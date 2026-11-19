@@ -15,8 +15,10 @@
     "test": "vitest run --root ../.. packages/kernel/src"
   },
   "dependencies": {
+    "@hono/node-server": "^1.13.0",
     "@kiln/protocol": "workspace:*",
     "better-sqlite3": "^13.2.0",
+    "hono": "^4.7.0",
     "yaml": "^2.7.0",
     "zod": "^3.24.2"
   },

@@ -11,6 +11,7 @@
     "build": "pnpm -r --if-present build",
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "vitest run",
+    "test:socket": "vitest run --config vitest.socket.config.ts",
     "test:watch": "vitest"
   },
   "devDependencies": {
