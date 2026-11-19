@@ -602,6 +602,14 @@ export class KilnSqliteIndex {
     };
   }
 
+  prepareForAtomicMove(): void {
+    if (!this.closed) {
+      this.db.pragma("wal_checkpoint(TRUNCATE)");
+      this.db.pragma("journal_mode = DELETE");
+      this.close();
+    }
+  }
+
   close(): void {
     if (!this.closed) {
       this.closed = true;

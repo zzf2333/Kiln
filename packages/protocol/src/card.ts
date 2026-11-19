@@ -221,6 +221,7 @@ export const StateEventSchema = z.discriminatedUnion("type", [
     at: z.string().min(1),
     decision_id: z.string().min(1),
     action: DecisionActionSchema,
+    target_stage: StageIdSchema.optional(),
   }),
   z.object({
     type: z.literal("external"),
@@ -266,6 +267,7 @@ export const GateReportSchema = z.object({
   contract_version: z.number().int().positive(),
   schema_ok: z.boolean(),
   scope_ok: z.boolean(),
+  artifacts_ok: z.boolean().default(true),
   out_of_scope_paths: z.array(z.string()),
   frozen_files_changed: z.array(z.string()),
   accept_exit_code: z.number().int(),

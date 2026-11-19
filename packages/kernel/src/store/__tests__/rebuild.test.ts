@@ -3,7 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { RunMeta, TaskCard } from "@kiln/protocol";
-import { KilnStore } from "../index.js";
+import { stageHostScopedChanges } from "../../gate/index.js";
+import { KilnStore, writeFileAtomic } from "../index.js";
 
 function makeTempHome(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "kiln-rebuild-test-"));
@@ -377,6 +378,86 @@ describe("KilnStore disk rebuild after deleting index.sqlite", () => {
       expect(recovered.getTaskIndex("t-corrupt")?.status).toBe("queued");
     } finally {
       recovered.close();
+    }
+  });
+
+  it("restores host_path_locks from backups/<id>/manifest.json across index.sqlite rebuild", () => {
+    const hostRoot = fs.mkdtempSync(path.join(os.tmpdir(), "kiln-rebuild-host-"));
+    try {
+      const hostTarget = path.join(hostRoot, "settings.conf");
+      fs.writeFileSync(hostTarget, "original=1\n", "utf8");
+      const canonicalHostTarget = fs.realpathSync(hostTarget);
+
+      const store1 = new KilnStore({ kilnHome });
+      store1.createTask(
+        makeCard("t-host-a", {
+          workspace_mode: "host_scoped",
+          contract: {
+            goal: "Stage host file",
+            end: "Applied cleanly",
+            accept_cmd: "echo ok",
+            accept_files_hash: "sha256:host-hash",
+            scope: [canonicalHostTarget],
+            deliver: { mode: "manual", cmd: null },
+            human_accept: false,
+            external_actions: "ask",
+          },
+        }),
+        "# Host A",
+      );
+      store1.createTask(
+        makeCard("t-host-b", {
+          workspace_mode: "host_scoped",
+          contract: {
+            goal: "Compete for host file",
+            end: "Blocked by lock",
+            accept_cmd: "echo ok",
+            accept_files_hash: "sha256:host-hash-b",
+            scope: [canonicalHostTarget],
+            deliver: { mode: "manual", cmd: null },
+            human_accept: false,
+            external_actions: "ask",
+          },
+        }),
+        "# Host B",
+      );
+
+      writeFileAtomic(path.join(store1.paths.stagedDir("t-host-a"), "settings.conf"), "staged=2\n");
+      const stageA = stageHostScopedChanges(store1, {
+        taskId: "t-host-a",
+        contractScope: [canonicalHostTarget],
+        stagedFiles: [{ stagedRelativePath: "settings.conf", targetPath: hostTarget }],
+        now: "2026-11-19T11:00:00.000Z",
+      });
+      expect(stageA.ok).toBe(true);
+      expect(store1.listHostPathLocks("t-host-a")).toHaveLength(1);
+
+      const dbFile = store1.paths.indexSqlite;
+      store1.close();
+      fs.rmSync(dbFile, { force: true });
+      fs.rmSync(`${dbFile}-wal`, { force: true });
+      fs.rmSync(`${dbFile}-shm`, { force: true });
+
+      const store2 = new KilnStore({ kilnHome });
+      try {
+        const restoredLocks = store2.listHostPathLocks("t-host-a");
+        expect(restoredLocks).toHaveLength(1);
+        expect(restoredLocks[0]?.canonical_path).toBe(canonicalHostTarget);
+
+        const competeLock = store2.acquireHostPathLocks(
+          "t-host-b",
+          [canonicalHostTarget],
+          "2026-11-19T11:05:00.000Z",
+        );
+        expect(competeLock).toEqual({
+          acquired: false,
+          conflicts: [{ path: canonicalHostTarget, heldByTaskId: "t-host-a" }],
+        });
+      } finally {
+        store2.close();
+      }
+    } finally {
+      fs.rmSync(hostRoot, { recursive: true, force: true });
     }
   });
 });

@@ -116,5 +116,34 @@ describe("card schemas", () => {
       checked_at: "2026-11-19T12:06:00.000Z",
     });
     expect(gate.escalated_to_l2).toBe(false);
+    expect(gate.artifacts_ok).toBe(true);
+
+    const failedArtifactGate = GateReportSchema.parse({
+      schema_version: 1,
+      run_id: "run-002",
+      contract_version: 1,
+      schema_ok: true,
+      scope_ok: true,
+      artifacts_ok: false,
+      out_of_scope_paths: [],
+      frozen_files_changed: [],
+      accept_exit_code: 0,
+      accept_duration_ms: 10,
+      escalated_to_l2: false,
+      checked_at: "2026-11-19T12:07:00.000Z",
+    });
+    expect(failedArtifactGate.artifacts_ok).toBe(false);
+
+    const decidedWithStage = StateEventSchema.parse({
+      type: "decided",
+      at: "2026-11-19T12:08:00.000Z",
+      decision_id: "dec-001",
+      action: "resume",
+      target_stage: "implement",
+    });
+    expect(decidedWithStage.type).toBe("decided");
+    if (decidedWithStage.type === "decided") {
+      expect(decidedWithStage.target_stage).toBe("implement");
+    }
   });
 });

@@ -41,6 +41,10 @@ import {
   writeYamlAtomic,
   type AnyZodType,
 } from "./fs-atomic.js";
+import {
+  HostBackupManifestSchema,
+  type HostBackupManifest,
+} from "./backup-manifest.js";
 import { KilnPaths, assertSafeSegment, type KilnConfigName } from "./paths.js";
 import {
   KilnSqliteIndex,
@@ -161,6 +165,10 @@ export function deriveTaskStatus(
         activeRunId = null;
         if (event.action === "resume") {
           status = "queued";
+          if (event.target_stage !== undefined) {
+            stage = event.target_stage;
+            round = null;
+          }
         } else if (event.action === "return_external") {
           status = "external";
         } else if (event.action === "finish") {
@@ -184,6 +192,19 @@ export function deriveTaskStatus(
       case "contract_updated":
         if (event.to_version > contractVersion) {
           contractVersion = event.to_version;
+        }
+        if (event.affected_stages.length > 0) {
+          const earliestAffected = [...event.affected_stages].sort(
+            (a, b) => STAGE_ORDER[a] - STAGE_ORDER[b],
+          )[0];
+          if (earliestAffected !== undefined) {
+            stage = earliestAffected;
+            round = null;
+          }
+        }
+        if (status === "running") {
+          status = "queued";
+          activeRunId = null;
         }
         break;
       case "priority_changed":
@@ -501,6 +522,19 @@ export class KilnStore {
     const oldVersion = card.contract_version;
     const newVersion = oldVersion + 1;
 
+    const acceptCmdChanged =
+      params.contractPatch.accept_cmd !== undefined &&
+      params.contractPatch.accept_cmd !== card.contract.accept_cmd;
+    if (acceptCmdChanged) {
+      const suppliedHash =
+        params.acceptFilesHash ?? params.contractPatch.accept_files_hash;
+      if (suppliedHash === undefined || suppliedHash === card.contract.accept_files_hash) {
+        throw new Error(
+          `Cannot update contract.accept_cmd for task "${taskId}" without supplying a new accept_files_hash`,
+        );
+      }
+    }
+
     const mergedContract = CardContractSchema.parse({
       ...card.contract,
       ...params.contractPatch,
@@ -528,7 +562,9 @@ export class KilnStore {
     appendNdjsonLine(this.paths.stateEventsNdjson(taskId), contractEvent);
 
     this.sqlite.expireActiveLeaseByTask(taskId, timestamp, "expired");
+    const derivedAfterBump = deriveTaskStatus(updatedCard, this.readStateEvents(taskId));
     this.sqlite.updateTaskStatusAndPriority(taskId, {
+      status: derivedAfterBump.status,
       contract_version: newVersion,
       updated_at: timestamp,
     });
@@ -623,6 +659,9 @@ export class KilnStore {
     }
 
     const derived = deriveTaskStatus(card, [...existingEvents, parsedEvent]);
+    if (isTerminalStatus(derived.status)) {
+      this.sqlite.releaseHostPathLocks(safeTaskId);
+    }
     const existingRow = this.sqlite.getTaskIndex(safeTaskId);
 
     let effectivePriority = derived.priority;
@@ -798,6 +837,11 @@ export class KilnStore {
     const cards = new Map<string, TaskCard>();
     const derivedByTask = new Map<string, DerivedTaskState>();
     const runsByTask = new Map<string, ScannedRun[]>();
+    const hostLocksToRestore: Array<{
+      taskId: string;
+      canonicalPaths: string[];
+      lockedAt: string;
+    }> = [];
 
     if (fs.existsSync(this.paths.tasksDir)) {
       for (const entry of fs.readdirSync(this.paths.tasksDir, { withFileTypes: true })) {
@@ -820,6 +864,30 @@ export class KilnStore {
         const derived = deriveTaskStatus(card, stateEvents);
         const runs = scanTaskRuns(this.paths, taskId);
 
+        const manifestPath = this.paths.backupManifest(taskId);
+        if (fs.existsSync(manifestPath)) {
+          const rawManifest = fs.readFileSync(manifestPath, "utf8");
+          const manifest: HostBackupManifest = HostBackupManifestSchema.parse(
+            JSON.parse(rawManifest) as unknown,
+          );
+          if (manifest.task_id !== taskId) {
+            throw new Error(
+              `Corrupted backup manifest for "${taskId}": manifest task_id is "${manifest.task_id}"`,
+            );
+          }
+          if (
+            manifest.status === "staged_awaiting_approval" &&
+            !isTerminalStatus(derived.status) &&
+            manifest.files.length > 0
+          ) {
+            hostLocksToRestore.push({
+              taskId,
+              canonicalPaths: manifest.files.map((f) => f.target_canonical_path),
+              lockedAt: manifest.updated_at,
+            });
+          }
+        }
+
         cards.set(taskId, card);
         derivedByTask.set(taskId, derived);
         runsByTask.set(taskId, runs);
@@ -828,18 +896,14 @@ export class KilnStore {
 
     const effectivePriorities = propagateEffectivePriorities(cards, derivedByTask);
 
-    if (this._sqlite) {
-      this._sqlite.close();
-      this._sqlite = null;
-    }
-
     const dbPath = this.paths.indexSqlite;
-    fs.rmSync(dbPath, { force: true });
-    fs.rmSync(`${dbPath}-wal`, { force: true });
-    fs.rmSync(`${dbPath}-shm`, { force: true });
+    const tmpDbPath = `${dbPath}.rebuild.${process.pid}.${randomUUID()}.tmp`;
+    let tmpSqlite: KilnSqliteIndex | null = null;
 
-    const sqlite = new KilnSqliteIndex(dbPath);
     try {
+      tmpSqlite = new KilnSqliteIndex(tmpDbPath);
+      const sqlite = tmpSqlite;
+
       sqlite.transaction(() => {
         for (const [taskId, card] of cards) {
           const derived = derivedByTask.get(taskId);
@@ -908,16 +972,49 @@ export class KilnStore {
             }
           }
         }
+
+        for (const entry of hostLocksToRestore) {
+          const lockRes = sqlite.acquireHostPathLocks(
+            entry.taskId,
+            entry.canonicalPaths,
+            entry.lockedAt,
+          );
+          if (!lockRes.acquired) {
+            throw new Error(
+              `Conflicting host_path_locks during rebuild for task "${entry.taskId}": ${JSON.stringify(lockRes.conflicts)}`,
+            );
+          }
+        }
       });
-    } catch (error) {
-      sqlite.close();
-      fs.rmSync(dbPath, { force: true });
+
+      sqlite.prepareForAtomicMove();
+      tmpSqlite = null;
+
+      if (this._sqlite) {
+        this._sqlite.close();
+        this._sqlite = null;
+      }
+
       fs.rmSync(`${dbPath}-wal`, { force: true });
       fs.rmSync(`${dbPath}-shm`, { force: true });
+      fs.renameSync(tmpDbPath, dbPath);
+      fs.rmSync(`${tmpDbPath}-wal`, { force: true });
+      fs.rmSync(`${tmpDbPath}-shm`, { force: true });
+
+      this._sqlite = new KilnSqliteIndex(dbPath);
+    } catch (error) {
+      if (tmpSqlite) {
+        try {
+          tmpSqlite.close();
+        } catch {
+          // Ignore secondary close errors during cleanup.
+        }
+      }
+      fs.rmSync(tmpDbPath, { force: true });
+      fs.rmSync(`${tmpDbPath}-wal`, { force: true });
+      fs.rmSync(`${tmpDbPath}-shm`, { force: true });
       throw error;
     }
-
-    this._sqlite = sqlite;
   }
 
   close(): void {
