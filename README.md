@@ -10,7 +10,7 @@
 
 1. **零 Token 确定性内核（Deterministic Kernel）**：调度、SQLite 租约抢占、可改范围校验、冻结测试哈希核对与验收命令重跑全部由常驻纯代码守护进程（`kilnd`）执行，不让多 Agent 互相套娃聊天空耗额度。
 2. **只认硬门禁，不信自述（Verify, Never Trust）**：执行者提交回执后，必须在隔离环境通过真实 `accept_cmd` 与异构模型独立审查（Reviewer 自动避开实施所用模型）；冻结测试文件被改动时强制升轨审查。
-3. **耗材化底座与模型（Swappable Agents & Backends）**：通过自有 `ExecutionBackend` 窄接口包装底层执行底座（V1 采用 Paseo TS SDK + 官方 CLI `ManualBackend`），7 类角色在设置页随时热换 Agent 与模型，工作流与决策账本（Ledger）永久留在本地 `~/.kiln/`。
+3. **耗材化底座与模型（Swappable Agents & Backends）**：通过自有 `ExecutionBackend` 窄接口包装底层执行底座（V1 统一采用 Paseo TS SDK，随 Paseo 演进平滑覆盖 Codex / Pi / `agy acp`），7 类角色在设置页随时热换 Agent 与模型，工作流与决策账本（Ledger）永久留在本地 `~/.kiln/`。
 4. **全场景四工作区隔离**：原生支持代码仓库（`git_worktree` + APFS 写时复制）、本机配置修改（`host_scoped` 两阶段沙盒暂存 + 路径锁 + SHA256 防覆盖回滚）、无项目调研（`scratch_dir`）与外部协作跟进（`external_only`）。
 5. **一核多端驻守形态**：单一本地守护进程同时驱动 macOS 顶部菜单栏、按需释放内存的原生桌面窗口、桌面/手机自适应 Web 看板与 `kiln` CLI；所有消耗统一按官方 API 标价透明折算。
 
@@ -35,9 +35,9 @@
 
 ## 实施路线图
 
-- [ ] **M0 · 技术探针验证**：实测验证 Paseo 对 Codex / Pi 的 MCP 动态注入、非完全访问权限拦截与 `lastUsage` 缓存细分数据。
+- [x] **M0 · 技术探针验证**：已完成 V1–V6、V9 实测与退路锁定（详见 [`scripts/probes/RESULTS.md`](./scripts/probes/RESULTS.md)；全员已统一走 Paseo，`agy` 将随 Paseo 下版 `agy acp` 接入，V7 已取消）。
 - [ ] **M1 · 协议与无头内核**：完成 `packages/protocol`、`kernel`、`mcp`、`cli` 及 `FakeBackend` 并发竞态与崩溃重建测试集。
-- [ ] **M2 · MVP 工作台闭环**：接入 `PaseoBackend` 与 `ManualBackend`，上线 `apps/web` 桌面与手机自适应看板。
+- [ ] **M2 · MVP 工作台闭环**：接入 `PaseoBackend`，上线 `apps/web` 桌面与手机自适应看板。
 - [ ] **M3 · 桌面常驻与开源发布**：封装 `apps/desktop`（Tauri v2 菜单栏 + 按需释放窗口），打通 npm 与 Homebrew 分发流水线。
 - [ ] **M4 · Post-MVP 演进**：复盘模块、多切片串行合并队列、执行台泳道、Tailscale/Passkey 推送与大需求循环（Epic Loop）。
 
