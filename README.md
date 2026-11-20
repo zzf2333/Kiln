@@ -36,7 +36,7 @@
 
 ## Installation
 
-> **Pre-release notice**: Workspace manifests are currently marked `"private": true` at `0.1.0` while M2 end-to-end acceptance and M3 packaging prep are finalized. Public npm and Homebrew channels below activate once the first public release is cut (see [`packaging/README.md`](packaging/README.md)). Until then, use [Build from Source](#build-from-source).
+> **Pre-release notice**: Workspace manifests are currently marked `"private": true` at `0.1.0` while M3 desktop bundling and signing prep are finalized. Public npm and Homebrew channels below activate once the first public release is cut (see [`packaging/README.md`](packaging/README.md)). Until then, use [Build from Source](#build-from-source).
 
 ### 1. One-Line Install Script (macOS / Linux)
 
@@ -137,8 +137,8 @@ kiln uninstall                  # Stop daemon, remove service, inspect worktrees
 
 - [x] **M0 · Technical Probe Verification**: Verified underlying agent capabilities, permission policies, and token/cost accounting formats.
 - [x] **M1 · Protocol & Headless Kernel**: Completed `packages/protocol`, `kernel`, `mcp`, `cli`, and concurrency race / store-rebuild test suites.
-- [ ] **M2 · MVP Workbench Loop**: Core execution loop, fix slices (`PaseoBackend` wiring, orchestrator, API/gate/SSE, `apps/web`), and non-destructive `kilnd` + live Paseo smoke tests passed; pending full 8-scenario real-machine E2E and Playwright (`<= 820px`) browser acceptance.
-- [ ] **M3 · Desktop Menu Bar & Open-Source Release (In Progress)**: Landed the `apps/desktop` Tauri v2 skeleton (`cargo check`, `cargo test`, and pure-`std` `model.rs` tests passing; `tauri build` bundle and interactive GUI runtime pending), CI/Release workflows, POSIX installer, and Homebrew/npm templates; pending public package prep and Apple signing credentials.
+- [x] **M2 · MVP Workbench Loop**: Passed all 8 real-machine E2E scenarios (`S1`–`S8`) against live Paseo (`codex` + `pi`), real `stdio` `kiln-mcp`, and Playwright Chrome acceptance across desktop (`1440×900`) and mobile (`390×844` `<= 820px`) viewports (with SQLite rebuild parity verified).
+- [ ] **M3 · Desktop Menu Bar & Open-Source Release (In Progress)**: Landed the `apps/desktop` Tauri v2 skeleton (`cargo check`, `cargo test`, `cargo build --release`, and pure-`std` `model.rs` tests passing; `tauri build` bundle and interactive GUI runtime pending), CI/Release workflows, POSIX installer, and aligned Homebrew (`io.kiln.desktop`)/npm templates; pending public package prep and Apple signing credentials.
 - [ ] **M4 · Post-MVP Evolution**: Retrospectives, serialized multi-slice merge queue, execution swimlanes, Tailscale/Passkey push notifications, and Epic Loop.
 
 ---
