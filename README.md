@@ -36,7 +36,7 @@
 
 ## Installation
 
-> **Pre-release notice**: Workspace manifests are currently marked `"private": true` at `0.1.0` while M3 desktop bundling and signing prep are finalized. Public npm and Homebrew channels below activate once the first public release is cut (see [`packaging/README.md`](packaging/README.md)). Until then, use [Build from Source](#build-from-source).
+> **Pre-release notice**: Internal workspace libraries remain `"private": true`, while `@zzf2333/kiln` (`packages/cli`, `0.1.0`) is configured as a standalone public npm package and verified via isolated `npm install -g` (currently awaiting the first `v0.1.0` tag / `NPM_TOKEN` and macOS signing/notarization). Public npm and Homebrew channels below activate once the first public release is published (see [`packaging/README.md`](packaging/README.md)). Until then, you can also [Build from Source](#build-from-source).
 
 ### 1. One-Line Install Script (macOS / Linux)
 
@@ -138,7 +138,7 @@ kiln uninstall                  # Stop daemon, remove service, inspect worktrees
 - [x] **M0 · Technical Probe Verification**: Verified underlying agent capabilities, permission policies, and token/cost accounting formats.
 - [x] **M1 · Protocol & Headless Kernel**: Completed `packages/protocol`, `kernel`, `mcp`, `cli`, and concurrency race / store-rebuild test suites.
 - [x] **M2 · MVP Workbench Loop**: Passed all 8 real-machine E2E scenarios (`S1`–`S8`) against live Paseo (`codex` + `pi`), real `stdio` `kiln-mcp`, and Playwright Chrome acceptance across desktop (`1440×900`) and mobile (`390×844` `<= 820px`) viewports (with SQLite rebuild parity verified).
-- [ ] **M3 · Desktop Menu Bar & Open-Source Release (In Progress)**: Landed the `apps/desktop` Tauri v2 skeleton (`cargo check`, `cargo test`, `cargo build --release`, and pure-`std` `model.rs` tests passing; `tauri build` bundle and interactive GUI runtime pending), CI/Release workflows, POSIX installer, and aligned Homebrew (`io.kiln.desktop`)/npm templates; pending public package prep and Apple signing credentials.
+- [ ] **M3 · Desktop Menu Bar & Open-Source Release (In Progress)**: Landed the `apps/desktop` Tauri v2 skeleton (`cargo check`, `cargo test`, `cargo build --release`, and pure-`std` `model.rs` tests passing; `tauri build` bundle and interactive GUI runtime pending), CI/Release workflows, POSIX installer, aligned Homebrew (`io.kiln.desktop`)/npm templates, and standalone `@zzf2333/kiln` public npm packaging (`npm install -g` smoke verified); pending `v0.1.0` tag publish (`NPM_TOKEN`) and macOS DMG signing/notarization.
 - [ ] **M4 · Post-MVP Evolution**: Retrospectives, serialized multi-slice merge queue, execution swimlanes, Tailscale/Passkey push notifications, and Epic Loop.
 
 ---

@@ -2,19 +2,17 @@
 
 This directory holds Homebrew distribution templates ([`kiln.rb`](homebrew/kiln.rb) and [`kiln-app.rb`](homebrew/kiln-app.rb)) that complement [`scripts/install.sh`](../scripts/install.sh) and [`.github/workflows/release.yml`](../.github/workflows/release.yml).
 
-> **Current repository state (`0.1.0`)**: All workspace packages currently carry `"private": true` and internal `@kiln/*` names with `workspace:*` references. The automated workflows and Homebrew files here are release-ready templates; complete the checklist below before cutting the first public release.
+> **Current repository state (`0.1.0`)**: `packages/cli` is now configured as the standalone public package `@zzf2333/kiln` (`"publishConfig": { "access": "public" }`, internal `@kiln/*` bundled into `dist/` & `mcp/dist/`, Web UI assets staged into `public/`, verified via isolated `npm install -g`), while internal monorepo packages (`packages/protocol`, `packages/kernel`, `packages/mcp`, `apps/web`, `apps/desktop`) remain `"private": true`. Complete the release-time secrets, tag, and Homebrew checksum steps below when cutting the public release.
 
 ## 1. Pre-Release Package Readiness
 
-1. **Publishable npm naming & visibility**:
-   - Switch target package manifests from `"private": true` to public publishable configuration (`"private": false` or removing `"private"`, plus `"publishConfig": { "access": "public" }`).
-   - Align the public CLI package name to `@zzf2333/kiln` (with `"bin": { "kiln": ..., "kl": ... }`).
-   - Eliminate raw `workspace:*` dependencies from the published `@zzf2333/kiln` manifest — either publish scoped workspace dependencies (`@zzf2333/kiln-protocol`, `@zzf2333/kiln-kernel`) alongside `@zzf2333/kiln` with matching semver, or bundle internal JS modules while keeping native `better-sqlite3` as a runtime dependency.
-2. **Bundle Web UI static assets (`packages/kernel/public/`)**:
-   - Run `pnpm build` so `apps/web` builds into `packages/kernel/public/`.
-   - Ensure the published package's `"files"` allowlist includes both compiled `dist/` outputs and `packages/kernel/public/` static assets so `kilnd` serves the Web workbench out of the box.
+1. **Standalone `@zzf2333/kiln` packaging (Completed)**:
+   - `packages/cli/package.json` publishes `@zzf2333/kiln` (`"publishConfig": { "access": "public" }`, `"bin": { "kiln": "./dist/bin.js", "kl": "./dist/bin.js", "kiln-mcp": "./mcp/dist/bin.js" }`) with zero `workspace:*` runtime `dependencies` (only external npm deps including `better-sqlite3`).
+   - `packages/cli/tsup.config.ts` bundles `@kiln/*` modules into `dist/` and `mcp/dist/` (resolving internal `@kiln/*` types), and `packages/cli/scripts/stage-assets.mjs` copies `packages/kernel/public/`, `README.md`, and `LICENSE` for `"files"`.
+2. **Bundle Web UI static assets (`packages/kernel/public/` -> `packages/cli/public/`)**:
+   - Running `pnpm build` compiles `apps/web` into `packages/kernel/public/` and automatically stages `packages/cli/public/` so installed `@zzf2333/kiln` serves the Web workbench out of the box.
 3. **Version alignment**:
-   - Bump `version` consistently across `packages/protocol/package.json`, `packages/kernel/package.json`, `packages/mcp/package.json`, `packages/cli/package.json`, `apps/web/package.json`, and `CLI_VERSION` in `packages/cli/src/commands.ts`.
+   - When bumping versions, update `version` consistently across `packages/protocol/package.json`, `packages/kernel/package.json`, `packages/mcp/package.json`, `packages/cli/package.json`, `apps/web/package.json`, and `CLI_VERSION` in `packages/cli/src/commands.ts`.
 
 ## 2. Repository Secrets & Signing Credentials
 
