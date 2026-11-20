@@ -40,100 +40,107 @@ assert_no_autostart_side_effects() {
   fi
 }
 
-# Build minimal isolated system tool directory without node/npm so PATH tests
-# do not accidentally pick up host /usr/local/bin/node or Homebrew node.
+compute_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print tolower($1)}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print tolower($1)}'
+  else
+    openssl dgst -sha256 "$1" | awk '{print tolower($NF)}'
+  fi
+}
+
+# Build minimal isolated system tool directory WITHOUT node or npm to prove zero Node dependency.
 SYS_BIN="${TMP_ROOT}/sysbin"
 mkdir -p "$SYS_BIN"
-for tool in sh uname; do
+for tool in sh uname awk sed tr tail cat cp mv rm mkdir chmod ln mktemp sha256sum shasum openssl; do
   if command -v "$tool" >/dev/null 2>&1; then
     ln -s "$(command -v "$tool")" "${SYS_BIN}/${tool}"
   fi
 done
 SH_BIN="$(command -v sh)"
 
-# Stub Node >= 22 + npm directory for deterministic dry-run tests even if host PATH varies,
-# plus real-PATH checks when node >= 22 is present.
-GOOD_NODE_BIN="${TMP_ROOT}/good-node-bin"
-mkdir -p "$GOOD_NODE_BIN"
-cat > "${GOOD_NODE_BIN}/node" <<'EOF'
+# Stub curl serving local fixture files from $KILN_TEST_FIXTURE_ROOT
+STUB_CURL_BIN="${TMP_ROOT}/stub-curl-bin"
+mkdir -p "$STUB_CURL_BIN"
+cat > "${STUB_CURL_BIN}/curl" <<'EOF'
 #!/bin/sh
-if [ "${1:-}" = "-v" ]; then
-  printf '%s\n' "v22.14.0"
-  exit 0
+set -eu
+out=""
+url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o)
+      out="$2"
+      shift 2
+      ;;
+    -w)
+      shift 2
+      ;;
+    -*)
+      shift 1
+      ;;
+    *)
+      url="$1"
+      shift 1
+      ;;
+  esac
+done
+: "${KILN_TEST_FIXTURE_ROOT:?missing fixture root}"
+rel="${url#https://fixture.local/}"
+src="${KILN_TEST_FIXTURE_ROOT}/${rel}"
+if [ ! -f "$src" ]; then
+  printf 'curl stub: 404 %s\n' "$src" >&2
+  exit 22
 fi
-exit 0
-EOF
-cat > "${GOOD_NODE_BIN}/npm" <<'EOF'
-#!/bin/sh
-printf '%s\n' "10.9.2"
-exit 0
-EOF
-chmod +x "${GOOD_NODE_BIN}/node" "${GOOD_NODE_BIN}/npm"
-
-OLD_NODE_BIN="${TMP_ROOT}/old-node-bin"
-mkdir -p "$OLD_NODE_BIN"
-cat > "${OLD_NODE_BIN}/node" <<'EOF'
-#!/bin/sh
-if [ "${1:-}" = "-v" ]; then
-  printf '%s\n' "v20.18.0"
-  exit 0
+if [ -n "$out" ]; then
+  cp "$src" "$out"
+else
+  cat "$src"
 fi
-exit 0
 EOF
-chmod +x "${OLD_NODE_BIN}/node"
+chmod +x "${STUB_CURL_BIN}/curl"
 
 # 1. POSIX shell syntax check
 sh -n "$INSTALL_SCRIPT"
 
-# 2. --help exits 0 and documents key options
-help_out="$(sh "$INSTALL_SCRIPT" --help)"
+# 2. --help exits 0 and documents key options and zero Node.js requirement
+help_out="$("$SH_BIN" "$INSTALL_SCRIPT" --help)"
 assert_contains "$help_out" "--version" "--help"
 assert_contains "$help_out" "--prefix" "--help"
 assert_contains "$help_out" "--dry-run" "--help"
 assert_contains "$help_out" "--help" "--help"
+assert_contains "$help_out" "Zero Node.js" "--help"
 
-# 3. --dry-run (default and with explicit --version / --prefix) exits 0 and creates no files
+# 3. --dry-run succeeds with ZERO node/npm in PATH and creates no files
 TEST_HOME="${TMP_ROOT}/home-dry-run"
 mkdir -p "$TEST_HOME"
-TEST_PREFIX="${TMP_ROOT}/kiln-test-prefix"
 
-dry_default_out="$(HOME="$TEST_HOME" PATH="${GOOD_NODE_BIN}:${SYS_BIN}" "$SH_BIN" "$INSTALL_SCRIPT" --dry-run)"
-assert_contains "$dry_default_out" "@zzf2333/kiln" "--dry-run"
-assert_contains "$dry_default_out" "npm install -g" "--dry-run"
+dry_default_out="$(HOME="$TEST_HOME" PATH="${STUB_CURL_BIN}:${SYS_BIN}" "$SH_BIN" "$INSTALL_SCRIPT" --dry-run)"
+assert_contains "$dry_default_out" "Node.js not required" "--dry-run"
+assert_contains "$dry_default_out" "${TEST_HOME}/.local/bin/kiln" "--dry-run"
+assert_contains "$dry_default_out" "${TEST_HOME}/.local/bin/kl -> kiln" "--dry-run"
+assert_contains "$dry_default_out" "SHA256SUMS" "--dry-run"
 assert_contains "$dry_default_out" "kiln doctor" "--dry-run"
 assert_contains "$dry_default_out" "kiln service install" "--dry-run"
 assert_contains "$dry_default_out" "kiln uninstall" "--dry-run"
-
-dry_custom_out="$(HOME="$TEST_HOME" PATH="${GOOD_NODE_BIN}:${SYS_BIN}" "$SH_BIN" "$INSTALL_SCRIPT" --dry-run --version 0.1.0 --prefix /tmp/kiln-test-prefix)"
-assert_contains "$dry_custom_out" "@zzf2333/kiln@0.1.0" "--dry-run custom"
-assert_contains "$dry_custom_out" "/tmp/kiln-test-prefix" "--dry-run custom"
 assert_no_autostart_side_effects "$TEST_HOME" "--dry-run"
+
+dry_custom_out="$(HOME="$TEST_HOME" PATH="${STUB_CURL_BIN}:${SYS_BIN}" "$SH_BIN" "$INSTALL_SCRIPT" --dry-run --version 0.1.0 --prefix /tmp/kiln-test-prefix)"
+assert_contains "$dry_custom_out" "kiln-v0.1.0-" "--dry-run custom"
+assert_contains "$dry_custom_out" "/tmp/kiln-test-prefix/bin/kiln" "--dry-run custom"
+assert_no_autostart_side_effects "$TEST_HOME" "--dry-run custom"
 
 # Prefix containing spaces must remain intact and never create directories in dry-run
 SPACE_PREFIX="${TMP_ROOT}/prefix with spaces"
-dry_space_out="$(HOME="$TEST_HOME" PATH="${GOOD_NODE_BIN}:${SYS_BIN}" "$SH_BIN" "$INSTALL_SCRIPT" --dry-run --version 0.1.0 --prefix "$SPACE_PREFIX")"
-assert_contains "$dry_space_out" "$SPACE_PREFIX" "--dry-run space prefix"
+dry_space_out="$(HOME="$TEST_HOME" PATH="${STUB_CURL_BIN}:${SYS_BIN}" "$SH_BIN" "$INSTALL_SCRIPT" --dry-run --version v0.1.0 --prefix "$SPACE_PREFIX")"
+assert_contains "$dry_space_out" "${SPACE_PREFIX}/bin/kiln" "--dry-run space prefix"
 if [ -e "$SPACE_PREFIX" ]; then
   fail "--dry-run created prefix directory on disk"
 fi
 assert_no_autostart_side_effects "$TEST_HOME" "--dry-run space prefix"
 
-# Also verify against host Node if host already provides Node >= 22
-if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
-  host_ver="$(node -v)"
-  host_clean="${host_ver#v}"
-  host_major="${host_clean%%.*}"
-  if [ "$host_major" -ge 22 ] 2>/dev/null; then
-    host_dry_out="$(HOME="$TEST_HOME" "$SH_BIN" "$INSTALL_SCRIPT" --dry-run --version 0.1.0 --prefix "$TEST_PREFIX")"
-    assert_contains "$host_dry_out" "@zzf2333/kiln@0.1.0" "host node --dry-run"
-    if [ -e "$TEST_PREFIX" ]; then
-      fail "host --dry-run created prefix directory on disk"
-    fi
-    assert_no_autostart_side_effects "$TEST_HOME" "host --dry-run"
-  fi
-fi
-
-# 4. Unknown flag and missing option values exit with code 2
+# 4. Unknown flag, missing option values, and invalid version exit with code 2
 set +e
 err_bogus="$("$SH_BIN" "$INSTALL_SCRIPT" --bogus 2>&1)"
 rc_bogus=$?
@@ -158,54 +165,90 @@ rc_flag_as_ver=$?
 set -e
 [ "$rc_flag_as_ver" -eq 2 ] || fail "--version --dry-run expected exit 2, got $rc_flag_as_ver ($err_flag_as_ver)"
 
-# 5. Missing node and low-version node fail cleanly with non-zero exit and zero HOME side effects
-NO_NODE_HOME="${TMP_ROOT}/home-no-node"
-mkdir -p "$NO_NODE_HOME"
 set +e
-err_no_node="$(HOME="$NO_NODE_HOME" PATH="$SYS_BIN" "$SH_BIN" "$INSTALL_SCRIPT" --dry-run 2>&1)"
-rc_no_node=$?
+err_bad_ver="$("$SH_BIN" "$INSTALL_SCRIPT" --version '0.1.0;rm' 2>&1)"
+rc_bad_ver=$?
 set -e
-[ "$rc_no_node" -ne 0 ] || fail "missing node expected non-zero exit, got 0"
-assert_contains "$err_no_node" "Node.js >= 22" "missing node"
-assert_no_autostart_side_effects "$NO_NODE_HOME" "missing node"
+[ "$rc_bad_ver" -eq 2 ] || fail "invalid --version chars expected exit 2, got $rc_bad_ver ($err_bad_ver)"
 
-OLD_NODE_HOME="${TMP_ROOT}/home-old-node"
-mkdir -p "$OLD_NODE_HOME"
-set +e
-err_old_node="$(HOME="$OLD_NODE_HOME" PATH="${OLD_NODE_BIN}:${SYS_BIN}" "$SH_BIN" "$INSTALL_SCRIPT" --dry-run 2>&1)"
-rc_old_node=$?
-set -e
-[ "$rc_old_node" -ne 0 ] || fail "old node expected non-zero exit, got 0"
-assert_contains "$err_old_node" "v20.18.0" "old node"
-assert_no_autostart_side_effects "$OLD_NODE_HOME" "old node"
-
-# 6. Simulated real install with stub npm verifies exact quoting (spaces in --prefix) and zero HOME side effects
-STUB_BIN="${TMP_ROOT}/stub-install-bin"
-mkdir -p "$STUB_BIN"
-cp "${GOOD_NODE_BIN}/node" "${STUB_BIN}/node"
-NPM_LOG="${TMP_ROOT}/npm-argv.log"
-cat > "${STUB_BIN}/npm" <<'EOF'
+# 5. Unsupported OS/arch fails cleanly with non-zero exit
+BAD_UNAME_BIN="${TMP_ROOT}/bad-uname-bin"
+mkdir -p "$BAD_UNAME_BIN"
+cat > "${BAD_UNAME_BIN}/uname" <<'EOF'
 #!/bin/sh
-: "${KILN_TEST_NPM_LOG:?missing log path}"
-: > "$KILN_TEST_NPM_LOG"
-for arg in "$@"; do
-  printf '%s\n' "$arg" >> "$KILN_TEST_NPM_LOG"
-done
+if [ "${1:-}" = "-s" ]; then
+  printf '%s\n' "FreeBSD"
+else
+  printf '%s\n' "sparc64"
+fi
 EOF
-chmod +x "${STUB_BIN}/node" "${STUB_BIN}/npm"
+chmod +x "${BAD_UNAME_BIN}/uname"
+
+set +e
+err_bad_os="$(HOME="$TEST_HOME" PATH="${BAD_UNAME_BIN}:${STUB_CURL_BIN}:${SYS_BIN}" "$SH_BIN" "$INSTALL_SCRIPT" --dry-run 2>&1)"
+rc_bad_os=$?
+set -e
+[ "$rc_bad_os" -ne 0 ] || fail "unsupported OS expected non-zero exit, got 0"
+assert_contains "$err_bad_os" "Unsupported OS/architecture" "unsupported OS"
+
+# 6. End-to-end simulated install with valid SHA256SUMS (prefix with spaces, zero Node)
+host_os="$(uname -s)"
+host_arch="$(uname -m)"
+case "${host_os}:${host_arch}" in
+  Darwin:arm64|Darwin:aarch64) host_target="darwin-arm64" ;;
+  Darwin:x86_64|Darwin:amd64) host_target="darwin-x64" ;;
+  Linux:x86_64|Linux:amd64) host_target="linux-x64" ;;
+  *) fail "test-install.sh cannot map host ${host_os}/${host_arch}" ;;
+esac
+
+FIXTURE_ROOT="${TMP_ROOT}/fixtures"
+RELEASE_DIR="${FIXTURE_ROOT}/v0.1.0"
+mkdir -p "$RELEASE_DIR"
+ASSET_NAME="kiln-v0.1.0-${host_target}"
+cat > "${RELEASE_DIR}/${ASSET_NAME}" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = "--version" ]; then
+  printf '%s\n' "kiln 0.1.0"
+  exit 0
+fi
+printf '%s\n' "stub-kiln:$*"
+EOF
+chmod +x "${RELEASE_DIR}/${ASSET_NAME}"
+GOOD_SHA="$(compute_sha256 "${RELEASE_DIR}/${ASSET_NAME}")"
+printf '%s  %s\n' "$GOOD_SHA" "$ASSET_NAME" > "${RELEASE_DIR}/SHA256SUMS"
 
 STUB_HOME="${TMP_ROOT}/home-stub-install"
 mkdir -p "$STUB_HOME"
-install_out="$(HOME="$STUB_HOME" KILN_TEST_NPM_LOG="$NPM_LOG" PATH="${STUB_BIN}:${SYS_BIN}" "$SH_BIN" "$INSTALL_SCRIPT" --version 0.1.0 --prefix "$SPACE_PREFIX")"
-assert_contains "$install_out" "Installed @zzf2333/kiln@0.1.0." "stub install"
+install_out="$(HOME="$STUB_HOME" KILN_TEST_FIXTURE_ROOT="$FIXTURE_ROOT" KILN_RELEASE_BASE_URL="https://fixture.local" PATH="${STUB_CURL_BIN}:${SYS_BIN}" "$SH_BIN" "$INSTALL_SCRIPT" --version 0.1.0 --prefix "$SPACE_PREFIX")"
+assert_contains "$install_out" "Installed kiln v0.1.0 (${host_target})" "stub install"
+assert_contains "$install_out" "$GOOD_SHA" "stub install sha"
 assert_no_autostart_side_effects "$STUB_HOME" "stub install"
 
-expected_argv="$(printf '%s\n' "install" "-g" "--prefix" "$SPACE_PREFIX" "@zzf2333/kiln@0.1.0")"
-actual_argv="$(cat "$NPM_LOG")"
-[ "$actual_argv" = "$expected_argv" ] || fail "stub npm argv mismatch:
-expected:
-${expected_argv}
-actual:
-${actual_argv}"
+[ -x "${SPACE_PREFIX}/bin/kiln" ] || fail "installed kiln binary missing or not executable"
+[ -L "${SPACE_PREFIX}/bin/kl" ] || fail "installed kl symlink missing"
+[ "$(readlink "${SPACE_PREFIX}/bin/kl")" = "kiln" ] || fail "kl symlink must target kiln"
+[ "$("${SPACE_PREFIX}/bin/kiln" --version)" = "kiln 0.1.0" ] || fail "installed kiln --version mismatch"
+[ "$("${SPACE_PREFIX}/bin/kl" --version)" = "kiln 0.1.0" ] || fail "installed kl --version mismatch"
+
+# 7. Tampered SHA256SUMS MUST fail before installing anything
+TAMPER_PREFIX="${TMP_ROOT}/tamper-prefix"
+printf '%s  %s\n' "0000000000000000000000000000000000000000000000000000000000000000" "$ASSET_NAME" > "${RELEASE_DIR}/SHA256SUMS"
+set +e
+err_tamper="$(HOME="$STUB_HOME" KILN_TEST_FIXTURE_ROOT="$FIXTURE_ROOT" KILN_RELEASE_BASE_URL="https://fixture.local" PATH="${STUB_CURL_BIN}:${SYS_BIN}" "$SH_BIN" "$INSTALL_SCRIPT" --version 0.1.0 --prefix "$TAMPER_PREFIX" 2>&1)"
+rc_tamper=$?
+set -e
+[ "$rc_tamper" -ne 0 ] || fail "tampered SHA256 expected non-zero exit, got 0"
+assert_contains "$err_tamper" "SHA-256 mismatch" "tampered SHA256"
+[ ! -e "${TAMPER_PREFIX}/bin/kiln" ] || fail "tampered binary must not be installed"
+
+# 8. Missing asset entry in SHA256SUMS MUST fail before installing anything
+printf '%s  %s\n' "$GOOD_SHA" "other-unrelated-file" > "${RELEASE_DIR}/SHA256SUMS"
+set +e
+err_missing_sum="$(HOME="$STUB_HOME" KILN_TEST_FIXTURE_ROOT="$FIXTURE_ROOT" KILN_RELEASE_BASE_URL="https://fixture.local" PATH="${STUB_CURL_BIN}:${SYS_BIN}" "$SH_BIN" "$INSTALL_SCRIPT" --version 0.1.0 --prefix "$TAMPER_PREFIX" 2>&1)"
+rc_missing_sum=$?
+set -e
+[ "$rc_missing_sum" -ne 0 ] || fail "missing SHA256 entry expected non-zero exit, got 0"
+assert_contains "$err_missing_sum" "No valid SHA-256 entry" "missing SHA256 entry"
+[ ! -e "${TAMPER_PREFIX}/bin/kiln" ] || fail "unverified binary must not be installed"
 
 printf '%s\n' "PASS: scripts/test-install.sh (all checks passed)"

@@ -43,10 +43,17 @@ import {
   deriveTaskStatus,
   ensureDir,
   inspectGitSpacePath,
+  isCompiledKilnBinary,
   writeFileAtomic,
+  type EmbeddedStaticAssets,
   type ExecutionBackend,
   type UsageSnapshot,
 } from "@kiln/kernel";
+import {
+  runStdioMcpServer,
+  type RunStdioMcpServerOptions,
+} from "@kiln/mcp";
+import { getEmbeddedPublicAssets } from "./embedded-public.js";
 import {
   getServiceStatus,
   installService,
@@ -130,6 +137,10 @@ export interface CliRuntimeOptions {
   disablePaseo?: boolean;
   backendRegistry?: BackendRegistry;
   createPaseoBackend?: (opts: { url?: string; password?: string }) => ExecutionBackend;
+  env?: NodeJS.ProcessEnv;
+  mcpOptions?: RunStdioMcpServerOptions;
+  embeddedPublicAssets?: EmbeddedStaticAssets | null;
+  compiledBinary?: boolean;
 }
 
 export interface CliRunResult {
@@ -369,7 +380,7 @@ function parsePaseoUrlValue(rawUrl: string | undefined): string | undefined {
 }
 
 export interface BuildDaemonForegroundArgsInput {
-  entrypoint: string;
+  entrypoint?: string;
   host: string;
   port: number;
   paseoUrl?: string;
@@ -383,15 +394,18 @@ export interface BuildDaemonForegroundArgsInput {
 export function buildDaemonForegroundArgs(
   input: BuildDaemonForegroundArgsInput,
 ): string[] {
-  const args = [
-    input.entrypoint,
+  const args: string[] = [];
+  if (input.entrypoint !== undefined && input.entrypoint.length > 0) {
+    args.push(input.entrypoint);
+  }
+  args.push(
     "up",
     "--foreground",
     "--host",
     input.host,
     "--port",
     String(input.port),
-  ];
+  );
   if (input.paseoUrl !== undefined) {
     args.push("--paseo-url", input.paseoUrl);
   }
@@ -863,12 +877,17 @@ async function handleUp(
         backendRegistry.register(paseoBackend);
       }
 
+      const embeddedPublicAssets =
+        options.embeddedPublicAssets !== undefined
+          ? options.embeddedPublicAssets
+          : getEmbeddedPublicAssets();
       const shutdownAc = options.foregroundSignal ? new AbortController() : null;
       server = new KilndServer({
         kilnHome,
         host,
         port,
         ...(options.socketPath !== undefined ? { socketPath: options.socketPath } : {}),
+        ...(embeddedPublicAssets !== null ? { embeddedPublicAssets } : {}),
         enableOrchestrator: true,
         backendRegistry,
         ...(shutdownAc
@@ -927,7 +946,8 @@ async function handleUp(
     }
   }
 
-  const entrypoint = resolveDefaultCliEntrypoint();
+  const compiledBinary = options.compiledBinary ?? isCompiledKilnBinary();
+  const entrypoint = compiledBinary ? undefined : resolveDefaultCliEntrypoint();
   const logDir = path.join(kilnHome, "logs");
   ensureDir(logDir);
   const logPath = path.join(logDir, "kilnd.log");
@@ -2525,18 +2545,34 @@ async function handleDoctor(
 
   const checks: DoctorCheckResult[] = [];
 
-  const nodeVer = parseNodeMajor(options.nodeVersion ?? process.versions.node);
-  const nodeOk = nodeVer.valid && nodeVer.major >= 22;
-  checks.push({
-    id: "node",
-    ok: nodeOk,
-    required: true,
-    status: nodeOk ? "pass" : "fail",
-    detail: nodeOk
-      ? `Node.js ${nodeVer.raw} (>= 22)`
-      : `Node.js ${nodeVer.raw} is below required >= 22`,
-    meta: { version: nodeVer.raw, major: nodeVer.major },
-  });
+  const compiledBinary = options.compiledBinary ?? isCompiledKilnBinary();
+  if (compiledBinary && options.nodeVersion === undefined) {
+    const bunVer =
+      typeof (process.versions as Record<string, string | undefined>).bun === "string"
+        ? (process.versions as Record<string, string | undefined>).bun!
+        : "unknown";
+    checks.push({
+      id: "node",
+      ok: true,
+      required: true,
+      status: "pass",
+      detail: `Standalone Bun ${bunVer} binary (Node.js not required)`,
+      meta: { runtime: "bun", version: bunVer, compiledBinary: true },
+    });
+  } else {
+    const nodeVer = parseNodeMajor(options.nodeVersion ?? process.versions.node);
+    const nodeOk = nodeVer.valid && nodeVer.major >= 22;
+    checks.push({
+      id: "node",
+      ok: nodeOk,
+      required: true,
+      status: nodeOk ? "pass" : "fail",
+      detail: nodeOk
+        ? `Node.js ${nodeVer.raw} (>= 22)`
+        : `Node.js ${nodeVer.raw} is below required >= 22`,
+      meta: { version: nodeVer.raw, major: nodeVer.major },
+    });
+  }
 
   try {
     const gitOut = await execImpl("git", ["--version"]);
@@ -2822,6 +2858,128 @@ async function handleUninstall(
   };
 }
 
+async function handleInternalMcp(
+  args: readonly string[],
+  options: CliRuntimeOptions,
+  io: ReturnType<typeof createOutputCollector>,
+): Promise<CliRunResult> {
+  const parsed = parseArgs({
+    args: [...args],
+    options: {
+      help: { type: "boolean", short: "h", default: false },
+    },
+    strict: true,
+    allowPositionals: false,
+  });
+
+  if (parsed.values.help) {
+    io.err(
+      "Usage: kiln __mcp (internal stdio MCP bridge; requires KILN_RUN_TOKEN in environment)",
+    );
+    return { exitCode: 0, stdout: io.getStdout(), stderr: io.getStderr() };
+  }
+
+  const env = options.env ?? process.env;
+  let handle: Awaited<ReturnType<typeof runStdioMcpServer>>;
+  try {
+    handle = await runStdioMcpServer(env, options.mcpOptions);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    io.err(`kiln __mcp: ${message}`);
+    return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+  }
+
+  const usesProcessStdin = options.mcpOptions?.mcpTransport === undefined;
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    let stdinEnded = false;
+    let inFlightRequests = 0;
+
+    const done = (): void => {
+      if (settled) return;
+      settled = true;
+      options.foregroundSignal?.removeEventListener("abort", done);
+      if (usesProcessStdin) {
+        process.stdin.removeListener("end", onStdinEnd);
+        process.stdin.removeListener("close", onStdinEnd);
+      }
+      resolve();
+    };
+
+    const maybeFinishAfterDrain = (): void => {
+      if (stdinEnded && inFlightRequests <= 0) {
+        setImmediate(() => {
+          if (stdinEnded && inFlightRequests <= 0) {
+            done();
+          }
+        });
+      }
+    };
+
+    const onStdinEnd = (): void => {
+      stdinEnded = true;
+      maybeFinishAfterDrain();
+    };
+
+    if (options.foregroundSignal?.aborted) {
+      done();
+      return;
+    }
+    options.foregroundSignal?.addEventListener("abort", done, { once: true });
+
+    const prevServerOnClose = handle.server.onclose;
+    handle.server.onclose = () => {
+      prevServerOnClose?.();
+      done();
+    };
+
+    if (usesProcessStdin) {
+      const origOnMessage = handle.transport.onmessage;
+      handle.transport.onmessage = (message, extra) => {
+        if (
+          typeof message === "object" &&
+          message !== null &&
+          "id" in message &&
+          "method" in message
+        ) {
+          inFlightRequests += 1;
+        }
+        origOnMessage?.(message, extra);
+      };
+
+      const origSend = handle.transport.send.bind(handle.transport);
+      handle.transport.send = async (message, sendOptions) => {
+        try {
+          await origSend(message, sendOptions);
+        } finally {
+          if (
+            typeof message === "object" &&
+            message !== null &&
+            "id" in message &&
+            !("method" in message)
+          ) {
+            inFlightRequests = Math.max(0, inFlightRequests - 1);
+            maybeFinishAfterDrain();
+          }
+        }
+      };
+
+      process.stdin.once("end", onStdinEnd);
+      process.stdin.once("close", onStdinEnd);
+    }
+  });
+
+  try {
+    await handle.close();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    io.err(`kiln __mcp shutdown error: ${message}`);
+    return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+  }
+
+  return { exitCode: 0, stdout: io.getStdout(), stderr: io.getStderr() };
+}
+
 /**
  * Executes the Kiln CLI against `argv` without calling `process.exit`, returning
  * buffered stdout, stderr, exit code, and structured command payload.
@@ -2864,6 +3022,8 @@ export async function runCli(
 
     const [command, ...rest] = argv;
     switch (command) {
+      case "__mcp":
+        return await handleInternalMcp(rest, options, io);
       case "help":
         io.out(GLOBAL_HELP);
         return { exitCode: 0, stdout: io.getStdout(), stderr: io.getStderr() };
@@ -2921,4 +3081,36 @@ export async function runCli(
     io.err(message);
     return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
   }
+}
+
+/**
+ * Process entrypoint shared by Node (`dist/bin.js`) and standalone Bun compiled binaries.
+ */
+export function runCliProcessMain(): void {
+  const main = async (): Promise<void> => {
+    const foregroundAc = new AbortController();
+    const onSignal = (): void => {
+      foregroundAc.abort();
+    };
+    process.once("SIGINT", onSignal);
+    process.once("SIGTERM", onSignal);
+
+    try {
+      const result = await runCli(process.argv.slice(2), {
+        stdout: process.stdout,
+        stderr: process.stderr,
+        foregroundSignal: foregroundAc.signal,
+      });
+      process.exitCode = result.exitCode;
+    } finally {
+      process.removeListener("SIGINT", onSignal);
+      process.removeListener("SIGTERM", onSignal);
+    }
+  };
+
+  main().catch((err: unknown) => {
+    const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
+    process.stderr.write(`${message}\n`);
+    process.exitCode = 1;
+  });
 }

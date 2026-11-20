@@ -196,18 +196,84 @@ function serveVerifiedFile(
   return new Response(body, { status: 200, headers });
 }
 
+export interface EmbeddedStaticAsset {
+  readonly contentType?: string;
+  readBytes(): Uint8Array;
+}
+
+export type EmbeddedStaticAssets = ReadonlyMap<string, EmbeddedStaticAsset>;
+
 export interface StaticFilesHandlerOptions {
   publicDir: string;
+  embeddedAssets?: EmbeddedStaticAssets | null;
+}
+
+function serveEmbeddedAsset(
+  method: string,
+  relPosixPath: string,
+  asset: EmbeddedStaticAsset,
+): Response {
+  const bytes = asset.readBytes();
+  const headers = new Headers({
+    "Content-Type": asset.contentType ?? getMimeType(relPosixPath),
+    "Content-Length": String(bytes.byteLength),
+    "Cache-Control": getCacheControl(relPosixPath),
+    "X-Content-Type-Options": "nosniff",
+  });
+
+  if (method === "HEAD") {
+    return new Response(null, { status: 200, headers });
+  }
+
+  return new Response(bytes, { status: 200, headers });
+}
+
+function serveFromEmbeddedAssets(
+  c: Context,
+  method: string,
+  segments: readonly string[],
+  embeddedAssets: EmbeddedStaticAssets,
+): Response {
+  const relPosix = segments.join("/");
+
+  if (segments.length > 0) {
+    const direct = embeddedAssets.get(relPosix);
+    if (direct) {
+      return serveEmbeddedAsset(method, relPosix, direct);
+    }
+
+    const dirRelPosix = `${relPosix}/index.html`;
+    const dirIndex = embeddedAssets.get(dirRelPosix);
+    if (dirIndex) {
+      return serveEmbeddedAsset(method, dirRelPosix, dirIndex);
+    }
+
+    if (ASSET_EXTENSION_PATTERN.test(relPosix)) {
+      return c.json(
+        { error: "not_found", message: `Static asset "${c.req.path}" not found` },
+        404,
+      );
+    }
+  }
+
+  const indexAsset = embeddedAssets.get("index.html");
+  if (indexAsset) {
+    return serveEmbeddedAsset(method, "index.html", indexAsset);
+  }
+
+  return c.json({ error: "not_found", message: "Static index.html not found" }, 404);
 }
 
 /**
  * Creates a strict single-port static site & SPA fallback handler with traversal,
  * NUL-byte, symlink-escape, and `/api/*` isolation guards.
+ * Falls back to `embeddedAssets` when `publicDir` does not exist on disk (e.g. compiled binary).
  */
 export function createStaticFilesHandler(
   options: StaticFilesHandlerOptions,
 ): (c: Context) => Response {
   const publicDir = options.publicDir;
+  const embeddedAssets = options.embeddedAssets ?? null;
 
   return (c: Context): Response => {
     if (c.req.path === "/api" || c.req.path.startsWith("/api/")) {
@@ -229,6 +295,9 @@ export function createStaticFilesHandler(
     }
 
     if (!fs.existsSync(publicDir)) {
+      if (embeddedAssets && embeddedAssets.size > 0) {
+        return serveFromEmbeddedAssets(c, method, parsed.segments, embeddedAssets);
+      }
       return c.json(
         { error: "not_found", message: "Web UI assets directory does not exist" },
         404,
@@ -239,12 +308,18 @@ export function createStaticFilesHandler(
     try {
       canonicalPublicDir = fs.realpathSync(publicDir);
       if (!fs.statSync(canonicalPublicDir).isDirectory()) {
+        if (embeddedAssets && embeddedAssets.size > 0) {
+          return serveFromEmbeddedAssets(c, method, parsed.segments, embeddedAssets);
+        }
         return c.json(
           { error: "not_found", message: "Web UI assets path is not a directory" },
           404,
         );
       }
     } catch {
+      if (embeddedAssets && embeddedAssets.size > 0) {
+        return serveFromEmbeddedAssets(c, method, parsed.segments, embeddedAssets);
+      }
       return c.json(
         { error: "not_found", message: "Web UI assets directory unavailable" },
         404,

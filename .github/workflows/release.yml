@@ -11,7 +11,7 @@ on:
         required: false
         type: string
       dry_run:
-        description: "Verify build, tarballs, and checksums without uploading a release or publishing to npm"
+        description: "Verify builds, installers, and checksums without publishing a GitHub Release"
         required: true
         default: true
         type: boolean
@@ -20,9 +20,13 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    name: Verify, Package & Release
+  verify:
+    name: Verify Workspace & Version Parity
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      is_tag_release: ${{ steps.version.outputs.is_tag_release }}
 
     steps:
       - name: Checkout repository
@@ -31,16 +35,16 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
 
-      - name: Setup Node.js 22
+      - name: Setup Node.js 24
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           cache: "pnpm"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build, typecheck, test, and validate installer
+      - name: Build, typecheck, test, and validate installer & templates
         run: |
           pnpm build
           pnpm typecheck
@@ -48,8 +52,10 @@ jobs:
           pnpm test:socket
           sh -n scripts/install.sh
           sh scripts/test-install.sh
+          ruby -c packaging/homebrew/Formula/kiln.rb
+          ruby -c packaging/homebrew/Casks/kiln-app.rb
 
-      - name: Verify release version matches workspace packages
+      - name: Verify release version parity across all workspace and desktop manifests
         id: version
         env:
           INPUT_VERSION: ${{ inputs.version }}
@@ -77,24 +83,36 @@ jobs:
             process.exit(1);
           }
 
-          const manifests = [
+          const jsonManifests = [
             "packages/protocol/package.json",
             "packages/kernel/package.json",
             "packages/mcp/package.json",
             "packages/cli/package.json",
             "apps/web/package.json",
+            "apps/desktop/package.json",
+            "apps/desktop/src-tauri/tauri.conf.json",
           ];
 
-          for (const manifestPath of manifests) {
-            const pkg = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-            if (pkg.version !== target) {
+          for (const manifestPath of jsonManifests) {
+            const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+            if (manifest.version !== target) {
               console.error(
-                `Version mismatch in ${manifestPath}: expected ${target}, found ${pkg.version}`,
+                `Version mismatch in ${manifestPath}: expected ${target}, found ${manifest.version}`,
               );
               process.exit(1);
             }
           }
-          console.log(`Verified workspace version: ${target}`);
+
+          const cargoToml = fs.readFileSync("apps/desktop/src-tauri/Cargo.toml", "utf8");
+          const cargoMatch = /^version\s*=\s*"([^"]+)"/m.exec(cargoToml);
+          if (!cargoMatch || cargoMatch[1] !== target) {
+            console.error(
+              `Version mismatch in apps/desktop/src-tauri/Cargo.toml: expected ${target}, found ${cargoMatch ? cargoMatch[1] : "<missing>"}`,
+            );
+            process.exit(1);
+          }
+
+          console.log(`Verified release version parity across all manifests: ${target}`);
           EOF
 
           {
@@ -103,43 +121,214 @@ jobs:
             echo "is_tag_release=${IS_TAG_RELEASE}"
           } >> "${GITHUB_OUTPUT}"
 
-      - name: Package release tarballs and SHA256SUMS
+  build-binaries:
+    name: Build Standalone Binary (${{ matrix.target }})
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: darwin-arm64
+            native_smoke: true
+            ext: ""
+          - os: macos-latest
+            target: darwin-x64
+            native_smoke: false
+            ext: ""
+          - os: windows-latest
+            target: windows-x64
+            native_smoke: true
+            ext: ".exe"
+          - os: ubuntu-latest
+            target: linux-x64
+            native_smoke: true
+            ext: ""
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies and build Web UI
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Compile standalone Kiln binary (${{ matrix.target }})
+        run: node scripts/build-binary.mjs --target ${{ matrix.target }} --version ${{ needs.verify.outputs.version }} --out-dir release-artifacts/bin
+
+      - name: Smoke test standalone binary (POSIX)
+        if: ${{ matrix.native_smoke && runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="${GITHUB_WORKSPACE}/release-artifacts/bin/kiln-v${{ needs.verify.outputs.version }}-${{ matrix.target }}"
+          TMP_HOME="$(mktemp -d)"
+          trap 'rm -rf "${TMP_HOME}"' EXIT
+          cp "${BIN}" "${TMP_HOME}/kiln"
+          chmod +x "${TMP_HOME}/kiln"
+          env -i PATH=/usr/bin:/bin HOME="${TMP_HOME}/home" KILN_HOME="${TMP_HOME}/kiln-home" "${TMP_HOME}/kiln" --version
+          env -i PATH=/usr/bin:/bin HOME="${TMP_HOME}/home" KILN_HOME="${TMP_HOME}/kiln-home" "${TMP_HOME}/kiln" up --port 14319 --no-paseo
+          curl -fsS http://127.0.0.1:14319/api/health
+          curl -fsS http://127.0.0.1:14319/ | grep -qi "<!doctype html"
+          env -i PATH=/usr/bin:/bin HOME="${TMP_HOME}/home" KILN_HOME="${TMP_HOME}/kiln-home" "${TMP_HOME}/kiln" down
+
+      - name: Smoke test standalone binary (Windows)
+        if: ${{ matrix.native_smoke && runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bin = Join-Path $env:GITHUB_WORKSPACE "release-artifacts\bin\kiln-v${{ needs.verify.outputs.version }}-windows-x64.exe"
+          $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("kiln-smoke-" + [Guid]::NewGuid().ToString("N"))
+          New-Item -ItemType Directory -Path $tmpRoot -Force | Out-Null
+          try {
+            $copied = Join-Path $tmpRoot "kiln.exe"
+            Copy-Item -Path $bin -Destination $copied -Force
+            $env:KILN_HOME = Join-Path $tmpRoot "kiln-home"
+            & $copied --version
+            & $copied up --port 14319 --no-paseo
+            $health = Invoke-WebRequest -Uri "http://127.0.0.1:14319/api/health" -UseBasicParsing
+            if ($health.StatusCode -ne 200) { throw "Unexpected health status: $($health.StatusCode)" }
+            $root = Invoke-WebRequest -Uri "http://127.0.0.1:14319/" -UseBasicParsing
+            if ($root.Content -notmatch "<!doctype html") { throw "Embedded index.html missing" }
+            & $copied down
+          } finally {
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload standalone binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: release-artifacts/bin/kiln-v${{ needs.verify.outputs.version }}-${{ matrix.target }}${{ matrix.ext }}
+          if-no-files-found: error
+
+  build-desktop:
+    name: Build Tauri Desktop Sidecar (${{ matrix.target }})
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: darwin-arm64
+            rust_triple: aarch64-apple-darwin
+            bundles: dmg
+          - os: macos-latest
+            target: darwin-x64
+            rust_triple: x86_64-apple-darwin
+            bundles: dmg
+          - os: windows-latest
+            target: windows-x64
+            rust_triple: x86_64-pc-windows-msvc
+            bundles: nsis
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_triple }}
+
+      - name: Install dependencies and build Web UI
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Run desktop Rust tests (base config without prebuilt sidecar)
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      - name: Build and stage sidecar binary (${{ matrix.target }})
+        run: node scripts/build-binary.mjs --target ${{ matrix.target }} --version ${{ needs.verify.outputs.version }} --stage-sidecar
+
+      - name: Build Tauri v2 desktop bundle (${{ matrix.rust_triple }})
+        working-directory: apps/desktop
         env:
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: npx -y @tauri-apps/cli@2 build --config src-tauri/tauri.sidecar.conf.json --target ${{ matrix.rust_triple }} --bundles ${{ matrix.bundles }}
+
+      - name: Collect desktop bundle artifacts (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-artifacts/desktop
+          DMG_SRC="$(find "apps/desktop/src-tauri/target/${{ matrix.rust_triple }}/release/bundle/dmg" -maxdepth 1 -name '*.dmg' | head -n 1)"
+          test -n "${DMG_SRC}"
+          cp "${DMG_SRC}" "release-artifacts/desktop/Kiln-v${{ needs.verify.outputs.version }}-${{ matrix.target }}.dmg"
+
+      - name: Collect desktop bundle artifacts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Path "release-artifacts/desktop" -Force | Out-Null
+          $exe = Get-ChildItem -Path "apps/desktop/src-tauri/target/${{ matrix.rust_triple }}/release/bundle/nsis" -Filter "*.exe" | Select-Object -First 1
+          if (-not $exe) { throw "NSIS installer .exe not found" }
+          Copy-Item -Path $exe.FullName -Destination "release-artifacts/desktop/Kiln-v${{ needs.verify.outputs.version }}-windows-x64-setup.exe" -Force
+
+      - name: Upload desktop bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.target }}
+          path: release-artifacts/desktop/*
+          if-no-files-found: error
+
+  publish:
+    name: Assemble SHA256SUMS & Publish GitHub Release
+    needs: [verify, build-binaries, build-desktop]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
         run: |
           set -eu
-          rm -rf release-artifacts
-          mkdir -p release-artifacts
+          cd release-artifacts
+          LC_ALL=C sha256sum kiln-v* Kiln-v* > SHA256SUMS
+          cat SHA256SUMS
 
-          pnpm --filter ./packages/cli pack --pack-destination "${GITHUB_WORKSPACE}/release-artifacts"
-
-          STAGE_DIR="release-artifacts/kiln-${RELEASE_TAG}"
-          mkdir -p "${STAGE_DIR}/packages/protocol" "${STAGE_DIR}/packages/kernel" "${STAGE_DIR}/packages/mcp" "${STAGE_DIR}/packages/cli" "${STAGE_DIR}/scripts"
-          cp LICENSE README.md README.zh-CN.md package.json pnpm-workspace.yaml pnpm-lock.yaml "${STAGE_DIR}/"
-          cp scripts/install.sh "${STAGE_DIR}/scripts/install.sh"
-          for pkg in protocol kernel mcp cli; do
-            cp "packages/${pkg}/package.json" "${STAGE_DIR}/packages/${pkg}/"
-            cp -R "packages/${pkg}/dist" "${STAGE_DIR}/packages/${pkg}/dist"
-          done
-          cp -R packages/kernel/public "${STAGE_DIR}/packages/kernel/public"
-          cp -R packages/cli/mcp "${STAGE_DIR}/packages/cli/mcp"
-          cp -R packages/cli/public "${STAGE_DIR}/packages/cli/public"
-
-          tar -czf "release-artifacts/kiln-${RELEASE_TAG}-bundle.tar.gz" -C release-artifacts "kiln-${RELEASE_TAG}"
-          rm -rf "${STAGE_DIR}"
-
-          (
-            cd release-artifacts
-            sha256sum *.tgz *.tar.gz > SHA256SUMS
-          )
-          cat release-artifacts/SHA256SUMS
-
-      - name: Print Homebrew SHA256 summary and release prerequisites
+      - name: Print Release Summary & Homebrew SHA256 Notes
         env:
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
-          IS_TAG_RELEASE: ${{ steps.version.outputs.is_tag_release }}
+          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
+          IS_TAG_RELEASE: ${{ needs.verify.outputs.is_tag_release }}
         run: |
           set -eu
           {
@@ -151,53 +340,16 @@ jobs:
             cat release-artifacts/SHA256SUMS
             echo '```'
             echo ""
-            echo "### Homebrew Formula Update Notes"
-            echo "1. Update \`packaging/homebrew/Formula/kiln.rb\` \`url\` and \`sha256\` in \`zzf2333/homebrew-tap\` using the published tarball hash above."
-            echo "2. \`packaging/homebrew/Casks/kiln-app.rb\` (macOS Cask for \`Kiln.app\`) requires signed & notarized macOS DMG release artifacts."
-            echo ""
-            echo "### Manual / Secrets Prerequisites Before Full Automated Release"
-            echo "- Configure \`NPM_TOKEN\` repository secret for automated npm publishing."
-            echo "- Configure Apple Developer ID signing & notarization secrets (\`APPLE_CERTIFICATE\`, \`APPLE_CERTIFICATE_PASSWORD\`, \`APPLE_ID\`, \`APPLE_TEAM_ID\`, \`APPLE_APP_SPECIFIC_PASSWORD\`) before publishing signed \`Kiln.app\` DMGs."
+            echo "### Homebrew Formula & Cask Update Notes"
+            echo "1. Copy \`kiln-${RELEASE_TAG}-darwin-arm64\`, \`kiln-${RELEASE_TAG}-darwin-x64\`, and \`kiln-${RELEASE_TAG}-linux-x64\` SHA-256 digests into \`packaging/homebrew/Formula/kiln.rb\` and sync to \`zzf2333/homebrew-tap\`."
+            echo "2. For signed & notarized macOS DMGs, backfill \`packaging/homebrew/Casks/kiln-app.rb\` SHA-256."
+            echo "3. Configure Apple Developer ID secrets (\`APPLE_CERTIFICATE\`, \`APPLE_CERTIFICATE_PASSWORD\`, \`APPLE_ID\`, \`APPLE_TEAM_ID\`, \`APPLE_APP_SPECIFIC_PASSWORD\`) and Windows Authenticode signing before formal public release."
           } | tee -a "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload GitHub Release
-        if: ${{ steps.version.outputs.is_tag_release == 'true' }}
+        if: ${{ needs.verify.outputs.is_tag_release == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
+          tag_name: ${{ needs.verify.outputs.tag }}
           generate_release_notes: true
           files: release-artifacts/*
-
-      - name: Publish @zzf2333/kiln to npm
-        if: ${{ steps.version.outputs.is_tag_release == 'true' }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set -eu
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "NPM_TOKEN secret is not configured; skipping npm publish step. See packaging/README.md for setup details."
-            exit 0
-          fi
-
-          node <<'EOF'
-          const fs = require("node:fs");
-          const pkg = JSON.parse(fs.readFileSync("packages/cli/package.json", "utf8"));
-          if (pkg.private === true) {
-            console.error(
-              "packages/cli/package.json still has private: true. Follow packaging/README.md before publishing to npm.",
-            );
-            process.exit(1);
-          }
-          if (pkg.name !== "@zzf2333/kiln") {
-            console.error(
-              `Expected publishable package name @zzf2333/kiln, found ${pkg.name}. Follow packaging/README.md.`,
-            );
-            process.exit(1);
-          }
-          EOF
-
-          NPMRC_PATH="${RUNNER_TEMP}/kiln-publish.npmrc"
-          trap 'rm -f "${NPMRC_PATH}"' EXIT
-          umask 077
-          printf '//registry.npmjs.org/:_authToken=%s\n' "${NODE_AUTH_TOKEN}" > "${NPMRC_PATH}"
-          NPM_CONFIG_USERCONFIG="${NPMRC_PATH}" npm_config_userconfig="${NPMRC_PATH}" pnpm --filter ./packages/cli publish --no-git-checks --access public

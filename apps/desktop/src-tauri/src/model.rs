@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 pub const DEFAULT_KILND_URL: &str = "http://127.0.0.1:4310";
 pub const MAIN_WINDOW_LABEL: &str = "main";
+pub const KILN_BIN_NAME_POSIX: &str = "kiln";
+pub const KILN_BIN_NAME_WINDOWS: &str = "kiln.exe";
 const MAX_JSON_DEPTH: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +39,18 @@ pub enum StartActionState {
     #[default]
     Idle,
     Starting,
+    Failed(String),
+}
+
+/// Mutually exclusive state for the tray "install CLI command" menu action.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum CliInstallActionState {
+    #[default]
+    Idle,
+    Installed {
+        bin_dir: String,
+        in_path: bool,
+    },
     Failed(String),
 }
 
@@ -490,6 +504,123 @@ pub fn is_start_menu_enabled(state: &TrayDisplayState) -> bool {
         state,
         TrayDisplayState::Offline { .. } | TrayDisplayState::StartFailed { .. }
     )
+}
+
+pub fn format_install_cli_menu_label(state: &CliInstallActionState) -> String {
+    match state {
+        CliInstallActionState::Idle => "安装 kiln 终端命令".to_string(),
+        CliInstallActionState::Installed { bin_dir, in_path } => {
+            if *in_path {
+                format!("已安装 kiln 终端命令（{bin_dir}）")
+            } else {
+                format!("已安装 kiln 终端命令（请将 {bin_dir} 加入 PATH）")
+            }
+        }
+        CliInstallActionState::Failed(err) => {
+            format!("安装终端命令失败（{}）", summarize_start_error(err))
+        }
+    }
+}
+
+pub fn platform_kiln_binary_name(is_windows: bool) -> &'static str {
+    if is_windows {
+        KILN_BIN_NAME_WINDOWS
+    } else {
+        KILN_BIN_NAME_POSIX
+    }
+}
+
+pub fn platform_kiln_binary_names(is_windows: bool) -> &'static [&'static str] {
+    if is_windows {
+        &["kiln.exe", "kiln.cmd"]
+    } else {
+        &["kiln"]
+    }
+}
+
+/// Resolves the sibling sidecar path next to the desktop executable (`kiln` on POSIX, `kiln.exe` on Windows).
+/// Returns `None` if the desktop executable itself shares the sidecar filename to avoid self-recursion.
+pub fn sidecar_candidate_path(current_exe: Option<&Path>, is_windows: bool) -> Option<PathBuf> {
+    let exe = current_exe?;
+    let dir = exe.parent()?;
+    if dir.as_os_str().is_empty() {
+        return None;
+    }
+    let sidecar_name = platform_kiln_binary_name(is_windows);
+    if let Some(exe_name) = exe.file_name().and_then(|n| n.to_str()) {
+        let same_name = if is_windows {
+            exe_name.eq_ignore_ascii_case(sidecar_name)
+        } else {
+            exe_name == sidecar_name
+        };
+        if same_name {
+            return None;
+        }
+    }
+    Some(dir.join(sidecar_name))
+}
+
+/// Ordered user-level CLI install directories searched on Windows without requiring UAC.
+pub fn windows_kiln_search_dirs(
+    local_app_data: Option<&Path>,
+    home_dir: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(local) = local_app_data {
+        if !local.as_os_str().is_empty() {
+            push_unique_dir(&mut dirs, local.join("Kiln").join("bin"));
+        }
+    }
+    if let Some(home) = home_dir {
+        if !home.as_os_str().is_empty() {
+            push_unique_dir(&mut dirs, home.join("AppData").join("Local").join("Kiln").join("bin"));
+            push_unique_dir(&mut dirs, home.join(".local").join("bin"));
+            push_unique_dir(&mut dirs, home.join("AppData").join("Roaming").join("npm"));
+        }
+    }
+    dirs
+}
+
+/// Renders a user-local Windows `.cmd` shim invoking the sidecar binary cleanly without UAC.
+#[allow(dead_code)]
+pub fn render_windows_cli_shim(target_exe: &Path) -> Result<String, String> {
+    let raw = target_exe
+        .to_str()
+        .ok_or_else(|| "sidecar path is not valid UTF-8".to_string())?;
+    if raw.trim().is_empty() {
+        return Err("sidecar path must not be empty".to_string());
+    }
+    if raw.bytes().any(|b| b < 0x20 || b == 0x7f || b == b'"') {
+        return Err("sidecar path contains forbidden control or quote characters".to_string());
+    }
+    let escaped = raw.replace('%', "%%");
+    Ok(format!("@echo off\r\n\"{escaped}\" %*\r\n"))
+}
+
+fn normalize_dir_for_path_compare(dir: &Path, case_insensitive: bool) -> String {
+    let s = dir.to_string_lossy();
+    let trimmed = s.trim_end_matches(['/', '\\']);
+    let effective = if trimmed.is_empty() { s.as_ref() } else { trimmed };
+    if case_insensitive {
+        effective.to_ascii_lowercase()
+    } else {
+        effective.to_string()
+    }
+}
+
+pub fn path_contains_dir(
+    path_env: Option<&OsStr>,
+    target_dir: &Path,
+    case_insensitive: bool,
+) -> bool {
+    let Some(raw) = path_env else {
+        return false;
+    };
+    let needle = normalize_dir_for_path_compare(target_dir, case_insensitive);
+    env::split_paths(raw).any(|entry| {
+        !entry.as_os_str().is_empty()
+            && normalize_dir_for_path_compare(&entry, case_insensitive) == needle
+    })
 }
 
 const SYSTEM_PATH_DIRS: &[&str] = &["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
@@ -1663,6 +1794,93 @@ mod tests {
                 .filter(|d| *d == Path::new("/Users/tester/.local/share/mise/installs/node/global/bin"))
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn resolves_platform_sidecar_paths_windows_shims_and_cli_install_labels() {
+        assert_eq!(platform_kiln_binary_name(false), "kiln");
+        assert_eq!(platform_kiln_binary_name(true), "kiln.exe");
+        assert_eq!(platform_kiln_binary_names(false), &["kiln"]);
+        assert_eq!(platform_kiln_binary_names(true), &["kiln.exe", "kiln.cmd"]);
+
+        let mac_exe = Path::new("/Applications/Kiln.app/Contents/MacOS/kiln-desktop");
+        assert_eq!(
+            sidecar_candidate_path(Some(mac_exe), false),
+            Some(PathBuf::from("/Applications/Kiln.app/Contents/MacOS/kiln"))
+        );
+
+        let win_exe = Path::new("/Users/tester/AppData/Local/Kiln/kiln-desktop.exe");
+        assert_eq!(
+            sidecar_candidate_path(Some(win_exe), true),
+            Some(PathBuf::from("/Users/tester/AppData/Local/Kiln/kiln.exe"))
+        );
+        // Guard: if main exe shares sidecar name (case-insensitively on Windows), refuse self-recursion
+        assert_eq!(
+            sidecar_candidate_path(Some(Path::new("/Users/tester/AppData/Local/Kiln/Kiln.exe")), true),
+            None
+        );
+        assert_eq!(sidecar_candidate_path(None, false), None);
+
+        let win_dirs = windows_kiln_search_dirs(
+            Some(Path::new("/Users/tester/AppData/Local")),
+            Some(Path::new("/Users/tester")),
+        );
+        assert_eq!(
+            win_dirs[0],
+            PathBuf::from("/Users/tester/AppData/Local/Kiln/bin")
+        );
+        assert!(win_dirs.contains(&PathBuf::from("/Users/tester/.local/bin")));
+
+        let shim = render_windows_cli_shim(Path::new(r"C:\Users\A B\AppData\Local\Kiln\kiln.exe"))
+            .expect("valid windows path renders shim");
+        assert_eq!(
+            shim,
+            "@echo off\r\n\"C:\\Users\\A B\\AppData\\Local\\Kiln\\kiln.exe\" %*\r\n"
+        );
+        let shim_pct = render_windows_cli_shim(Path::new(r"C:\Users\100%dev\Kiln\kiln.exe"))
+            .expect("percent sign in path should be escaped for cmd.exe");
+        assert_eq!(
+            shim_pct,
+            "@echo off\r\n\"C:\\Users\\100%%dev\\Kiln\\kiln.exe\" %*\r\n"
+        );
+        assert!(render_windows_cli_shim(Path::new("C:\\bad\npath\\kiln.exe")).is_err());
+        assert!(render_windows_cli_shim(Path::new("C:\\bad\"quote\\kiln.exe")).is_err());
+
+        assert!(path_contains_dir(
+            Some(OsStr::new("/usr/bin:/Users/tester/.local/bin/:/bin")),
+            Path::new("/Users/tester/.local/bin"),
+            false
+        ));
+        assert!(!path_contains_dir(
+            Some(OsStr::new("/usr/bin:/bin")),
+            Path::new("/Users/tester/.local/bin"),
+            false
+        ));
+
+        assert_eq!(
+            format_install_cli_menu_label(&CliInstallActionState::Idle),
+            "安装 kiln 终端命令"
+        );
+        assert_eq!(
+            format_install_cli_menu_label(&CliInstallActionState::Installed {
+                bin_dir: "~/.local/bin".to_string(),
+                in_path: true,
+            }),
+            "已安装 kiln 终端命令（~/.local/bin）"
+        );
+        assert_eq!(
+            format_install_cli_menu_label(&CliInstallActionState::Installed {
+                bin_dir: "~/.local/bin".to_string(),
+                in_path: false,
+            }),
+            "已安装 kiln 终端命令（请将 ~/.local/bin 加入 PATH）"
+        );
+        assert!(
+            format_install_cli_menu_label(&CliInstallActionState::Failed(
+                "permission denied".to_string()
+            ))
+            .contains("permission denied")
         );
     }
 }

@@ -11,6 +11,7 @@ import {
   assertSafeSegment,
   buildSanitizedEnv,
   ensureDir,
+  isCompiledKilnBinary,
   readYamlOptional,
   resolveDefaultIpcPath,
   resolveKilnHome,
@@ -55,7 +56,7 @@ export type ExecGitFn = (args: readonly string[], cwd?: string) => Promise<strin
 
 export interface RenderLaunchAgentPlistInput {
   nodeExecutable: string;
-  kilndEntrypoint: string;
+  kilndEntrypoint?: string;
   kilnHome: string;
   logDir: string;
   label?: string;
@@ -64,7 +65,7 @@ export interface RenderLaunchAgentPlistInput {
 
 export interface RenderSystemdUnitInput {
   nodeExecutable: string;
-  kilndEntrypoint: string;
+  kilndEntrypoint?: string;
   kilnHome: string;
   logDir?: string;
   description?: string;
@@ -428,7 +429,7 @@ export function renderLaunchAgentPlist(input: RenderLaunchAgentPlistInput): stri
   );
   const programArgs = [
     input.nodeExecutable,
-    input.kilndEntrypoint,
+    ...(input.kilndEntrypoint !== undefined ? [input.kilndEntrypoint] : []),
     ...(input.args ?? []),
   ];
   const stdoutLog = path.join(input.logDir, "kilnd.out.log");
@@ -480,7 +481,7 @@ export function renderSystemdUnit(input: RenderSystemdUnitInput): string {
   const logDir = input.logDir ?? path.join(input.kilnHome, "logs");
   const programArgs = [
     input.nodeExecutable,
-    input.kilndEntrypoint,
+    ...(input.kilndEntrypoint !== undefined ? [input.kilndEntrypoint] : []),
     ...(input.args ?? []),
   ];
   const execStart = programArgs
@@ -569,7 +570,12 @@ export async function installService(
       : path.join(kilnHome, "logs");
   const nodeExecutable = options.nodeExecutable ?? process.execPath;
   const usingDefaultEntrypoint = options.kilndEntrypoint === undefined;
-  const kilndEntrypoint = options.kilndEntrypoint ?? resolveDefaultCliEntrypoint();
+  const kilndEntrypoint =
+    options.kilndEntrypoint !== undefined
+      ? options.kilndEntrypoint
+      : isCompiledKilnBinary()
+        ? undefined
+        : resolveDefaultCliEntrypoint();
 
   if (descriptor.platform === "win32") {
     const winArgs = options.args ?? ["up"];

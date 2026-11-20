@@ -415,12 +415,70 @@ export interface McpCommandSpec {
   args: string[];
 }
 
+export interface CompiledBinaryDetectInput {
+  isBun?: boolean;
+  argv1?: string;
+  moduleUrl?: string;
+  bunMain?: string;
+}
+
+function isBunVirtualFsPath(value: string): boolean {
+  return (
+    value.includes("/$bunfs/") ||
+    value.includes("\\$bunfs\\") ||
+    /[\\/]~BUN[\\/]/i.test(value)
+  );
+}
+
+/**
+ * Detects whether the current process is executing from a standalone single-file
+ * Bun-compiled binary (`bun build --compile`). Returns `false` in Node.js and in
+ * uncompiled `bun run` dev sessions.
+ */
+export function isCompiledKilnBinary(input?: CompiledBinaryDetectInput): boolean {
+  const bunRuntime = (globalThis as { Bun?: { main?: unknown } }).Bun;
+  const isBun = input?.isBun ?? typeof bunRuntime !== "undefined";
+  if (!isBun) {
+    return false;
+  }
+
+  const argv1 = input?.argv1 ?? process.argv[1] ?? "";
+  if (isBunVirtualFsPath(argv1)) {
+    return true;
+  }
+
+  const moduleUrl = input?.moduleUrl ?? import.meta.url;
+  if (isBunVirtualFsPath(moduleUrl)) {
+    return true;
+  }
+
+  const bunMain =
+    input?.bunMain ?? (typeof bunRuntime?.main === "string" ? bunRuntime.main : "");
+  if (isBunVirtualFsPath(bunMain)) {
+    return true;
+  }
+
+  return false;
+}
+
 /**
  * Resolves the `kiln-mcp` stdio command specification used when mounting MCP tools onto agent sessions.
+ * In standalone compiled binaries, invokes `[process.execPath, "__mcp"]` in-process via the hidden CLI entrypoint.
  */
-export function resolveMcpServerCommand(override?: McpCommandSpec): McpCommandSpec {
+export function resolveMcpServerCommand(
+  override?: McpCommandSpec,
+  options?: { compiledBinary?: boolean; execPath?: string },
+): McpCommandSpec {
   if (override) {
     return { command: override.command, args: [...override.args] };
+  }
+
+  const compiled = options?.compiledBinary ?? isCompiledKilnBinary();
+  if (compiled) {
+    return {
+      command: options?.execPath ?? process.execPath,
+      args: ["__mcp"],
+    };
   }
 
   let current = import.meta.dirname;

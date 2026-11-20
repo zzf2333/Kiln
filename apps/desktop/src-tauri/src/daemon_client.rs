@@ -9,9 +9,10 @@ use std::time::Duration;
 
 use crate::model::{
     build_child_command_path_dirs, join_path_dirs, parse_bootstrap_summary_json, parse_health_json,
-    parse_semver_key, parse_sse_event_block, standard_kiln_search_dirs, validate_kilnd_url,
-    KilnBootstrapSummary, KilnHealth, NormalizedKilndUrl, SseEventFrame, TrayDisplayState,
-    DEFAULT_KILND_URL,
+    parse_semver_key, parse_sse_event_block, path_contains_dir, platform_kiln_binary_names,
+    render_windows_cli_shim, sidecar_candidate_path, standard_kiln_search_dirs, validate_kilnd_url,
+    windows_kiln_search_dirs, KilnBootstrapSummary, KilnHealth, NormalizedKilndUrl, SseEventFrame,
+    TrayDisplayState, DEFAULT_KILND_URL,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(1500);
@@ -304,6 +305,24 @@ impl KilndClient {
     }
 }
 
+#[cfg(windows)]
+fn configure_background_command(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn configure_background_command(_cmd: &mut Command) {}
+
+fn resolve_user_home_dir() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .filter(|v| !v.is_empty())
+        .or_else(|| env::var_os("USERPROFILE").filter(|v| !v.is_empty()))
+        .map(PathBuf::from)
+}
+
 pub fn spawn_kiln_up(url: &NormalizedKilndUrl) -> Result<String, String> {
     let validated = validate_kilnd_url(&url.base_url)
         .map_err(|err| format!("refusing kiln up on invalid URL: {err}"))?;
@@ -316,6 +335,7 @@ pub fn spawn_kiln_up(url: &NormalizedKilndUrl) -> Result<String, String> {
         "--port",
         &validated.port.to_string(),
     ]);
+    configure_background_command(&mut cmd);
     apply_enriched_child_path(&mut cmd, &bin);
     let output = cmd
         .output()
@@ -335,6 +355,7 @@ pub fn run_kiln_down() -> Result<String, String> {
     let bin = resolve_kiln_binary()?;
     let mut cmd = Command::new(&bin);
     cmd.arg("down");
+    configure_background_command(&mut cmd);
     apply_enriched_child_path(&mut cmd, &bin);
     let output = cmd
         .output()
@@ -352,11 +373,37 @@ pub fn run_kiln_down() -> Result<String, String> {
 
 fn apply_enriched_child_path(cmd: &mut Command, bin: &Path) {
     let current_path = env::var_os("PATH");
-    let home_dir = env::var_os("HOME").map(PathBuf::from);
-    if let Some(child_path) =
-        build_kiln_child_path(bin, current_path.as_deref(), home_dir.as_deref())
+    let home_dir = resolve_user_home_dir();
+    #[cfg(windows)]
     {
-        cmd.env("PATH", child_path);
+        let local_app_data = env::var_os("LOCALAPPDATA").map(PathBuf::from);
+        let mut dirs = Vec::new();
+        if let Some(bin_parent) = bin.parent().filter(|p| !p.as_os_str().is_empty()) {
+            dirs.push(bin_parent.to_path_buf());
+        }
+        for dir in windows_kiln_search_dirs(local_app_data.as_deref(), home_dir.as_deref()) {
+            if dir.is_dir() && !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+        if let Some(raw_path) = current_path.as_deref() {
+            for dir in env::split_paths(raw_path) {
+                if !dir.as_os_str().is_empty() && !dirs.contains(&dir) {
+                    dirs.push(dir);
+                }
+            }
+        }
+        if let Some(child_path) = join_path_dirs(&dirs) {
+            cmd.env("PATH", child_path);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if let Some(child_path) =
+            build_kiln_child_path(bin, current_path.as_deref(), home_dir.as_deref())
+        {
+            cmd.env("PATH", child_path);
+        }
     }
 }
 
@@ -600,20 +647,45 @@ pub fn build_kiln_child_path(
 
 fn resolve_kiln_binary() -> Result<PathBuf, String> {
     let explicit = env::var("KILN_BIN").ok();
+    let current_exe = env::current_exe().ok();
     let current_path = env::var_os("PATH");
-    let home_dir = env::var_os("HOME").map(PathBuf::from);
-    resolve_kiln_binary_with(
+    let home_dir = resolve_user_home_dir();
+    let local_app_data = env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    resolve_kiln_binary_for_platform(
         explicit.as_deref(),
+        current_exe.as_deref(),
         current_path.as_deref(),
         home_dir.as_deref(),
+        local_app_data.as_deref(),
+        cfg!(windows),
     )
 }
 
+#[cfg(test)]
 fn resolve_kiln_binary_with(
     explicit_kiln_bin: Option<&str>,
     current_path: Option<&OsStr>,
     home_dir: Option<&Path>,
 ) -> Result<PathBuf, String> {
+    resolve_kiln_binary_for_platform(
+        explicit_kiln_bin,
+        None,
+        current_path,
+        home_dir,
+        None,
+        cfg!(windows),
+    )
+}
+
+fn resolve_kiln_binary_for_platform(
+    explicit_kiln_bin: Option<&str>,
+    current_exe: Option<&Path>,
+    current_path: Option<&OsStr>,
+    home_dir: Option<&Path>,
+    local_app_data: Option<&Path>,
+    is_windows: bool,
+) -> Result<PathBuf, String> {
+    // 1. Explicit KILN_BIN environment override always wins.
     if let Some(raw_explicit) = explicit_kiln_bin {
         let trimmed = raw_explicit.trim();
         if !trimmed.is_empty() {
@@ -628,24 +700,204 @@ fn resolve_kiln_binary_with(
         }
     }
 
+    // 2. Sibling sidecar binary bundled alongside the desktop executable (`kiln` / `kiln.exe`).
+    if let Some(sidecar) = sidecar_candidate_path(current_exe, is_windows) {
+        if sidecar.is_file() {
+            let is_same_as_self = match (current_exe.and_then(|p| fs::canonicalize(p).ok()), fs::canonicalize(&sidecar).ok()) {
+                (Some(a), Some(b)) => a == b,
+                _ => false,
+            };
+            if !is_same_as_self {
+                return Ok(sidecar);
+            }
+        }
+    }
+
+    let bin_names = platform_kiln_binary_names(is_windows);
+
+    // 3. Existing PATH lookup.
     if let Some(path_var) = current_path {
         for dir in env::split_paths(path_var) {
-            let candidate = dir.join("kiln");
+            for bin_name in bin_names {
+                let candidate = dir.join(bin_name);
+                if candidate.is_file() {
+                    return Ok(candidate);
+                }
+            }
+        }
+    }
+
+    // 4. Standard user install & Node version-manager fallback directories.
+    let search_dirs = if is_windows {
+        windows_kiln_search_dirs(local_app_data, home_dir)
+    } else {
+        let versioned_bins = collect_versioned_node_bins(home_dir);
+        standard_kiln_search_dirs(home_dir, &versioned_bins)
+    };
+    for dir in search_dirs {
+        for bin_name in bin_names {
+            let candidate = dir.join(bin_name);
             if candidate.is_file() {
                 return Ok(candidate);
             }
         }
     }
 
-    let versioned_bins = collect_versioned_node_bins(home_dir);
-    for dir in standard_kiln_search_dirs(home_dir, &versioned_bins) {
-        let candidate = dir.join("kiln");
-        if candidate.is_file() {
-            return Ok(candidate);
+    Err("unable to locate `kiln` CLI binary in PATH or standard install directories".to_string())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CliInstallOutcome {
+    pub bin_dir: PathBuf,
+    pub display_bin_dir: String,
+    pub target_bin: PathBuf,
+    pub in_path: bool,
+}
+
+#[cfg(unix)]
+fn atomic_replace_symlink(target: &Path, link_path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::symlink;
+
+    if let (Ok(canon_target), Ok(canon_link)) = (fs::canonicalize(target), fs::canonicalize(link_path))
+    {
+        if canon_target == canon_link {
+            return Ok(());
         }
     }
 
-    Err("unable to locate `kiln` CLI binary in PATH or standard install directories".to_string())
+    let parent = link_path
+        .parent()
+        .ok_or_else(|| format!("invalid link path: {}", link_path.display()))?;
+    let file_name = link_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("kiln");
+    let tmp_link = parent.join(format!(".{file_name}.kiln-tmp-{}", std::process::id()));
+    let _ = fs::remove_file(&tmp_link);
+
+    symlink(target, &tmp_link).map_err(|err| {
+        format!(
+            "failed to create symlink {} -> {}: {err}",
+            link_path.display(),
+            target.display()
+        )
+    })?;
+
+    if let Err(err) = fs::rename(&tmp_link, link_path) {
+        let _ = fs::remove_file(&tmp_link);
+        return Err(format!(
+            "failed to install symlink {}: {err}",
+            link_path.display()
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+pub fn install_posix_cli_symlinks(
+    source_bin: &Path,
+    bin_dir: &Path,
+    current_path: Option<&OsStr>,
+) -> Result<CliInstallOutcome, String> {
+    if !source_bin.is_file() {
+        return Err(format!(
+            "kiln binary does not exist: {}",
+            source_bin.display()
+        ));
+    }
+    let canonical_source = fs::canonicalize(source_bin).unwrap_or_else(|_| source_bin.to_path_buf());
+    fs::create_dir_all(bin_dir)
+        .map_err(|err| format!("failed to create {}: {err}", bin_dir.display()))?;
+
+    atomic_replace_symlink(&canonical_source, &bin_dir.join("kiln"))?;
+    atomic_replace_symlink(&canonical_source, &bin_dir.join("kl"))?;
+
+    let in_path = path_contains_dir(current_path, bin_dir, false);
+    Ok(CliInstallOutcome {
+        bin_dir: bin_dir.to_path_buf(),
+        display_bin_dir: "~/.local/bin".to_string(),
+        target_bin: canonical_source,
+        in_path,
+    })
+}
+
+#[allow(dead_code)]
+fn atomic_write_file(dest: &Path, content: &str) -> Result<(), String> {
+    let parent = dest
+        .parent()
+        .ok_or_else(|| format!("invalid destination path: {}", dest.display()))?;
+    let file_name = dest
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("kiln.cmd");
+    let tmp_path = parent.join(format!(".{file_name}.kiln-tmp-{}", std::process::id()));
+    fs::write(&tmp_path, content)
+        .map_err(|err| format!("failed to write {}: {err}", tmp_path.display()))?;
+    if let Err(err) = fs::rename(&tmp_path, dest) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(format!("failed to move shim to {}: {err}", dest.display()));
+    }
+    Ok(())
+}
+
+/// Writes user-local `kiln.cmd` and `kl.cmd` shims into `%LOCALAPPDATA%\Kiln\bin` without UAC.
+#[allow(dead_code)]
+pub fn install_windows_cli_shims(
+    source_bin: &Path,
+    bin_dir: &Path,
+    current_path: Option<&OsStr>,
+) -> Result<CliInstallOutcome, String> {
+    if !source_bin.is_file() {
+        return Err(format!(
+            "kiln.exe binary does not exist: {}",
+            source_bin.display()
+        ));
+    }
+    let shim_body = render_windows_cli_shim(source_bin)?;
+    fs::create_dir_all(bin_dir)
+        .map_err(|err| format!("failed to create {}: {err}", bin_dir.display()))?;
+
+    atomic_write_file(&bin_dir.join("kiln.cmd"), &shim_body)?;
+    atomic_write_file(&bin_dir.join("kl.cmd"), &shim_body)?;
+
+    let in_path = path_contains_dir(current_path, bin_dir, true);
+    Ok(CliInstallOutcome {
+        bin_dir: bin_dir.to_path_buf(),
+        display_bin_dir: "%LOCALAPPDATA%\\Kiln\\bin".to_string(),
+        target_bin: source_bin.to_path_buf(),
+        in_path,
+    })
+}
+
+/// Installs user-local `kiln` and `kl` CLI commands pointing to the bundled sidecar (or active binary)
+/// without modifying shell profiles, Registry auto-start, or requiring administrator privileges.
+pub fn install_cli_command() -> Result<CliInstallOutcome, String> {
+    let source_bin = resolve_kiln_binary()?;
+    let current_path = env::var_os("PATH");
+
+    #[cfg(unix)]
+    {
+        let home = resolve_user_home_dir()
+            .ok_or_else(|| "unable to determine HOME directory".to_string())?;
+        let bin_dir = home.join(".local").join("bin");
+        let outcome = install_posix_cli_symlinks(&source_bin, &bin_dir, current_path.as_deref())?;
+        return Ok(outcome);
+    }
+
+    #[cfg(windows)]
+    {
+        let local_app_data = env::var_os("LOCALAPPDATA")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                resolve_user_home_dir().map(|h| h.join("AppData").join("Local"))
+            })
+            .ok_or_else(|| "unable to determine LOCALAPPDATA directory".to_string())?;
+        let bin_dir = local_app_data.join("Kiln").join("bin");
+        let outcome = install_windows_cli_shims(&source_bin, &bin_dir, current_path.as_deref())?;
+        return Ok(outcome);
+    }
 }
 
 #[cfg(test)]
@@ -771,5 +1023,155 @@ mod tests {
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("FAKE_NODE_RAN:"), "stdout was: {stdout}");
         assert!(stdout.contains(&kiln_bin.display().to_string()));
+    }
+
+    #[test]
+    fn sidecar_binary_takes_priority_over_path_and_kiln_bin_overrides_sidecar() {
+        let guard = TempDirGuard::new("sidecar-priority");
+        let root = &guard.path;
+
+        let bundle_macos_dir = root.join("Kiln.app/Contents/MacOS");
+        let path_dir = root.join("path-bin");
+        let override_dir = root.join("override-bin");
+        fs::create_dir_all(&bundle_macos_dir).expect("create bundle dir");
+        fs::create_dir_all(&path_dir).expect("create path dir");
+        fs::create_dir_all(&override_dir).expect("create override dir");
+
+        let fake_desktop_exe = bundle_macos_dir.join("kiln-desktop");
+        let sidecar_kiln = bundle_macos_dir.join("kiln");
+        let path_kiln = path_dir.join("kiln");
+        let override_kiln = override_dir.join("kiln");
+        fs::write(&fake_desktop_exe, "desktop").expect("write fake desktop exe");
+        fs::write(&sidecar_kiln, "sidecar").expect("write sidecar");
+        fs::write(&path_kiln, "path").expect("write path kiln");
+        fs::write(&override_kiln, "override").expect("write override kiln");
+
+        // Sidecar wins over PATH
+        let resolved_sidecar = resolve_kiln_binary_for_platform(
+            None,
+            Some(&fake_desktop_exe),
+            Some(path_dir.as_os_str()),
+            Some(root),
+            None,
+            false,
+        )
+        .expect("should resolve sibling sidecar");
+        assert_eq!(resolved_sidecar, sidecar_kiln);
+
+        // Explicit KILN_BIN wins over sidecar
+        let resolved_override = resolve_kiln_binary_for_platform(
+            override_kiln.to_str(),
+            Some(&fake_desktop_exe),
+            Some(path_dir.as_os_str()),
+            Some(root),
+            None,
+            false,
+        )
+        .expect("should resolve explicit KILN_BIN");
+        assert_eq!(resolved_override, override_kiln);
+
+        // Windows sidecar (`kiln.exe` next to `kiln-desktop.exe`) and `%LOCALAPPDATA%\Kiln\bin\kiln.exe` lookup
+        let win_app_dir = root.join("WinApp");
+        let win_local_app_data = root.join("LocalAppData");
+        let win_local_bin = win_local_app_data.join("Kiln/bin");
+        fs::create_dir_all(&win_app_dir).expect("create win app dir");
+        fs::create_dir_all(&win_local_bin).expect("create win local bin");
+        let win_desktop_exe = win_app_dir.join("kiln-desktop.exe");
+        let win_sidecar_exe = win_app_dir.join("kiln.exe");
+        let win_fallback_exe = win_local_bin.join("kiln.exe");
+        fs::write(&win_desktop_exe, "win-desktop").expect("write win desktop");
+        fs::write(&win_fallback_exe, "win-fallback").expect("write win fallback");
+
+        let resolved_win_fallback = resolve_kiln_binary_for_platform(
+            None,
+            Some(&win_desktop_exe),
+            None,
+            Some(root),
+            Some(&win_local_app_data),
+            true,
+        )
+        .expect("should fall back to LOCALAPPDATA\\Kiln\\bin\\kiln.exe");
+        assert_eq!(resolved_win_fallback, win_fallback_exe);
+
+        // Self-recursion guard: if current_exe itself is named `Kiln.exe`, never resolve it as sidecar
+        let win_self_named = win_app_dir.join("Kiln.exe");
+        fs::write(&win_self_named, "win-self").expect("write win self");
+        let resolved_no_self = resolve_kiln_binary_for_platform(
+            None,
+            Some(&win_self_named),
+            None,
+            Some(root),
+            Some(&win_local_app_data),
+            true,
+        )
+        .expect("should fall back instead of self-recursing on Kiln.exe");
+        assert_eq!(resolved_no_self, win_fallback_exe);
+        let _ = fs::remove_file(&win_self_named);
+
+        fs::write(&win_sidecar_exe, "win-sidecar").expect("write win sidecar");
+        let resolved_win_sidecar = resolve_kiln_binary_for_platform(
+            None,
+            Some(&win_desktop_exe),
+            None,
+            Some(root),
+            Some(&win_local_app_data),
+            true,
+        )
+        .expect("should prefer sibling kiln.exe sidecar on Windows");
+        assert_eq!(resolved_win_sidecar, win_sidecar_exe);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installs_posix_cli_symlinks_idempotently_without_touching_shell_profiles() {
+        let guard = TempDirGuard::new("posix-cli-install");
+        let home = &guard.path;
+        let sidecar = home.join("Kiln.app/Contents/MacOS/kiln");
+        write_executable(&sidecar, "#!/bin/sh\necho kiln-sidecar\n");
+
+        let local_bin = home.join(".local/bin");
+        let first = install_posix_cli_symlinks(&sidecar, &local_bin, Some(OsStr::new("/usr/bin:/bin")))
+            .expect("first symlink install must succeed");
+        assert!(!first.in_path);
+        assert_eq!(
+            fs::read_link(local_bin.join("kiln")).expect("read kiln symlink"),
+            fs::canonicalize(&sidecar).expect("canon sidecar")
+        );
+        assert_eq!(
+            fs::read_link(local_bin.join("kl")).expect("read kl symlink"),
+            fs::canonicalize(&sidecar).expect("canon sidecar")
+        );
+
+        // Idempotent re-install when ~/.local/bin IS in PATH
+        let second = install_posix_cli_symlinks(&sidecar, &local_bin, Some(local_bin.as_os_str()))
+            .expect("second symlink install must succeed");
+        assert!(second.in_path);
+
+        // Never modifies shell profiles or LaunchAgents
+        assert!(!home.join(".zshrc").exists());
+        assert!(!home.join(".bashrc").exists());
+        assert!(!home.join(".profile").exists());
+        assert!(!home.join("Library/LaunchAgents").exists());
+    }
+
+    #[test]
+    fn installs_windows_cli_shims_idempotently() {
+        let guard = TempDirGuard::new("win-shim-install");
+        let root = &guard.path;
+        let sidecar = root.join("Kiln/kiln.exe");
+        fs::create_dir_all(sidecar.parent().unwrap()).expect("create sidecar dir");
+        fs::write(&sidecar, "MZ").expect("write fake exe");
+
+        let bin_dir = root.join("LocalAppData/Kiln/bin");
+        let outcome = install_windows_cli_shims(&sidecar, &bin_dir, Some(OsStr::new("C:\\Windows\\System32")))
+            .expect("shim install must succeed");
+        assert!(!outcome.in_path);
+
+        let kiln_cmd = fs::read_to_string(bin_dir.join("kiln.cmd")).expect("read kiln.cmd");
+        let kl_cmd = fs::read_to_string(bin_dir.join("kl.cmd")).expect("read kl.cmd");
+        assert_eq!(kiln_cmd, kl_cmd);
+        assert!(kiln_cmd.starts_with("@echo off\r\n"));
+        assert!(kiln_cmd.contains(&sidecar.display().to_string()));
+        assert!(kiln_cmd.ends_with("%*\r\n"));
     }
 }

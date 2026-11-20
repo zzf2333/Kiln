@@ -4,6 +4,8 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { PricingConfig, RunMeta, TaskCard } from "@kiln/protocol";
 import {
   BackendRegistry,
@@ -1897,5 +1899,113 @@ describe("@kiln/cli", () => {
       await new Promise((r) => setTimeout(r, 20));
     }
     expect(capturedNoSigServer!.address).toBeNull();
+  });
+
+  it("supports hidden `kiln __mcp` stdio bridge and compiled-binary argument/service/doctor modes", async () => {
+    // 1. `__mcp` is hidden from normal help output
+    const helpRes = await runCli(["--help"]);
+    expect(helpRes.exitCode).toBe(0);
+    expect(helpRes.stdout).not.toContain("__mcp");
+
+    // 2. Missing KILN_RUN_TOKEN fails cleanly on stderr without polluting stdout
+    const missingTokenRes = await runCli(["__mcp"], { env: {} });
+    expect(missingTokenRes.exitCode).toBe(1);
+    expect(missingTokenRes.stdout).toBe("");
+    expect(missingTokenRes.stderr).toContain("KILN_RUN_TOKEN");
+
+    // 3. Real MCP handshake + listTools + callTool via `runCli(["__mcp"])` over InMemoryTransport
+    const kilnHome = path.join(makeTempDir("kiln-cli-mcp-"), "kh");
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      publicDir: null,
+      tokenSecret: "cli-mcp-bridge-secret-0123456789",
+    });
+    servers.push(server);
+
+    const token = server.issueRunToken({
+      taskId: "t-mcp-1",
+      runId: "r-mcp-1",
+      role: "intake",
+      contractVersion: 1,
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const mcpAc = new AbortController();
+    const mcpCliPromise = runCli(["__mcp"], {
+      env: { KILN_RUN_TOKEN: token, KILN_HOME: kilnHome },
+      foregroundSignal: mcpAc.signal,
+      mcpOptions: {
+        mcpTransport: serverTransport,
+        rpcTransport: async (req) =>
+          server.invokeMcpRpc({
+            method: req.method,
+            url: req.path,
+            headers: req.headers,
+            rawBody: req.rawBody,
+          }),
+      },
+    });
+
+    const mcpClient = new Client({ name: "kiln-cli-test", version: "0.0.1" });
+    await mcpClient.connect(clientTransport);
+    const listed = await mcpClient.listTools();
+    expect(listed.tools.map((t) => t.name).sort()).toEqual([
+      "wb_ask_decision",
+      "wb_get_context",
+      "wb_list_tasks",
+      "wb_plan",
+      "wb_propose_ledger",
+      "wb_read_ledger",
+      "wb_submit_receipt",
+    ]);
+    const listRes = await mcpClient.callTool({ name: "wb_list_tasks", arguments: {} });
+    expect(listRes.isError).not.toBe(true);
+    await mcpClient.close();
+    mcpAc.abort();
+
+    const mcpExit = await mcpCliPromise;
+    expect(mcpExit.exitCode).toBe(0);
+    expect(mcpExit.stdout).toBe("");
+
+    // 4. Compiled single-binary helpers omit JS entrypoint in daemon spawn & service templates
+    expect(
+      buildDaemonForegroundArgs({
+        host: "127.0.0.1",
+        port: 4310,
+      }),
+    ).toEqual(["up", "--foreground", "--host", "127.0.0.1", "--port", "4310"]);
+
+    const plist = renderLaunchAgentPlist({
+      nodeExecutable: "/Users/tester/.local/bin/kiln",
+      kilnHome: "/Users/tester/.kiln",
+      logDir: "/Users/tester/.kiln/logs",
+      args: ["up", "--foreground"],
+    });
+    expect(plist).toContain("<string>/Users/tester/.local/bin/kiln</string>");
+    expect(plist).toContain("<string>up</string>");
+    expect(plist).not.toContain("dist/bin.js");
+
+    const unit = renderSystemdUnit({
+      nodeExecutable: "/home/tester/.local/bin/kiln",
+      kilnHome: "/home/tester/.kiln",
+      args: ["up", "--foreground"],
+    });
+    expect(unit).toContain('ExecStart="/home/tester/.local/bin/kiln" "up" "--foreground"');
+
+    // 5. `kiln doctor --json` in compiledBinary mode passes runtime check without requiring Node.js
+    const docRoot = makeTempDir("kiln-cli-doc-compiled-");
+    const docRes = await runCli(["doctor", "--json"], {
+      compiledBinary: true,
+      kilnHome: path.join(docRoot, "kh"),
+      homeDir: path.join(docRoot, "home"),
+      launchAgentsDir: path.join(docRoot, "home", "Library", "LaunchAgents"),
+      isDaemonRunning: () => false,
+      execFileImpl: async () => ({ stdout: "git version 2.45.0\n", stderr: "" }),
+    });
+    expect(docRes.exitCode).toBe(0);
+    const report = docRes.data as DoctorReport;
+    const nodeCheck = report.checks.find((c) => c.id === "node");
+    expect(nodeCheck?.ok).toBe(true);
+    expect(nodeCheck?.detail).toContain("Node.js not required");
   });
 });
