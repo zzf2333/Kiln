@@ -99,6 +99,7 @@ rustc -D warnings --test apps/desktop/src-tauri/src/model.rs -o /tmp/kiln-deskto
 ```sh
 kiln doctor                     # Verify Node >= 22, Git, APFS clone, kilnd, Paseo, and service status
 kiln up                         # Start local kilnd daemon in the background (127.0.0.1:4310, PaseoBackend on by default)
+kiln space add .                # Register the current Git repository as a project space
 kiln open                       # Open the local Web workbench in your default browser
 kiln draft "Add OAuth PKCE"     # Create a task draft card
 kiln status                     # Inspect running tasks, pending decisions, drafts, and usage
@@ -124,6 +125,7 @@ kiln uninstall                  # Stop daemon, remove service, inspect worktrees
 | `kiln down` | Stop the managed `kilnd` daemon cleanly |
 | `kiln open [--port <port>] [--host <host>]` | Open the Kiln Web workbench in the system browser |
 | `kiln status [--port <port>] [--host <host>] [--json]` | Display tasks, running count, pending decisions, drafts, and usage |
+| `kiln space <list\|add [path]\|rm <id>> [--id <id>] [--name <name>] [--branch <branch>] [--accept-cmd <cmd>] [--copy-untracked <csv>] [--clone-deps <csv>] [--port <port>] [--host <host>] [--json]` | List, register/inspect a local Git repository (`add` defaults to current directory), or remove an idle project space |
 | `kiln draft "<idea>" [--id <id>] [--space <id>] [--priority <P0\|P1\|P2\|P3>] [--track <L1\|L2>] [--mode <git_worktree\|host_scoped\|scratch_dir>] [--port <port>] [--host <host>]` | Create a new draft card |
 | `kiln decide [task-id] [--option <id>] [--decision <id>] [--rationale <text>] [--apply-ledger] [--port <port>] [--host <host>]` | List or submit pending approval decisions |
 | `kiln doctor [--port <port>] [--host <host>] [--json]` | Check Node, Git, APFS clone support, `kilnd` reachability, Paseo agent discovery (`required: false`), and startup service state |

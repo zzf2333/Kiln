@@ -99,6 +99,7 @@ rustc -D warnings --test apps/desktop/src-tauri/src/model.rs -o /tmp/kiln-deskto
 ```sh
 kiln doctor                     # 检查 Node >= 22、Git、APFS 克隆、kilnd、Paseo 与服务状态
 kiln up                         # 幂等启动本地后台守护进程 kilnd（默认 127.0.0.1:4310，默认注册 PaseoBackend）
+kiln space add .                # 将当前目录 Git 仓库识别并登记为项目空间
 kiln open                       # 在默认浏览器打开 Web 工作台
 kiln draft "接入 OAuth PKCE"     # 创建任务草稿卡
 kiln status                     # 查看任务列表、运行计数、待决拍板、草稿与用量
@@ -124,6 +125,7 @@ kiln uninstall                  # 停止守护进程、移除系统服务并巡�
 | `kiln down` | 停止托管的 `kilnd` 守护进程 |
 | `kiln open [--port <port>] [--host <host>]` | 在系统默认浏览器打开 Kiln Web 工作台 |
 | `kiln status [--port <port>] [--host <host>] [--json]` | 输出任务状态、运行数、待决拍板、草稿与用量快照 |
+| `kiln space <list\|add [path]\|rm <id>> [--id <id>] [--name <name>] [--branch <branch>] [--accept-cmd <cmd>] [--copy-untracked <csv>] [--clone-deps <csv>] [--port <port>] [--host <host>] [--json]` | 列出项目空间、自动探测并登记本地 Git 仓库（`add` 默认当前目录），或删除无活跃任务的空间 |
 | `kiln draft "<idea>" [--id <id>] [--space <id>] [--priority <P0\|P1\|P2\|P3>] [--track <L1\|L2>] [--mode <git_worktree\|host_scoped\|scratch_dir>] [--port <port>] [--host <host>]` | 创建任务草稿卡 |
 | `kiln decide [task-id] [--option <id>] [--decision <id>] [--rationale <text>] [--apply-ledger] [--port <port>] [--host <host>]` | 列出或提交待决人工拍板 |
 | `kiln doctor [--port <port>] [--host <host>] [--json]` | 检查 Node、Git、APFS 克隆能力、`kilnd` 连通性、Paseo Agent 发现（非必填项）与服务状态 |
