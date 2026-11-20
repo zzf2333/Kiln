@@ -2200,6 +2200,20 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     expect(listSpacesRes.status).toBe(200);
     const listSpacesJson = await readJson(listSpacesRes);
     expect(listSpacesJson.spaces["my-app"]?.name).toBe("My App Renamed");
+    expect(listSpacesJson.spaces.local).toMatchObject({
+      id: "local",
+      name: "本机与临时",
+    });
+    expect(listSpacesJson.spaces.local?.repo_path).toBeUndefined();
+
+    const bootDefaultLocalRes = await requestHttp(server, "/api/bootstrap");
+    expect(bootDefaultLocalRes.status).toBe(200);
+    const bootDefaultLocalJson = await readJson(bootDefaultLocalRes);
+    expect(bootDefaultLocalJson.spaces.local).toMatchObject({
+      id: "local",
+      name: "本机与临时",
+    });
+    expect(bootDefaultLocalJson.spaces.local?.repo_path).toBeUndefined();
 
     const intakeToken = server.issueRunToken({
       taskId: "d-empty-list",

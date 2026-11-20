@@ -235,6 +235,16 @@ async function readJsonBodyOptional(c: Context): Promise<unknown> {
   }
 }
 
+const BUILTIN_LOCAL_SPACE: SpaceConfig = {
+  schema_version: 1,
+  id: "local",
+  name: "本机与临时",
+  default_branch: "main",
+  copy_untracked: [],
+  clone_deps: [],
+  freeze_patterns: [],
+};
+
 function loadAllSpaces(
   store: KilnStore,
   extraSpaceIds: Iterable<string>,
@@ -255,6 +265,14 @@ function loadAllSpaces(
     if (cfg) {
       spaces[spaceId] = cfg;
     }
+  }
+  if (!spaces.local) {
+    spaces.local = {
+      ...BUILTIN_LOCAL_SPACE,
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    };
   }
   return spaces;
 }
