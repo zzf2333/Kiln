@@ -1,12 +1,15 @@
 use std::env;
+use std::ffi::{OsStr, OsString};
+use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use crate::model::{
-    parse_bootstrap_summary_json, parse_health_json, parse_sse_event_block, validate_kilnd_url,
+    build_child_command_path_dirs, join_path_dirs, parse_bootstrap_summary_json, parse_health_json,
+    parse_semver_key, parse_sse_event_block, standard_kiln_search_dirs, validate_kilnd_url,
     KilnBootstrapSummary, KilnHealth, NormalizedKilndUrl, SseEventFrame, TrayDisplayState,
     DEFAULT_KILND_URL,
 };
@@ -305,14 +308,16 @@ pub fn spawn_kiln_up(url: &NormalizedKilndUrl) -> Result<String, String> {
     let validated = validate_kilnd_url(&url.base_url)
         .map_err(|err| format!("refusing kiln up on invalid URL: {err}"))?;
     let bin = resolve_kiln_binary()?;
-    let output = Command::new(&bin)
-        .args([
-            "up",
-            "--host",
-            &validated.host,
-            "--port",
-            &validated.port.to_string(),
-        ])
+    let mut cmd = Command::new(&bin);
+    cmd.args([
+        "up",
+        "--host",
+        &validated.host,
+        "--port",
+        &validated.port.to_string(),
+    ]);
+    apply_enriched_child_path(&mut cmd, &bin);
+    let output = cmd
         .output()
         .map_err(|err| format!("failed to execute {} up: {err}", bin.display()))?;
 
@@ -328,8 +333,10 @@ pub fn spawn_kiln_up(url: &NormalizedKilndUrl) -> Result<String, String> {
 
 pub fn run_kiln_down() -> Result<String, String> {
     let bin = resolve_kiln_binary()?;
-    let output = Command::new(&bin)
-        .arg("down")
+    let mut cmd = Command::new(&bin);
+    cmd.arg("down");
+    apply_enriched_child_path(&mut cmd, &bin);
+    let output = cmd
         .output()
         .map_err(|err| format!("failed to execute {} down: {err}", bin.display()))?;
 
@@ -340,6 +347,16 @@ pub fn run_kiln_down() -> Result<String, String> {
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let detail = if !stderr.is_empty() { stderr } else { stdout };
         Err(format!("kiln down failed: {detail}"))
+    }
+}
+
+fn apply_enriched_child_path(cmd: &mut Command, bin: &Path) {
+    let current_path = env::var_os("PATH");
+    let home_dir = env::var_os("HOME").map(PathBuf::from);
+    if let Some(child_path) =
+        build_kiln_child_path(bin, current_path.as_deref(), home_dir.as_deref())
+    {
+        cmd.env("PATH", child_path);
     }
 }
 
@@ -504,16 +521,115 @@ fn decode_chunked_body(raw: &[u8]) -> Result<Vec<u8>, String> {
     }
 }
 
-fn resolve_kiln_binary() -> Result<PathBuf, String> {
-    if let Ok(explicit) = env::var("KILN_BIN") {
-        let candidate = PathBuf::from(explicit.trim());
-        if candidate.is_file() {
-            return Ok(candidate);
+fn collect_versioned_node_bins(home_dir: Option<&Path>) -> Vec<PathBuf> {
+    let Some(home) = home_dir.filter(|p| !p.as_os_str().is_empty()) else {
+        return Vec::new();
+    };
+
+    let roots = [
+        (".local/share/mise/installs/node", "bin"),
+        (".nvm/versions/node", "bin"),
+        (".fnm/node-versions", "installation/bin"),
+        ("Library/Application Support/fnm/node-versions", "installation/bin"),
+    ];
+
+    let mut versioned: Vec<((u64, u64, u64), PathBuf)> = Vec::new();
+    for (root_rel, bin_rel) in roots {
+        let root_dir = home.join(root_rel);
+        let Ok(entries) = fs::read_dir(root_dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name_str) = name.to_str() else {
+                continue;
+            };
+            let Some(ver_key) = parse_semver_key(name_str) else {
+                continue;
+            };
+            let bin_dir = entry.path().join(bin_rel);
+            if bin_dir.is_dir() {
+                versioned.push((ver_key, bin_dir));
+            }
         }
     }
 
-    if let Some(path_var) = env::var_os("PATH") {
-        for dir in env::split_paths(&path_var) {
+    versioned.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+
+    let mut deduped = Vec::new();
+    for (_key, dir) in versioned {
+        if !deduped.contains(&dir) {
+            deduped.push(dir);
+        }
+    }
+    deduped
+}
+
+fn is_kept_system_dir(dir: &Path) -> bool {
+    matches!(
+        dir.to_str(),
+        Some("/usr/bin" | "/bin" | "/usr/sbin" | "/sbin")
+    )
+}
+
+pub fn build_kiln_child_path(
+    bin: &Path,
+    current_path: Option<&OsStr>,
+    home_dir: Option<&Path>,
+) -> Option<OsString> {
+    let bin_parent = bin.parent().filter(|p| !p.as_os_str().is_empty());
+    let existing_entries: Vec<PathBuf> = current_path
+        .map(|raw| env::split_paths(raw).filter(|p| !p.as_os_str().is_empty()).collect())
+        .unwrap_or_default();
+    let versioned_bins = collect_versioned_node_bins(home_dir);
+    let candidate_dirs =
+        build_child_command_path_dirs(bin_parent, current_path, home_dir, &versioned_bins);
+
+    let filtered: Vec<PathBuf> = candidate_dirs
+        .into_iter()
+        .filter(|dir| {
+            bin_parent == Some(dir.as_path())
+                || existing_entries.iter().any(|existing| existing == dir)
+                || is_kept_system_dir(dir)
+                || dir.is_dir()
+        })
+        .collect();
+
+    join_path_dirs(&filtered)
+}
+
+fn resolve_kiln_binary() -> Result<PathBuf, String> {
+    let explicit = env::var("KILN_BIN").ok();
+    let current_path = env::var_os("PATH");
+    let home_dir = env::var_os("HOME").map(PathBuf::from);
+    resolve_kiln_binary_with(
+        explicit.as_deref(),
+        current_path.as_deref(),
+        home_dir.as_deref(),
+    )
+}
+
+fn resolve_kiln_binary_with(
+    explicit_kiln_bin: Option<&str>,
+    current_path: Option<&OsStr>,
+    home_dir: Option<&Path>,
+) -> Result<PathBuf, String> {
+    if let Some(raw_explicit) = explicit_kiln_bin {
+        let trimmed = raw_explicit.trim();
+        if !trimmed.is_empty() {
+            let candidate = PathBuf::from(trimmed);
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+            return Err(format!(
+                "KILN_BIN points to missing file: {}",
+                candidate.display()
+            ));
+        }
+    }
+
+    if let Some(path_var) = current_path {
+        for dir in env::split_paths(path_var) {
             let candidate = dir.join("kiln");
             if candidate.is_file() {
                 return Ok(candidate);
@@ -521,25 +637,139 @@ fn resolve_kiln_binary() -> Result<PathBuf, String> {
         }
     }
 
-    let mut fallbacks = vec![
-        PathBuf::from("/opt/homebrew/bin/kiln"),
-        PathBuf::from("/usr/local/bin/kiln"),
-    ];
-    if let Ok(home) = env::var("HOME") {
-        let home_dir = PathBuf::from(home);
-        fallbacks.push(home_dir.join(".local/bin/kiln"));
-        fallbacks.push(home_dir.join(".npm-global/bin/kiln"));
-        fallbacks.push(home_dir.join(".volta/bin/kiln"));
-        fallbacks.push(home_dir.join(".asdf/shims/kiln"));
-        fallbacks.push(home_dir.join(".local/share/mise/shims/kiln"));
-        fallbacks.push(home_dir.join("Library/pnpm/kiln"));
-    }
-
-    for candidate in fallbacks {
+    let versioned_bins = collect_versioned_node_bins(home_dir);
+    for dir in standard_kiln_search_dirs(home_dir, &versioned_bins) {
+        let candidate = dir.join("kiln");
         if candidate.is_file() {
             return Ok(candidate);
         }
     }
 
     Err("unable to locate `kiln` CLI binary in PATH or standard install directories".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TempDirGuard {
+        path: PathBuf,
+    }
+
+    impl TempDirGuard {
+        fn new(prefix: &str) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let path = env::temp_dir().join(format!(
+                "kiln-desktop-test-{prefix}-{}-{nanos}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("create temp test dir");
+            Self { path }
+        }
+    }
+
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[cfg(unix)]
+    fn write_executable(path: &Path, content: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create parent dir");
+        }
+        fs::write(path, content).expect("write executable script");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+            .expect("chmod +x executable");
+    }
+
+    #[test]
+    fn collects_versioned_node_bins_sorted_descending_and_ignores_aliases() {
+        let guard = TempDirGuard::new("semver-bins");
+        let home = &guard.path;
+
+        let v22 = home.join(".local/share/mise/installs/node/22.19.0/bin");
+        let v24 = home.join(".local/share/mise/installs/node/24.20.0/bin");
+        let v20 = home.join(".nvm/versions/node/v20.11.0/bin");
+        let fnm_v21 = home.join(".fnm/node-versions/v21.7.3/installation/bin");
+        let global_alias = home.join(".local/share/mise/installs/node/global/bin");
+        let missing_bin_parent = home.join(".local/share/mise/installs/node/25.0.0");
+
+        for dir in [&v22, &v24, &v20, &fnm_v21, &global_alias, &missing_bin_parent] {
+            fs::create_dir_all(dir).expect("create test node dir");
+        }
+
+        let collected = collect_versioned_node_bins(Some(home));
+        assert_eq!(collected, vec![v24, v22, fnm_v21, v20]);
+    }
+
+    #[test]
+    fn resolves_kiln_binary_from_version_managers_and_reports_missing_explicit_kiln_bin() {
+        let guard = TempDirGuard::new("resolve-bin");
+        let home = &guard.path;
+        let mise_v24_bin = home.join(".local/share/mise/installs/node/24.20.0/bin");
+        fs::create_dir_all(&mise_v24_bin).expect("create mise bin");
+        let fake_kiln = mise_v24_bin.join("kiln");
+        fs::write(&fake_kiln, "#!/usr/bin/env node\n").expect("write fake kiln");
+
+        let resolved =
+            resolve_kiln_binary_with(None, Some(OsStr::new("/nonexistent-empty")), Some(home))
+                .expect("should resolve kiln inside mise node dir");
+        assert_eq!(resolved, fake_kiln);
+
+        let missing = home.join("missing-kiln");
+        let err = resolve_kiln_binary_with(
+            Some(missing.to_str().unwrap()),
+            Some(OsStr::new("/nonexistent-empty")),
+            Some(home),
+        )
+        .expect_err("explicit KILN_BIN missing file must fail");
+        assert!(err.starts_with("KILN_BIN points to missing file:"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executes_env_node_shebang_script_with_bare_finder_path_via_enriched_child_path() {
+        let guard = TempDirGuard::new("finder-path");
+        let home = &guard.path;
+
+        let mise_global_bin = home.join(".local/share/mise/installs/node/global/bin");
+        let fake_node = mise_global_bin.join("node");
+        write_executable(
+            &fake_node,
+            "#!/bin/sh\necho \"FAKE_NODE_RAN:$*\"\n",
+        );
+
+        let kiln_bin = home.join(".local/bin/kiln");
+        write_executable(
+            &kiln_bin,
+            "#!/usr/bin/env node\nok\n",
+        );
+
+        let bare_finder_path = OsStr::new("/usr/bin:/bin:/usr/sbin:/sbin");
+        let child_path = build_kiln_child_path(&kiln_bin, Some(bare_finder_path), Some(home))
+            .expect("child PATH must be constructed");
+
+        let output = Command::new(&kiln_bin)
+            .args(["up", "--host", "127.0.0.1", "--port", "4310"])
+            .env("PATH", &child_path)
+            .output()
+            .expect("kiln script with #!/usr/bin/env node should launch under enriched PATH");
+
+        assert!(
+            output.status.success(),
+            "expected success, stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("FAKE_NODE_RAN:"), "stdout was: {stdout}");
+        assert!(stdout.contains(&kiln_bin.display().to_string()));
+    }
 }

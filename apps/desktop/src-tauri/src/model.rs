@@ -1,5 +1,8 @@
+use std::env;
 use std::error::Error;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 pub const DEFAULT_KILND_URL: &str = "http://127.0.0.1:4310";
 pub const MAIN_WINDOW_LABEL: &str = "main";
@@ -28,11 +31,24 @@ pub struct KilnBootstrapSummary {
     pub totals: KilnLiveRatesTotals,
 }
 
+/// Pending or failed background `kiln up` action triggered from the tray menu.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum StartActionState {
+    #[default]
+    Idle,
+    Starting,
+    Failed(String),
+}
+
 /// Mutually exclusive desktop tray states projected from `kilnd` health & bootstrap data.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TrayDisplayState {
     Offline {
         reason: Option<String>,
+    },
+    Starting,
+    StartFailed {
+        error: String,
     },
     Idle {
         cost_usd: f64,
@@ -96,7 +112,22 @@ impl TrayDisplayState {
     }
 
     pub fn is_online(&self) -> bool {
-        !matches!(self, Self::Offline { .. })
+        matches!(
+            self,
+            Self::Idle { .. } | Self::Running { .. } | Self::WaitingDecision { .. }
+        )
+    }
+
+    /// Applies the transient menu-driven start action only while `kilnd` remains offline.
+    pub fn apply_start_action(self, action: &StartActionState) -> Self {
+        if self.is_online() {
+            return self;
+        }
+        match action {
+            StartActionState::Idle => self,
+            StartActionState::Starting => Self::Starting,
+            StartActionState::Failed(err) => Self::StartFailed { error: err.clone() },
+        }
     }
 }
 
@@ -306,9 +337,47 @@ pub fn is_allowed_navigation_url(raw: &str, allowed_origin: &NormalizedKilndUrl)
     parsed.host == allowed_origin.host && parsed.port == allowed_origin.port
 }
 
+/// Maps raw CLI / spawn failures to concise, actionable Chinese menu status text.
+pub fn summarize_start_error(raw: &str) -> String {
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("unable to locate") && lower.contains("kiln") {
+        return "未找到 kiln CLI，请先安装 @zzf2333/kiln".to_string();
+    }
+    if lower.contains("kiln_bin points to missing file") {
+        return "KILN_BIN 指向的文件不存在".to_string();
+    }
+    if lower.contains("env: node:")
+        || lower.contains("node: no such file")
+        || lower.contains("cannot find node")
+    {
+        return "未找到 Node.js (>=22)，请先安装 Node.js".to_string();
+    }
+
+    let first_line = raw
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    let stripped = first_line
+        .strip_prefix("kiln up failed:")
+        .map(str::trim)
+        .unwrap_or(first_line);
+    let collapsed = stripped.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return "未知启动错误".to_string();
+    }
+    if collapsed.chars().count() > 72 {
+        let truncated: String = collapsed.chars().take(71).collect();
+        return format!("{truncated}…");
+    }
+    collapsed
+}
+
 pub fn format_tray_title(state: &TrayDisplayState) -> String {
     match state {
         TrayDisplayState::Offline { .. } => "离线".to_string(),
+        TrayDisplayState::Starting => "启动中…".to_string(),
+        TrayDisplayState::StartFailed { .. } => "启动失败".to_string(),
         TrayDisplayState::Idle { cost_usd, .. } => {
             format!("待机 ${:.2}", sanitize_non_negative(*cost_usd))
         }
@@ -344,6 +413,11 @@ pub fn format_tray_tooltip(state: &TrayDisplayState, kilnd_url: &str) -> String 
             }
             _ => format!("Kiln · kilnd 离线 — {kilnd_url}"),
         },
+        TrayDisplayState::Starting => format!("Kiln · 正在启动 kilnd… — {kilnd_url}"),
+        TrayDisplayState::StartFailed { error } => format!(
+            "Kiln · 启动 kilnd 失败（{}）— {kilnd_url}",
+            summarize_start_error(error)
+        ),
         TrayDisplayState::Idle {
             cost_usd,
             task_count,
@@ -376,6 +450,10 @@ pub fn format_tray_tooltip(state: &TrayDisplayState, kilnd_url: &str) -> String 
 pub fn format_tray_menu_status(state: &TrayDisplayState) -> String {
     match state {
         TrayDisplayState::Offline { .. } => "状态：kilnd 未运行".to_string(),
+        TrayDisplayState::Starting => "状态：正在启动 kilnd…".to_string(),
+        TrayDisplayState::StartFailed { error } => {
+            format!("状态：启动失败（{}）", summarize_start_error(error))
+        }
         TrayDisplayState::Idle {
             cost_usd,
             task_count,
@@ -397,6 +475,189 @@ pub fn format_tray_menu_status(state: &TrayDisplayState) -> String {
             ..
         } => format!("状态：{pending_decisions} 项待决 · {running_count} 个运行中"),
     }
+}
+
+pub fn format_start_menu_label(state: &TrayDisplayState) -> &'static str {
+    match state {
+        TrayDisplayState::Starting => "正在启动 kilnd…",
+        TrayDisplayState::StartFailed { .. } => "重试启动 kilnd",
+        _ => "启动 kilnd",
+    }
+}
+
+pub fn is_start_menu_enabled(state: &TrayDisplayState) -> bool {
+    matches!(
+        state,
+        TrayDisplayState::Offline { .. } | TrayDisplayState::StartFailed { .. }
+    )
+}
+
+const SYSTEM_PATH_DIRS: &[&str] = &["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+
+fn push_unique_dir(out: &mut Vec<PathBuf>, dir: PathBuf) {
+    if !dir.as_os_str().is_empty() && !out.contains(&dir) {
+        out.push(dir);
+    }
+}
+
+fn is_system_path_dir(dir: &Path) -> bool {
+    SYSTEM_PATH_DIRS.iter().any(|sys| dir == Path::new(sys))
+}
+
+/// Parses directory names such as `24.20.0`, `v22.19`, or `24.0.0-rc.1` for descending version sort.
+pub fn parse_semver_key(name: &str) -> Option<(u64, u64, u64)> {
+    let trimmed = name.trim();
+    let without_v = trimmed.strip_prefix(['v', 'V']).unwrap_or(trimmed);
+    let core = without_v.split('-').next().unwrap_or("");
+    if core.is_empty() {
+        return None;
+    }
+
+    let mut parts = core.split('.');
+    let major = parse_numeric_part(parts.next()?)?;
+    let minor = match parts.next() {
+        Some(p) => parse_numeric_part(p)?,
+        None => 0,
+    };
+    let patch = match parts.next() {
+        Some(p) => parse_numeric_part(p)?,
+        None => 0,
+    };
+    if parts.next().is_some() {
+        return None;
+    }
+
+    Some((major, minor, patch))
+}
+
+fn parse_numeric_part(part: &str) -> Option<u64> {
+    if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    part.parse::<u64>().ok()
+}
+
+/// Ordered search directories for locating the `kiln` CLI outside the caller's shell `PATH`.
+pub fn standard_kiln_search_dirs(
+    home_dir: Option<&Path>,
+    versioned_node_bins: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    push_unique_dir(&mut dirs, PathBuf::from("/opt/homebrew/bin"));
+    push_unique_dir(&mut dirs, PathBuf::from("/usr/local/bin"));
+
+    if let Some(home) = home_dir {
+        if !home.as_os_str().is_empty() {
+            for rel in [
+                ".local/bin",
+                ".npm-global/bin",
+                ".volta/bin",
+                ".asdf/shims",
+                "Library/pnpm",
+                ".local/share/pnpm",
+                ".local/share/mise/installs/node/global/bin",
+                ".local/share/mise/installs/node/lts/bin",
+                ".local/share/mise/installs/node/latest/bin",
+                ".local/share/mise/shims",
+                ".nvm/current/bin",
+                ".fnm/current/bin",
+            ] {
+                push_unique_dir(&mut dirs, home.join(rel));
+            }
+        }
+    }
+
+    for dir in versioned_node_bins {
+        push_unique_dir(&mut dirs, dir.clone());
+    }
+
+    dirs
+}
+
+/// Builds an enriched child `PATH` list so Finder-launched apps can resolve `#!/usr/bin/env node` and local agent CLIs.
+pub fn build_child_command_path_dirs(
+    bin_dir: Option<&Path>,
+    current_path: Option<&OsStr>,
+    home_dir: Option<&Path>,
+    versioned_node_bins: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    if let Some(dir) = bin_dir {
+        push_unique_dir(&mut dirs, dir.to_path_buf());
+    }
+
+    let existing_entries: Vec<PathBuf> = current_path
+        .map(|raw| env::split_paths(raw).filter(|p| !p.as_os_str().is_empty()).collect())
+        .unwrap_or_default();
+
+    for dir in &existing_entries {
+        if !is_system_path_dir(dir) {
+            push_unique_dir(&mut dirs, dir.clone());
+        }
+    }
+
+    if let Some(home) = home_dir {
+        if !home.as_os_str().is_empty() {
+            for rel in [
+                ".local/share/mise/installs/node/global/bin",
+                ".local/share/mise/installs/node/lts/bin",
+                ".local/share/mise/installs/node/latest/bin",
+                ".local/share/mise/shims",
+                ".volta/bin",
+                ".asdf/shims",
+                ".nvm/current/bin",
+                ".fnm/current/bin",
+            ] {
+                push_unique_dir(&mut dirs, home.join(rel));
+            }
+        }
+    }
+
+    for dir in versioned_node_bins {
+        push_unique_dir(&mut dirs, dir.clone());
+    }
+
+    if let Some(home) = home_dir {
+        if !home.as_os_str().is_empty() {
+            for rel in [".npm-global/bin", "Library/pnpm", ".local/share/pnpm", ".local/bin"] {
+                push_unique_dir(&mut dirs, home.join(rel));
+            }
+        }
+    }
+
+    for dir in [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/opt/homebrew/opt/node@22/bin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+        "/usr/local/opt/node@22/bin",
+    ] {
+        push_unique_dir(&mut dirs, PathBuf::from(dir));
+    }
+
+    for dir in existing_entries {
+        push_unique_dir(&mut dirs, dir);
+    }
+
+    for sys in SYSTEM_PATH_DIRS {
+        push_unique_dir(&mut dirs, PathBuf::from(sys));
+    }
+
+    dirs
+}
+
+pub fn join_path_dirs(dirs: &[PathBuf]) -> Option<OsString> {
+    let non_empty: Vec<&Path> = dirs
+        .iter()
+        .map(PathBuf::as_path)
+        .filter(|p| !p.as_os_str().is_empty())
+        .collect();
+    if non_empty.is_empty() {
+        return None;
+    }
+    env::join_paths(non_empty).ok()
 }
 
 /// Parses a single SSE event block separated by an empty line (`\n\n` or `\r\n\r\n`).
@@ -1237,5 +1498,171 @@ mod tests {
             cost_usd: 0.0,
         };
         assert_eq!(format_tray_title(&waiting_only), "1 待决");
+    }
+
+    #[test]
+    fn applies_start_action_and_formats_starting_and_failed_states() {
+        let base_offline = TrayDisplayState::Offline {
+            reason: Some("connection refused".to_string()),
+        };
+
+        let idle_applied = base_offline.clone().apply_start_action(&StartActionState::Idle);
+        assert_eq!(idle_applied, base_offline);
+        assert!(is_start_menu_enabled(&idle_applied));
+        assert_eq!(format_start_menu_label(&idle_applied), "启动 kilnd");
+
+        let starting = base_offline
+            .clone()
+            .apply_start_action(&StartActionState::Starting);
+        assert_eq!(starting, TrayDisplayState::Starting);
+        assert!(!starting.is_online());
+        assert!(!is_start_menu_enabled(&starting));
+        assert_eq!(format_tray_title(&starting), "启动中…");
+        assert_eq!(format_tray_menu_status(&starting), "状态：正在启动 kilnd…");
+        assert_eq!(format_start_menu_label(&starting), "正在启动 kilnd…");
+        assert!(format_tray_tooltip(&starting, DEFAULT_KILND_URL).contains("正在启动 kilnd"));
+
+        let missing_cli = "unable to locate `kiln` CLI binary in PATH or standard install directories".to_string();
+        let failed = base_offline.apply_start_action(&StartActionState::Failed(missing_cli));
+        assert!(!failed.is_online());
+        assert!(is_start_menu_enabled(&failed));
+        assert_eq!(format_tray_title(&failed), "启动失败");
+        assert_eq!(format_start_menu_label(&failed), "重试启动 kilnd");
+        assert_eq!(
+            format_tray_menu_status(&failed),
+            "状态：启动失败（未找到 kiln CLI，请先安装 @zzf2333/kiln）"
+        );
+        assert!(
+            format_tray_tooltip(&failed, DEFAULT_KILND_URL)
+                .contains("未找到 kiln CLI，请先安装 @zzf2333/kiln")
+        );
+
+        let online_idle = TrayDisplayState::Idle {
+            cost_usd: 0.0,
+            task_count: 0,
+        };
+        let online_after_err = online_idle
+            .clone()
+            .apply_start_action(&StartActionState::Failed("boom".to_string()));
+        assert_eq!(online_after_err, online_idle);
+        assert!(!is_start_menu_enabled(&online_idle));
+        assert_eq!(format_start_menu_label(&online_idle), "启动 kilnd");
+
+        assert_eq!(
+            summarize_start_error("KILN_BIN points to missing file: /nope/kiln"),
+            "KILN_BIN 指向的文件不存在"
+        );
+        assert_eq!(
+            summarize_start_error("kiln up failed: env: node: No such file or directory"),
+            "未找到 Node.js (>=22)，请先安装 Node.js"
+        );
+        assert_eq!(summarize_start_error("   \n  "), "未知启动错误");
+        assert_eq!(
+            summarize_start_error("kiln up failed:    permission\t denied  \nsecond line"),
+            "permission denied"
+        );
+        let long_raw = format!("kiln up failed: {}", "a".repeat(90));
+        let summarized = summarize_start_error(&long_raw);
+        assert_eq!(summarized.chars().count(), 72);
+        assert!(summarized.ends_with('…'));
+    }
+
+    #[test]
+    fn builds_enriched_child_path_for_bare_finder_env() {
+        let home = Path::new("/Users/tester");
+        let bin_dir = Path::new("/Users/tester/.local/bin");
+        let versioned = vec![PathBuf::from(
+            "/Users/tester/.local/share/mise/installs/node/24.20.0/bin",
+        )];
+        let dirs = build_child_command_path_dirs(
+            Some(bin_dir),
+            Some(OsStr::new("/usr/bin:/bin:/usr/sbin:/sbin")),
+            Some(home),
+            &versioned,
+        );
+
+        assert_eq!(dirs[0], bin_dir);
+        let mise_global = PathBuf::from("/Users/tester/.local/share/mise/installs/node/global/bin");
+        let mise_ver = PathBuf::from("/Users/tester/.local/share/mise/installs/node/24.20.0/bin");
+        let brew_node22 = PathBuf::from("/opt/homebrew/opt/node@22/bin");
+        let usr_bin = PathBuf::from("/usr/bin");
+
+        assert!(dirs.contains(&mise_global));
+        assert!(dirs.contains(&mise_ver));
+        assert!(dirs.contains(&brew_node22));
+        assert!(dirs.contains(&PathBuf::from("/usr/local/opt/node@22/bin")));
+
+        let pos_bin = dirs.iter().position(|d| d == bin_dir).unwrap();
+        let pos_global = dirs.iter().position(|d| d == &mise_global).unwrap();
+        let pos_brew = dirs.iter().position(|d| d == &brew_node22).unwrap();
+        let pos_usr = dirs.iter().position(|d| d == &usr_bin).unwrap();
+        assert!(pos_bin < pos_global);
+        assert!(pos_global < pos_brew);
+        assert!(pos_brew < pos_usr);
+
+        // Deduplicated
+        assert_eq!(dirs.iter().filter(|d| *d == &usr_bin).count(), 1);
+        assert_eq!(dirs.iter().filter(|d| *d == bin_dir).count(), 1);
+
+        // Custom terminal entries preserve priority ahead of mise/homebrew fallbacks
+        let custom_dirs = build_child_command_path_dirs(
+            Some(bin_dir),
+            Some(OsStr::new("/custom/node/bin:/usr/bin:/bin")),
+            Some(home),
+            &versioned,
+        );
+        let pos_custom = custom_dirs
+            .iter()
+            .position(|d| d == Path::new("/custom/node/bin"))
+            .unwrap();
+        let pos_mise = custom_dirs
+            .iter()
+            .position(|d| d == &mise_global)
+            .unwrap();
+        assert!(pos_custom < pos_mise);
+
+        let joined = join_path_dirs(&custom_dirs).expect("non-empty PATH");
+        assert!(!joined.is_empty());
+        assert_eq!(join_path_dirs(&[]), None);
+    }
+
+    #[test]
+    fn parses_semver_keys_and_orders_standard_kiln_search_dirs() {
+        assert_eq!(parse_semver_key("24.20.0"), Some((24, 20, 0)));
+        assert_eq!(parse_semver_key("v22.19.1"), Some((22, 19, 1)));
+        assert_eq!(parse_semver_key("V20.11"), Some((20, 11, 0)));
+        assert_eq!(parse_semver_key("24"), Some((24, 0, 0)));
+        assert_eq!(parse_semver_key("24.0.0-rc.1"), Some((24, 0, 0)));
+        assert_eq!(parse_semver_key("global"), None);
+        assert_eq!(parse_semver_key("lts"), None);
+        assert_eq!(parse_semver_key("latest"), None);
+        assert_eq!(parse_semver_key("1.2.3.4"), None);
+        assert_eq!(parse_semver_key(""), None);
+
+        let home = Path::new("/Users/tester");
+        let dirs = standard_kiln_search_dirs(
+            Some(home),
+            &[
+                PathBuf::from("/Users/tester/.local/share/mise/installs/node/24.20.0/bin"),
+                PathBuf::from("/Users/tester/.local/share/mise/installs/node/global/bin"),
+            ],
+        );
+        let global_pos = dirs
+            .iter()
+            .position(|d| {
+                d == Path::new("/Users/tester/.local/share/mise/installs/node/global/bin")
+            })
+            .unwrap();
+        let shims_pos = dirs
+            .iter()
+            .position(|d| d == Path::new("/Users/tester/.local/share/mise/shims"))
+            .unwrap();
+        assert!(global_pos < shims_pos);
+        assert_eq!(
+            dirs.iter()
+                .filter(|d| *d == Path::new("/Users/tester/.local/share/mise/installs/node/global/bin"))
+                .count(),
+            1
+        );
     }
 }

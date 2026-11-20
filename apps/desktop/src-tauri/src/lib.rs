@@ -11,7 +11,7 @@ use tauri::{AppHandle, RunEvent, Runtime};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 use crate::daemon_client::{resolve_kilnd_url, KilndClient, SsePollResult};
-use crate::model::{NormalizedKilndUrl, TrayDisplayState};
+use crate::model::{NormalizedKilndUrl, StartActionState, TrayDisplayState};
 use crate::tray::{setup_tray, update_tray_display};
 use crate::window_manager::open_or_focus_main_window;
 
@@ -24,6 +24,7 @@ const GLOBAL_WORKBENCH_SHORTCUT: &str = "CommandOrControl+Shift+K";
 struct CoordinatorState {
     epoch: u64,
     shutdown: bool,
+    start_action: StartActionState,
 }
 
 pub struct RefreshCoordinator {
@@ -44,6 +45,45 @@ impl RefreshCoordinator {
             guard.epoch = guard.epoch.wrapping_add(1);
             self.wake.notify_all();
         }
+    }
+
+    pub fn begin_start_kilnd(&self) -> bool {
+        if let Ok(mut guard) = self.state.lock() {
+            if matches!(guard.start_action, StartActionState::Starting) {
+                return false;
+            }
+            guard.start_action = StartActionState::Starting;
+            guard.epoch = guard.epoch.wrapping_add(1);
+            self.wake.notify_all();
+            return true;
+        }
+        false
+    }
+
+    pub fn finish_start_kilnd(&self, result: Result<(), String>) {
+        if let Ok(mut guard) = self.state.lock() {
+            guard.start_action = match result {
+                Ok(()) => StartActionState::Idle,
+                Err(err) => StartActionState::Failed(err),
+            };
+            guard.epoch = guard.epoch.wrapping_add(1);
+            self.wake.notify_all();
+        }
+    }
+
+    pub fn clear_start_action(&self) {
+        if let Ok(mut guard) = self.state.lock() {
+            if !matches!(guard.start_action, StartActionState::Idle) {
+                guard.start_action = StartActionState::Idle;
+            }
+        }
+    }
+
+    pub fn start_action(&self) -> StartActionState {
+        self.state
+            .lock()
+            .map(|g| g.start_action.clone())
+            .unwrap_or_default()
     }
 
     pub fn request_shutdown(&self) {
@@ -91,7 +131,13 @@ fn spawn_status_worker<R: Runtime>(
             let (mut seen_epoch, mut shutdown) = coordinator.snapshot();
 
             while !shutdown {
-                let current_state = client.probe_tray_state();
+                let raw_state = client.probe_tray_state();
+                let current_state = if raw_state.is_online() {
+                    coordinator.clear_start_action();
+                    raw_state
+                } else {
+                    raw_state.apply_start_action(&coordinator.start_action())
+                };
                 if last_state.as_ref() != Some(&current_state) {
                     update_tray_display(&app, &current_state);
                     last_state = Some(current_state.clone());

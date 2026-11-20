@@ -8,8 +8,8 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use crate::daemon_client::{open_in_default_browser, run_kiln_down, spawn_kiln_up};
 use crate::model::{
-    format_tray_menu_status, format_tray_title, format_tray_tooltip, NormalizedKilndUrl,
-    TrayDisplayState,
+    format_start_menu_label, format_tray_menu_status, format_tray_title, format_tray_tooltip,
+    is_start_menu_enabled, NormalizedKilndUrl, TrayDisplayState,
 };
 use crate::window_manager::{destroy_main_window, open_or_focus_main_window};
 use crate::RefreshCoordinator;
@@ -128,7 +128,8 @@ pub fn update_tray_display<R: Runtime>(app: &AppHandle<R>, state: &TrayDisplaySt
 
     let online = state.is_online();
     let _ = handles.status_item.set_text(format_tray_menu_status(state));
-    let _ = handles.start_item.set_enabled(!online);
+    let _ = handles.start_item.set_text(format_start_menu_label(state));
+    let _ = handles.start_item.set_enabled(is_start_menu_enabled(state));
     let _ = handles.stop_and_quit_item.set_enabled(online);
 }
 
@@ -154,13 +155,17 @@ fn handle_menu_event<R: Runtime>(
             coordinator.trigger_refresh();
         }
         MENU_START_KILND => {
+            if !coordinator.begin_start_kilnd() {
+                return;
+            }
             let url = kilnd_url.clone();
             let coord = Arc::clone(coordinator);
             std::thread::spawn(move || {
-                if let Err(err) = spawn_kiln_up(&url) {
+                let outcome = spawn_kiln_up(&url).map(|_| ());
+                if let Err(ref err) = outcome {
                     eprintln!("kiln-desktop: {err}");
                 }
-                coord.trigger_refresh();
+                coord.finish_start_kilnd(outcome);
             });
         }
         MENU_QUIT_TRAY_ONLY => {
