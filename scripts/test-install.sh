@@ -251,4 +251,19 @@ set -e
 assert_contains "$err_missing_sum" "No valid SHA-256 entry" "missing SHA256 entry"
 [ ! -e "${TAMPER_PREFIX}/bin/kiln" ] || fail "unverified binary must not be installed"
 
+# 9. Malicious redirected latest tag MUST be rejected by version allowlist
+BAD_LATEST_CURL="${TMP_ROOT}/bad-latest-curl"
+mkdir -p "$BAD_LATEST_CURL"
+cat > "${BAD_LATEST_CURL}/curl" <<'EOF'
+#!/bin/sh
+printf '%s' "https://github.com/zzf2333/Kiln/releases/tag/v0.1.0;evil"
+EOF
+chmod +x "${BAD_LATEST_CURL}/curl"
+set +e
+err_bad_latest="$(HOME="$STUB_HOME" PATH="${BAD_LATEST_CURL}:${SYS_BIN}" "$SH_BIN" "$INSTALL_SCRIPT" --prefix "$TAMPER_PREFIX" 2>&1)"
+rc_bad_latest=$?
+set -e
+[ "$rc_bad_latest" -ne 0 ] || fail "malicious latest tag expected non-zero exit, got 0"
+assert_contains "$err_bad_latest" "Resolved invalid release version" "malicious latest tag"
+
 printf '%s\n' "PASS: scripts/test-install.sh (all checks passed)"

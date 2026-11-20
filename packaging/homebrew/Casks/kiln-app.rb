@@ -6,11 +6,14 @@
 #   3. Replace the placeholder `sha256` (and `url` if artifact naming changes)
 #      with the real checksum before syncing to `zzf2333/homebrew-tap`.
 cask "kiln-app" do
-  version "0.0.1"
-  # TODO: Replace placeholder sha256 with the signed & notarized Kiln DMG hash.
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  arch arm: "arm64", intel: "x64"
 
-  url "https://github.com/zzf2333/Kiln/releases/download/v#{version}/Kiln-#{version}-universal.dmg"
+  version "0.0.1"
+  # TODO: Replace placeholder sha256 values with the signed & notarized Kiln DMG hashes.
+  sha256 arm:   "0000000000000000000000000000000000000000000000000000000000000000",
+         intel: "0000000000000000000000000000000000000000000000000000000000000000"
+
+  url "https://github.com/zzf2333/Kiln/releases/download/v#{version}/Kiln-v#{version}-darwin-#{arch}.dmg"
   name "Kiln"
   desc "Local-first autonomous developer workbench menu bar app"
   homepage "https://github.com/zzf2333/Kiln"

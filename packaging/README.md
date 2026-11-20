@@ -33,7 +33,7 @@ Configure the following GitHub Actions secrets before expecting signed public de
 | :--- | :--- | :--- |
 | `APPLE_CERTIFICATE` | Signing `Kiln.app` (including `Contents/MacOS/kiln` sidecar) & `.dmg` | Base64-encoded Developer ID Application `.p12` certificate. |
 | `APPLE_CERTIFICATE_PASSWORD` | Unlocking signing certificate | Password for `APPLE_CERTIFICATE`. |
-| `APPLE_ID` / `APPLE_TEAM_ID` / `APPLE_APP_SPECIFIC_PASSWORD` | Apple notarization (`xcrun notarytool`) | Required so macOS Gatekeeper accepts `Kiln.app` without quarantine warnings. |
+| `APPLE_ID` / `APPLE_TEAM_ID` / `APPLE_PASSWORD` | Apple notarization (`xcrun notarytool`) | Required so macOS Gatekeeper accepts `Kiln.app` without quarantine warnings (`APPLE_PASSWORD` holds the Apple app-specific password read by Tauri v2). |
 | Windows Authenticode certificate | Signing `Kiln.exe`, `kiln.exe` sidecar, and NSIS setup `.exe` | Configure `bundle.windows.signCommand` before public Windows SmartScreen-free distribution. |
 
 ## 3. Release Execution Flow

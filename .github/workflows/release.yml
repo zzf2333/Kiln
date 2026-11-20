@@ -269,14 +269,34 @@ jobs:
       - name: Build and stage sidecar binary (${{ matrix.target }})
         run: node scripts/build-binary.mjs --target ${{ matrix.target }} --version ${{ needs.verify.outputs.version }} --stage-sidecar
 
-      - name: Build Tauri v2 desktop bundle (${{ matrix.rust_triple }})
+      - name: Build Tauri v2 desktop bundle (macOS ${{ matrix.rust_triple }})
+        if: runner.os == 'macOS'
+        shell: bash
         working-directory: apps/desktop
         env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          RAW_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          RAW_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          RAW_APPLE_ID: ${{ secrets.APPLE_ID }}
+          RAW_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          RAW_APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_TEAM_ID APPLE_PASSWORD
+          if [ -n "${RAW_APPLE_CERTIFICATE}" ] && [ -n "${RAW_APPLE_CERTIFICATE_PASSWORD}" ]; then
+            export APPLE_CERTIFICATE="${RAW_APPLE_CERTIFICATE}"
+            export APPLE_CERTIFICATE_PASSWORD="${RAW_APPLE_CERTIFICATE_PASSWORD}"
+            if [ -n "${RAW_APPLE_ID}" ] && [ -n "${RAW_APPLE_TEAM_ID}" ] && [ -n "${RAW_APPLE_PASSWORD}" ]; then
+              export APPLE_ID="${RAW_APPLE_ID}"
+              export APPLE_TEAM_ID="${RAW_APPLE_TEAM_ID}"
+              export APPLE_PASSWORD="${RAW_APPLE_PASSWORD}"
+            fi
+          fi
+          npx -y @tauri-apps/cli@2 build --config src-tauri/tauri.sidecar.conf.json --target ${{ matrix.rust_triple }} --bundles ${{ matrix.bundles }}
+
+      - name: Build Tauri v2 desktop bundle (Windows ${{ matrix.rust_triple }})
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: apps/desktop
         run: npx -y @tauri-apps/cli@2 build --config src-tauri/tauri.sidecar.conf.json --target ${{ matrix.rust_triple }} --bundles ${{ matrix.bundles }}
 
       - name: Collect desktop bundle artifacts (macOS)
@@ -343,7 +363,7 @@ jobs:
             echo "### Homebrew Formula & Cask Update Notes"
             echo "1. Copy \`kiln-${RELEASE_TAG}-darwin-arm64\`, \`kiln-${RELEASE_TAG}-darwin-x64\`, and \`kiln-${RELEASE_TAG}-linux-x64\` SHA-256 digests into \`packaging/homebrew/Formula/kiln.rb\` and sync to \`zzf2333/homebrew-tap\`."
             echo "2. For signed & notarized macOS DMGs, backfill \`packaging/homebrew/Casks/kiln-app.rb\` SHA-256."
-            echo "3. Configure Apple Developer ID secrets (\`APPLE_CERTIFICATE\`, \`APPLE_CERTIFICATE_PASSWORD\`, \`APPLE_ID\`, \`APPLE_TEAM_ID\`, \`APPLE_APP_SPECIFIC_PASSWORD\`) and Windows Authenticode signing before formal public release."
+            echo "3. Configure Apple Developer ID secrets (\`APPLE_CERTIFICATE\`, \`APPLE_CERTIFICATE_PASSWORD\`, \`APPLE_ID\`, \`APPLE_TEAM_ID\`, \`APPLE_PASSWORD\`) and Windows Authenticode signing before formal public release."
           } | tee -a "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload GitHub Release

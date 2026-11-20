@@ -1721,8 +1721,17 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
   });
 
   if (deps.publicDir !== null) {
+    const hasEmbeddedAssets =
+      deps.embeddedPublicAssets !== undefined &&
+      deps.embeddedPublicAssets !== null &&
+      deps.embeddedPublicAssets.size > 0;
     const staticHandler = createStaticFilesHandler({
-      publicDir: deps.publicDir ?? resolveDefaultPublicDir(),
+      publicDir:
+        deps.publicDir !== undefined
+          ? deps.publicDir
+          : hasEmbeddedAssets
+            ? null
+            : resolveDefaultPublicDir(),
       ...(deps.embeddedPublicAssets !== undefined
         ? { embeddedAssets: deps.embeddedPublicAssets }
         : {}),

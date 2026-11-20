@@ -204,7 +204,7 @@ export interface EmbeddedStaticAsset {
 export type EmbeddedStaticAssets = ReadonlyMap<string, EmbeddedStaticAsset>;
 
 export interface StaticFilesHandlerOptions {
-  publicDir: string;
+  publicDir?: string | null;
   embeddedAssets?: EmbeddedStaticAssets | null;
 }
 
@@ -272,7 +272,7 @@ function serveFromEmbeddedAssets(
 export function createStaticFilesHandler(
   options: StaticFilesHandlerOptions,
 ): (c: Context) => Response {
-  const publicDir = options.publicDir;
+  const publicDir = options.publicDir ?? null;
   const embeddedAssets = options.embeddedAssets ?? null;
 
   return (c: Context): Response => {
@@ -292,6 +292,16 @@ export function createStaticFilesHandler(
     const parsed = parseAndValidateStaticSegments(rawPathname);
     if (!parsed.ok) {
       return c.json({ error: parsed.reason, message: "Forbidden path" }, parsed.status);
+    }
+
+    if (publicDir === null) {
+      if (embeddedAssets && embeddedAssets.size > 0) {
+        return serveFromEmbeddedAssets(c, method, parsed.segments, embeddedAssets);
+      }
+      return c.json(
+        { error: "not_found", message: "Web UI assets directory does not exist" },
+        404,
+      );
     }
 
     if (!fs.existsSync(publicDir)) {

@@ -1396,6 +1396,39 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     ]);
 
     const outsideDir = makeTempDir("kiln-embedded-static-");
+    // 1. When publicDir is NOT explicitly provided and embeddedPublicAssets is populated,
+    //    serve embedded assets directly without probing disk (prevents reading host `/public` in compiled binaries).
+    const defaultEmbeddedServer = new KilndServer({
+      kilnHome: makeTempDir("kiln-embedded-default-home-"),
+      embeddedPublicAssets,
+      port: 0,
+      tokenSecret: "embedded-default-secret-01234567",
+    });
+    servers.push(defaultEmbeddedServer);
+    const defaultRootRes = await defaultEmbeddedServer.app.request(new Request("http://127.0.0.1/"));
+    expect(defaultRootRes.status).toBe(200);
+    expect(await defaultRootRes.text()).toContain("Embedded Kiln");
+
+    // 2. When explicit publicDir exists on disk, disk overrides embedded assets.
+    const explicitDiskDir = makeTempDir("kiln-explicit-disk-pub-");
+    fs.writeFileSync(
+      path.join(explicitDiskDir, "index.html"),
+      "<!doctype html><html><body>Disk Override Kiln</body></html>",
+      "utf8",
+    );
+    const diskOverrideServer = new KilndServer({
+      kilnHome: makeTempDir("kiln-disk-override-home-"),
+      publicDir: explicitDiskDir,
+      embeddedPublicAssets,
+      port: 0,
+      tokenSecret: "disk-override-secret-01234567890",
+    });
+    servers.push(diskOverrideServer);
+    const overrideRes = await diskOverrideServer.app.request(new Request("http://127.0.0.1/"));
+    expect(overrideRes.status).toBe(200);
+    expect(await overrideRes.text()).toContain("Disk Override Kiln");
+
+    // 3. When explicit publicDir is absent on disk, fall back to embedded assets.
     const server = new KilndServer({
       kilnHome: makeTempDir("kiln-embedded-home-"),
       publicDir: path.join(outsideDir, "nonexistent-public"),

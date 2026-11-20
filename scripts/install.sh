@@ -263,6 +263,13 @@ fi
 
 if [ -z "$install_version" ]; then
   install_version="$(resolve_latest_version "$downloader")"
+  install_version="${install_version#v}"
+  case "$install_version" in
+    ""|*[!A-Za-z0-9._+-]*)
+      log_err "Resolved invalid release version from ${RELEASE_LATEST_URL}: ${install_version}"
+      exit 1
+      ;;
+  esac
 fi
 
 tag="v${install_version}"
@@ -271,7 +278,15 @@ binary_url="${RELEASE_BASE_URL}/${tag}/${asset_name}"
 sums_url="${RELEASE_BASE_URL}/${tag}/SHA256SUMS"
 
 tmp_dir="$(mktemp -d)"
+staged_bin=""
+staged_link=""
 cleanup() {
+  if [ -n "$staged_bin" ]; then
+    rm -f "$staged_bin"
+  fi
+  if [ -n "$staged_link" ]; then
+    rm -f "$staged_link"
+  fi
   rm -rf "$tmp_dir"
 }
 trap cleanup EXIT INT TERM
@@ -305,10 +320,12 @@ staged_link="${bin_dir}/.kl.tmp.$$"
 cp "$bin_download" "$staged_bin"
 chmod 755 "$staged_bin"
 mv -f "$staged_bin" "${bin_dir}/kiln"
+staged_bin=""
 
 rm -f "$staged_link"
 ln -s "kiln" "$staged_link"
 mv -f "$staged_link" "${bin_dir}/kl"
+staged_link=""
 
 printf '%s\n' "Installed kiln ${tag} (${target}) to ${bin_dir}/kiln (verified SHA-256: ${actual_sha})."
 print_next_steps "$bin_dir"

@@ -582,6 +582,7 @@ pub fn windows_kiln_search_dirs(
 }
 
 /// Renders a user-local Windows `.cmd` shim invoking the sidecar binary cleanly without UAC.
+/// Uses `call` when delegating to another `.cmd`/`.bat` file so exit codes propagate properly.
 #[allow(dead_code)]
 pub fn render_windows_cli_shim(target_exe: &Path) -> Result<String, String> {
     let raw = target_exe
@@ -594,7 +595,12 @@ pub fn render_windows_cli_shim(target_exe: &Path) -> Result<String, String> {
         return Err("sidecar path contains forbidden control or quote characters".to_string());
     }
     let escaped = raw.replace('%', "%%");
-    Ok(format!("@echo off\r\n\"{escaped}\" %*\r\n"))
+    let lower = raw.to_ascii_lowercase();
+    if lower.ends_with(".cmd") || lower.ends_with(".bat") {
+        Ok(format!("@echo off\r\ncall \"{escaped}\" %*\r\n"))
+    } else {
+        Ok(format!("@echo off\r\n\"{escaped}\" %*\r\n"))
+    }
 }
 
 fn normalize_dir_for_path_compare(dir: &Path, case_insensitive: bool) -> String {
@@ -1843,6 +1849,12 @@ mod tests {
         assert_eq!(
             shim_pct,
             "@echo off\r\n\"C:\\Users\\100%%dev\\Kiln\\kiln.exe\" %*\r\n"
+        );
+        let shim_cmd = render_windows_cli_shim(Path::new(r"C:\Users\dev\Kiln\kiln.cmd"))
+            .expect("cmd target should use call");
+        assert_eq!(
+            shim_cmd,
+            "@echo off\r\ncall \"C:\\Users\\dev\\Kiln\\kiln.cmd\" %*\r\n"
         );
         assert!(render_windows_cli_shim(Path::new("C:\\bad\npath\\kiln.exe")).is_err());
         assert!(render_windows_cli_shim(Path::new("C:\\bad\"quote\\kiln.exe")).is_err());

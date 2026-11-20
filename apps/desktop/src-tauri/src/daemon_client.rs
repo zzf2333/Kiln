@@ -841,7 +841,29 @@ fn atomic_write_file(dest: &Path, content: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(dead_code)]
+fn normalize_path_for_windows_identity(path: &Path) -> String {
+    let resolved = fs::canonicalize(path).unwrap_or_else(|_| {
+        if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+            fs::canonicalize(parent)
+                .map(|p| p.join(name))
+                .unwrap_or_else(|_| path.to_path_buf())
+        } else {
+            path.to_path_buf()
+        }
+    });
+    let s = resolved.to_string_lossy().replace('/', "\\");
+    s.trim_start_matches(r"\\?\").to_ascii_lowercase()
+}
+
+#[allow(dead_code)]
+fn paths_equal_windows(a: &Path, b: &Path) -> bool {
+    normalize_path_for_windows_identity(a) == normalize_path_for_windows_identity(b)
+}
+
 /// Writes user-local `kiln.cmd` and `kl.cmd` shims into `%LOCALAPPDATA%\Kiln\bin` without UAC.
+/// Guards against self-overwriting existing `kiln.cmd` / `kl.cmd` shims or shadowing an already-installed
+/// `kiln.exe` in the same directory.
 #[allow(dead_code)]
 pub fn install_windows_cli_shims(
     source_bin: &Path,
@@ -854,18 +876,32 @@ pub fn install_windows_cli_shims(
             source_bin.display()
         ));
     }
-    let shim_body = render_windows_cli_shim(source_bin)?;
+    let canonical_source =
+        fs::canonicalize(source_bin).unwrap_or_else(|_| source_bin.to_path_buf());
+    let shim_body = render_windows_cli_shim(&canonical_source)?;
     fs::create_dir_all(bin_dir)
         .map_err(|err| format!("failed to create {}: {err}", bin_dir.display()))?;
 
-    atomic_write_file(&bin_dir.join("kiln.cmd"), &shim_body)?;
-    atomic_write_file(&bin_dir.join("kl.cmd"), &shim_body)?;
+    let kiln_cmd = bin_dir.join("kiln.cmd");
+    let kiln_exe = bin_dir.join("kiln.exe");
+    let kl_cmd = bin_dir.join("kl.cmd");
+
+    let source_is_kiln_cmd = paths_equal_windows(&canonical_source, &kiln_cmd);
+    let source_is_kiln_exe = paths_equal_windows(&canonical_source, &kiln_exe);
+    let source_is_kl_cmd = paths_equal_windows(&canonical_source, &kl_cmd);
+
+    if !source_is_kiln_cmd && !source_is_kiln_exe {
+        atomic_write_file(&kiln_cmd, &shim_body)?;
+    }
+    if !source_is_kl_cmd {
+        atomic_write_file(&kl_cmd, &shim_body)?;
+    }
 
     let in_path = path_contains_dir(current_path, bin_dir, true);
     Ok(CliInstallOutcome {
         bin_dir: bin_dir.to_path_buf(),
         display_bin_dir: "%LOCALAPPDATA%\\Kiln\\bin".to_string(),
-        target_bin: source_bin.to_path_buf(),
+        target_bin: canonical_source,
         in_path,
     })
 }
@@ -1171,7 +1207,34 @@ mod tests {
         let kl_cmd = fs::read_to_string(bin_dir.join("kl.cmd")).expect("read kl.cmd");
         assert_eq!(kiln_cmd, kl_cmd);
         assert!(kiln_cmd.starts_with("@echo off\r\n"));
-        assert!(kiln_cmd.contains(&sidecar.display().to_string()));
+        assert!(kiln_cmd.contains(&fs::canonicalize(&sidecar).unwrap().display().to_string()));
         assert!(kiln_cmd.ends_with("%*\r\n"));
+
+        // Self-overwrite guard 1: source_bin IS bin_dir\kiln.cmd -> preserve kiln.cmd, delegate via `call` in kl.cmd
+        let self_cmd_dir = root.join("SelfCmdBin");
+        fs::create_dir_all(&self_cmd_dir).expect("create self cmd dir");
+        let existing_kiln_cmd = self_cmd_dir.join("kiln.cmd");
+        let sentinel = "@echo off\r\n\"C:\\Custom\\kiln.exe\" %*\r\n";
+        fs::write(&existing_kiln_cmd, sentinel).expect("write sentinel kiln.cmd");
+        install_windows_cli_shims(&existing_kiln_cmd, &self_cmd_dir, None)
+            .expect("self-referencing kiln.cmd must succeed safely without self-overwrite");
+        assert_eq!(
+            fs::read_to_string(&existing_kiln_cmd).expect("read preserved kiln.cmd"),
+            sentinel
+        );
+        let generated_kl = fs::read_to_string(self_cmd_dir.join("kl.cmd")).expect("read kl.cmd");
+        assert!(generated_kl.contains("call \""));
+        assert!(generated_kl.contains("kiln.cmd\" %*"));
+
+        // Self-overwrite guard 2: source_bin IS bin_dir\kiln.exe -> do not create redundant kiln.cmd, only kl.cmd
+        let self_exe_dir = root.join("SelfExeBin");
+        fs::create_dir_all(&self_exe_dir).expect("create self exe dir");
+        let existing_kiln_exe = self_exe_dir.join("kiln.exe");
+        fs::write(&existing_kiln_exe, "MZ").expect("write kiln.exe");
+        install_windows_cli_shims(&existing_kiln_exe, &self_exe_dir, None)
+            .expect("existing kiln.exe in bin_dir must succeed");
+        assert!(!self_exe_dir.join("kiln.cmd").exists());
+        let kl_for_exe = fs::read_to_string(self_exe_dir.join("kl.cmd")).expect("read kl.cmd");
+        assert!(kl_for_exe.contains("kiln.exe\" %*"));
     }
 }
