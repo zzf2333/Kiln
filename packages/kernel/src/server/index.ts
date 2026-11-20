@@ -4,6 +4,7 @@ export {
   type CaffeinateChildProcess,
   type CaffeinateControllerOptions,
   type CaffeinateSpawnFn,
+  type KeepAwakeMode,
 } from "./caffeinate.js";
 export {
   ChatMessageRecordSchema,
@@ -27,10 +28,16 @@ export {
   DEFAULT_SERVER_VERSION,
   KilndServer,
   type IssueRunTokenInput,
+  type KilndRemoteAddress,
   type KilndServerAddress,
   type KilndServerOptions,
 } from "./daemon.js";
-export { createHttpApiApp, type HttpApiDependencies } from "./http-api.js";
+export {
+  createHttpApiApp,
+  type HttpApiDependencies,
+  type HttpApiListenerMode,
+  type RemoteRuntimeStatus,
+} from "./http-api.js";
 export {
   ServerHttpError,
   mapDomainError,
@@ -71,6 +78,42 @@ export {
   type LiveRateTrackerOptions,
   type RateTickPayload,
 } from "./rate-tracker.js";
+export {
+  FORBIDDEN_LOCAL_PROXY_HEADERS,
+  KILN_SESSION_COOKIE_NAME,
+  PAIRING_MAX_FAILED_ATTEMPTS,
+  PAIRING_TTL_MS,
+  RemoteAuthManager,
+  SESSION_MAX_AGE_SECONDS,
+  buildPairUrl,
+  formatClearSessionCookieHeader,
+  formatSessionCookieHeader,
+  hashSessionToken,
+  isLocalAllowedOrigin,
+  isSecureRequest,
+  isStrictLoopbackHost,
+  parseSessionCookie,
+  timingSafeHexEqual,
+  timingSafeStringEqual,
+  verifyRemoteCsrf,
+  type CompletePairingInput,
+  type CompletePairingResult,
+  type PairingChallengePublic,
+  type RemoteAuthManagerOptions,
+  type RevokeAllDevicesResult,
+  type RevokeDeviceResult,
+} from "./remote-auth.js";
+export {
+  RemoteNotifier,
+  type DecisionNotificationInput,
+  type NotificationDeliveryResult,
+  type RemoteNotifierOptions,
+} from "./remote-notify.js";
+export {
+  inspectTailscaleStatus,
+  type InspectTailscaleOptions,
+  type TailscaleExecFileFn,
+} from "./remote-tailscale.js";
 export {
   InvalidSpacePathError,
   inspectGitSpacePath,

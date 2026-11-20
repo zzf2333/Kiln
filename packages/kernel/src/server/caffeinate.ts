@@ -16,6 +16,8 @@ export type CaffeinateSpawnFn = (
   options: SpawnOptions,
 ) => CaffeinateChildProcess;
 
+export type KeepAwakeMode = "off" | "active_tasks" | "remote_ac_standby";
+
 export interface CaffeinateControllerOptions {
   spawnProcess?: CaffeinateSpawnFn;
   platform?: NodeJS.Platform;
@@ -25,10 +27,12 @@ export interface CaffeinateControllerOptions {
 }
 
 /**
- * Dynamic macOS sleep prevention controller (`AGENTS.md §4.6`):
- * - Spawns `/usr/bin/caffeinate -i -w <pid>` only on `0 -> >=1` running task transition.
- * - Immediately terminates the child via `SIGTERM` when running task count returns to `0`.
- * - Idempotent across concurrent/repeated `syncRunningCount` calls.
+ * Dynamic sleep prevention controller (`AGENTS.md §4.6`):
+ * - When `runningCount > 0`, holds active-task assertion (`/usr/bin/caffeinate -i -w <pid>` on macOS).
+ * - When `runningCount === 0` and `remoteKeepAwakeOnAc === true`, holds AC-only standby assertion
+ *   (`/usr/bin/caffeinate -s -i -w <pid>` on macOS).
+ * - When `runningCount === 0` and `remoteKeepAwakeOnAc === false`, terminates the child immediately.
+ * - Idempotent across repeated updates; cleanly structured for cross-platform extension.
  */
 export class CaffeinateController {
   private readonly spawnProcess: CaffeinateSpawnFn;
@@ -38,6 +42,8 @@ export class CaffeinateController {
   private readonly caffeinatePath: string;
 
   private runningCount = 0;
+  private remoteKeepAwakeOnAcEnabled = false;
+  private activeMode: KeepAwakeMode = "off";
   private child: CaffeinateChildProcess | null = null;
 
   constructor(options: CaffeinateControllerOptions = {}) {
@@ -58,8 +64,16 @@ export class CaffeinateController {
     return this.runningCount;
   }
 
+  get remoteKeepAwakeOnAc(): boolean {
+    return this.remoteKeepAwakeOnAcEnabled;
+  }
+
+  get mode(): KeepAwakeMode {
+    return this.activeMode;
+  }
+
   /**
-   * Synchronizes the active `caffeinate` child with the current running leaf task count.
+   * Synchronizes the active assertion with the current running leaf task count.
    */
   syncRunningCount(runningCount: number): void {
     if (!Number.isInteger(runningCount) || runningCount < 0) {
@@ -69,18 +83,68 @@ export class CaffeinateController {
     }
 
     this.runningCount = runningCount;
+    this.reconcile();
+  }
 
-    if (runningCount === 0) {
-      if (this.child !== null) {
-        const activeChild = this.child;
-        this.child = null;
-        activeChild.kill("SIGTERM");
-      }
+  /**
+   * Toggles opt-in AC-only standby sleep prevention for remote mobile access.
+   */
+  setRemoteKeepAwakeOnAc(enabled: boolean): void {
+    this.remoteKeepAwakeOnAcEnabled = Boolean(enabled);
+    this.reconcile();
+  }
+
+  /**
+   * Stops any active sleep-prevention process immediately during daemon shutdown.
+   */
+  stop(): void {
+    this.runningCount = 0;
+    this.remoteKeepAwakeOnAcEnabled = false;
+    this.reconcile();
+  }
+
+  private computeDesiredMode(): KeepAwakeMode {
+    if (this.runningCount > 0) {
+      return "active_tasks";
+    }
+    if (this.remoteKeepAwakeOnAcEnabled) {
+      return "remote_ac_standby";
+    }
+    return "off";
+  }
+
+  private argsForDarwinMode(mode: Exclude<KeepAwakeMode, "off">): readonly string[] {
+    if (mode === "remote_ac_standby") {
+      return ["-s", "-i", "-w", String(this.pid)];
+    }
+    return ["-i", "-w", String(this.pid)];
+  }
+
+  private terminateActiveChild(): void {
+    if (this.child !== null) {
+      const activeChild = this.child;
+      this.child = null;
+      this.activeMode = "off";
+      activeChild.kill("SIGTERM");
+    } else {
+      this.activeMode = "off";
+    }
+  }
+
+  private reconcile(): void {
+    const desired = this.computeDesiredMode();
+
+    if (desired === "off") {
+      this.terminateActiveChild();
+      return;
+    }
+
+    if (this.child !== null && this.activeMode === desired) {
       return;
     }
 
     if (this.child !== null) {
-      return;
+      this.terminateActiveChild();
     }
 
     if (this.platform !== "darwin" || !this.existsSync(this.caffeinatePath)) {
@@ -89,26 +153,21 @@ export class CaffeinateController {
 
     const spawned = this.spawnProcess(
       this.caffeinatePath,
-      ["-i", "-w", String(this.pid)],
+      this.argsForDarwinMode(desired),
       { stdio: "ignore" },
     );
     this.child = spawned;
+    this.activeMode = desired;
 
     const clearIfCurrent = (): void => {
       if (this.child === spawned) {
         this.child = null;
+        this.activeMode = "off";
       }
     };
 
     spawned.once("exit", clearIfCurrent);
     spawned.once("error", clearIfCurrent);
     spawned.unref?.();
-  }
-
-  /**
-   * Stops any active `caffeinate` process immediately during daemon shutdown.
-   */
-  stop(): void {
-    this.syncRunningCount(0);
   }
 }

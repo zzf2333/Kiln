@@ -28,20 +28,33 @@ function toBuffer(content: string | Uint8Array): Buffer {
     : Buffer.from(content.buffer, content.byteOffset, content.byteLength);
 }
 
+export interface WriteFileAtomicOptions {
+  /** Optional POSIX file mode (e.g., `0o600` for sensitive config files). */
+  mode?: number;
+}
+
 /**
  * Writes a file atomically via a same-directory temp file, fsync, and renameSync.
  * Cleans up the temp file on failure before rethrowing.
  */
-export function writeFileAtomic(filePath: string, content: string | Uint8Array): void {
+export function writeFileAtomic(
+  filePath: string,
+  content: string | Uint8Array,
+  options?: WriteFileAtomicOptions,
+): void {
   const dir = path.dirname(filePath);
   ensureDir(dir);
 
   const tmpPath = path.join(dir, `.tmp.${process.pid}.${randomUUID()}`);
   const buf = toBuffer(content);
+  const mode = options?.mode;
 
   let fd: number | null = null;
   try {
-    fd = fs.openSync(tmpPath, "wx");
+    fd = mode !== undefined ? fs.openSync(tmpPath, "wx", mode) : fs.openSync(tmpPath, "wx");
+    if (mode !== undefined && process.platform !== "win32") {
+      fs.fchmodSync(fd, mode);
+    }
     writeAllSync(fd, buf, tmpPath);
     fs.fsyncSync(fd);
     fs.closeSync(fd);
@@ -73,9 +86,10 @@ export function writeYamlAtomic<T>(
   filePath: string,
   data: T,
   schema?: AnyZodType<T>,
+  options?: WriteFileAtomicOptions,
 ): void {
   const validated = schema ? schema.parse(data) : data;
-  writeFileAtomic(filePath, stringifyYaml(validated));
+  writeFileAtomic(filePath, stringifyYaml(validated), options);
 }
 
 /**

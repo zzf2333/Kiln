@@ -97,3 +97,13 @@ export const MCP_ROLE_ALLOWLIST: Record<McpToolName, readonly RoleId[]> = {
 export function isRoleAllowedForTool(role: RoleId, tool: McpToolName): boolean {
   return MCP_ROLE_ALLOWLIST[tool].includes(role);
 }
+
+export const DEFAULT_LOCAL_PORT = 4310;
+export const DEFAULT_REMOTE_PORT = 4311;
+
+export const REMOTE_NOTIFICATION_CHANNELS = ["bark", "ntfy", "webhook"] as const;
+export type RemoteNotificationChannel = (typeof REMOTE_NOTIFICATION_CHANNELS)[number];
+
+export const DEFAULT_REMOTE_NOTIFICATION_PRIORITIES: readonly Priority[] = ["P0", "P1"];
+
+export const SHA256_HEX_RE = /^[a-f0-9]{64}$/;

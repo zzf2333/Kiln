@@ -291,4 +291,139 @@ describe("KilndServer OS socket smoke suite (requires unsandboxed connect)", () 
       expect(frames[0].data.taskId).toBe("t-sse-graceful");
     }
   });
+
+  it("dynamically starts/stops authenticated dual-port remote listener over real loopback TCP and disconnects revoked SSE", async () => {
+    const kilnHome = makeTempDir("kiln-srv-remote-dual-");
+    tempDirs.push(kilnHome);
+
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      remotePort: 0,
+      tokenSecret: "socket-remote-dual-secret-1234567890",
+    });
+    servers.push(server);
+    const addr = await server.start();
+
+    // Disabled by default -> remote listener not started
+    expect(server.remoteAddress).toBeNull();
+
+    // Local port rejects reverse-proxy header over real TCP
+    const proxyOnLocal = await fetch(`${addr.baseUrl}/api/health`, {
+      headers: { "X-Forwarded-For": "198.51.100.7" },
+    });
+    expect(proxyOnLocal.status).toBe(403);
+    expect(((await proxyOnLocal.json()) as { error: string }).error).toBe(
+      "remote_port_required",
+    );
+
+    // Local port rejects DNS-rebinding Host header over real TCP
+    const rebindStatus = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          host: "127.0.0.1",
+          port: addr.port,
+          path: "/api/health",
+          method: "GET",
+          headers: { Host: "evil.rebinding.test" },
+        },
+        (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+    expect(rebindStatus).toBe(403);
+
+    // Enable remote dynamically via local PUT /api/settings/remote -> starts remote listener
+    const enableRes = await fetch(`${addr.baseUrl}/api/settings/remote`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        schema_version: 1,
+        enabled: true,
+        remote_port: 4311,
+      }),
+    });
+    expect(enableRes.status).toBe(200);
+    const remoteAddr = server.remoteAddress;
+    expect(remoteAddr).not.toBeNull();
+    expect(remoteAddr!.port).not.toBe(addr.port);
+
+    // Remote port requires session cookie even over 127.0.0.1
+    const unauthRemote = await fetch(`${remoteAddr!.baseUrl}/api/bootstrap`);
+    expect(unauthRemote.status).toBe(401);
+
+    // Pair via local :4310 + remote :4311
+    const pairCreateRes = await fetch(`${addr.baseUrl}/api/remote/pair`, {
+      method: "POST",
+    });
+    expect(pairCreateRes.status).toBe(201);
+    const challenge = (await pairCreateRes.json()) as { token: string };
+
+    const pairFinishRes = await fetch(`${remoteAddr!.baseUrl}/api/auth/pair`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: challenge.token, label: "Socket Phone" }),
+    });
+    expect(pairFinishRes.status).toBe(200);
+    const setCookie = pairFinishRes.headers.get("set-cookie") ?? "";
+    const cookieToken = /^kiln_session=([^;]+)/.exec(setCookie)?.[1];
+    expect(cookieToken).toBeTruthy();
+    const pairedBody = (await pairFinishRes.json()) as { device: { id: string } };
+
+    // Authenticated remote REST + SSE succeed over real TCP
+    const authBoot = await fetch(`${remoteAddr!.baseUrl}/api/bootstrap`, {
+      headers: { Cookie: `kiln_session=${cookieToken}` },
+    });
+    expect(authBoot.status).toBe(200);
+
+    // Open real TCP remote SSE stream and verify revoke closes it cleanly
+    const sseClosed = new Promise<boolean>((resolve, reject) => {
+      const req = http.request(
+        {
+          host: "127.0.0.1",
+          port: remoteAddr!.port,
+          path: "/api/events",
+          method: "GET",
+          headers: { Cookie: `kiln_session=${cookieToken}` },
+        },
+        (res) => {
+          expect(res.statusCode).toBe(200);
+          res.once("data", () => {
+            void fetch(
+              `${addr.baseUrl}/api/remote/devices/${pairedBody.device.id}`,
+              { method: "DELETE" },
+            );
+          });
+          res.on("end", () => resolve(true));
+        },
+      );
+      req.on("error", reject);
+      req.end();
+      setTimeout(() => {
+        server.sseHub.publish({
+          type: "task.updated",
+          taskId: "t-remote-tcp-sse",
+          patch: { status: "running" },
+        });
+      }, 30);
+    });
+    expect(await sseClosed).toBe(true);
+
+    // Disable remote dynamically -> stops remote listener cleanly
+    const disableRes = await fetch(`${addr.baseUrl}/api/settings/remote`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        schema_version: 1,
+        enabled: false,
+        remote_port: 4311,
+      }),
+    });
+    expect(disableRes.status).toBe(200);
+    expect(server.remoteAddress).toBeNull();
+  });
 });

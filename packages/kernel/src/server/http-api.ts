@@ -12,9 +12,12 @@ import {
   HashMismatchErrorSchema,
   InspectSpaceRequestSchema,
   LimitsConfigSchema,
+  PairCompleteRequestSchema,
   PricingConfigSchema,
   PrioritySchema,
   PriorityUpdateRequestSchema,
+  RemoteConfigSchema,
+  RemoteNotificationTestRequestSchema,
   RolesConfigSchema,
   RunEventSchema,
   RunMetaSchema,
@@ -27,9 +30,12 @@ import {
   WorkspaceModeSchema,
   type LedgerFile,
   type PendingDecision,
+  type PublicPairedDevice,
+  type RemoteConfig,
   type RunMeta,
   type SpaceConfig,
   type StageId,
+  type TailscaleStatusResponse,
 } from "@kiln/protocol";
 import type { BackendRegistry } from "../backend/index.js";
 import {
@@ -67,12 +73,45 @@ import {
   resolveCardLimits,
 } from "./pending-decisions.js";
 import type { LiveRateTracker } from "./rate-tracker.js";
+import {
+  FORBIDDEN_LOCAL_PROXY_HEADERS,
+  RemoteAuthManager,
+  formatClearSessionCookieHeader,
+  formatSessionCookieHeader,
+  isLocalAllowedOrigin,
+  isSecureRequest,
+  isStrictLoopbackHost,
+  verifyRemoteCsrf,
+} from "./remote-auth.js";
+import { RemoteNotifier } from "./remote-notify.js";
+import { inspectTailscaleStatus } from "./remote-tailscale.js";
 import { inspectGitSpacePath, validateCommitWorkspace } from "./space-inspect.js";
 import type { SseHub } from "./sse.js";
 import {
   createStaticFilesHandler,
   resolveDefaultPublicDir,
 } from "./static-files.js";
+
+export type HttpApiListenerMode = "local" | "remote";
+
+export interface RemoteRuntimeStatus {
+  listening: boolean;
+  port: number | null;
+  baseUrl: string | null;
+}
+
+const MUTATING_HTTP_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+function isLocalOnlyRemoteAdminPath(rawPath: string): boolean {
+  const collapsed = rawPath.replace(/\/+/g, "/").replace(/\/+$/, "") || "/";
+  const lower = collapsed.toLowerCase();
+  return (
+    lower === "/api/settings/remote" ||
+    lower.startsWith("/api/settings/remote/") ||
+    lower === "/api/remote" ||
+    lower.startsWith("/api/remote/")
+  );
+}
 
 export interface HttpApiDependencies {
   store: KilnStore;
@@ -85,6 +124,13 @@ export interface HttpApiDependencies {
   chatEngine?: KilnChatEngine;
   publicDir?: string | null;
   backendQueryTimeoutMs?: number;
+  listenerMode?: HttpApiListenerMode;
+  remoteAuth?: RemoteAuthManager;
+  remoteNotifier?: RemoteNotifier;
+  getLocalPort?: () => number;
+  getRemoteRuntimeStatus?: () => RemoteRuntimeStatus;
+  onRemoteConfigUpdated?: (nextConfig: RemoteConfig) => Promise<void> | void;
+  inspectTailscale?: (remotePort: number) => Promise<TailscaleStatusResponse>;
   onTaskQueued?: (taskId: string) => void;
   onTaskPaused?: (taskId: string) => Promise<void> | void;
   onTaskCancelled?: (taskId: string) => Promise<void> | void;
@@ -315,14 +361,22 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     rateTracker,
     chatEngine,
     backendQueryTimeoutMs,
+    getLocalPort,
+    getRemoteRuntimeStatus,
+    onRemoteConfigUpdated,
+    inspectTailscale,
     onTaskQueued,
     onTaskPaused,
     onTaskCancelled,
     onBeforeDecisionApply,
     onSettingsUpdated,
   } = deps;
+  const listenerMode: HttpApiListenerMode = deps.listenerMode ?? "local";
+  const remoteAuth = deps.remoteAuth ?? new RemoteAuthManager({ store, sseHub });
+  const remoteNotifier = deps.remoteNotifier ?? new RemoteNotifier({ store });
   const version = deps.version ?? "0.0.1";
   const app = new Hono();
+  const authenticatedDevicesByRequest = new WeakMap<Request, PublicPairedDevice>();
 
   const readDraftChatFallback = (draftId: string) => {
     if (chatEngine) {
@@ -377,12 +431,343 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     return c.json(mapped.payload, mapped.statusCode);
   });
 
+  if (listenerMode === "local") {
+    app.use("*", async (c, next) => {
+      for (const headerName of FORBIDDEN_LOCAL_PROXY_HEADERS) {
+        if (c.req.header(headerName) !== undefined) {
+          const remotePort = remoteAuth.getEffectiveRemotePort();
+          return c.json(
+            {
+              error: "remote_port_required",
+              header: headerName,
+              remotePort,
+              message: `Reverse-proxy traffic is blocked on the local Kiln port. Enable remote access and point your tunnel to http://127.0.0.1:${remotePort} instead.`,
+            },
+            403,
+          );
+        }
+      }
+
+      const hostHeader = c.req.header("host");
+      if (hostHeader !== undefined) {
+        if (!isStrictLoopbackHost(hostHeader)) {
+          return c.json(
+            {
+              error: "invalid_host",
+              host: hostHeader,
+              message:
+                "Local Kiln listener only accepts loopback Host headers (127.0.0.1, localhost, [::1])",
+            },
+            403,
+          );
+        }
+      } else {
+        let urlHost = "";
+        try {
+          urlHost = new URL(c.req.url).host;
+        } catch {
+          urlHost = "";
+        }
+        if (!isStrictLoopbackHost(urlHost)) {
+          return c.json(
+            {
+              error: "invalid_host",
+              host: urlHost,
+              message:
+                "Local Kiln listener only accepts loopback Host headers (127.0.0.1, localhost, [::1])",
+            },
+            403,
+          );
+        }
+      }
+
+      const method = c.req.method.toUpperCase();
+      if (MUTATING_HTTP_METHODS.has(method)) {
+        const originHeader = c.req.header("origin");
+        if (originHeader !== undefined && !isLocalAllowedOrigin(originHeader)) {
+          return c.json(
+            {
+              error: "csrf_origin_mismatch",
+              origin: originHeader,
+              message: "Cross-origin mutating requests to the local Kiln port are forbidden",
+            },
+            403,
+          );
+        }
+      }
+
+      await next();
+    });
+  } else {
+    app.use("*", async (c, next) => {
+      const reqPath = c.req.path;
+      const method = c.req.method.toUpperCase();
+
+      if (isLocalOnlyRemoteAdminPath(reqPath)) {
+        return c.json(
+          {
+            error: "local_only_endpoint",
+            path: reqPath,
+            message:
+              "Remote administration endpoints are restricted to the local Kiln port",
+          },
+          403,
+        );
+      }
+
+      if (
+        (method === "GET" || method === "HEAD") &&
+        (reqPath === "/api/health" || reqPath === "/api/auth/status")
+      ) {
+        await next();
+        return;
+      }
+
+      if (method === "POST" && reqPath === "/api/auth/pair") {
+        await next();
+        return;
+      }
+
+      if (method === "POST" && reqPath === "/api/auth/logout") {
+        const csrf = verifyRemoteCsrf(c, store.readConfig("remote"));
+        if (!csrf.ok) {
+          return c.json({ error: csrf.error, message: csrf.message }, 403);
+        }
+        await next();
+        return;
+      }
+
+      const normalizedPath = reqPath.replace(/\/+/g, "/").toLowerCase();
+      if (
+        (method === "GET" || method === "HEAD") &&
+        normalizedPath !== "/api" &&
+        !normalizedPath.startsWith("/api/")
+      ) {
+        await next();
+        return;
+      }
+
+      // Unconditional device session cookie verification — ZERO loopback bypass!
+      const device = remoteAuth.authenticateCookie(
+        c.req.header("cookie"),
+        c.req.header("user-agent"),
+      );
+      if (!device) {
+        return c.json(
+          {
+            error: "unauthorized",
+            message:
+              "Valid paired device session cookie (kiln_session) is required on the remote port",
+          },
+          401,
+        );
+      }
+      authenticatedDevicesByRequest.set(c.req.raw, device);
+
+      if (MUTATING_HTTP_METHODS.has(method)) {
+        const csrf = verifyRemoteCsrf(c, store.readConfig("remote"));
+        if (!csrf.ok) {
+          return c.json({ error: csrf.error, message: csrf.message }, 403);
+        }
+      }
+
+      await next();
+    });
+  }
+
   app.get("/api/health", (c) => {
+    if (listenerMode === "remote") {
+      return c.json({
+        ok: true,
+        mode: "remote",
+      });
+    }
     return c.json({
       ok: true,
       pid: process.pid,
       version,
+      mode: "local",
     });
+  });
+
+  app.get("/api/auth/status", (c) => {
+    if (listenerMode === "local") {
+      return c.json({
+        ok: true,
+        mode: "local",
+        authenticated: true,
+        device: null,
+      });
+    }
+    const device = remoteAuth.authenticateCookie(
+      c.req.header("cookie"),
+      c.req.header("user-agent"),
+    );
+    return c.json({
+      ok: true,
+      mode: "remote",
+      authenticated: device !== null,
+      device,
+    });
+  });
+
+  app.post("/api/auth/pair", async (c) => {
+    const rawBody = await readJsonBodyStrict(c);
+    const body = PairCompleteRequestSchema.parse(rawBody);
+    const userAgent = c.req.header("user-agent");
+    const result = remoteAuth.completePairing({
+      ...(body.token !== undefined ? { token: body.token } : {}),
+      ...(body.code !== undefined ? { code: body.code } : {}),
+      ...(body.label !== undefined ? { label: body.label } : {}),
+      ...(userAgent !== undefined ? { userAgent } : {}),
+    });
+    c.header(
+      "Set-Cookie",
+      formatSessionCookieHeader(result.sessionToken, {
+        secure: isSecureRequest(c),
+      }),
+    );
+    return c.json({
+      ok: true,
+      device: result.device,
+    });
+  });
+
+  app.post("/api/auth/logout", (c) => {
+    const device = remoteAuth.authenticateCookie(c.req.header("cookie"));
+    let revokedDeviceId: string | null = null;
+    if (device) {
+      remoteAuth.revokeDevice(device.id);
+      revokedDeviceId = device.id;
+    }
+    c.header(
+      "Set-Cookie",
+      formatClearSessionCookieHeader({ secure: isSecureRequest(c) }),
+    );
+    return c.json({
+      ok: true,
+      loggedOut: true,
+      revokedDeviceId,
+    });
+  });
+
+  app.get("/api/settings/remote", (c) => {
+    const remote = remoteAuth.readRemoteConfig();
+    const runtime = getRemoteRuntimeStatus
+      ? getRemoteRuntimeStatus()
+      : { listening: false, port: null, baseUrl: null };
+    return c.json({
+      ok: true,
+      remote,
+      runtime,
+      activeDeviceCount: remoteAuth.activeDeviceCount(),
+    });
+  });
+
+  app.put("/api/settings/remote", async (c) => {
+    const rawBody = await readJsonBodyStrict(c);
+    const data = RemoteConfigSchema.parse(rawBody);
+    const activeLocalPort = getLocalPort?.();
+    if (
+      activeLocalPort !== undefined &&
+      activeLocalPort > 0 &&
+      data.remote_port === activeLocalPort
+    ) {
+      throw new ServerHttpError(400, {
+        error: "remote_port_conflict",
+        localPort: activeLocalPort,
+        remotePort: data.remote_port,
+        message: `remote_port (${data.remote_port}) must differ from local port (${activeLocalPort})`,
+      });
+    }
+
+    if (onRemoteConfigUpdated) {
+      await Promise.resolve(onRemoteConfigUpdated(data));
+    } else {
+      store.writeConfig("remote", data);
+      caffeinate.setRemoteKeepAwakeOnAc(data.enabled && data.keep_awake_on_ac);
+    }
+
+    const runtime = getRemoteRuntimeStatus
+      ? getRemoteRuntimeStatus()
+      : { listening: false, port: null, baseUrl: null };
+
+    return c.json({
+      ok: true,
+      section: "remote",
+      data,
+      runtime,
+    });
+  });
+
+  app.post("/api/remote/pair", (c) => {
+    const challenge = remoteAuth.createPairingChallenge();
+    return c.json(
+      {
+        ok: true,
+        ...challenge,
+      },
+      201,
+    );
+  });
+
+  app.get("/api/remote/devices", (c) => {
+    return c.json({
+      ok: true,
+      devices: remoteAuth.listDevices(),
+    });
+  });
+
+  app.delete("/api/remote/devices/:id", (c) => {
+    const res = remoteAuth.revokeDevice(c.req.param("id"));
+    return c.json({
+      ok: true,
+      revoked: true,
+      device: res.device,
+      closedStreams: res.closedStreams,
+    });
+  });
+
+  app.post("/api/remote/devices/revoke-all", (c) => {
+    const res = remoteAuth.revokeAllDevices();
+    return c.json({
+      ok: true,
+      revokedCount: res.revokedCount,
+      closedStreams: res.closedStreams,
+    });
+  });
+
+  app.post("/api/remote/notifications/test", async (c) => {
+    const rawBody = await readJsonBodyOptional(c);
+    const body = RemoteNotificationTestRequestSchema.parse(rawBody);
+    const result = await remoteNotifier.sendTestNotification(body);
+    if (!result.delivered) {
+      return c.json(
+        {
+          ok: false,
+          delivered: false,
+          error: "notification_delivery_failed",
+          channel: result.channel,
+          ...(result.status !== undefined ? { status: result.status } : {}),
+          message: result.error ?? "Failed to deliver test notification",
+        },
+        502,
+      );
+    }
+    return c.json({
+      ok: true,
+      delivered: true,
+      channel: result.channel,
+      ...(result.status !== undefined ? { status: result.status } : {}),
+    });
+  });
+
+  app.get("/api/remote/tailscale", async (c) => {
+    const remotePort = remoteAuth.getEffectiveRemotePort();
+    const status = inspectTailscale
+      ? await inspectTailscale(remotePort)
+      : await inspectTailscaleStatus({ remotePort });
+    return c.json(status);
   });
 
   app.get("/api/agents", async (c) => {
@@ -1291,9 +1676,17 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         ? parseLastEventIdParam(headerVal)
         : parseLastEventIdParam(queryVal);
 
+    const authenticatedDevice =
+      listenerMode === "remote"
+        ? authenticatedDevicesByRequest.get(c.req.raw)
+        : undefined;
+
     const stream = sseHub.createEventStream({
       lastEventId,
       signal: c.req.raw.signal,
+      ...(authenticatedDevice !== undefined
+        ? { deviceId: authenticatedDevice.id }
+        : {}),
     });
 
     return new Response(stream, {

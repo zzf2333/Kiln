@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 
-export const CONFIG_NAMES = ["roles", "limits", "pricing"] as const;
+export const CONFIG_NAMES = ["roles", "limits", "pricing", "remote", "devices"] as const;
 export type KilnConfigName = (typeof CONFIG_NAMES)[number];
 
 /**

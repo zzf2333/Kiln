@@ -3,11 +3,13 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   CardContractSchema,
+  DevicesConfigSchema,
   DraftCardSchema,
   LedgerFileSchema,
   LimitsConfigSchema,
   PRIORITY_RANK,
   PricingConfigSchema,
+  RemoteConfigSchema,
   RolesConfigSchema,
   RunEventSchema,
   RunMetaSchema,
@@ -16,11 +18,13 @@ import {
   TaskCardSchema,
   parseFrontmatterMarkdown,
   type CardContract,
+  type DevicesConfig,
   type DraftCard,
   type LedgerFile,
   type LimitsConfig,
   type PricingConfig,
   type Priority,
+  type RemoteConfig,
   type RolesConfig,
   type RunEvent,
   type RunMeta,
@@ -73,7 +77,14 @@ const CONFIG_SCHEMAS = {
   roles: RolesConfigSchema,
   limits: LimitsConfigSchema,
   pricing: PricingConfigSchema,
+  remote: RemoteConfigSchema,
+  devices: DevicesConfigSchema,
 } as const;
+
+const RESTRICTED_CONFIG_NAMES: ReadonlySet<KilnConfigName> = new Set([
+  "remote",
+  "devices",
+]);
 
 export interface DerivedTaskState {
   status: TaskStatus;
@@ -729,9 +740,13 @@ export class KilnStore {
   readConfig(name: "roles"): RolesConfig | null;
   readConfig(name: "limits"): LimitsConfig | null;
   readConfig(name: "pricing"): PricingConfig | null;
-  readConfig(name: KilnConfigName): RolesConfig | LimitsConfig | PricingConfig | null {
+  readConfig(name: "remote"): RemoteConfig | null;
+  readConfig(name: "devices"): DevicesConfig | null;
+  readConfig(
+    name: KilnConfigName,
+  ): RolesConfig | LimitsConfig | PricingConfig | RemoteConfig | DevicesConfig | null {
     const schema = CONFIG_SCHEMAS[name] as AnyZodType<
-      RolesConfig | LimitsConfig | PricingConfig
+      RolesConfig | LimitsConfig | PricingConfig | RemoteConfig | DevicesConfig
     >;
     return readYamlOptional(this.paths.configFile(name), schema);
   }
@@ -739,14 +754,17 @@ export class KilnStore {
   writeConfig(name: "roles", data: RolesConfig): void;
   writeConfig(name: "limits", data: LimitsConfig): void;
   writeConfig(name: "pricing", data: PricingConfig): void;
+  writeConfig(name: "remote", data: RemoteConfig): void;
+  writeConfig(name: "devices", data: DevicesConfig): void;
   writeConfig(
     name: KilnConfigName,
-    data: RolesConfig | LimitsConfig | PricingConfig,
+    data: RolesConfig | LimitsConfig | PricingConfig | RemoteConfig | DevicesConfig,
   ): void {
     const schema = CONFIG_SCHEMAS[name] as AnyZodType<
-      RolesConfig | LimitsConfig | PricingConfig
+      RolesConfig | LimitsConfig | PricingConfig | RemoteConfig | DevicesConfig
     >;
-    writeYamlAtomic(this.paths.configFile(name), data, schema);
+    const writeOpts = RESTRICTED_CONFIG_NAMES.has(name) ? { mode: 0o600 } : undefined;
+    writeYamlAtomic(this.paths.configFile(name), data, schema, writeOpts);
   }
 
   readSpace(spaceId: string): SpaceConfig | null {

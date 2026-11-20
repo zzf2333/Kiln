@@ -3,7 +3,13 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { serve, type ServerType } from "@hono/node-server";
 import type { Hono } from "hono";
-import type { RoleId, RunMeta, RunTokenClaims } from "@kiln/protocol";
+import type {
+  RemoteConfig,
+  RoleId,
+  RunMeta,
+  RunTokenClaims,
+  TailscaleStatusResponse,
+} from "@kiln/protocol";
 import { BackendRegistry } from "../backend/index.js";
 import { TaskStateMachine } from "../state/index.js";
 import { KilnStore, type AcquireStageLeaseResult } from "../store/index.js";
@@ -13,7 +19,12 @@ import {
   type ChatResponder,
   type McpCommandSpec,
 } from "./chat.js";
-import { createHttpApiApp } from "./http-api.js";
+import { ServerHttpError } from "./errors.js";
+import {
+  createHttpApiApp,
+  type HttpApiDependencies,
+  type RemoteRuntimeStatus,
+} from "./http-api.js";
 import {
   McpRpcServer,
   type McpRpcHttpRequest,
@@ -30,6 +41,12 @@ import {
   PendingDecisionStore,
 } from "./pending-decisions.js";
 import { LiveRateTracker } from "./rate-tracker.js";
+import { RemoteAuthManager } from "./remote-auth.js";
+import { RemoteNotifier } from "./remote-notify.js";
+import {
+  inspectTailscaleStatus,
+  type TailscaleExecFileFn,
+} from "./remote-tailscale.js";
 import { SseHub } from "./sse.js";
 import { signRunToken, verifyRunToken } from "./token.js";
 
@@ -45,8 +62,12 @@ export interface KilndServerOptions {
   backendRegistry?: BackendRegistry;
   sseHub?: SseHub;
   caffeinate?: CaffeinateController;
+  remoteAuth?: RemoteAuthManager;
+  remoteNotifier?: RemoteNotifier;
   host?: string;
   port?: number;
+  /** Optional override for the remote HTTP listener port (e.g., `0` for ephemeral port in tests). */
+  remotePort?: number;
   socketPath?: string;
   tokenSecret?: string | Buffer;
   version?: string;
@@ -61,12 +82,23 @@ export interface KilndServerOptions {
   rateTickIntervalMs?: number;
   backendQueryTimeoutMs?: number;
   rateLimitCooldownMs?: number;
+  notifyFetchImpl?: typeof fetch;
+  notifyTimeoutMs?: number;
+  tailscaleExecFile?: TailscaleExecFileFn;
+  remoteAuthNow?: () => number;
 }
 
 export interface KilndServerAddress {
   port: number;
   baseUrl: string;
   socketPath: string;
+  remotePort?: number;
+  remoteBaseUrl?: string;
+}
+
+export interface KilndRemoteAddress {
+  port: number;
+  baseUrl: string;
 }
 
 export interface IssueRunTokenInput {
@@ -102,23 +134,31 @@ export class KilndServer {
   readonly backendRegistry: BackendRegistry;
   readonly sseHub: SseHub;
   readonly caffeinate: CaffeinateController;
+  readonly remoteAuth: RemoteAuthManager;
+  readonly remoteNotifier: RemoteNotifier;
   readonly pendingDecisions: PendingDecisionStore;
   readonly rateTracker: LiveRateTracker;
   readonly chatEngine: KilnChatEngine;
   readonly orchestrator: KilnOrchestrator;
   readonly enableOrchestrator: boolean;
   readonly app: Hono;
+  readonly remoteApp: Hono;
   readonly host: string;
   readonly requestedPort: number;
+  readonly requestedRemotePort: number | undefined;
   readonly socketPath: string;
 
   private readonly ownsStore: boolean;
   private readonly ownsBackendRegistry: boolean;
   private readonly tokenSecret: Buffer;
   private readonly mcpRpcServer: McpRpcServer;
+  private readonly unsubscribeNotify: () => void;
 
   private httpServer: ServerType | null = null;
   private activeAddress: KilndServerAddress | null = null;
+  private remoteHttpServer: ServerType | null = null;
+  private activeRemoteAddress: KilndRemoteAddress | null = null;
+  private remoteConfigQueue: Promise<void> = Promise.resolve();
 
   constructor(options: KilndServerOptions = {}) {
     this.ownsStore = options.store === undefined;
@@ -129,13 +169,42 @@ export class KilndServer {
     this.backendRegistry = options.backendRegistry ?? new BackendRegistry();
     this.sseHub = options.sseHub ?? new SseHub();
     this.caffeinate = options.caffeinate ?? new CaffeinateController();
+    this.remoteAuth =
+      options.remoteAuth ??
+      new RemoteAuthManager({
+        store: this.store,
+        sseHub: this.sseHub,
+        ...(options.remoteAuthNow !== undefined ? { now: options.remoteAuthNow } : {}),
+      });
+    this.remoteNotifier =
+      options.remoteNotifier ??
+      new RemoteNotifier({
+        store: this.store,
+        ...(options.notifyFetchImpl !== undefined
+          ? { fetchImpl: options.notifyFetchImpl }
+          : {}),
+        ...(options.notifyTimeoutMs !== undefined
+          ? { timeoutMs: options.notifyTimeoutMs }
+          : {}),
+      });
     this.pendingDecisions = new PendingDecisionStore(this.store);
     this.enableOrchestrator = options.enableOrchestrator ?? false;
 
     this.host = options.host ?? DEFAULT_KILND_HOST;
     this.requestedPort = options.port ?? DEFAULT_KILND_PORT;
+    this.requestedRemotePort = options.remotePort;
     this.socketPath = options.socketPath ?? this.store.paths.kilndSock;
     this.tokenSecret = normalizeTokenSecret(options.tokenSecret);
+
+    this.unsubscribeNotify = this.sseHub.subscribe((event) => {
+      if (event.type === "decision.requested") {
+        void this.remoteNotifier.notifyDecisionRequested({
+          taskId: event.taskId,
+          priority: event.priority,
+          question: event.question,
+        });
+      }
+    });
 
     this.rateTracker = new LiveRateTracker({
       ...(options.rateWindowMs !== undefined ? { windowMs: options.rateWindowMs } : {}),
@@ -204,7 +273,15 @@ export class KilndServer {
         : {}),
     });
 
-    this.app = createHttpApiApp({
+    const inspectTailscale = (remotePort: number): Promise<TailscaleStatusResponse> =>
+      inspectTailscaleStatus({
+        remotePort,
+        ...(options.tailscaleExecFile !== undefined
+          ? { execFileImpl: options.tailscaleExecFile }
+          : {}),
+      });
+
+    const sharedHttpDeps: HttpApiDependencies = {
       store: this.store,
       stateMachine: this.stateMachine,
       sseHub: this.sseHub,
@@ -213,6 +290,12 @@ export class KilndServer {
       backendRegistry: this.backendRegistry,
       rateTracker: this.rateTracker,
       chatEngine: this.chatEngine,
+      remoteAuth: this.remoteAuth,
+      remoteNotifier: this.remoteNotifier,
+      getLocalPort: () => this.activeAddress?.port ?? this.requestedPort,
+      getRemoteRuntimeStatus: () => this.getRemoteRuntimeStatus(),
+      onRemoteConfigUpdated: (nextConfig) => this.applyRemoteConfig(nextConfig),
+      inspectTailscale,
       ...(options.publicDir !== undefined ? { publicDir: options.publicDir } : {}),
       ...(options.backendQueryTimeoutMs !== undefined
         ? { backendQueryTimeoutMs: options.backendQueryTimeoutMs }
@@ -243,6 +326,16 @@ export class KilndServer {
         }
       },
       version: options.version ?? DEFAULT_SERVER_VERSION,
+    };
+
+    this.app = createHttpApiApp({
+      ...sharedHttpDeps,
+      listenerMode: "local",
+    });
+
+    this.remoteApp = createHttpApiApp({
+      ...sharedHttpDeps,
+      listenerMode: "remote",
     });
 
     this.mcpRpcServer = new McpRpcServer({
@@ -273,148 +366,307 @@ export class KilndServer {
   }
 
   get address(): KilndServerAddress | null {
-    return this.activeAddress ? { ...this.activeAddress } : null;
+    if (!this.activeAddress) {
+      return null;
+    }
+    return {
+      ...this.activeAddress,
+      ...(this.activeRemoteAddress
+        ? {
+            remotePort: this.activeRemoteAddress.port,
+            remoteBaseUrl: this.activeRemoteAddress.baseUrl,
+          }
+        : {}),
+    };
+  }
+
+  get remoteAddress(): KilndRemoteAddress | null {
+    return this.activeRemoteAddress ? { ...this.activeRemoteAddress } : null;
+  }
+
+  getRemoteRuntimeStatus(): RemoteRuntimeStatus {
+    return this.activeRemoteAddress
+      ? {
+          listening: true,
+          port: this.activeRemoteAddress.port,
+          baseUrl: this.activeRemoteAddress.baseUrl,
+        }
+      : {
+          listening: false,
+          port: null,
+          baseUrl: null,
+        };
+  }
+
+  private async bindHttpApp(
+    app: Hono,
+    port: number,
+  ): Promise<{ server: ServerType; port: number; baseUrl: string }> {
+    const server = await new Promise<ServerType>((resolve, reject) => {
+      let settled = false;
+      let createdServer: ServerType | null = null;
+
+      const onError = (err: Error): void => {
+        if (!settled) {
+          settled = true;
+          reject(err);
+        }
+      };
+
+      createdServer = serve(
+        {
+          fetch: app.fetch,
+          hostname: this.host,
+          port,
+        },
+        () => {
+          if (settled) return;
+          settled = true;
+          createdServer?.removeListener("error", onError);
+          resolve(createdServer!);
+        },
+      );
+      createdServer.once("error", onError);
+    });
+
+    const rawAddr = server.address() as AddressInfo | string | null;
+    if (!rawAddr || typeof rawAddr === "string") {
+      server.close();
+      throw new Error("KilndServer HTTP server failed to bind a TCP port");
+    }
+
+    return {
+      server,
+      port: rawAddr.port,
+      baseUrl: `http://${this.host}:${rawAddr.port}`,
+    };
+  }
+
+  private async closeHttpServer(server: ServerType): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let forceCloseTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const finish = (err?: Error | null): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (forceCloseTimer !== null) {
+          clearTimeout(forceCloseTimer);
+          forceCloseTimer = null;
+        }
+        if (err && (err as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") {
+          reject(err);
+        } else {
+          resolve();
+        }
+      };
+
+      try {
+        server.close((err) => {
+          finish(err);
+        });
+      } catch (err) {
+        finish(err instanceof Error ? err : new Error(String(err)));
+        return;
+      }
+
+      if (!settled) {
+        const closableServer = server as ServerType & {
+          closeIdleConnections?: () => void;
+          closeAllConnections?: () => void;
+        };
+        if (
+          server instanceof http.Server ||
+          typeof closableServer.closeIdleConnections === "function"
+        ) {
+          closableServer.closeIdleConnections?.();
+        }
+        if (
+          !settled &&
+          (server instanceof http.Server ||
+            typeof closableServer.closeAllConnections === "function")
+        ) {
+          forceCloseTimer = setTimeout(() => {
+            forceCloseTimer = null;
+            closableServer.closeAllConnections?.();
+          }, HTTP_CLOSE_GRACE_MS);
+          forceCloseTimer.unref?.();
+        }
+      }
+    });
+  }
+
+  private async ensureRemoteHttpServer(targetPort: number): Promise<void> {
+    const localPort = this.activeAddress?.port ?? this.requestedPort;
+    if (targetPort > 0 && localPort > 0 && targetPort === localPort) {
+      throw new ServerHttpError(400, {
+        error: "remote_port_conflict",
+        localPort,
+        remotePort: targetPort,
+        message: `remote_port (${targetPort}) must differ from active local port (${localPort})`,
+      });
+    }
+
+    if (this.remoteHttpServer && this.activeRemoteAddress) {
+      if (targetPort === 0 || this.activeRemoteAddress.port === targetPort) {
+        return;
+      }
+    }
+
+    let bound: { server: ServerType; port: number; baseUrl: string };
+    try {
+      bound = await this.bindHttpApp(this.remoteApp, targetPort);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new ServerHttpError(409, {
+        error: "remote_port_bind_failed",
+        remotePort: targetPort,
+        message: `Failed to bind remote listener on ${this.host}:${targetPort}: ${msg}`,
+      });
+    }
+
+    const previousServer = this.remoteHttpServer;
+    this.remoteHttpServer = bound.server;
+    this.activeRemoteAddress = {
+      port: bound.port,
+      baseUrl: bound.baseUrl,
+    };
+
+    if (previousServer) {
+      this.sseHub.closeAllRemote();
+      await this.closeHttpServer(previousServer);
+    }
+  }
+
+  private async stopRemoteHttpServer(): Promise<void> {
+    this.sseHub.closeAllRemote();
+    const server = this.remoteHttpServer;
+    this.remoteHttpServer = null;
+    this.activeRemoteAddress = null;
+    if (server) {
+      await this.closeHttpServer(server);
+    }
+  }
+
+  /**
+   * Atomically validates and applies updated `remote.yaml` settings, dynamically
+   * starting/stopping/re-binding the `:4311` remote listener and syncing AC keep-awake.
+   */
+  async applyRemoteConfig(nextConfig: RemoteConfig): Promise<void> {
+    const run = async (): Promise<void> => {
+      const localPort = this.activeAddress?.port ?? this.requestedPort;
+      if (localPort > 0 && nextConfig.remote_port === localPort) {
+        throw new ServerHttpError(400, {
+          error: "remote_port_conflict",
+          localPort,
+          remotePort: nextConfig.remote_port,
+          message: `remote_port (${nextConfig.remote_port}) must differ from local port (${localPort})`,
+        });
+      }
+
+      if (this.httpServer !== null) {
+        if (nextConfig.enabled) {
+          const targetPort = this.requestedRemotePort ?? nextConfig.remote_port;
+          await this.ensureRemoteHttpServer(targetPort);
+        } else {
+          await this.stopRemoteHttpServer();
+        }
+      }
+
+      this.store.writeConfig("remote", nextConfig);
+      this.caffeinate.setRemoteKeepAwakeOnAc(
+        nextConfig.enabled && nextConfig.keep_awake_on_ac,
+      );
+    };
+
+    const nextPromise = this.remoteConfigQueue.then(run, run);
+    this.remoteConfigQueue = nextPromise.catch(() => {});
+    return await nextPromise;
   }
 
   /**
    * Hydrates disk-persisted pending decisions, syncs caffeinate state, and starts
-   * both the `0600` Unix Domain Socket RPC server and the loopback HTTP+SSE server.
+   * the `0600` Unix Domain Socket RPC server, the local loopback HTTP+SSE server,
+   * and (only when `remote.enabled === true`) the authenticated remote HTTP+SSE server.
    */
   async start(): Promise<KilndServerAddress> {
     if (this.activeAddress) {
-      return { ...this.activeAddress };
+      return this.address!;
     }
 
     this.pendingDecisions.hydrateFromDisk();
     if (this.enableOrchestrator) {
       await this.orchestrator.reconcileOnStart();
     }
+    const remoteConfig = this.remoteAuth.readRemoteConfig();
+    this.caffeinate.setRemoteKeepAwakeOnAc(
+      remoteConfig.enabled && remoteConfig.keep_awake_on_ac,
+    );
     this.syncCaffeinate();
 
     await this.mcpRpcServer.start();
 
-    let server: ServerType;
+    let localBound: { server: ServerType; port: number; baseUrl: string };
     try {
-      server = await new Promise<ServerType>((resolve, reject) => {
-        let settled = false;
-        let createdServer: ServerType | null = null;
-
-        const onError = (err: Error): void => {
-          if (!settled) {
-            settled = true;
-            reject(err);
-          }
-        };
-
-        createdServer = serve(
-          {
-            fetch: this.app.fetch,
-            hostname: this.host,
-            port: this.requestedPort,
-          },
-          () => {
-            if (settled) return;
-            settled = true;
-            createdServer?.removeListener("error", onError);
-            resolve(createdServer!);
-          },
-        );
-        createdServer.once("error", onError);
-      });
+      localBound = await this.bindHttpApp(this.app, this.requestedPort);
     } catch (err) {
+      this.caffeinate.stop();
       await this.mcpRpcServer.stop();
       throw err;
     }
 
-    const rawAddr = server.address() as AddressInfo | string | null;
-    if (!rawAddr || typeof rawAddr === "string") {
-      server.close();
-      await this.mcpRpcServer.stop();
-      throw new Error("KilndServer HTTP server failed to bind a TCP port");
-    }
-
-    this.httpServer = server;
+    this.httpServer = localBound.server;
     this.activeAddress = {
-      port: rawAddr.port,
-      baseUrl: `http://${this.host}:${rawAddr.port}`,
+      port: localBound.port,
+      baseUrl: localBound.baseUrl,
       socketPath: this.socketPath,
     };
+
+    if (remoteConfig.enabled) {
+      const targetRemotePort = this.requestedRemotePort ?? remoteConfig.remote_port;
+      try {
+        await this.ensureRemoteHttpServer(targetRemotePort);
+      } catch (err) {
+        const localSrv = this.httpServer;
+        this.httpServer = null;
+        this.activeAddress = null;
+        if (localSrv) {
+          await this.closeHttpServer(localSrv);
+        }
+        this.caffeinate.stop();
+        await this.mcpRpcServer.stop();
+        throw err;
+      }
+    }
 
     if (this.enableOrchestrator) {
       await this.orchestrator.start();
     }
 
-    return { ...this.activeAddress };
+    return this.address!;
   }
 
   /**
    * Stops orchestrator, rate tracker, caffeinate, closes all active SSE streams,
-   * tears down HTTP & UDS listeners, and closes daemon-owned backend/store handles.
+   * tears down local + remote HTTP & UDS listeners, and closes daemon-owned handles.
    */
   async stop(): Promise<void> {
+    this.unsubscribeNotify();
     await this.orchestrator.stop();
     this.rateTracker.stop();
     this.caffeinate.stop();
     this.sseHub.closeAll();
+
+    await this.stopRemoteHttpServer();
 
     const server = this.httpServer;
     this.httpServer = null;
     this.activeAddress = null;
 
     if (server) {
-      await new Promise<void>((resolve, reject) => {
-        let settled = false;
-        let forceCloseTimer: ReturnType<typeof setTimeout> | null = null;
-
-        const finish = (err?: Error | null): void => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          if (forceCloseTimer !== null) {
-            clearTimeout(forceCloseTimer);
-            forceCloseTimer = null;
-          }
-          if (err && (err as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") {
-            reject(err);
-          } else {
-            resolve();
-          }
-        };
-
-        try {
-          server.close((err) => {
-            finish(err);
-          });
-        } catch (err) {
-          finish(err instanceof Error ? err : new Error(String(err)));
-          return;
-        }
-
-        if (!settled) {
-          const closableServer = server as ServerType & {
-            closeIdleConnections?: () => void;
-            closeAllConnections?: () => void;
-          };
-          if (
-            server instanceof http.Server ||
-            typeof closableServer.closeIdleConnections === "function"
-          ) {
-            closableServer.closeIdleConnections?.();
-          }
-          if (
-            !settled &&
-            (server instanceof http.Server ||
-              typeof closableServer.closeAllConnections === "function")
-          ) {
-            forceCloseTimer = setTimeout(() => {
-              forceCloseTimer = null;
-              closableServer.closeAllConnections?.();
-            }, HTTP_CLOSE_GRACE_MS);
-            forceCloseTimer.unref?.();
-          }
-        }
-      });
+      await this.closeHttpServer(server);
     }
 
     await this.mcpRpcServer.stop();

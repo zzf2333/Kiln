@@ -11,9 +11,16 @@ export interface SseHubOptions {
 export interface SseStreamOptions {
   lastEventId?: number | null;
   signal?: AbortSignal;
+  /** Paired remote device ID owning this SSE connection (absent for local connections). */
+  deviceId?: string;
 }
 
 export type SseListener = (event: SseEvent, frame: string) => void;
+
+interface ActiveSseStreamEntry {
+  close: () => void;
+  deviceId?: string;
+}
 
 const DEFAULT_BUFFER_CAPACITY = 500;
 
@@ -33,7 +40,7 @@ export class SseHub {
   private nextSeq = 1;
   private readonly buffer: SseEvent[] = [];
   private readonly listeners = new Set<SseListener>();
-  private readonly streamClosers = new Set<() => void>();
+  private readonly streamClosers = new Set<ActiveSseStreamEntry>();
 
   constructor(options: SseHubOptions = {}) {
     const capacity = options.bufferCapacity ?? DEFAULT_BUFFER_CAPACITY;
@@ -116,7 +123,7 @@ export class SseHub {
         unsubscribe();
         unsubscribe = null;
       }
-      this.streamClosers.delete(closeFromHub);
+      this.streamClosers.delete(entry);
       if (options.signal) {
         options.signal.removeEventListener("abort", closeFromHub);
       }
@@ -134,10 +141,15 @@ export class SseHub {
       }
     };
 
+    const entry: ActiveSseStreamEntry =
+      options.deviceId !== undefined
+        ? { close: closeFromHub, deviceId: options.deviceId }
+        : { close: closeFromHub };
+
     return new ReadableStream<Uint8Array>({
       start: (controller) => {
         streamController = controller;
-        this.streamClosers.add(closeFromHub);
+        this.streamClosers.add(entry);
 
         if (options.signal) {
           if (options.signal.aborted) {
@@ -180,11 +192,41 @@ export class SseHub {
   }
 
   /**
+   * Immediately closes all active remote SSE streams owned by `deviceId`.
+   * Returns the number of closed streams.
+   */
+  closeByDeviceId(deviceId: string): number {
+    let closedCount = 0;
+    for (const entry of Array.from(this.streamClosers)) {
+      if (entry.deviceId === deviceId) {
+        entry.close();
+        closedCount += 1;
+      }
+    }
+    return closedCount;
+  }
+
+  /**
+   * Immediately closes all active remote (device-bound) SSE streams while leaving local streams open.
+   * Returns the number of closed streams.
+   */
+  closeAllRemote(): number {
+    let closedCount = 0;
+    for (const entry of Array.from(this.streamClosers)) {
+      if (entry.deviceId !== undefined) {
+        entry.close();
+        closedCount += 1;
+      }
+    }
+    return closedCount;
+  }
+
+  /**
    * Closes all active SSE HTTP response streams cleanly during daemon shutdown.
    */
   closeAll(): void {
-    for (const closeStream of Array.from(this.streamClosers)) {
-      closeStream();
+    for (const entry of Array.from(this.streamClosers)) {
+      entry.close();
     }
     this.listeners.clear();
   }

@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { DecisionActionSchema, PrioritySchema } from "./card.js";
-import { RoleIdSchema } from "./config.js";
+import {
+  PublicPairedDeviceSchema,
+  RemoteNotificationChannelSchema,
+  RoleIdSchema,
+} from "./config.js";
 import { McpToolNameSchema } from "./mcp.js";
 
 export const DecideRequestSchema = z.object({
@@ -61,3 +65,65 @@ export const UpsertSpaceRequestSchema = z.object({
   freeze_patterns: z.array(z.string().trim().min(1)).default([]),
 });
 export type UpsertSpaceRequest = z.infer<typeof UpsertSpaceRequestSchema>;
+
+export const PairCompleteRequestSchema = z
+  .object({
+    token: z.string().trim().min(1).optional(),
+    code: z.string().trim().min(1).optional(),
+    label: z.string().trim().min(1).max(120).optional(),
+  })
+  .refine((v) => v.token !== undefined || v.code !== undefined, {
+    message: "Either token or code must be provided",
+  });
+export type PairCompleteRequest = z.infer<typeof PairCompleteRequestSchema>;
+
+export const RemotePairChallengeResponseSchema = z.object({
+  ok: z.literal(true),
+  challengeId: z.string().min(1),
+  code: z.string().min(1),
+  token: z.string().min(1),
+  expiresAt: z.string().min(1),
+  pairUrl: z.string().min(1).nullable(),
+});
+export type RemotePairChallengeResponse = z.infer<
+  typeof RemotePairChallengeResponseSchema
+>;
+
+export const RemoteAuthStatusResponseSchema = z.object({
+  ok: z.literal(true),
+  mode: z.enum(["local", "remote"]),
+  authenticated: z.boolean(),
+  device: PublicPairedDeviceSchema.nullable(),
+});
+export type RemoteAuthStatusResponse = z.infer<
+  typeof RemoteAuthStatusResponseSchema
+>;
+
+export const RemoteNotificationTestRequestSchema = z.object({
+  channel: RemoteNotificationChannelSchema.optional(),
+  url: z.string().trim().min(1).optional(),
+  secret: z.string().min(1).optional(),
+  title: z.string().trim().min(1).max(160).optional(),
+  body: z.string().trim().min(1).max(1000).optional(),
+});
+export type RemoteNotificationTestRequest = z.infer<
+  typeof RemoteNotificationTestRequestSchema
+>;
+
+export const TailscaleStatusResponseSchema = z.object({
+  ok: z.literal(true),
+  installed: z.boolean(),
+  running: z.boolean(),
+  backendState: z.string().nullable(),
+  dnsName: z.string().nullable(),
+  magicDnsUrl: z.string().nullable(),
+  serveActive: z.boolean(),
+  serveConfiguredForPort: z.boolean(),
+  serveTargets: z.array(z.string()).default([]),
+  remotePort: z.number().int().min(1).max(65535),
+  recommendedCommand: z.string().min(1),
+  detail: z.string().optional(),
+});
+export type TailscaleStatusResponse = z.infer<
+  typeof TailscaleStatusResponseSchema
+>;

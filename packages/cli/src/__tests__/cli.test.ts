@@ -1439,4 +1439,192 @@ describe("@kiln/cli", () => {
     expect(offlineBusyRm.exitCode).toBe(1);
     expect(offlineBusyRm.stderr).toContain("active task");
   });
+
+  it("supports kiln remote status/enable/disable/pair/devices/revoke/tailscale with flags and --json", async () => {
+    const root = makeTempDir("kiln-cli-remote-");
+    const kilnHome = path.join(root, ".kiln");
+    const server = new KilndServer({
+      kilnHome,
+      publicDir: null,
+      tokenSecret: "cli-remote-test-secret-0123456789",
+      tailscaleExecFile: async (_file, args) => {
+        if (args[0] === "status") {
+          return {
+            stdout: JSON.stringify({
+              BackendState: "Running",
+              Self: { DNSName: "studio.tail77.ts.net." },
+            }),
+            stderr: "",
+          };
+        }
+        return {
+          stdout: JSON.stringify({
+            Web: {
+              "studio.tail77.ts.net:443": {
+                Handlers: { "/": { Proxy: "http://127.0.0.1:4411" } },
+              },
+            },
+          }),
+          stderr: "",
+        };
+      },
+    });
+    servers.push(server);
+    const fetchImpl = createInProcessFetch(server);
+
+    // 1. Default status (disabled, port 4311)
+    const status0 = await runCli(["remote", "status", "--json"], {
+      kilnHome,
+      fetchImpl,
+    });
+    expect(status0.exitCode).toBe(0);
+    const status0Json = JSON.parse(status0.stdout) as {
+      remote: { enabled: boolean; remote_port: number };
+      activeDeviceCount: number;
+    };
+    expect(status0Json.remote.enabled).toBe(false);
+    expect(status0Json.remote.remote_port).toBe(4311);
+    expect(status0Json.activeDeviceCount).toBe(0);
+
+    // 2. Reject --remote-port colliding with --port
+    const portConflict = await runCli(
+      ["remote", "enable", "--port", "4310", "--remote-port", "4310"],
+      { kilnHome, fetchImpl },
+    );
+    expect(portConflict.exitCode).toBe(2);
+    expect(portConflict.stderr).toContain("must differ");
+
+    // 3. Enable with custom --remote-port and --public-url
+    const enableRes = await runCli(
+      [
+        "remote",
+        "enable",
+        "--remote-port",
+        "4411",
+        "--public-url",
+        "https://studio.tail77.ts.net",
+        "--json",
+      ],
+      { kilnHome, fetchImpl },
+    );
+    expect(enableRes.exitCode).toBe(0);
+    const enableJson = JSON.parse(enableRes.stdout) as {
+      data: { enabled: boolean; remote_port: number; public_url: string };
+    };
+    expect(enableJson.data.enabled).toBe(true);
+    expect(enableJson.data.remote_port).toBe(4411);
+    expect(enableJson.data.public_url).toBe("https://studio.tail77.ts.net");
+
+    // 4. Tailscale inspection reflects configured remote port 4411
+    const tsRes = await runCli(["remote", "tailscale", "--json"], {
+      kilnHome,
+      fetchImpl,
+    });
+    expect(tsRes.exitCode).toBe(0);
+    const tsJson = JSON.parse(tsRes.stdout) as {
+      installed: boolean;
+      running: boolean;
+      magicDnsUrl: string;
+      serveConfiguredForPort: boolean;
+      recommendedCommand: string;
+    };
+    expect(tsJson.installed).toBe(true);
+    expect(tsJson.running).toBe(true);
+    expect(tsJson.magicDnsUrl).toBe("https://studio.tail77.ts.net");
+    expect(tsJson.serveConfiguredForPort).toBe(true);
+    expect(tsJson.recommendedCommand).toBe("tailscale serve --bg http://127.0.0.1:4411");
+
+    // 5. Pair -> returns 6-digit code, token, and #pair=<token> fragment URL
+    const pair1 = await runCli(["remote", "pair", "--json"], {
+      kilnHome,
+      fetchImpl,
+    });
+    expect(pair1.exitCode).toBe(0);
+    const pair1Json = JSON.parse(pair1.stdout) as {
+      code: string;
+      token: string;
+      pairUrl: string;
+    };
+    expect(pair1Json.code).toMatch(/^\d{6}$/);
+    expect(pair1Json.pairUrl).toBe(
+      `https://studio.tail77.ts.net/#pair=${encodeURIComponent(pair1Json.token)}`,
+    );
+
+    // Complete pairing against remoteApp
+    const complete1 = await server.remoteApp.request(
+      new Request("http://127.0.0.1:4411/api/auth/pair", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: pair1Json.code, label: "CLI Test Phone" }),
+      }),
+    );
+    expect(complete1.status).toBe(200);
+    const dev1Id = ((await complete1.json()) as { device: { id: string } }).device.id;
+
+    // Pair a second device so we can test both single revoke and --all revoke
+    const pair2 = await runCli(["remote", "pair", "--json"], { kilnHome, fetchImpl });
+    const pair2Json = JSON.parse(pair2.stdout) as { token: string };
+    const complete2 = await server.remoteApp.request(
+      new Request("http://127.0.0.1:4411/api/auth/pair", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: pair2Json.token, label: "CLI Test Tablet" }),
+      }),
+    );
+    expect(complete2.status).toBe(200);
+
+    // 6. List paired devices
+    const devicesRes = await runCli(["remote", "devices", "--json"], {
+      kilnHome,
+      fetchImpl,
+    });
+    expect(devicesRes.exitCode).toBe(0);
+    const devicesJson = JSON.parse(devicesRes.stdout) as {
+      devices: Array<{ id: string; label: string; revoked_at?: string }>;
+    };
+    expect(devicesJson.devices).toHaveLength(2);
+
+    // 7. Revoke single device
+    const revokeOne = await runCli(["remote", "revoke", dev1Id, "--json"], {
+      kilnHome,
+      fetchImpl,
+    });
+    expect(revokeOne.exitCode).toBe(0);
+    const revokeOneJson = JSON.parse(revokeOne.stdout) as {
+      revoked: boolean;
+      device: { id: string; revoked_at?: string };
+    };
+    expect(revokeOneJson.revoked).toBe(true);
+    expect(revokeOneJson.device.id).toBe(dev1Id);
+    expect(revokeOneJson.device.revoked_at).toBeTruthy();
+
+    // 8. Revoke remaining devices with --all
+    const revokeAll = await runCli(["remote", "revoke", "--all", "--json"], {
+      kilnHome,
+      fetchImpl,
+    });
+    expect(revokeAll.exitCode).toBe(0);
+    const revokeAllJson = JSON.parse(revokeAll.stdout) as { revokedCount: number };
+    expect(revokeAllJson.revokedCount).toBe(1);
+
+    // 9. Disable remote access
+    const disableRes = await runCli(["remote", "disable", "--json"], {
+      kilnHome,
+      fetchImpl,
+    });
+    expect(disableRes.exitCode).toBe(0);
+    const disableJson = JSON.parse(disableRes.stdout) as {
+      data: { enabled: boolean; remote_port: number };
+    };
+    expect(disableJson.data.enabled).toBe(false);
+    expect(disableJson.data.remote_port).toBe(4411);
+
+    // 10. Offline daemon reports clear error with exit code 1
+    const offlineStatus = await runCli(["remote", "status"], {
+      kilnHome,
+      fetchImpl: createInProcessFetch(server, () => false),
+    });
+    expect(offlineStatus.exitCode).toBe(1);
+    expect(offlineStatus.stderr).toContain("offline");
+  });
 });

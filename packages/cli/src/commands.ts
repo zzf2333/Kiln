@@ -5,17 +5,23 @@ import os from "node:os";
 import path from "node:path";
 import { parseArgs, promisify } from "node:util";
 import {
+  DEFAULT_REMOTE_PORT,
   DecideRequestSchema,
   DraftCardSchema,
   PrioritySchema,
+  PublicRemoteUrlSchema,
+  RemoteConfigSchema,
   SpaceConfigSchema,
   TrackSchema,
   WorkspaceModeSchema,
   type DraftCard,
   type PendingDecision,
   type Priority,
+  type PublicPairedDevice,
+  type RemoteConfig,
   type SpaceConfig,
   type StageId,
+  type TailscaleStatusResponse,
   type TaskStatus,
   type Track,
   type WorkspaceMode,
@@ -193,6 +199,8 @@ const GLOBAL_HELP = [
   "  decide [task-id] [--option <id>] [--rationale <t>] List or submit pending decisions",
   "        [--apply-ledger] [--decision <id>]",
   "  space <list|add|rm> [args]                         Manage project spaces",
+  "  remote <status|enable|disable|pair|devices|revoke|tailscale>",
+  "                                                     Manage tunnel-agnostic remote mobile access",
   "  doctor [--port <port>] [--host <host>] [--json]    Verify Node, Git, APFS, kilnd, Paseo, service",
   "  service <install|uninstall|status>                 Manage OS startup service",
   "  uninstall [--purge-data]                           Stop daemon, remove service, inspect worktrees",
@@ -216,6 +224,17 @@ const COMMAND_HELP: Record<string, string> = {
     "  kiln space list [--port <port>] [--host <host>] [--json]",
     "  kiln space add [path] [--id <id>] [--name <name>] [--branch <branch>] [--accept-cmd <cmd>] [--copy-untracked <csv>] [--clone-deps <csv>] [--port <port>] [--host <host>] [--json]",
     "  kiln space rm <id> [--port <port>] [--host <host>]",
+  ].join("\n"),
+  remote: [
+    "Usage:",
+    "  kiln remote status [--port <port>] [--host <host>] [--json]",
+    "  kiln remote enable [--remote-port <port>] [--public-url <url>] [--keep-awake-ac] [--port <port>] [--host <host>] [--json]",
+    "  kiln remote disable [--port <port>] [--host <host>] [--json]",
+    "  kiln remote pair [--port <port>] [--host <host>] [--json]",
+    "  kiln remote devices [--port <port>] [--host <host>] [--json]",
+    "  kiln remote revoke <device-id> [--port <port>] [--host <host>] [--json]",
+    "  kiln remote revoke --all [--port <port>] [--host <host>] [--json]",
+    "  kiln remote tailscale [--port <port>] [--host <host>] [--json]",
   ].join("\n"),
   doctor: "Usage: kiln doctor [--port <port>] [--host <host>] [--json]",
   service:
@@ -1807,6 +1826,448 @@ async function handleSpace(
   );
 }
 
+async function fetchLocalRemoteApi(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit,
+  baseUrl: string,
+): Promise<{ ok: true; res: Response } | { ok: false; error: string }> {
+  try {
+    const res = await fetchWithTimeout(fetchImpl, url, init, API_TIMEOUT_MS);
+    return { ok: true, res };
+  } catch {
+    return {
+      ok: false,
+      error: `kilnd is offline at ${baseUrl}; start it first with "kiln up"`,
+    };
+  }
+}
+
+async function handleRemote(
+  args: readonly string[],
+  options: CliRuntimeOptions,
+  io: ReturnType<typeof createOutputCollector>,
+): Promise<CliRunResult> {
+  const parsed = parseArgs({
+    args: [...args],
+    options: {
+      port: { type: "string", short: "p" },
+      host: { type: "string" },
+      "remote-port": { type: "string" },
+      "public-url": { type: "string" },
+      "keep-awake-ac": { type: "boolean", default: false },
+      all: { type: "boolean", default: false },
+      json: { type: "boolean", default: false },
+      help: { type: "boolean", short: "h", default: false },
+    },
+    strict: true,
+    allowPositionals: true,
+  });
+
+  if (parsed.values.help) {
+    io.out(COMMAND_HELP.remote!);
+    return { exitCode: 0, stdout: io.getStdout(), stderr: io.getStderr() };
+  }
+
+  const subcommand = parsed.positionals[0];
+  if (!subcommand) {
+    throw new CliUsageError(
+      "remote requires a subcommand: status, enable, disable, pair, devices, revoke, or tailscale",
+      COMMAND_HELP.remote,
+    );
+  }
+
+  const host = parseHostValue(parsed.values.host, options.host);
+  const port = parsePortValue(
+    parsed.values.port,
+    options.port ?? DEFAULT_KILND_PORT,
+    false,
+  );
+  const baseUrl = buildBaseUrl(host, port);
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+
+  if (subcommand === "status") {
+    if (parsed.positionals.length !== 1) {
+      throw new CliUsageError("remote status takes no extra positional arguments", COMMAND_HELP.remote);
+    }
+    const call = await fetchLocalRemoteApi(
+      fetchImpl,
+      `${baseUrl}/api/settings/remote`,
+      { method: "GET" },
+      baseUrl,
+    );
+    if (!call.ok) {
+      io.err(call.error);
+      return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+    }
+    if (!call.res.ok) {
+      io.err(`Failed to query remote status: ${await readErrorMessage(call.res)}`);
+      return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+    }
+    const body = (await call.res.json()) as {
+      ok: true;
+      remote: RemoteConfig;
+      runtime: { listening: boolean; port: number | null; baseUrl: string | null };
+      activeDeviceCount: number;
+    };
+
+    if (parsed.values.json) {
+      io.out(JSON.stringify(body, null, 2));
+    } else {
+      io.out(
+        `Remote access: ${body.remote.enabled ? "enabled" : "disabled"} (configured port: ${body.remote.remote_port})`,
+      );
+      io.out(
+        `Remote listener: ${body.runtime.listening ? `listening at ${body.runtime.baseUrl}` : "stopped"}`,
+      );
+      io.out(`Public URL: ${body.remote.public_url ?? "(not configured)"}`);
+      io.out(`Keep awake on AC: ${body.remote.keep_awake_on_ac ? "enabled" : "disabled"}`);
+      io.out(
+        `Notifications: ${body.remote.notifications.enabled ? `${body.remote.notifications.channel} (${body.remote.notifications.priorities.join(",")})` : "disabled"}`,
+      );
+      io.out(`Active paired devices: ${body.activeDeviceCount}`);
+    }
+    return { exitCode: 0, stdout: io.getStdout(), stderr: io.getStderr(), data: body };
+  }
+
+  if (subcommand === "enable" || subcommand === "disable") {
+    if (parsed.positionals.length !== 1) {
+      throw new CliUsageError(
+        `remote ${subcommand} takes no extra positional arguments`,
+        COMMAND_HELP.remote,
+      );
+    }
+
+    const currentCall = await fetchLocalRemoteApi(
+      fetchImpl,
+      `${baseUrl}/api/settings/remote`,
+      { method: "GET" },
+      baseUrl,
+    );
+    if (!currentCall.ok) {
+      io.err(currentCall.error);
+      return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+    }
+    if (!currentCall.res.ok) {
+      io.err(
+        `Failed to load existing remote settings: ${await readErrorMessage(currentCall.res)}`,
+      );
+      return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+    }
+    const currentBody = (await currentCall.res.json()) as { remote: RemoteConfig };
+
+    let nextRemotePort = currentBody.remote.remote_port ?? DEFAULT_REMOTE_PORT;
+    if (parsed.values["remote-port"] !== undefined) {
+      const rawRemotePort = parsed.values["remote-port"].trim();
+      if (!/^\d+$/.test(rawRemotePort)) {
+        throw new CliUsageError(
+          `Invalid --remote-port "${parsed.values["remote-port"]}": expected an integer between 1 and 65535`,
+          COMMAND_HELP.remote,
+        );
+      }
+      const parsedRemotePort = Number(rawRemotePort);
+      if (
+        !Number.isSafeInteger(parsedRemotePort) ||
+        parsedRemotePort < 1 ||
+        parsedRemotePort > 65535
+      ) {
+        throw new CliUsageError(
+          `Invalid --remote-port "${parsed.values["remote-port"]}": expected an integer between 1 and 65535`,
+          COMMAND_HELP.remote,
+        );
+      }
+      if (parsedRemotePort === port) {
+        throw new CliUsageError(
+          `--remote-port (${parsedRemotePort}) must differ from local --port (${port})`,
+          COMMAND_HELP.remote,
+        );
+      }
+      nextRemotePort = parsedRemotePort;
+    }
+
+    let nextPublicUrl = currentBody.remote.public_url;
+    if (parsed.values["public-url"] !== undefined) {
+      const validated = PublicRemoteUrlSchema.safeParse(parsed.values["public-url"]);
+      if (!validated.success) {
+        throw new CliUsageError(
+          `Invalid --public-url "${parsed.values["public-url"]}": ${validated.error.issues.map((i) => i.message).join("; ")}`,
+          COMMAND_HELP.remote,
+        );
+      }
+      nextPublicUrl = validated.data;
+    }
+
+    const nextConfigCandidate: Record<string, unknown> = {
+      schema_version: 1,
+      enabled: subcommand === "enable",
+      remote_port: nextRemotePort,
+      keep_awake_on_ac: parsed.values["keep-awake-ac"]
+        ? true
+        : currentBody.remote.keep_awake_on_ac,
+      notifications: currentBody.remote.notifications,
+      ...(nextPublicUrl !== undefined ? { public_url: nextPublicUrl } : {}),
+    };
+
+    const validatedConfig = RemoteConfigSchema.safeParse(nextConfigCandidate);
+    if (!validatedConfig.success) {
+      throw new CliUsageError(
+        `Invalid remote configuration: ${validatedConfig.error.issues.map((i) => i.message).join("; ")}`,
+        COMMAND_HELP.remote,
+      );
+    }
+
+    const updateCall = await fetchLocalRemoteApi(
+      fetchImpl,
+      `${baseUrl}/api/settings/remote`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(validatedConfig.data),
+      },
+      baseUrl,
+    );
+    if (!updateCall.ok) {
+      io.err(updateCall.error);
+      return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+    }
+    if (!updateCall.res.ok) {
+      io.err(
+        `Failed to ${subcommand} remote access: ${await readErrorMessage(updateCall.res)}`,
+      );
+      return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+    }
+    const updated = (await updateCall.res.json()) as {
+      ok: true;
+      section: "remote";
+      data: RemoteConfig;
+      runtime: { listening: boolean; port: number | null; baseUrl: string | null };
+    };
+
+    if (parsed.values.json) {
+      io.out(JSON.stringify(updated, null, 2));
+    } else if (subcommand === "enable") {
+      io.out(
+        `Remote access enabled on port ${updated.data.remote_port}${updated.runtime.listening ? ` (listening at ${updated.runtime.baseUrl})` : ""}.`,
+      );
+      if (updated.data.public_url) {
+        io.out(`Public URL: ${updated.data.public_url}`);
+      }
+      io.out(
+        `Tunnel command: tailscale serve --bg http://127.0.0.1:${updated.data.remote_port}`,
+      );
+    } else {
+      io.out("Remote access disabled.");
+    }
+    return { exitCode: 0, stdout: io.getStdout(), stderr: io.getStderr(), data: updated };
+  }
+
+  if (subcommand === "pair") {
+    if (parsed.positionals.length !== 1) {
+      throw new CliUsageError("remote pair takes no extra positional arguments", COMMAND_HELP.remote);
+    }
+    const call = await fetchLocalRemoteApi(
+      fetchImpl,
+      `${baseUrl}/api/remote/pair`,
+      { method: "POST" },
+      baseUrl,
+    );
+    if (!call.ok) {
+      io.err(call.error);
+      return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+    }
+    if (!call.res.ok) {
+      io.err(`Failed to create pairing challenge: ${await readErrorMessage(call.res)}`);
+      return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+    }
+    const body = (await call.res.json()) as {
+      ok: true;
+      challengeId: string;
+      code: string;
+      token: string;
+      expiresAt: string;
+      pairUrl: string | null;
+    };
+
+    if (parsed.values.json) {
+      io.out(JSON.stringify(body, null, 2));
+    } else {
+      io.out(`Pairing code: ${body.code}`);
+      io.out(`Pairing token: ${body.token}`);
+      io.out(`Expires at: ${body.expiresAt}`);
+      if (body.pairUrl) {
+        io.out(`Pair URL: ${body.pairUrl}`);
+      } else {
+        io.out(
+          'Pair URL: (not set — configure --public-url via "kiln remote enable --public-url https://<your-host>")',
+        );
+      }
+    }
+    return { exitCode: 0, stdout: io.getStdout(), stderr: io.getStderr(), data: body };
+  }
+
+  if (subcommand === "devices") {
+    if (parsed.positionals.length !== 1) {
+      throw new CliUsageError("remote devices takes no extra positional arguments", COMMAND_HELP.remote);
+    }
+    const call = await fetchLocalRemoteApi(
+      fetchImpl,
+      `${baseUrl}/api/remote/devices`,
+      { method: "GET" },
+      baseUrl,
+    );
+    if (!call.ok) {
+      io.err(call.error);
+      return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+    }
+    if (!call.res.ok) {
+      io.err(`Failed to list paired devices: ${await readErrorMessage(call.res)}`);
+      return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+    }
+    const body = (await call.res.json()) as {
+      ok: true;
+      devices: PublicPairedDevice[];
+    };
+
+    if (parsed.values.json) {
+      io.out(JSON.stringify(body, null, 2));
+    } else if (body.devices.length === 0) {
+      io.out("No paired devices.");
+    } else {
+      io.out(`Paired devices (${body.devices.length}):`);
+      for (const dev of body.devices) {
+        const status = dev.revoked_at ? `revoked (${dev.revoked_at})` : "active";
+        io.out(
+          `- ${dev.id} | ${dev.label} | ${status} | last_seen=${dev.last_seen_at}`,
+        );
+      }
+    }
+    return { exitCode: 0, stdout: io.getStdout(), stderr: io.getStderr(), data: body };
+  }
+
+  if (subcommand === "revoke") {
+    if (parsed.values.all) {
+      if (parsed.positionals.length !== 1) {
+        throw new CliUsageError(
+          "remote revoke --all does not accept a device-id argument",
+          COMMAND_HELP.remote,
+        );
+      }
+      const call = await fetchLocalRemoteApi(
+        fetchImpl,
+        `${baseUrl}/api/remote/devices/revoke-all`,
+        { method: "POST" },
+        baseUrl,
+      );
+      if (!call.ok) {
+        io.err(call.error);
+        return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+      }
+      if (!call.res.ok) {
+        io.err(`Failed to revoke all devices: ${await readErrorMessage(call.res)}`);
+        return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+      }
+      const body = (await call.res.json()) as {
+        ok: true;
+        revokedCount: number;
+        closedStreams: number;
+      };
+      if (parsed.values.json) {
+        io.out(JSON.stringify(body, null, 2));
+      } else {
+        io.out(
+          `Revoked ${body.revokedCount} device(s) and closed ${body.closedStreams} remote SSE stream(s).`,
+        );
+      }
+      return { exitCode: 0, stdout: io.getStdout(), stderr: io.getStderr(), data: body };
+    }
+
+    if (parsed.positionals.length !== 2) {
+      throw new CliUsageError(
+        "remote revoke requires <device-id> or --all",
+        COMMAND_HELP.remote,
+      );
+    }
+    const deviceId = parseSafeCliSegment(
+      parsed.positionals[1]!,
+      "deviceId",
+      COMMAND_HELP.remote,
+    );
+    const call = await fetchLocalRemoteApi(
+      fetchImpl,
+      `${baseUrl}/api/remote/devices/${encodeURIComponent(deviceId)}`,
+      { method: "DELETE" },
+      baseUrl,
+    );
+    if (!call.ok) {
+      io.err(call.error);
+      return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+    }
+    if (!call.res.ok) {
+      io.err(`Failed to revoke device "${deviceId}": ${await readErrorMessage(call.res)}`);
+      return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+    }
+    const body = (await call.res.json()) as {
+      ok: true;
+      revoked: true;
+      device: PublicPairedDevice;
+      closedStreams: number;
+    };
+    if (parsed.values.json) {
+      io.out(JSON.stringify(body, null, 2));
+    } else {
+      io.out(
+        `Revoked device ${body.device.id} (${body.device.label}); closed ${body.closedStreams} remote SSE stream(s).`,
+      );
+    }
+    return { exitCode: 0, stdout: io.getStdout(), stderr: io.getStderr(), data: body };
+  }
+
+  if (subcommand === "tailscale") {
+    if (parsed.positionals.length !== 1) {
+      throw new CliUsageError("remote tailscale takes no extra positional arguments", COMMAND_HELP.remote);
+    }
+    const call = await fetchLocalRemoteApi(
+      fetchImpl,
+      `${baseUrl}/api/remote/tailscale`,
+      { method: "GET" },
+      baseUrl,
+    );
+    if (!call.ok) {
+      io.err(call.error);
+      return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+    }
+    if (!call.res.ok) {
+      io.err(`Failed to inspect Tailscale status: ${await readErrorMessage(call.res)}`);
+      return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+    }
+    const body = (await call.res.json()) as TailscaleStatusResponse;
+
+    if (parsed.values.json) {
+      io.out(JSON.stringify(body, null, 2));
+    } else {
+      io.out(
+        `Tailscale CLI: ${body.installed ? "installed" : "not installed"} | State: ${body.backendState ?? (body.running ? "Running" : "unavailable")}`,
+      );
+      if (body.magicDnsUrl) {
+        io.out(`MagicDNS URL: ${body.magicDnsUrl}`);
+      }
+      io.out(
+        `Tailscale Serve: ${body.serveConfiguredForPort ? `active for port ${body.remotePort}` : body.serveActive ? "active (other target)" : "not configured"}`,
+      );
+      io.out(`Recommended command: ${body.recommendedCommand}`);
+      if (body.detail) {
+        io.out(`Detail: ${body.detail}`);
+      }
+    }
+    return { exitCode: 0, stdout: io.getStdout(), stderr: io.getStderr(), data: body };
+  }
+
+  throw new CliUsageError(
+    `Unknown remote subcommand "${subcommand}": expected status, enable, disable, pair, devices, revoke, or tailscale`,
+    COMMAND_HELP.remote,
+  );
+}
+
 function parseNodeMajor(rawVersion: string): { valid: boolean; major: number; raw: string } {
   const cleaned = rawVersion.startsWith("v") ? rawVersion.slice(1) : rawVersion;
   const match = /^(\d+)/.exec(cleaned);
@@ -2371,6 +2832,8 @@ export async function runCli(
         return await handleDecide(rest, options, io);
       case "space":
         return await handleSpace(rest, options, io);
+      case "remote":
+        return await handleRemote(rest, options, io);
       case "doctor":
         return await handleDoctor(rest, options, io);
       case "service":

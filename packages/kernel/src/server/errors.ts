@@ -12,7 +12,7 @@ import {
 } from "../state/index.js";
 import { InvalidSpacePathError } from "./space-inspect.js";
 
-export type ServerErrorStatus = 400 | 401 | 403 | 404 | 409 | 413 | 500;
+export type ServerErrorStatus = 400 | 401 | 403 | 404 | 409 | 413 | 429 | 500 | 502;
 
 /**
  * Structured HTTP error carrying status code and JSON error payload for both REST and UDS RPC handlers.
