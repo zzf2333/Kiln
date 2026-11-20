@@ -36,6 +36,7 @@ import { signRunToken, verifyRunToken } from "./token.js";
 export const DEFAULT_KILND_HOST = "127.0.0.1";
 export const DEFAULT_KILND_PORT = 4310;
 export const DEFAULT_SERVER_VERSION = "0.1.0";
+const HTTP_CLOSE_GRACE_MS = 350;
 
 export interface KilndServerOptions {
   kilnHome?: string;
@@ -352,17 +353,58 @@ export class KilndServer {
     this.activeAddress = null;
 
     if (server) {
-      if (server instanceof http.Server) {
-        server.closeAllConnections?.();
-      }
       await new Promise<void>((resolve, reject) => {
-        server.close((err) => {
+        let settled = false;
+        let forceCloseTimer: ReturnType<typeof setTimeout> | null = null;
+
+        const finish = (err?: Error | null): void => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          if (forceCloseTimer !== null) {
+            clearTimeout(forceCloseTimer);
+            forceCloseTimer = null;
+          }
           if (err && (err as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") {
             reject(err);
           } else {
             resolve();
           }
-        });
+        };
+
+        try {
+          server.close((err) => {
+            finish(err);
+          });
+        } catch (err) {
+          finish(err instanceof Error ? err : new Error(String(err)));
+          return;
+        }
+
+        if (!settled) {
+          const closableServer = server as ServerType & {
+            closeIdleConnections?: () => void;
+            closeAllConnections?: () => void;
+          };
+          if (
+            server instanceof http.Server ||
+            typeof closableServer.closeIdleConnections === "function"
+          ) {
+            closableServer.closeIdleConnections?.();
+          }
+          if (
+            !settled &&
+            (server instanceof http.Server ||
+              typeof closableServer.closeAllConnections === "function")
+          ) {
+            forceCloseTimer = setTimeout(() => {
+              forceCloseTimer = null;
+              closableServer.closeAllConnections?.();
+            }, HTTP_CLOSE_GRACE_MS);
+            forceCloseTimer.unref?.();
+          }
+        }
       });
     }
 

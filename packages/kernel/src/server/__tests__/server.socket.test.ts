@@ -180,4 +180,115 @@ describe("KilndServer OS socket smoke suite (requires unsandboxed connect)", () 
     abort.abort();
     await reader.cancel().catch(() => {});
   });
+
+  it("closes active HTTP SSE streams cleanly on server.stop() without ERR_INCOMPLETE_CHUNKED_ENCODING", async () => {
+    const kilnHome = makeTempDir("kiln-srv-sse-stop-");
+    tempDirs.push(kilnHome);
+
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      tokenSecret: "socket-sse-stop-secret-1234567890",
+    });
+    servers.push(server);
+    const addr = await server.start();
+
+    let firstFrameResolve!: () => void;
+    const firstFrameReceived = new Promise<void>((resolve) => {
+      firstFrameResolve = resolve;
+    });
+    const stopPromise = firstFrameReceived.then(async () => {
+      await server.stop();
+    });
+
+    const sseOutcomePromise = new Promise<{
+      statusCode: number | undefined;
+      headers: http.IncomingHttpHeaders;
+      endedCleanly: boolean;
+      complete: boolean;
+      aborted: boolean;
+      errors: string[];
+      bodyText: string;
+    }>((resolve, reject) => {
+      let bodyText = "";
+      let firstFrameSeen = false;
+      let aborted = false;
+      let settled = false;
+      const errors: string[] = [];
+
+      const req = http.get(`${addr.baseUrl}/api/events`, (res) => {
+        res.setEncoding("utf8");
+        res.on("data", (chunk: string) => {
+          bodyText += chunk;
+          if (!firstFrameSeen && bodyText.includes("\n\n")) {
+            firstFrameSeen = true;
+            firstFrameResolve();
+          }
+        });
+        res.on("aborted", () => {
+          aborted = true;
+        });
+        res.on("error", (err) => {
+          errors.push(err.message);
+        });
+        res.on("end", () => {
+          if (settled) return;
+          settled = true;
+          resolve({
+            statusCode: res.statusCode,
+            headers: res.headers,
+            endedCleanly: true,
+            complete: res.complete,
+            aborted,
+            errors,
+            bodyText,
+          });
+        });
+        res.on("close", () => {
+          if (!settled && !res.complete) {
+            settled = true;
+            resolve({
+              statusCode: res.statusCode,
+              headers: res.headers,
+              endedCleanly: false,
+              complete: res.complete,
+              aborted,
+              errors,
+              bodyText,
+            });
+          }
+        });
+
+        server.sseHub.publish({
+          type: "task.updated",
+          taskId: "t-sse-graceful",
+          patch: { status: "running", stage: "implement", round: 1 },
+        });
+      });
+
+      req.on("error", (err) => {
+        errors.push(err.message);
+        if (!settled) {
+          settled = true;
+          reject(err);
+        }
+      });
+    });
+
+    const [sseOutcome] = await Promise.all([sseOutcomePromise, stopPromise]);
+
+    expect(sseOutcome.statusCode).toBe(200);
+    expect(sseOutcome.headers["content-type"]).toContain("text/event-stream");
+    expect(sseOutcome.endedCleanly).toBe(true);
+    expect(sseOutcome.complete).toBe(true);
+    expect(sseOutcome.aborted).toBe(false);
+    expect(sseOutcome.errors).toEqual([]);
+
+    const frames = parseSseFrames(sseOutcome.bodyText);
+    expect(frames).toHaveLength(1);
+    expect(frames[0]?.data.type).toBe("task.updated");
+    if (frames[0]?.data.type === "task.updated") {
+      expect(frames[0].data.taskId).toBe("t-sse-graceful");
+    }
+  });
 });

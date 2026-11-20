@@ -15,6 +15,7 @@ import { evaluateWorkerStageOutcome } from "../../state/index.js";
 import {
   HostBackupManifestSchema,
   applyApprovedHostScopedChanges,
+  buildHostStagedDiffs,
   buildSanitizedEnv,
   checkScope,
   cleanupGitWorktree,
@@ -821,6 +822,125 @@ describe("host_scoped two-stage staging, locking, rollback, and 409 hash conflic
       expect(fs.readFileSync(existingTarget, "utf8")).toBe(originalContent);
       expect(fs.existsSync(newTarget)).toBe(false);
       expect(store.listHostPathLocks("t-host-a")).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("buildHostStagedDiffs projects modified, new, binary, missing-backup, and truncated diffs only during staged_awaiting_approval", async () => {
+    const { store, hostRoot } = setupHostStore();
+    try {
+      const allowedDir = path.join(hostRoot, "allowed");
+      fs.mkdirSync(allowedDir, { recursive: true });
+
+      const modTarget = path.join(allowedDir, "app.conf");
+      const newTarget = path.join(allowedDir, "new.conf");
+      const binTarget = path.join(allowedDir, "logo.bin");
+      const largeLinesTarget = path.join(allowedDir, "many-lines.txt");
+      const largeBytesTarget = path.join(allowedDir, "huge-bytes.txt");
+
+      fs.writeFileSync(modTarget, "mode=before\nport=4310\n");
+      fs.writeFileSync(binTarget, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]));
+      fs.writeFileSync(
+        largeLinesTarget,
+        Array.from({ length: 240 }, (_, i) => `old-line-${i}`).join("\n") + "\n",
+      );
+      fs.writeFileSync(largeBytesTarget, "A".repeat(70 * 1024));
+
+      const card = makeTaskCard({
+        id: "t-host-diffs",
+        workspace_mode: "host_scoped",
+        track: "L1",
+        contract: {
+          goal: "Preview staged host diffs",
+          end: "Diffs accurate and bounded",
+          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_files_hash: "sha256:diffs",
+          scope: [`${allowedDir}/**`],
+          deliver: { mode: "manual", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+      });
+      store.createTask(card, "# Diffs");
+
+      // No manifest yet -> []
+      expect(buildHostStagedDiffs(store, card.id)).toEqual([]);
+
+      const stagedDir = store.paths.stagedDir(card.id);
+      writeFileAtomic(path.join(stagedDir, "app.conf"), "mode=after\nport=4311\n");
+      writeFileAtomic(path.join(stagedDir, "new.conf"), "created=yes\nline2=ok\n");
+      writeFileAtomic(
+        path.join(stagedDir, "logo.bin"),
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x02, 0x03]),
+      );
+      writeFileAtomic(
+        path.join(stagedDir, "many-lines.txt"),
+        Array.from({ length: 240 }, (_, i) => `new-line-${i}`).join("\n") + "\n",
+      );
+      writeFileAtomic(path.join(stagedDir, "huge-bytes.txt"), "B".repeat(70 * 1024));
+
+      const stageRes = stageHostScopedChanges(store, {
+        taskId: card.id,
+        contractScope: card.contract.scope,
+        stagedFiles: [
+          { stagedRelativePath: "app.conf", targetPath: modTarget },
+          { stagedRelativePath: "new.conf", targetPath: newTarget },
+          { stagedRelativePath: "logo.bin", targetPath: binTarget },
+          { stagedRelativePath: "many-lines.txt", targetPath: largeLinesTarget },
+          { stagedRelativePath: "huge-bytes.txt", targetPath: largeBytesTarget },
+        ],
+      });
+      expect(stageRes.ok).toBe(true);
+      if (!stageRes.ok) throw new Error("Expected stage ok");
+
+      const diffs = buildHostStagedDiffs(store, card.id);
+      expect(diffs).toHaveLength(5);
+
+      const modEntry = diffs.find((d) => d.targetPath === fs.realpathSync(modTarget))!;
+      expect(modEntry.existedBefore).toBe(true);
+      expect(modEntry.preSha256).toMatch(/^sha256:/);
+      expect(modEntry.truncated).toBe(false);
+      expect(modEntry.diff).toContain("-mode=before");
+      expect(modEntry.diff).toContain("+mode=after");
+
+      const newEntry = diffs.find((d) => d.targetPath.endsWith("/new.conf"))!;
+      expect(newEntry.existedBefore).toBe(false);
+      expect(newEntry.preSha256).toBeNull();
+      expect(newEntry.truncated).toBe(false);
+      expect(newEntry.diff).toContain("+created=yes");
+      expect(newEntry.diff).toContain("+line2=ok");
+
+      const binEntry = diffs.find((d) => d.targetPath === fs.realpathSync(binTarget))!;
+      expect(binEntry.diff).toBe("[binary file diff omitted]");
+      expect(binEntry.truncated).toBe(false);
+
+      const manyLinesEntry = diffs.find((d) => d.targetPath === fs.realpathSync(largeLinesTarget))!;
+      expect(manyLinesEntry.truncated).toBe(true);
+      expect(manyLinesEntry.diff.split("\n").length).toBeLessThanOrEqual(200);
+
+      const hugeBytesEntry = diffs.find((d) => d.targetPath === fs.realpathSync(largeBytesTarget))!;
+      expect(hugeBytesEntry.truncated).toBe(true);
+      expect(hugeBytesEntry.diff.split("\n").length).toBeLessThanOrEqual(200);
+
+      // Missing backup file on disk must not throw
+      const modBackupPath = path.join(
+        store.paths.backupDir(card.id),
+        stageRes.manifest.files[0]!.backup_relative_path!,
+      );
+      const savedBackup = fs.readFileSync(modBackupPath);
+      fs.rmSync(modBackupPath);
+      const missingBackupDiffs = buildHostStagedDiffs(store, card.id);
+      expect(missingBackupDiffs[0]?.diff).toBe("[backup file unavailable]");
+      writeFileAtomic(modBackupPath, savedBackup);
+
+      // After approval apply (status === "applied"), returns []
+      const applied = await applyApprovedHostScopedChanges(store, {
+        taskId: card.id,
+        approved: true,
+      });
+      expect(applied.ok).toBe(true);
+      expect(buildHostStagedDiffs(store, card.id)).toEqual([]);
     } finally {
       store.close();
     }

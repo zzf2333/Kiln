@@ -133,8 +133,18 @@ export type RestoreHostScopedBackupResult =
       conflicts: HostRestoreHashConflict[];
     };
 
+export interface HostStagedDiffEntry {
+  targetPath: string;
+  existedBefore: boolean;
+  preSha256: string | null;
+  diff: string;
+  truncated: boolean;
+}
+
 const MAX_SYMLINK_DEPTH = 40;
 const MAX_DIFF_LINES = 400;
+const MAX_STAGED_PREVIEW_BYTES = 64 * 1024;
+const MAX_STAGED_DIFF_LINES = 200;
 
 function sha256Buffer(buf: Buffer): string {
   return `sha256:${crypto.createHash("sha256").update(buf).digest("hex")}`;
@@ -448,75 +458,320 @@ function summarizeContent(buf: Buffer | null, sha256: string | null): string {
   return `${buf.length} bytes, ${lines.length} lines (${sha256 ?? "unknown"}): ${preview}`;
 }
 
+interface UnifiedLineDiffOptions {
+  fromLabel?: string;
+  toLabel?: string;
+  treatEmptyAsZeroLines?: boolean;
+  maxOutputLines?: number;
+}
+
+function buildUnifiedLineDiffWithMeta(
+  expectedText: string | null,
+  actualText: string | null,
+  options: UnifiedLineDiffOptions = {},
+): { diff: string; truncated: boolean } {
+  if (expectedText === null && actualText === null) {
+    return {
+      diff: "(both expected and actual contents unavailable)",
+      truncated: false,
+    };
+  }
+
+  const fromLabel = options.fromLabel ?? "expected (post_sha256)";
+  const toLabel = options.toLabel ?? "actual (current)";
+  const treatEmptyAsZeroLines = options.treatEmptyAsZeroLines ?? false;
+  const splitLines = (text: string | null): string[] => {
+    if (text === null) {
+      return [];
+    }
+    if (treatEmptyAsZeroLines && text.length === 0) {
+      return [];
+    }
+    return text.split(/\r?\n/);
+  };
+
+  const aLines = splitLines(expectedText);
+  const bLines = splitLines(actualText);
+  const hunkHeader =
+    treatEmptyAsZeroLines && aLines.length === 0
+      ? `@@ -0,0 +${bLines.length === 0 ? 0 : 1},${bLines.length} @@`
+      : `@@ -1,${aLines.length} +1,${bLines.length} @@`;
+
+  let lines: string[];
+  let truncated = false;
+
+  if (aLines.length > MAX_DIFF_LINES || bLines.length > MAX_DIFF_LINES) {
+    truncated = true;
+    const isDefaultLabels =
+      options.fromLabel === undefined && options.toLabel === undefined;
+    const beforeTailTag = isDefaultLabels ? "expected" : "before";
+    const afterTailTag = isDefaultLabels ? "actual" : "after";
+    lines = [
+      `--- ${fromLabel}`,
+      `+++ ${toLabel}`,
+      hunkHeader,
+      ...aLines.slice(0, 20).map((l) => `-${l}`),
+      ...(aLines.length > 20 ? [`... (${aLines.length - 20} more ${beforeTailTag} lines)`] : []),
+      ...bLines.slice(0, 20).map((l) => `+${l}`),
+      ...(bLines.length > 20 ? [`... (${bLines.length - 20} more ${afterTailTag} lines)`] : []),
+    ];
+  } else {
+    const m = aLines.length;
+    const n = bLines.length;
+    const dp: Uint32Array[] = Array.from({ length: m + 1 }, () => new Uint32Array(n + 1));
+
+    for (let i = m - 1; i >= 0; i--) {
+      const row = dp[i]!;
+      const nextRow = dp[i + 1]!;
+      for (let j = n - 1; j >= 0; j--) {
+        if (aLines[i] === bLines[j]) {
+          row[j] = 1 + nextRow[j + 1]!;
+        } else {
+          row[j] = Math.max(nextRow[j]!, row[j + 1]!);
+        }
+      }
+    }
+
+    const diffBody: string[] = [];
+    let i = 0;
+    let j = 0;
+    while (i < m && j < n) {
+      if (aLines[i] === bLines[j]) {
+        diffBody.push(` ${aLines[i]!}`);
+        i++;
+        j++;
+      } else if (dp[i + 1]![j]! >= dp[i]![j + 1]!) {
+        diffBody.push(`-${aLines[i]!}`);
+        i++;
+      } else {
+        diffBody.push(`+${bLines[j]!}`);
+        j++;
+      }
+    }
+    while (i < m) {
+      diffBody.push(`-${aLines[i]!}`);
+      i++;
+    }
+    while (j < n) {
+      diffBody.push(`+${bLines[j]!}`);
+      j++;
+    }
+
+    lines = [
+      `--- ${fromLabel}`,
+      `+++ ${toLabel}`,
+      hunkHeader,
+      ...diffBody,
+    ];
+  }
+
+  if (options.maxOutputLines !== undefined && lines.length > options.maxOutputLines) {
+    const keepCount = Math.max(1, options.maxOutputLines - 1);
+    const omitted = lines.length - keepCount;
+    lines = [...lines.slice(0, keepCount), `... (${omitted} more diff lines omitted)`];
+    truncated = true;
+  }
+
+  return {
+    diff: lines.join("\n"),
+    truncated,
+  };
+}
+
 function buildUnifiedLineDiff(
   expectedText: string | null,
   actualText: string | null,
 ): string {
-  if (expectedText === null && actualText === null) {
-    return "(both expected and actual contents unavailable)";
+  return buildUnifiedLineDiffWithMeta(expectedText, actualText).diff;
+}
+
+type PreviewFileReadResult =
+  | { ok: true; buffer: Buffer; bytesTruncated: boolean; isBinary: boolean }
+  | { ok: false; reason: "missing" | "unreadable" };
+
+function resolveCanonicalDirOptional(dirPath: string): string | null {
+  try {
+    const resolved = fs.realpathSync(dirPath);
+    return fs.statSync(resolved).isDirectory() ? resolved : null;
+  } catch {
+    return null;
   }
-  const aLines = expectedText === null ? [] : expectedText.split(/\r?\n/);
-  const bLines = actualText === null ? [] : actualText.split(/\r?\n/);
+}
 
-  if (aLines.length > MAX_DIFF_LINES || bLines.length > MAX_DIFF_LINES) {
-    return [
-      "--- expected (post_sha256)",
-      "+++ actual (current)",
-      `@@ -1,${aLines.length} +1,${bLines.length} @@`,
-      ...aLines.slice(0, 20).map((l) => `-${l}`),
-      ...(aLines.length > 20 ? [`... (${aLines.length - 20} more expected lines)`] : []),
-      ...bLines.slice(0, 20).map((l) => `+${l}`),
-      ...(bLines.length > 20 ? [`... (${bLines.length - 20} more actual lines)`] : []),
-    ].join("\n");
+function readPreviewFileBounded(
+  rootDir: string,
+  canonicalRootDir: string | null,
+  relativePath: string,
+  maxBytes: number,
+): PreviewFileReadResult {
+  if (!canonicalRootDir) {
+    return { ok: false, reason: "missing" };
   }
 
-  const m = aLines.length;
-  const n = bLines.length;
-  const dp: Uint32Array[] = Array.from({ length: m + 1 }, () => new Uint32Array(n + 1));
+  let normRel: string;
+  try {
+    normRel = normalizeRepoRelativePath(relativePath);
+  } catch {
+    return { ok: false, reason: "unreadable" };
+  }
 
-  for (let i = m - 1; i >= 0; i--) {
-    const row = dp[i]!;
-    const nextRow = dp[i + 1]!;
-    for (let j = n - 1; j >= 0; j--) {
-      if (aLines[i] === bLines[j]) {
-        row[j] = 1 + nextRow[j + 1]!;
-      } else {
-        row[j] = Math.max(nextRow[j]!, row[j + 1]!);
+  const candidate = path.join(rootDir, normRel);
+  let lstat: fs.Stats;
+  try {
+    lstat = fs.lstatSync(candidate);
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ENOENT"
+      ? { ok: false, reason: "missing" }
+      : { ok: false, reason: "unreadable" };
+  }
+
+  let canonicalFile: string;
+  try {
+    canonicalFile = fs.realpathSync(candidate);
+  } catch (err) {
+    if (!lstat.isSymbolicLink() && (err as NodeJS.ErrnoException).code === "ENOENT") {
+      return { ok: false, reason: "missing" };
+    }
+    return { ok: false, reason: "unreadable" };
+  }
+
+  if (!isInsideCanonicalDir(canonicalFile, canonicalRootDir)) {
+    return { ok: false, reason: "unreadable" };
+  }
+
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(canonicalFile, "r");
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) {
+      return { ok: false, reason: "unreadable" };
+    }
+    const toRead = Math.min(stat.size, maxBytes);
+    const buffer = Buffer.allocUnsafe(toRead);
+    let totalRead = 0;
+    while (totalRead < toRead) {
+      const bytesRead = fs.readSync(fd, buffer, totalRead, toRead - totalRead, totalRead);
+      if (bytesRead === 0) {
+        break;
+      }
+      totalRead += bytesRead;
+    }
+    const slice = totalRead === buffer.length ? buffer : buffer.subarray(0, totalRead);
+    return {
+      ok: true,
+      buffer: slice,
+      bytesTruncated: stat.size > maxBytes,
+      isBinary: slice.includes(0),
+    };
+  } catch {
+    return { ok: false, reason: "unreadable" };
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // Ignore close error on read-only preview descriptor
       }
     }
   }
+}
 
-  const diffBody: string[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < m && j < n) {
-    if (aLines[i] === bLines[j]) {
-      diffBody.push(` ${aLines[i]!}`);
-      i++;
-      j++;
-    } else if (dp[i + 1]![j]! >= dp[i]![j + 1]!) {
-      diffBody.push(`-${aLines[i]!}`);
-      i++;
-    } else {
-      diffBody.push(`+${bLines[j]!}`);
-      j++;
+/**
+ * Builds bounded per-file unified diffs between backed-up pre-apply originals and
+ * staged host-scoped files while the task awaits human approval (`staged_awaiting_approval`).
+ */
+export function buildHostStagedDiffs(
+  store: KilnStore,
+  taskId: string,
+): HostStagedDiffEntry[] {
+  const safeTaskId = assertSafeSegment(taskId, "taskId");
+
+  let manifest: HostBackupManifest;
+  try {
+    manifest = readHostBackupManifest(store, safeTaskId);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
     }
-  }
-  while (i < m) {
-    diffBody.push(`-${aLines[i]!}`);
-    i++;
-  }
-  while (j < n) {
-    diffBody.push(`+${bLines[j]!}`);
-    j++;
+    throw err;
   }
 
-  return [
-    "--- expected (post_sha256)",
-    "+++ actual (current)",
-    `@@ -1,${m} +1,${n} @@`,
-    ...diffBody,
-  ].join("\n");
+  if (manifest.task_id !== safeTaskId || manifest.status !== "staged_awaiting_approval") {
+    return [];
+  }
+
+  const backupDir = store.paths.backupDir(safeTaskId);
+  const stagedDir = store.paths.stagedDir(safeTaskId);
+  const canonicalBackupDir = resolveCanonicalDirOptional(backupDir);
+  const canonicalStagedDir = resolveCanonicalDirOptional(stagedDir);
+
+  return manifest.files.map((entry) => {
+    const afterRead = readPreviewFileBounded(
+      stagedDir,
+      canonicalStagedDir,
+      entry.staged_relative_path,
+      MAX_STAGED_PREVIEW_BYTES,
+    );
+
+    const beforeRead: PreviewFileReadResult = entry.existed_before
+      ? entry.backup_relative_path
+        ? readPreviewFileBounded(
+            backupDir,
+            canonicalBackupDir,
+            entry.backup_relative_path,
+            MAX_STAGED_PREVIEW_BYTES,
+          )
+        : { ok: false, reason: "missing" }
+      : { ok: true, buffer: Buffer.alloc(0), bytesTruncated: false, isBinary: false };
+
+    if ((beforeRead.ok && beforeRead.isBinary) || (afterRead.ok && afterRead.isBinary)) {
+      return {
+        targetPath: entry.target_canonical_path,
+        existedBefore: entry.existed_before,
+        preSha256: entry.pre_sha256,
+        diff: "[binary file diff omitted]",
+        truncated: false,
+      };
+    }
+
+    if (!beforeRead.ok) {
+      return {
+        targetPath: entry.target_canonical_path,
+        existedBefore: entry.existed_before,
+        preSha256: entry.pre_sha256,
+        diff: "[backup file unavailable]",
+        truncated: false,
+      };
+    }
+
+    if (!afterRead.ok) {
+      return {
+        targetPath: entry.target_canonical_path,
+        existedBefore: entry.existed_before,
+        preSha256: entry.pre_sha256,
+        diff: "[staged file unavailable]",
+        truncated: false,
+      };
+    }
+
+    const beforeText = beforeRead.buffer.toString("utf8");
+    const afterText = afterRead.buffer.toString("utf8");
+    const diffResult = buildUnifiedLineDiffWithMeta(beforeText, afterText, {
+      fromLabel: entry.existed_before ? `${entry.target_canonical_path} (before)` : "/dev/null",
+      toLabel: `${entry.target_canonical_path} (staged)`,
+      treatEmptyAsZeroLines: true,
+      maxOutputLines: MAX_STAGED_DIFF_LINES,
+    });
+
+    return {
+      targetPath: entry.target_canonical_path,
+      existedBefore: entry.existed_before,
+      preSha256: entry.pre_sha256,
+      diff: diffResult.diff,
+      truncated:
+        beforeRead.bytesTruncated || afterRead.bytesTruncated || diffResult.truncated,
+    };
+  });
 }
 
 /**

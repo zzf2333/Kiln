@@ -31,6 +31,7 @@ import {
 import type { BackendRegistry } from "../backend/index.js";
 import {
   HostBackupManifestSchema,
+  buildHostStagedDiffs,
   restoreHostScopedBackup,
   type HostBackupManifest,
 } from "../gate/index.js";
@@ -373,6 +374,17 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     });
   });
 
+  app.get("/api/backends", async (c) => {
+    const snap = await snapshotBackends(backendRegistry, {
+      timeoutMs: backendQueryTimeoutMs,
+    });
+    return c.json({
+      ok: true,
+      backends: snap.backends,
+      agents: snap.agents,
+    });
+  });
+
   app.get("/api/ledgers", (c) => {
     const extraSpaces = new Set<string>(store.listTasks().map((t) => t.space));
     const ledgers = loadAllLedgers(store, extraSpaces);
@@ -563,6 +575,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     }
 
     const hostBackup = readHostBackupManifestOptional(store, taskId);
+    const hostStagedDiffs = buildHostStagedDiffs(store, taskId);
     const chatMessages = readTaskChatFallback(taskId);
     const usageTurns = store.listUsageTurns({ taskId });
     const usage = computeUsageSnapshot(usageTurns, pricing);
@@ -582,6 +595,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       usage,
       liveViewUrl,
       hostBackup,
+      hostStagedDiffs,
       stateEvents,
       chatMessages,
     });

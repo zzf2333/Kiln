@@ -1,9 +1,11 @@
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SseEventSchema, type RolesConfig, type TaskCard } from "@kiln/protocol";
 import { FakeBackend, type ExecutionBackend } from "../../backend/index.js";
+import { stageHostScopedChanges } from "../../gate/index.js";
 import { writeFileAtomic } from "../../store/index.js";
 import {
   KilndServer,
@@ -293,6 +295,17 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
       ]),
     );
 
+    const backendsRes = await server.app.request(new Request("http://127.0.0.1/api/backends"));
+    expect(backendsRes.status).toBe(200);
+    const backendsBody = (await backendsRes.json()) as {
+      ok: boolean;
+      backends: Array<{ backendId: string; connected: boolean }>;
+      agents: Array<{ id: string }>;
+    };
+    expect(backendsBody.ok).toBe(true);
+    expect(backendsBody.backends).toEqual(agentsBody.backends);
+    expect(backendsBody.agents.map((a) => a.id)).toContain("codex");
+
     const ledgersRes = await server.app.request(new Request("http://127.0.0.1/api/ledgers"));
     expect(ledgersRes.status).toBe(200);
     const ledgersBody = (await ledgersRes.json()) as {
@@ -477,13 +490,213 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     const taskJson = (await taskRes.json()) as {
       liveViewUrl: string | null;
       hostBackup: unknown;
+      hostStagedDiffs: unknown[];
       stateEvents: unknown[];
       chatMessages: Array<{ text: string }>;
     };
     expect(taskJson.liveViewUrl).toBe(`paseo://h/local/agent/${sessRef.sessionId}`);
     expect(taskJson.hostBackup).toBeNull();
+    expect(taskJson.hostStagedDiffs).toEqual([]);
     expect(taskJson.stateEvents.length).toBeGreaterThanOrEqual(2);
     expect(taskJson.chatMessages[0]?.text).toBe("你好");
+  });
+
+  it("includes hostStagedDiffs in GET /api/tasks/:id for staged_awaiting_approval host_scoped tasks", async () => {
+    const kilnHome = makeTempDir("kiln-m2-host-diff-home-");
+    const hostRoot = makeTempDir("kiln-m2-host-diff-root-");
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      publicDir: null,
+      tokenSecret: "m2-host-diff-secret-0123456789abcd",
+    });
+    servers.push(server);
+
+    const existingFile = path.join(hostRoot, "service.conf");
+    const createdFile = path.join(hostRoot, "added.conf");
+    const binaryFile = path.join(hostRoot, "blob.bin");
+    const largeFile = path.join(hostRoot, "large.log");
+    fs.writeFileSync(existingFile, "port=4310\nmode=before\n");
+    fs.writeFileSync(binaryFile, Buffer.from([0x00, 0x01, 0x02]));
+    fs.writeFileSync(largeFile, "X".repeat(70 * 1024));
+
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-host-detail-diff",
+        title: "Host staged diff detail check",
+        space: "kiln",
+        priority: "P1",
+        track: "L1",
+        workspace_mode: "host_scoped",
+        parent: null,
+        depends_on: [],
+        contract_version: 1,
+        contract: {
+          goal: "Expose staged host diffs before approval",
+          end: "Diffs rendered in task detail",
+          accept_cmd: "echo ok",
+          accept_files_hash: "sha256:host-detail",
+          scope: [`${hostRoot}/**`],
+          deliver: { mode: "manual", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 100_000 },
+        created_at: "2026-11-19T10:00:00.000Z",
+        updated_at: "2026-11-19T10:00:00.000Z",
+      },
+      "# Host staged diff brief",
+    );
+
+    const stagedDir = server.store.paths.stagedDir("t-host-detail-diff");
+    writeFileAtomic(path.join(stagedDir, "service.conf"), "port=4311\nmode=after\n");
+    writeFileAtomic(path.join(stagedDir, "added.conf"), "enabled=true\n");
+    writeFileAtomic(path.join(stagedDir, "blob.bin"), Buffer.from([0x00, 0x02, 0x03]));
+    writeFileAtomic(path.join(stagedDir, "large.log"), "Y".repeat(70 * 1024));
+
+    const staged = stageHostScopedChanges(server.store, {
+      taskId: "t-host-detail-diff",
+      contractScope: [`${hostRoot}/**`],
+      stagedFiles: [
+        { stagedRelativePath: "service.conf", targetPath: existingFile },
+        { stagedRelativePath: "added.conf", targetPath: createdFile },
+        { stagedRelativePath: "blob.bin", targetPath: binaryFile },
+        { stagedRelativePath: "large.log", targetPath: largeFile },
+      ],
+    });
+    expect(staged.ok).toBe(true);
+
+    const detailRes = await server.app.request(
+      new Request("http://127.0.0.1/api/tasks/t-host-detail-diff"),
+    );
+    expect(detailRes.status).toBe(200);
+    const detailJson = (await detailRes.json()) as {
+      hostStagedDiffs: Array<{
+        targetPath: string;
+        existedBefore: boolean;
+        preSha256: string | null;
+        diff: string;
+        truncated: boolean;
+      }>;
+    };
+    expect(detailJson.hostStagedDiffs).toHaveLength(4);
+
+    const modifiedDiff = detailJson.hostStagedDiffs.find((d) =>
+      d.targetPath.endsWith("/service.conf"),
+    )!;
+    expect(modifiedDiff.existedBefore).toBe(true);
+    expect(modifiedDiff.preSha256).toMatch(/^sha256:/);
+    expect(modifiedDiff.diff).toContain("-mode=before");
+    expect(modifiedDiff.diff).toContain("+mode=after");
+    expect(modifiedDiff.truncated).toBe(false);
+
+    const addedDiff = detailJson.hostStagedDiffs.find((d) =>
+      d.targetPath.endsWith("/added.conf"),
+    )!;
+    expect(addedDiff.existedBefore).toBe(false);
+    expect(addedDiff.preSha256).toBeNull();
+    expect(addedDiff.diff).toContain("+enabled=true");
+
+    const binDiff = detailJson.hostStagedDiffs.find((d) =>
+      d.targetPath.endsWith("/blob.bin"),
+    )!;
+    expect(binDiff.diff).toBe("[binary file diff omitted]");
+
+    const largeDiff = detailJson.hostStagedDiffs.find((d) =>
+      d.targetPath.endsWith("/large.log"),
+    )!;
+    expect(largeDiff.truncated).toBe(true);
+  });
+
+  it("closes SSE streams before draining HTTP server in stop() and only invokes closeAllConnections after grace timeout", async () => {
+    try {
+      // 1. Natural close: sseHub.closeAll() -> server.close() completes cleanly without calling closeAllConnections
+      const server1 = new KilndServer({
+        kilnHome: makeTempDir("kiln-stop-grace-1-"),
+        port: 0,
+        publicDir: null,
+        tokenSecret: "m2-stop-grace-secret-1-0123456789",
+      });
+      servers.push(server1);
+      await server1.start();
+
+      const sseRes = await server1.app.request(new Request("http://127.0.0.1/api/events"));
+      expect(sseRes.status).toBe(200);
+      const reader = sseRes.body!.getReader();
+      server1.sseHub.publish({
+        type: "task.updated",
+        taskId: "t-sse-stop",
+        patch: { status: "running" },
+      });
+      const firstChunk = await reader.read();
+      expect(new TextDecoder().decode(firstChunk.value)).toContain("t-sse-stop");
+
+      const tcpHttpServer1 = (server1 as unknown as { httpServer: http.Server }).httpServer;
+      expect(tcpHttpServer1).toBeInstanceOf(http.Server);
+
+      const callOrder: string[] = [];
+      const origCloseAll = server1.sseHub.closeAll.bind(server1.sseHub);
+      vi.spyOn(server1.sseHub, "closeAll").mockImplementation(() => {
+        callOrder.push("sseHub.closeAll");
+        origCloseAll();
+      });
+
+      const origServerClose1 = tcpHttpServer1.close.bind(tcpHttpServer1);
+      vi.spyOn(tcpHttpServer1, "close").mockImplementation(((cb?: (err?: Error) => void) => {
+        callOrder.push("httpServer.close");
+        return origServerClose1(cb);
+      }) as typeof tcpHttpServer1.close);
+      const closeIdleSpy = vi.spyOn(tcpHttpServer1, "closeIdleConnections");
+      const closeAllSpy = vi.spyOn(tcpHttpServer1, "closeAllConnections");
+
+      await server1.stop();
+      servers.pop();
+
+      expect(callOrder.indexOf("sseHub.closeAll")).toBeGreaterThanOrEqual(0);
+      expect(callOrder.indexOf("httpServer.close")).toBeGreaterThan(
+        callOrder.indexOf("sseHub.closeAll"),
+      );
+      expect(closeIdleSpy).toHaveBeenCalled();
+      expect(closeAllSpy).not.toHaveBeenCalled();
+
+      const eof = await reader.read();
+      expect(eof.done).toBe(true);
+
+      // 2. Stuck connection fallback: closeAllConnections is invoked only after grace timeout (~350ms)
+      const server2 = new KilndServer({
+        kilnHome: makeTempDir("kiln-stop-grace-2-"),
+        port: 0,
+        publicDir: null,
+        tokenSecret: "m2-stop-grace-secret-2-0123456789",
+      });
+      servers.push(server2);
+      await server2.start();
+
+      const tcpHttpServer2 = (server2 as unknown as { httpServer: http.Server }).httpServer;
+      let heldCloseCb: ((err?: Error) => void) | undefined;
+      const origServerClose2 = tcpHttpServer2.close.bind(tcpHttpServer2);
+      vi.spyOn(tcpHttpServer2, "close").mockImplementation(((cb?: (err?: Error) => void) => {
+        heldCloseCb = cb;
+        return origServerClose2();
+      }) as typeof tcpHttpServer2.close);
+      const fallbackCloseAllSpy = vi
+        .spyOn(tcpHttpServer2, "closeAllConnections")
+        .mockImplementation(() => {
+          heldCloseCb?.();
+          heldCloseCb = undefined;
+        });
+
+      const stopPromise = server2.stop();
+      await Promise.resolve();
+      expect(fallbackCloseAllSpy).not.toHaveBeenCalled();
+
+      await stopPromise;
+      servers.pop();
+      expect(fallbackCloseAllSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 
   it("handles unknown backend_id with 409, invalidates chat sessions on role hot-swap, and restricts resolver update_contract to bound task", async () => {
