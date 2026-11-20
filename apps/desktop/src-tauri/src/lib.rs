@@ -185,6 +185,14 @@ fn spawn_status_worker<R: Runtime>(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let kilnd_url = match resolve_kilnd_url() {
+        Ok(url) => url,
+        Err(err) => {
+            eprintln!("kiln-desktop: {err}");
+            std::process::exit(2);
+        }
+    };
+
     let coordinator = Arc::new(RefreshCoordinator::new());
     let allow_exit = Arc::new(AtomicBool::new(false));
 
@@ -195,9 +203,6 @@ pub fn run() {
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-
-            let kilnd_url = resolve_kilnd_url()
-                .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
 
             let url_for_shortcut = kilnd_url.base_url.clone();
             #[cfg(desktop)]
