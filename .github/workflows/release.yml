@@ -123,6 +123,8 @@ jobs:
             cp -R "packages/${pkg}/dist" "${STAGE_DIR}/packages/${pkg}/dist"
           done
           cp -R packages/kernel/public "${STAGE_DIR}/packages/kernel/public"
+          cp -R packages/cli/mcp "${STAGE_DIR}/packages/cli/mcp"
+          cp -R packages/cli/public "${STAGE_DIR}/packages/cli/public"
 
           tar -czf "release-artifacts/kiln-${RELEASE_TAG}-bundle.tar.gz" -C release-artifacts "kiln-${RELEASE_TAG}"
           rm -rf "${STAGE_DIR}"
@@ -154,7 +156,6 @@ jobs:
             echo "2. \`packaging/homebrew/kiln-app.rb\` (macOS Cask for \`Kiln.app\`) requires signed & notarized macOS DMG release artifacts."
             echo ""
             echo "### Manual / Secrets Prerequisites Before Full Automated Release"
-            echo "- Switch target package manifests from \`\"private\": true\` to public \`@zzf2333/kiln\` packaging and bundle/resolve \`workspace:*\` dependencies + \`packages/kernel/public/\` (see \`packaging/README.md\`)."
             echo "- Configure \`NPM_TOKEN\` repository secret for automated npm publishing."
             echo "- Configure Apple Developer ID signing & notarization secrets (\`APPLE_CERTIFICATE\`, \`APPLE_CERTIFICATE_PASSWORD\`, \`APPLE_ID\`, \`APPLE_TEAM_ID\`, \`APPLE_APP_SPECIFIC_PASSWORD\`) before publishing signed \`Kiln.app\` DMGs."
           } | tee -a "${GITHUB_STEP_SUMMARY}"
@@ -168,11 +169,16 @@ jobs:
           files: release-artifacts/*
 
       - name: Publish @zzf2333/kiln to npm
-        if: ${{ steps.version.outputs.is_tag_release == 'true' && secrets.NPM_TOKEN != '' }}
+        if: ${{ steps.version.outputs.is_tag_release == 'true' }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -eu
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN secret is not configured; skipping npm publish step. See packaging/README.md for setup details."
+            exit 0
+          fi
+
           node <<'EOF'
           const fs = require("node:fs");
           const pkg = JSON.parse(fs.readFileSync("packages/cli/package.json", "utf8"));
@@ -195,8 +201,3 @@ jobs:
           umask 077
           printf '//registry.npmjs.org/:_authToken=%s\n' "${NODE_AUTH_TOKEN}" > "${NPMRC_PATH}"
           NPM_CONFIG_USERCONFIG="${NPMRC_PATH}" npm_config_userconfig="${NPMRC_PATH}" pnpm --filter ./packages/cli publish --no-git-checks --access public
-
-      - name: Skip npm publish notice
-        if: ${{ secrets.NPM_TOKEN == '' }}
-        run: |
-          echo "NPM_TOKEN secret is not configured; skipping npm publish step. See packaging/README.md for setup details."

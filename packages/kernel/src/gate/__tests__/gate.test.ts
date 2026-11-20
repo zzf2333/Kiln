@@ -375,6 +375,20 @@ describe("command-runner isolation & process group kill", () => {
     });
   });
 
+  async function expectProcessGone(pid: number, timeoutMs = 2_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        process.kill(pid, 0);
+      } catch (err) {
+        expect((err as NodeJS.ErrnoException).code).toBe("ESRCH");
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(() => process.kill(pid, 0)).toThrow();
+  }
+
   it("kills the entire process group including spawned grandchild processes on timeout", async () => {
     const cwd = makeTempDir("kiln-cmd-pgkill-");
     const pidFile = path.join(cwd, "grandchild.pid");
@@ -407,7 +421,7 @@ describe("command-runner isolation & process group kill", () => {
     expect(Number.isInteger(grandchildPid)).toBe(true);
     expect(grandchildPid).toBeGreaterThan(0);
 
-    expect(() => process.kill(grandchildPid, 0)).toThrow();
+    await expectProcessGone(grandchildPid);
 
     const sizeAtKill = fs.existsSync(tickFile) ? fs.statSync(tickFile).size : 0;
     await new Promise((resolve) => setTimeout(resolve, 150));
@@ -452,7 +466,7 @@ describe("command-runner isolation & process group kill", () => {
     expect(result.exitCode).not.toBe(0);
 
     const pid = Number(fs.readFileSync(pidFile, "utf8").trim());
-    expect(() => process.kill(pid, 0)).toThrow();
+    await expectProcessGone(pid);
   });
 
   it("caps large command output without hanging or blowing memory", async () => {
