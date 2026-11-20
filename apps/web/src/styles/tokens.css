@@ -1,0 +1,41 @@
+:root {
+  color-scheme: dark;
+  /* 暖铁灰中性色阶：外壳安静，颜色只留给阶段与火焰 */
+  --bg: #121110;
+  --rail: #171615;
+  --surface: #1c1b19;
+  --raised: #24221f;
+  --hover: #201f1c;
+  --line: rgba(255, 244, 230, 0.07);
+  --line-2: rgba(255, 244, 230, 0.13);
+  --t1: #ece7e1;
+  --t2: #a39d96;
+  --t3: #726c66;
+
+  /* 阶段色：每种颜色只表示一个阶段 */
+  --s-intake: #8f87c6;
+  --s-impl: #3fa2b3;
+  --s-research: #4b95c8;
+  --s-verify: #5aa57c;
+  --s-review: #6d8ddf;
+  --s-accept: #c086ab;
+  --s-advise: #b8954f;
+  --s-deliver: #8d939a;
+
+  /* 语义色 */
+  --ask: #dba145;
+  --bad: #d1625b;
+  --ok: #5aa57c;
+
+  /* 余烬：只用于正在运行 */
+  --ember-1: #c2410c;
+  --ember-2: #f08a24;
+  --ember-3: #fcd34d;
+
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+  --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+
+  scrollbar-color: var(--raised) transparent;
+  scrollbar-width: thin;
+}
