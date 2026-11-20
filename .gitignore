@@ -24,3 +24,10 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Local design docs, prototypes, probes & agent instructions
+docs/
+prototype/
+scripts/probes/
+AGENTS.md
+REVIEW.md

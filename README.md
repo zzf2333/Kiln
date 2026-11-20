@@ -16,28 +16,37 @@
 
 ---
 
-## 仓库目录与文档导航
-
-当前阶段：**架构、协议与多端交互原型已审查闭环定稿**，准备进入 `M0`（底座探针验证）与 `M1`（无头内核实现）。
+## 仓库结构
 
 | 路径 | 说明 |
 | :--- | :--- |
-| [`docs/workflow-and-protocol.md`](./docs/workflow-and-protocol.md) | **工作流与业务协议总设计书（V2.2 定稿）**：任务模型、6+1 状态机、三级升级链、人类红线、角色配置、`kiln-mcp` 7 工具、阶段模版与 MVP 验收标准 |
-| [`docs/architecture-and-engineering.md`](./docs/architecture-and-engineering.md) | **产品形态与技术工程开发文档**：一核多端常驻形态、TypeScript + Node 22 + Hono(SSE) + SQLite + Tauri v2 技术栈、Monorepo 边界、通信协议、SQLite DDL、CLI 与分发方案 |
-| [`docs/reviews/v2-design-audit.md`](./docs/reviews/v2-design-audit.md) | **架构与原型独立审查闭环记录**：施工前针对状态机、数据契约、本机安全及移动端交互的两轮完整审查与修复台账 |
-| [`prototype/index.html`](./prototype/index.html) | **交互式前端原型（桌面 + 移动端自适应）**：零外部依赖单文件原型，含总览看板、粒子火焰甘特时间轴、三栏产物阅读器、立项/讨论对话、API 标价用量统计与完整设置页 |
+| `packages/protocol` | **纯数据契约层**：全链路 Zod Schema、`card.yaml` / 回执 / 配置解析与标价费用公式 |
+| `packages/kernel` | **`kilnd` 守护进程核心**：状态机、调度器、验真门禁、可重建存储、HTTP+SSE 与执行底座抽象 |
+| `packages/mcp` | **`kiln-mcp` 工具服务**：受限 `stdio` MCP 服务，通过 `0600` Unix Socket 与 `KILN_RUN_TOKEN` 调用 `kilnd` |
+| `packages/cli` | **`kiln` CLI**：守护进程启停、状态查询、草稿/审批命令及系统服务管理 |
+| `apps/web` | **Web 工作台**：桌面与移动端（`<= 820px`）自适应前端 |
 
-### 本地预览交互原型
+---
 
-直接在浏览器打开 [`prototype/index.html`](./prototype/index.html)（macOS 终端可执行 `open prototype/index.html`），支持快捷键 `N`（新需求）、`⌘K`（命令面板）、`Esc`（返回）及手机窄屏（`<= 820px`）自适应预览。
+## 快速开始与验证命令
+
+> 环境要求：`Node >= 22 LTS`、`pnpm >= 9`
+
+```bash
+pnpm install       # 安装 Monorepo 全部工作区依赖
+pnpm build         # 构建所有子包（含 apps/web 前端产物）
+pnpm typecheck     # 全仓 TypeScript 类型检查
+pnpm test          # 运行全部非 Socket 单元测试与集成测试
+pnpm test:socket   # 运行 Unix Socket / 回环 TCP 连通冒烟测试
+```
 
 ---
 
 ## 实施路线图
 
-- [x] **M0 · 技术探针验证**：已完成 V1–V6、V9 实测与退路锁定（详见 [`scripts/probes/RESULTS.md`](./scripts/probes/RESULTS.md)；全员已统一走 Paseo，`agy` 将随 Paseo 下版 `agy acp` 接入，V7 已取消）。
-- [ ] **M1 · 协议与无头内核**：完成 `packages/protocol`、`kernel`、`mcp`、`cli` 及 `FakeBackend` 并发竞态与崩溃重建测试集。
-- [ ] **M2 · MVP 工作台闭环**：接入 `PaseoBackend`，上线 `apps/web` 桌面与手机自适应看板。
+- [x] **M0 · 技术探针验证**：已完成底层 Agent 能力、权限策略与用量格式实测锁定。
+- [x] **M1 · 协议与无头内核**：完成 `packages/protocol`、`kernel`、`mcp`、`cli` 与并发竞态 / 删库重建测试集。
+- [ ] **M2 · MVP 工作台闭环**：推进 `PaseoBackend`、`apps/web` 桌面/手机看板与真机端到端联调验收。
 - [ ] **M3 · 桌面常驻与开源发布**：封装 `apps/desktop`（Tauri v2 菜单栏 + 按需释放窗口），打通 npm 与 Homebrew 分发流水线。
 - [ ] **M4 · Post-MVP 演进**：复盘模块、多切片串行合并队列、执行台泳道、Tailscale/Passkey 推送与大需求循环（Epic Loop）。
 
