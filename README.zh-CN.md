@@ -27,6 +27,7 @@
 | [`packages/mcp`](packages/mcp/package.json) | **`kiln-mcp` 工具服务**：受限 `stdio` MCP 服务，通过 `0600` Unix Socket 与 `KILN_RUN_TOKEN` 调用 `kilnd` |
 | [`packages/cli`](packages/cli/package.json) | **`kiln` / `kl` CLI**：守护进程启停、状态查询、草稿/审批命令、环境自检及系统服务管理 |
 | [`apps/web`](apps/web/package.json) | **Web 工作台**：桌面与移动端（`<= 820px`）自适应 Preact 前端，编译产出至 `packages/kernel/public/` |
+| [`apps/desktop`](apps/desktop/README.md) | **桌面菜单栏薄壳**：Tauri v2 托盘薄壳、按需销毁 `WKWebView` 窗口及零外部依赖 `model.rs` 核心 |
 | [`scripts/`](scripts/install.sh) | **安装脚本与自测**：纯 POSIX [`install.sh`](scripts/install.sh) 与零依赖测试脚本 [`test-install.sh`](scripts/test-install.sh) |
 | [`packaging/`](packaging/README.md) | **发版打包模板**：Homebrew [Formula](packaging/homebrew/kiln.rb)、[Cask](packaging/homebrew/kiln-app.rb) 与发版前核对清单 |
 | [`.github/workflows/`](.github/workflows/ci.yml) | **CI/Release 工作流**：跨平台 [`ci.yml`](.github/workflows/ci.yml)（`ubuntu-latest` / `macos-latest`）与 [`release.yml`](.github/workflows/release.yml) |
@@ -83,11 +84,12 @@ pnpm test          # 运行全部非 Socket 单元测试与集成测试
 pnpm test:socket   # 运行 Unix Socket / 回环 TCP 连通冒烟测试
 ```
 
-本地验证安装脚本与 Homebrew 模板：
+本地验证安装脚本、Homebrew 模板与桌面核心单测：
 
 ```sh
 sh -n scripts/install.sh && sh scripts/test-install.sh
 ruby -c packaging/homebrew/kiln.rb && ruby -c packaging/homebrew/kiln-app.rb
+rustc -D warnings --test apps/desktop/src-tauri/src/model.rs -o /tmp/kiln-desktop-model-test && /tmp/kiln-desktop-model-test && rm -f /tmp/kiln-desktop-model-test
 ```
 
 ---
@@ -95,8 +97,8 @@ ruby -c packaging/homebrew/kiln.rb && ruby -c packaging/homebrew/kiln-app.rb
 ## 快速开始
 
 ```sh
-kiln doctor                     # 检查 Node >= 22、Git、APFS 克隆、kilnd 与服务状态
-kiln up                         # 幂等启动本地后台守护进程 kilnd（默认 127.0.0.1:4310）
+kiln doctor                     # 检查 Node >= 22、Git、APFS 克隆、kilnd、Paseo 与服务状态
+kiln up                         # 幂等启动本地后台守护进程 kilnd（默认 127.0.0.1:4310，默认注册 PaseoBackend）
 kiln open                       # 在默认浏览器打开 Web 工作台
 kiln draft "接入 OAuth PKCE"     # 创建任务草稿卡
 kiln status                     # 查看任务列表、运行计数、待决拍板、草稿与用量
@@ -118,13 +120,13 @@ kiln uninstall                  # 停止守护进程、移除系统服务并巡�
 
 | 命令 | 说明 |
 | :--- | :--- |
-| `kiln up [--port <port>] [--host <host>] [--foreground]` | 幂等启动 `kilnd`（默认 `127.0.0.1:4310`；`--foreground` 前台运行） |
+| `kiln up [--port <port>] [--host <host>] [--foreground] [--paseo-url <url>] [--no-paseo]` | 幂等启动 `kilnd`（默认 `127.0.0.1:4310` 并注册 `PaseoBackend`；可用 `--paseo-url`/`PASEO_URL`/`PASEO_PASSWORD` 覆盖，或 `--no-paseo`/`KILN_DISABLE_PASEO=1` 禁用；`--foreground` 前台运行） |
 | `kiln down` | 停止托管的 `kilnd` 守护进程 |
 | `kiln open [--port <port>] [--host <host>]` | 在系统默认浏览器打开 Kiln Web 工作台 |
 | `kiln status [--port <port>] [--host <host>] [--json]` | 输出任务状态、运行数、待决拍板、草稿与用量快照 |
 | `kiln draft "<idea>" [--id <id>] [--space <id>] [--priority <P0\|P1\|P2\|P3>] [--track <L1\|L2>] [--mode <git_worktree\|host_scoped\|scratch_dir>] [--port <port>] [--host <host>]` | 创建任务草稿卡 |
 | `kiln decide [task-id] [--option <id>] [--decision <id>] [--rationale <text>] [--apply-ledger] [--port <port>] [--host <host>]` | 列出或提交待决人工拍板 |
-| `kiln doctor [--port <port>] [--host <host>] [--json]` | 检查 Node、Git、APFS 克隆能力、`kilnd` 连通性与服务状态 |
+| `kiln doctor [--port <port>] [--host <host>] [--json]` | 检查 Node、Git、APFS 克隆能力、`kilnd` 连通性、Paseo Agent 发现（非必填项）与服务状态 |
 | `kiln service <install\|uninstall\|status> [--platform <darwin\|linux>] [--label <label>] [--service-name <name>]` | 显式安装、卸载或查询操作系统自启服务 |
 | `kiln uninstall [--purge-data] [--platform <darwin\|linux>]` | 停止守护进程、清理服务并检测残余 worktree（加 `--purge-data` 删除 `~/.kiln`） |
 | `kiln -h, --help` / `kiln -v, --version` / `kiln help` | 显示帮助或 CLI 版本号（`0.1.0`） |
@@ -135,8 +137,8 @@ kiln uninstall                  # 停止守护进程、移除系统服务并巡�
 
 - [x] **M0 · 技术探针验证**：已完成底层 Agent 能力、权限策略与用量格式实测锁定。
 - [x] **M1 · 协议与无头内核**：完成 `packages/protocol`、`kernel`、`mcp`、`cli` 与并发竞态 / 删库重建测试集。
-- [ ] **M2 · MVP 工作台闭环**：核心闭环（`PaseoBackend`、`kilnd` 执行编排、`apps/web` 自适应看板与 `kiln` CLI）已开发完成，待真机端到端验收。
-- [ ] **M3 · 桌面常驻与开源发布（准备中）**：推进 macOS 菜单栏原生薄壳（按需释放 `WKWebView` 窗口）与 CI/Release 工作流、POSIX 安装脚本、Homebrew/npm 分发流水线。
+- [ ] **M2 · MVP 工作台闭环**：核心闭环与修复切片已合入，非破坏 `kilnd` + 本机实跑 Paseo 连通冒烟已通过；待完整 8 场景真机 E2E 与真实浏览器 / Playwright（含 `<= 820px` 移动端）验收。
+- [ ] **M3 · 桌面常驻与开源发布（进行中）**：已合入 `apps/desktop` Tauri v2 骨架（`cargo check`、`cargo test` 与纯 `std` 核心单测均已通过，`tauri build` 打包与 GUI 真机运行待验证）及 CI/Release 工作流、POSIX 安装脚本、Homebrew/npm 模板；待公开包脱敏/去 `private` 准备与 Apple 签名公证凭据配置。
 - [ ] **M4 · Post-MVP 演进**：复盘模块、多切片串行合并队列、执行台泳道、Tailscale/Passkey 推送与大需求循环（Epic Loop）。
 
 ---

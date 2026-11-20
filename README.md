@@ -27,6 +27,7 @@
 | [`packages/mcp`](packages/mcp/package.json) | **`kiln-mcp` Tool Server**: Restricted `stdio` MCP server communicating with `kilnd` over `0600` Unix socket + `KILN_RUN_TOKEN` |
 | [`packages/cli`](packages/cli/package.json) | **`kiln` / `kl` CLI**: Daemon lifecycle, status inspection, draft/decision workflows, diagnostics, and opt-in OS startup services |
 | [`apps/web`](apps/web/package.json) | **Web Workbench**: Preact adaptive UI for desktop and mobile (`<= 820px`), compiled into `packages/kernel/public/` |
+| [`apps/desktop`](apps/desktop/README.md) | **Desktop Menu Bar Shell**: Tauri v2 tray shell with on-demand `WKWebView` destruction and pure-`std` `model.rs` core |
 | [`scripts/`](scripts/install.sh) | **Installer & Tests**: POSIX [`install.sh`](scripts/install.sh) and dependency-free [`test-install.sh`](scripts/test-install.sh) |
 | [`packaging/`](packaging/README.md) | **Release Templates**: Homebrew [Formula](packaging/homebrew/kiln.rb), [Cask](packaging/homebrew/kiln-app.rb), and pre-release checklist |
 | [`.github/workflows/`](.github/workflows/ci.yml) | **Automation**: Cross-platform [`ci.yml`](.github/workflows/ci.yml) (`ubuntu-latest`, `macos-latest`) and [`release.yml`](.github/workflows/release.yml) |
@@ -83,11 +84,12 @@ pnpm test          # Run unit and integration test suites
 pnpm test:socket   # Run Unix socket and loopback TCP smoke tests
 ```
 
-Validate installer and Homebrew templates locally:
+Validate installer, Homebrew templates, and desktop core unit tests locally:
 
 ```sh
 sh -n scripts/install.sh && sh scripts/test-install.sh
 ruby -c packaging/homebrew/kiln.rb && ruby -c packaging/homebrew/kiln-app.rb
+rustc -D warnings --test apps/desktop/src-tauri/src/model.rs -o /tmp/kiln-desktop-model-test && /tmp/kiln-desktop-model-test && rm -f /tmp/kiln-desktop-model-test
 ```
 
 ---
@@ -95,8 +97,8 @@ ruby -c packaging/homebrew/kiln.rb && ruby -c packaging/homebrew/kiln-app.rb
 ## Quick Start
 
 ```sh
-kiln doctor                     # Verify Node >= 22, Git, APFS clone, kilnd, and service status
-kiln up                         # Start local kilnd daemon in the background (127.0.0.1:4310)
+kiln doctor                     # Verify Node >= 22, Git, APFS clone, kilnd, Paseo, and service status
+kiln up                         # Start local kilnd daemon in the background (127.0.0.1:4310, PaseoBackend on by default)
 kiln open                       # Open the local Web workbench in your default browser
 kiln draft "Add OAuth PKCE"     # Create a task draft card
 kiln status                     # Inspect running tasks, pending decisions, drafts, and usage
@@ -118,13 +120,13 @@ kiln uninstall                  # Stop daemon, remove service, inspect worktrees
 
 | Command | Description |
 | :--- | :--- |
-| `kiln up [--port <port>] [--host <host>] [--foreground]` | Start `kilnd` idempotently (defaults to `127.0.0.1:4310`; `--foreground` runs attached) |
+| `kiln up [--port <port>] [--host <host>] [--foreground] [--paseo-url <url>] [--no-paseo]` | Start `kilnd` idempotently (defaults to `127.0.0.1:4310` with `PaseoBackend` registered; override via `--paseo-url`/`PASEO_URL`/`PASEO_PASSWORD` or skip via `--no-paseo`/`KILN_DISABLE_PASEO=1`; `--foreground` runs attached) |
 | `kiln down` | Stop the managed `kilnd` daemon cleanly |
 | `kiln open [--port <port>] [--host <host>]` | Open the Kiln Web workbench in the system browser |
 | `kiln status [--port <port>] [--host <host>] [--json]` | Display tasks, running count, pending decisions, drafts, and usage |
 | `kiln draft "<idea>" [--id <id>] [--space <id>] [--priority <P0\|P1\|P2\|P3>] [--track <L1\|L2>] [--mode <git_worktree\|host_scoped\|scratch_dir>] [--port <port>] [--host <host>]` | Create a new draft card |
 | `kiln decide [task-id] [--option <id>] [--decision <id>] [--rationale <text>] [--apply-ledger] [--port <port>] [--host <host>]` | List or submit pending approval decisions |
-| `kiln doctor [--port <port>] [--host <host>] [--json]` | Check Node, Git, APFS clone support, `kilnd` reachability, and startup service state |
+| `kiln doctor [--port <port>] [--host <host>] [--json]` | Check Node, Git, APFS clone support, `kilnd` reachability, Paseo agent discovery (`required: false`), and startup service state |
 | `kiln service <install\|uninstall\|status> [--platform <darwin\|linux>] [--label <label>] [--service-name <name>]` | Explicitly install, remove, or inspect the OS background service |
 | `kiln uninstall [--purge-data] [--platform <darwin\|linux>]` | Stop daemon, remove startup service, inspect worktrees (add `--purge-data` to delete `~/.kiln`) |
 | `kiln -h, --help` / `kiln -v, --version` / `kiln help` | Print CLI help or version (`0.1.0`) |
@@ -135,8 +137,8 @@ kiln uninstall                  # Stop daemon, remove service, inspect worktrees
 
 - [x] **M0 · Technical Probe Verification**: Verified underlying agent capabilities, permission policies, and token/cost accounting formats.
 - [x] **M1 · Protocol & Headless Kernel**: Completed `packages/protocol`, `kernel`, `mcp`, `cli`, and concurrency race / store-rebuild test suites.
-- [ ] **M2 · MVP Workbench Loop**: Core execution loop (`PaseoBackend`, `kilnd` orchestration, `apps/web` adaptive desktop/mobile workbench, and `kiln` CLI) implemented; pending real-machine end-to-end acceptance.
-- [ ] **M3 · Desktop Menu Bar & Open-Source Release (In Progress)**: Preparing the macOS menu bar shell (`Kiln.app` with on-demand `WKWebView` release) alongside CI/Release workflows, POSIX installer, and Homebrew/npm distribution templates.
+- [ ] **M2 · MVP Workbench Loop**: Core execution loop, fix slices (`PaseoBackend` wiring, orchestrator, API/gate/SSE, `apps/web`), and non-destructive `kilnd` + live Paseo smoke tests passed; pending full 8-scenario real-machine E2E and Playwright (`<= 820px`) browser acceptance.
+- [ ] **M3 · Desktop Menu Bar & Open-Source Release (In Progress)**: Landed the `apps/desktop` Tauri v2 skeleton (`cargo check`, `cargo test`, and pure-`std` `model.rs` tests passing; `tauri build` bundle and interactive GUI runtime pending), CI/Release workflows, POSIX installer, and Homebrew/npm templates; pending public package prep and Apple signing credentials.
 - [ ] **M4 · Post-MVP Evolution**: Retrospectives, serialized multi-slice merge queue, execution swimlanes, Tailscale/Passkey push notifications, and Epic Loop.
 
 ---
