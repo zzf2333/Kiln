@@ -1,6 +1,6 @@
 [package]
 name = "kiln-desktop"
-version = "0.1.0"
+version = "0.0.1"
 description = "Kiln menu bar thin shell (Tauri v2)"
 authors = ["Kiln Contributors"]
 license = "Apache-2.0"

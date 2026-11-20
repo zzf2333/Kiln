@@ -36,7 +36,7 @@
 
 ## Installation
 
-> **Pre-release notice**: Internal workspace libraries remain `"private": true`, while `@zzf2333/kiln` (`packages/cli`, `0.1.0`) is configured as a standalone public npm package and verified via isolated `npm install -g` (currently awaiting the first `v0.1.0` tag / `NPM_TOKEN` and macOS signing/notarization). Public npm and Homebrew channels below activate once the first public release is published (see [`packaging/README.md`](packaging/README.md)). Until then, you can also [Build from Source](#build-from-source).
+> **Pre-release notice**: Internal workspace libraries remain `"private": true`, while `@zzf2333/kiln` (`packages/cli`) is currently set to **`0.0.1`** as the initial pre-release (`0.1.0` is reserved for the first formal public release). Public npm and Homebrew channels below activate once release artifacts are published (see [`packaging/README.md`](packaging/README.md)); until then, you can also [Build from Source](#build-from-source).
 
 ### 1. One-Line Install Script (macOS / Linux)
 
@@ -53,7 +53,7 @@ Useful installer options (see [`scripts/install.sh`](scripts/install.sh)):
 curl -fsSL https://raw.githubusercontent.com/zzf2333/Kiln/main/scripts/install.sh | sh -s -- --dry-run
 
 # Pin a version or custom global prefix
-curl -fsSL https://raw.githubusercontent.com/zzf2333/Kiln/main/scripts/install.sh | sh -s -- --version 0.1.0 --prefix "$HOME/.local"
+curl -fsSL https://raw.githubusercontent.com/zzf2333/Kiln/main/scripts/install.sh | sh -s -- --version 0.0.1 --prefix "$HOME/.local"
 ```
 
 ### 2. npm (Global CLI)
@@ -129,7 +129,7 @@ kiln uninstall                  # Stop daemon, remove service, inspect worktrees
 | `kiln doctor [--port <port>] [--host <host>] [--json]` | Check Node, Git, APFS clone support, `kilnd` reachability, Paseo agent discovery (`required: false`), and startup service state |
 | `kiln service <install\|uninstall\|status> [--platform <darwin\|linux>] [--label <label>] [--service-name <name>]` | Explicitly install, remove, or inspect the OS background service |
 | `kiln uninstall [--purge-data] [--platform <darwin\|linux>]` | Stop daemon, remove startup service, inspect worktrees (add `--purge-data` to delete `~/.kiln`) |
-| `kiln -h, --help` / `kiln -v, --version` / `kiln help` | Print CLI help or version (`0.1.0`) |
+| `kiln -h, --help` / `kiln -v, --version` / `kiln help` | Print CLI help or version (`0.0.1`) |
 
 ---
 
@@ -138,7 +138,7 @@ kiln uninstall                  # Stop daemon, remove service, inspect worktrees
 - [x] **M0 · Technical Probe Verification**: Verified underlying agent capabilities, permission policies, and token/cost accounting formats.
 - [x] **M1 · Protocol & Headless Kernel**: Completed `packages/protocol`, `kernel`, `mcp`, `cli`, and concurrency race / store-rebuild test suites.
 - [x] **M2 · MVP Workbench Loop**: Passed all 8 real-machine E2E scenarios (`S1`–`S8`) against live Paseo (`codex` + `pi`), real `stdio` `kiln-mcp`, and Playwright Chrome acceptance across desktop (`1440×900`) and mobile (`390×844` `<= 820px`) viewports (with SQLite rebuild parity verified).
-- [ ] **M3 · Desktop Menu Bar & Open-Source Release (In Progress)**: Landed the `apps/desktop` Tauri v2 skeleton (`cargo check`, `cargo test`, `cargo build --release`, and pure-`std` `model.rs` tests passing; `tauri build` bundle and interactive GUI runtime pending), CI/Release workflows, POSIX installer, aligned Homebrew (`io.kiln.desktop`)/npm templates, and standalone `@zzf2333/kiln` public npm packaging (`npm install -g` smoke verified); pending `v0.1.0` tag publish (`NPM_TOKEN`) and macOS DMG signing/notarization.
+- [ ] **M3 · Desktop Menu Bar & Open-Source Release (In Progress)**: Landed the `apps/desktop` Tauri v2 skeleton (`cargo check`, `cargo test`, `cargo build --release`, and pure-`std` `model.rs` tests passing; `tauri build` bundle and interactive GUI runtime pending), CI/Release workflows, POSIX installer, aligned Homebrew (`io.kiln.desktop`)/npm templates, and standalone `@zzf2333/kiln` public npm packaging (`0.0.1` pre-release ready, reserving `0.1.0` for the first formal external release); pending `v0.0.1` publish (`NPM_TOKEN` / npm auth) and macOS DMG signing/notarization.
 - [ ] **M4 · Post-MVP Evolution**: Retrospectives, serialized multi-slice merge queue, execution swimlanes, Tailscale/Passkey push notifications, and Epic Loop.
 
 ---

@@ -299,7 +299,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     onBeforeDecisionApply,
     onSettingsUpdated,
   } = deps;
-  const version = deps.version ?? "0.1.0";
+  const version = deps.version ?? "0.0.1";
   const app = new Hono();
 
   const readDraftChatFallback = (draftId: string) => {

@@ -36,7 +36,7 @@
 
 ## 安装方式
 
-> **发版前置说明**：仓库内部库仍标记 `"private": true`，`packages/cli` 已完成独立公开 npm 包 `@zzf2333/kiln`（`0.1.0`）打包配置并通过隔离 `npm install -g` 实装验证（当前待打首个 `v0.1.0` Release 标签、`NPM_TOKEN` 及 macOS 签名公证）。下方公开分发渠道将在首个公开 Release 发布后激活（详见 [`packaging/README.md`](packaging/README.md)）；当前也可通过[源码构建与验证](#源码构建与验证)本地安装。
+> **发版前置说明**：仓库内部库仍标记 `"private": true`，`packages/cli` 现以 **`0.0.1`** 作为首个预发布验证版（**`0.1.0`** 预留给首个正式对外发布版本）。下方公开分发渠道将在对应版本推包与 Release 完成后激活（详见 [`packaging/README.md`](packaging/README.md)）；当前也可通过[源码构建与验证](#源码构建与验证)本地安装。
 
 ### 1. 一键安装脚本（macOS / Linux）
 
@@ -53,7 +53,7 @@ curl -fsSL https://raw.githubusercontent.com/zzf2333/Kiln/main/scripts/install.s
 curl -fsSL https://raw.githubusercontent.com/zzf2333/Kiln/main/scripts/install.sh | sh -s -- --dry-run
 
 # 指定版本与自定义安装前缀
-curl -fsSL https://raw.githubusercontent.com/zzf2333/Kiln/main/scripts/install.sh | sh -s -- --version 0.1.0 --prefix "$HOME/.local"
+curl -fsSL https://raw.githubusercontent.com/zzf2333/Kiln/main/scripts/install.sh | sh -s -- --version 0.0.1 --prefix "$HOME/.local"
 ```
 
 ### 2. npm 全局安装
@@ -129,7 +129,7 @@ kiln uninstall                  # 停止守护进程、移除系统服务并巡�
 | `kiln doctor [--port <port>] [--host <host>] [--json]` | 检查 Node、Git、APFS 克隆能力、`kilnd` 连通性、Paseo Agent 发现（非必填项）与服务状态 |
 | `kiln service <install\|uninstall\|status> [--platform <darwin\|linux>] [--label <label>] [--service-name <name>]` | 显式安装、卸载或查询操作系统自启服务 |
 | `kiln uninstall [--purge-data] [--platform <darwin\|linux>]` | 停止守护进程、清理服务并检测残余 worktree（加 `--purge-data` 删除 `~/.kiln`） |
-| `kiln -h, --help` / `kiln -v, --version` / `kiln help` | 显示帮助或 CLI 版本号（`0.1.0`） |
+| `kiln -h, --help` / `kiln -v, --version` / `kiln help` | 显示帮助或 CLI 版本号（`0.0.1`） |
 
 ---
 
@@ -138,7 +138,7 @@ kiln uninstall                  # 停止守护进程、移除系统服务并巡�
 - [x] **M0 · 技术探针验证**：已完成底层 Agent 能力、权限策略与用量格式实测锁定。
 - [x] **M1 · 协议与无头内核**：完成 `packages/protocol`、`kernel`、`mcp`、`cli` 与并发竞态 / 删库重建测试集。
 - [x] **M2 · MVP 工作台闭环**：已通过基于真实 Paseo（`codex` + `pi`）、真实独立 `stdio kiln-mcp` 与 Playwright Chrome 桌面端（`1440×900`）/ 移动端（`390×844` `<= 820px`）的 `S1`–`S8` 全部 8 场景真机端到端复验收与删库重建 100% 一致校验。
-- [ ] **M3 · 桌面常驻与开源发布（进行中）**：已合入 `apps/desktop` Tauri v2 骨架（`cargo check`、`cargo test`、`cargo build --release` 与纯 `std` 核心单测均已通过，`tauri build` `.app`/`.dmg` 打包与 GUI 真机运行待验证）、CI/Release 工作流、POSIX 安装脚本、对齐 `io.kiln.desktop` 的 Homebrew/npm 模板，并完成 `@zzf2333/kiln` 独立公开 npm 打包与隔离 `npm install -g` 实测；待首个 `v0.1.0` tag 发布（`NPM_TOKEN`）与 macOS `.dmg` 签名公证。
+- [ ] **M3 · 桌面常驻与开源发布（进行中）**：已合入 `apps/desktop` Tauri v2 骨架（`cargo check`、`cargo test`、`cargo build --release` 与纯 `std` 核心单测均已通过，`tauri build` `.app`/`.dmg` 打包与 GUI 真机运行待验证）、CI/Release 工作流、POSIX 安装脚本、对齐 `io.kiln.desktop` 的 Homebrew/npm 模板，并完成 `@zzf2333/kiln` 独立公开 npm 打包与隔离 `npm install -g` 实测（当前切为 `0.0.1` 初始预发布版，预留 `0.1.0` 作为首个正式对外版本）；待 `v0.0.1` 发布与 macOS `.dmg` 签名公证。
 - [ ] **M4 · Post-MVP 演进**：复盘模块、多切片串行合并队列、执行台泳道、Tailscale/Passkey 推送与大需求循环（Epic Loop）。
 
 ---

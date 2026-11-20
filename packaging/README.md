@@ -2,7 +2,7 @@
 
 This directory holds Homebrew distribution templates ([`kiln.rb`](homebrew/kiln.rb) and [`kiln-app.rb`](homebrew/kiln-app.rb)) that complement [`scripts/install.sh`](../scripts/install.sh) and [`.github/workflows/release.yml`](../.github/workflows/release.yml).
 
-> **Current repository state (`0.1.0`)**: `packages/cli` is now configured as the standalone public package `@zzf2333/kiln` (`"publishConfig": { "access": "public" }`, internal `@kiln/*` bundled into `dist/` & `mcp/dist/`, Web UI assets staged into `public/`, verified via isolated `npm install -g`), while internal monorepo packages (`packages/protocol`, `packages/kernel`, `packages/mcp`, `apps/web`, `apps/desktop`) remain `"private": true`. Complete the release-time secrets, tag, and Homebrew checksum steps below when cutting the public release.
+> **Current repository state (`0.0.1`)**: Current development and initial pre-release artifacts target **`0.0.1`** (`v0.0.1`), reserving **`0.1.0`** for the first formal external release. `packages/cli` is configured as the standalone public package `@zzf2333/kiln` (`"publishConfig": { "access": "public" }`, internal `@kiln/*` bundled into `dist/` & `mcp/dist/`, Web UI assets staged into `public/`, verified via isolated `npm install -g`), while internal monorepo packages (`packages/protocol`, `packages/kernel`, `packages/mcp`, `apps/web`, `apps/desktop`) remain `"private": true`. Complete the release-time secrets, tag, and Homebrew checksum steps below when cutting a release.
 
 ## 1. Pre-Release Package Readiness
 
@@ -12,7 +12,7 @@ This directory holds Homebrew distribution templates ([`kiln.rb`](homebrew/kiln.
 2. **Bundle Web UI static assets (`packages/kernel/public/` -> `packages/cli/public/`)**:
    - Running `pnpm build` compiles `apps/web` into `packages/kernel/public/` and automatically stages `packages/cli/public/` so installed `@zzf2333/kiln` serves the Web workbench out of the box.
 3. **Version alignment**:
-   - When bumping versions, update `version` consistently across `packages/protocol/package.json`, `packages/kernel/package.json`, `packages/mcp/package.json`, `packages/cli/package.json`, `apps/web/package.json`, and `CLI_VERSION` in `packages/cli/src/commands.ts`.
+   - When bumping versions, update `version` consistently across `packages/protocol/package.json`, `packages/kernel/package.json`, `packages/mcp/package.json`, `packages/cli/package.json`, `apps/web/package.json`, `apps/desktop/package.json`, `apps/desktop/src-tauri/Cargo.toml`, `apps/desktop/src-tauri/tauri.conf.json`, plus runtime version defaults `CLI_VERSION` (`packages/cli/src/commands.ts`), `KERNEL_VERSION` (`packages/kernel/src/index.ts`), `DEFAULT_SERVER_VERSION` (`packages/kernel/src/server/daemon.ts`), `packages/kernel/src/server/http-api.ts`, and `packages/mcp/src/server.ts`, and update `packaging/homebrew/kiln.rb` / `packaging/homebrew/kiln-app.rb` (then run `cargo check` and `pnpm build` so `Cargo.lock` and staged CLI assets stay in sync).
 
 ## 2. Repository Secrets & Signing Credentials
 
@@ -30,7 +30,7 @@ Configure the following GitHub Actions secrets before expecting unattended publi
 1. **Dry-run verification**:
    - Trigger `.github/workflows/release.yml` via `workflow_dispatch` (`dry_run: true`) to validate `pnpm install --frozen-lockfile`, `pnpm build`, `pnpm typecheck`, `pnpm test`, `pnpm test:socket`, `scripts/test-install.sh`, tarball creation, and `SHA256SUMS` output without uploading assets or publishing to npm.
 2. **Tag & release**:
-   - Push a `vX.Y.Z` tag (for example `v0.1.0`).
+   - Push a `vX.Y.Z` tag (for example `v0.0.1` for the initial pre-release or `v0.1.0` for the first formal release).
    - `.github/workflows/release.yml` verifies tag-to-package version parity, creates tarballs + `SHA256SUMS`, publishes the GitHub Release, and publishes `@zzf2333/kiln` if `NPM_TOKEN` is present and manifests are public.
 3. **Backfill Homebrew Tap (`zzf2333/homebrew-tap`)**:
    - Copy the real `sha256` from `SHA256SUMS` (or `shasum -a 256 <tarball>`) into `packaging/homebrew/kiln.rb` (replacing the `0000...` placeholder and updating `url` if needed).

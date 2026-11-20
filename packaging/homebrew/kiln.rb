@@ -9,7 +9,7 @@ class Kiln < Formula
   desc "Local-first autonomous developer workbench and kilnd CLI"
   homepage "https://github.com/zzf2333/Kiln"
   # TODO: Update `url` and `sha256` after the first public release tarball is published.
-  url "https://registry.npmjs.org/@zzf2333/kiln/-/kiln-0.1.0.tgz"
+  url "https://registry.npmjs.org/@zzf2333/kiln/-/kiln-0.0.1.tgz"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "Apache-2.0"
 

@@ -35,7 +35,7 @@ import { signRunToken, verifyRunToken } from "./token.js";
 
 export const DEFAULT_KILND_HOST = "127.0.0.1";
 export const DEFAULT_KILND_PORT = 4310;
-export const DEFAULT_SERVER_VERSION = "0.1.0";
+export const DEFAULT_SERVER_VERSION = "0.0.1";
 const HTTP_CLOSE_GRACE_MS = 350;
 
 export interface KilndServerOptions {

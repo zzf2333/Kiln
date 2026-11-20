@@ -1,6 +1,6 @@
 {
   "name": "@zzf2333/kiln",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "Local-first autonomous developer workbench and kilnd CLI",
   "license": "Apache-2.0",
   "homepage": "https://github.com/zzf2333/Kiln",
