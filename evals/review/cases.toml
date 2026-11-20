@@ -31,3 +31,11 @@ fix = ["efb11e7d7497a483ee53d29d210d294a8fc00863"]
 risk = "high"
 files = ["packages/kernel/src/server/daemon.ts"]
 defect = "KilndServer.stop() 在调用 sseHub.closeAll() 后紧接着同步调用 server.closeAllConnections() 强掐连接，未待 HTTP server.close() 先优雅排空响应流，导致活跃 SSE 客户端在服务端刷出 chunked 终止块前被断连并报 ERR_INCOMPLETE_CHUNKED_ENCODING。"
+
+[[cases]]
+id = "R5"
+intro = "739bfcaf41d1d2aa92182f675bcfc32b09d1c178"
+fix = ["4c4945e249ea74d01a03746e8c0200532106ab26"]
+risk = "medium"
+files = ["packages/kernel/src/scheduler/scheduler.ts"]
+defect = "KilnScheduler.executeTick() 顶部以 nowMs 检查速率限流并延后候选任务，尾部调用 syncCooldownTimer(this.now()) 却直接用新时间点同步定时器；当被延后任务的冷却恰好在本次 tick 耗时期间过期时，syncCooldownTimer 清除冷却定时器且未置位 dirty，导致延后任务永久卡死在 queued 失去唤醒。"
