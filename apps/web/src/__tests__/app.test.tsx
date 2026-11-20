@@ -183,11 +183,11 @@ function makeBaseBootstrap(
         id: "antigravity",
         label: "Antigravity",
         capabilities: {
-          interactiveChat: false,
+          interactiveChat: true,
           approvals: false,
           mcpInjection: false,
           usageCacheBreakdown: false,
-          interrupt: false,
+          interrupt: true,
         },
         modes: [{ id: "full-access", label: "Full access", isFullAccess: true }],
         models: [{ id: "gemini-3-pro", thinkingOptions: ["low", "high"] }],
@@ -840,7 +840,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     expect(within(alertBox).getByText(/\+export MANUAL_EDIT=1/)).toBeTruthy();
   });
 
-  it("SettingsView filters intake/resolver by interactiveChat+mcpInjection, warns on heterogeneous_review clash, confirms allow_full_access_fallback, and recalculates cost immediately on pricing change", async () => {
+  it("SettingsView allows Codex/Pi/Antigravity on intake/resolver with interactiveChat filtering, warns on non-MCP and full-access, refreshes via /api/agents?refresh=1, and recalculates cost immediately", async () => {
     const bootstrap = makeBaseBootstrap();
     // Make worker and reviewer use the exact same model and colliding fallback
     bootstrap.roles!.roles.reviewer = {
@@ -852,8 +852,39 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     };
 
     const savedPayloads: Array<{ url: string; body: unknown }> = [];
+    const refreshedAgents = [
+      ...bootstrap.agents!,
+      {
+        id: "batch",
+        label: "Batch Runner",
+        capabilities: {
+          interactiveChat: false,
+          approvals: false,
+          mcpInjection: false,
+          usageCacheBreakdown: false,
+          interrupt: true,
+        },
+        modes: [],
+        models: [{ id: "batch-v1", thinkingOptions: [] }],
+      },
+    ];
     fetchMock.mockImplementation(async (url, init) => {
       if (url === "/api/bootstrap") return jsonResponse(bootstrap);
+      if (url === "/api/agents?refresh=1") {
+        return jsonResponse({
+          ok: true,
+          agents: refreshedAgents,
+          backends: [
+            {
+              backendId: "paseo",
+              id: "paseo",
+              connected: true,
+              status: "connected",
+              detail: "4 agent(s) available",
+            },
+          ],
+        });
+      }
       if (url.startsWith("/api/settings/")) {
         const body = JSON.parse(String(init?.body));
         savedPayloads.push({ url, body });
@@ -865,27 +896,76 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     window.location.hash = "#view=settings&tab=roles";
     render(<App />);
 
-    // Wait for bootstrap agents to populate the role selectors
+    // Wait for bootstrap agents to populate the role selectors: intake/resolver allow codex, pi, antigravity
     await waitFor(() => {
       const intakeSelect = screen.getByLabelText("立项对话 Agent") as HTMLSelectElement;
-      expect(Array.from(intakeSelect.options).map((o) => o.value)).toEqual(["codex"]);
+      expect(Array.from(intakeSelect.options).map((o) => o.value)).toEqual([
+        "codex",
+        "pi",
+        "antigravity",
+      ]);
     });
 
     const resolverSelect = screen.getByLabelText("讨论对话 Agent") as HTMLSelectElement;
     const resolverOpts = Array.from(resolverSelect.options).map((o) => o.value);
-    expect(resolverOpts).toEqual(["codex"]);
+    expect(resolverOpts).toEqual(["codex", "pi", "antigravity"]);
 
-    // worker can see all agents including pi and antigravity
-    const workerSelect = screen.getByLabelText("实施 Agent") as HTMLSelectElement;
-    const workerOpts = Array.from(workerSelect.options).map((o) => o.value);
-    expect(workerOpts).toEqual(["codex", "pi", "antigravity"]);
+    // Switching intake to Pi displays non-MCP structured patch notice
+    const intakeSelect = screen.getByLabelText("立项对话 Agent") as HTMLSelectElement;
+    fireEvent.change(intakeSelect, { target: { value: "pi" } });
+    await waitFor(() => {
+      expect(
+        screen.getByText(/无 MCP 模式：自动通过结构化补丁同步草稿\/契约/),
+      ).toBeTruthy();
+    });
+
+    // Switching intake to Antigravity triggers full-access-only warning until fallback opt-in is confirmed
+    fireEvent.change(intakeSelect, { target: { value: "antigravity" } });
+    await waitFor(() => {
+      expect(
+        screen.getByText(/仅暴露 full-access，默认拦截派发，需先开启右侧「允许全权兜底」/),
+      ).toBeTruthy();
+    });
+
+    const intakeFallbackToggle = screen.getByLabelText(
+      "立项对话 允许全权兜底",
+    ) as HTMLInputElement;
+    expect(intakeFallbackToggle.checked).toBe(false);
+    fireEvent.click(intakeFallbackToggle);
+    const intakeConfirmDialog = await screen.findByRole("alertdialog", {
+      name: "确认开启全权兜底",
+    });
+    fireEvent.click(within(intakeConfirmDialog).getByRole("button", { name: "确认开启" }));
+    expect(intakeFallbackToggle.checked).toBe(true);
+
+    // Click 重新读取 -> hits /api/agents?refresh=1, keeps interactiveChat=false batch out of intake while adding it to worker
+    fireEvent.click(screen.getByRole("button", { name: "重新读取" }));
+    await waitFor(() => {
+      const workerSelect = screen.getByLabelText("实施 Agent") as HTMLSelectElement;
+      expect(Array.from(workerSelect.options).map((o) => o.value)).toEqual([
+        "codex",
+        "pi",
+        "antigravity",
+        "batch",
+      ]);
+    });
+    expect(Array.from(intakeSelect.options).map((o) => o.value)).toEqual([
+      "codex",
+      "pi",
+      "antigravity",
+    ]);
+
+    // Verify backends snapshot updated on 连接与底座 tab
+    fireEvent.click(screen.getByRole("tab", { name: "连接与底座" }));
+    expect(screen.getByText("4 agent(s) available")).toBeTruthy();
+    fireEvent.click(screen.getByRole("tab", { name: "角色与模型" }));
 
     // heterogeneous_review collision warning
     expect(
       screen.getByText(/独立审查与实施主模型和备选均撞车/),
     ).toBeTruthy();
 
-    // allow_full_access_fallback requires explicit secondary confirmation
+    // worker allow_full_access_fallback requires explicit secondary confirmation
     const fallbackToggle = screen.getByLabelText(
       "实施 允许全权兜底",
     ) as HTMLInputElement;

@@ -334,6 +334,7 @@ export interface ChatResponsePayload {
   draft?: DraftCard;
   pendingDecision?: PendingDecision | null;
   contractPatch?: Partial<CardContract>;
+  card?: TaskCard;
 }
 
 export type SettingsSectionMap = {

@@ -107,6 +107,7 @@ export function SettingsView() {
     null,
   );
   const [newModelName, setNewModelName] = useState("");
+  const [refreshBusy, setRefreshBusy] = useState(false);
 
   useEffect(() => {
     setRolesDraft({
@@ -191,19 +192,33 @@ export function SettingsView() {
         (reviewer.fallback.agent === worker?.agent &&
           reviewer.fallback.model === worker?.model));
 
+    const totalModels = agents.reduce(
+      (sum, agent) => sum + (agent.models?.length ?? 0),
+      0,
+    );
+
     return (
       <>
         <div class="sync-line">
           <span>
             可选项来自 ExecutionBackend.listAgents()（当前已发现 {agents.length}{" "}
-            个 Agent）
+            个 Agent，共 {totalModels} 个模型）
           </span>
           <button
             type="button"
             class="btn btn-ghost btn-sm"
-            onClick={() => void store.refreshAgents()}
+            disabled={refreshBusy}
+            onClick={async () => {
+              if (refreshBusy) return;
+              setRefreshBusy(true);
+              try {
+                await store.refreshAgents(true);
+              } finally {
+                setRefreshBusy(false);
+              }
+            }}
           >
-            重新读取
+            {refreshBusy ? "刷新中…" : "重新读取"}
           </button>
         </div>
 
@@ -226,11 +241,7 @@ export function SettingsView() {
               const currentModel = assignment?.model ?? "";
 
               const candidateAgents = info.interactive
-                ? agents.filter(
-                    (a) =>
-                      a.capabilities.interactiveChat &&
-                      a.capabilities.mcpInjection,
-                  )
+                ? agents.filter((a) => a.capabilities.interactiveChat)
                 : agents;
 
               const selectedAgentObj = agentById.get(currentAgentId);
@@ -249,8 +260,12 @@ export function SettingsView() {
               const currentIneligible =
                 info.interactive &&
                 Boolean(selectedAgentObj) &&
-                (!selectedAgentObj!.capabilities.interactiveChat ||
-                  !selectedAgentObj!.capabilities.mcpInjection);
+                !selectedAgentObj!.capabilities.interactiveChat;
+              const isNonMcpInteractive =
+                info.interactive &&
+                Boolean(selectedAgentObj) &&
+                selectedAgentObj!.capabilities.interactiveChat &&
+                !selectedAgentObj!.capabilities.mcpInjection;
 
               return (
                 <tr key={roleId}>
@@ -264,14 +279,17 @@ export function SettingsView() {
                     <div class="role-desc">{info.desc}</div>
                     {currentIneligible ? (
                       <div class="warn-line" style={{ marginTop: "4px", fontSize: "11.5px" }}>
-                        当前 {currentAgentId} 不支持 MCP/实时对话，请更换
+                        当前 {currentAgentId} 不支持实时交互对话，请更换
+                      </div>
+                    ) : isNonMcpInteractive ? (
+                      <div class="role-desc" style={{ marginTop: "4px" }}>
+                        无 MCP 模式：自动通过结构化补丁同步草稿/契约
                       </div>
                     ) : null}
-                    {!info.interactive &&
-                    fullAccessOnly &&
+                    {fullAccessOnly &&
                     !assignment?.allow_full_access_fallback ? (
                       <div class="warn-line" style={{ marginTop: "4px", fontSize: "11.5px" }}>
-                        仅暴露 full-access，默认拦截无人值守派发
+                        仅暴露 full-access，默认拦截派发，需先开启右侧「允许全权兜底」
                       </div>
                     ) : null}
                   </td>
@@ -399,41 +417,31 @@ export function SettingsView() {
                   </td>
 
                   <td>
-                    {info.interactive ? (
-                      <span
-                        class="muted"
-                        style={{ fontSize: "11.5px" }}
-                        title="交互对话角色必须具备受限 MCP 能力，禁止无人值守 full-access"
-                      >
-                        实时流式
-                      </span>
-                    ) : (
-                      <label class="switch">
-                        <input
-                          type="checkbox"
-                          aria-label={`${info.label} 允许全权兜底`}
-                          checked={Boolean(
-                            assignment?.allow_full_access_fallback,
-                          )}
-                          onChange={(e) => {
-                            const checked = (
-                              e.currentTarget as HTMLInputElement
-                            ).checked;
-                            if (checked) {
-                              setPendingConfirmRole(roleId);
-                            } else {
-                              if (pendingConfirmRole === roleId) {
-                                setPendingConfirmRole(null);
-                              }
-                              updateRole(roleId, {
-                                allow_full_access_fallback: false,
-                              });
+                    <label class="switch">
+                      <input
+                        type="checkbox"
+                        aria-label={`${info.label} 允许全权兜底`}
+                        checked={Boolean(
+                          assignment?.allow_full_access_fallback,
+                        )}
+                        onChange={(e) => {
+                          const checked = (
+                            e.currentTarget as HTMLInputElement
+                          ).checked;
+                          if (checked) {
+                            setPendingConfirmRole(roleId);
+                          } else {
+                            if (pendingConfirmRole === roleId) {
+                              setPendingConfirmRole(null);
                             }
-                          }}
-                        />
-                        <span />
-                      </label>
-                    )}
+                            updateRole(roleId, {
+                              allow_full_access_fallback: false,
+                            });
+                          }
+                        }}
+                      />
+                      <span />
+                    </label>
                   </td>
                 </tr>
               );

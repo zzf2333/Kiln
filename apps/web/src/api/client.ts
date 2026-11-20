@@ -10,6 +10,7 @@ import type {
 } from "@kiln/protocol/web";
 import type {
   AgentDescriptorInfo,
+  BackendConnectionInfo,
   BootstrapResponse,
   ChatMessage,
   ChatResponsePayload,
@@ -394,8 +395,11 @@ export async function sendResolveChat(
   );
 }
 
-export async function fetchAgents(): Promise<AgentDescriptorInfo[] | null> {
-  const res = await fetch("/api/agents");
+export async function fetchAgents(options?: {
+  refresh?: boolean;
+}): Promise<{ agents: AgentDescriptorInfo[]; backends: BackendConnectionInfo[] } | null> {
+  const qs = options?.refresh ? "?refresh=1" : "";
+  const res = await fetch(`/api/agents${qs}`);
   if (res.status === 404) return null;
   const data = await parseJsonSafe(res);
   if (!res.ok) {
@@ -406,7 +410,10 @@ export async function fetchAgents(): Promise<AgentDescriptorInfo[] | null> {
       data,
     );
   }
-  return Array.isArray(data.agents) ? (data.agents as AgentDescriptorInfo[]) : [];
+  return {
+    agents: Array.isArray(data.agents) ? (data.agents as AgentDescriptorInfo[]) : [],
+    backends: Array.isArray(data.backends) ? (data.backends as BackendConnectionInfo[]) : [],
+  };
 }
 
 export async function fetchLedgers(): Promise<

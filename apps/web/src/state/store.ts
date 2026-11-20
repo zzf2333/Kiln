@@ -1388,7 +1388,7 @@ export class KilnWebStore {
         },
         resolveBusy: false,
       });
-      if (res.pendingDecision) {
+      if (res.pendingDecision || res.card) {
         await this.bootstrap();
         await this.loadTaskDetail(taskId);
       }
@@ -1456,12 +1456,27 @@ export class KilnWebStore {
     }
   }
 
-  async refreshAgents(): Promise<void> {
+  async refreshAgents(refresh = false): Promise<void> {
     try {
-      const list = await apiFetchAgents();
-      if (list) {
-        this.setState({ agents: list });
-        this.showToast("已重新读取可用 Agent 与模型列表");
+      const res = await apiFetchAgents({ refresh });
+      if (!res) return;
+      const totalModels = res.agents.reduce(
+        (sum, agent) => sum + (agent.models?.length ?? 0),
+        0,
+      );
+      this.setState({
+        agents: res.agents,
+        ...(res.backends.length > 0 || refresh ? { backends: res.backends } : {}),
+      });
+      if (res.agents.length === 0) {
+        const failed = res.backends.find((b) => !b.connected && b.detail);
+        this.showToast(
+          failed?.detail
+            ? `未读取到可用 Agent：${failed.detail}`
+            : "未读取到可用 Agent，请检查连接与底座配置",
+        );
+      } else {
+        this.showToast(`已读取 ${res.agents.length} 个 Agent（共 ${totalModels} 个模型）`);
       }
     } catch (err) {
       this.showToast(err instanceof Error ? err.message : "读取 Agent 列表失败");
