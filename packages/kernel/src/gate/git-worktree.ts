@@ -77,8 +77,22 @@ function assertSafeRef(ref: string, label: string): string {
   return ref;
 }
 
+function sameCanonicalPath(a: string, b: string): boolean {
+  if (process.platform === "win32") {
+    return a.toLowerCase() === b.toLowerCase();
+  }
+  return a === b;
+}
+
 function isInsideCanonicalDir(canonicalTarget: string, canonicalDir: string): boolean {
   const prefix = canonicalDir.endsWith(path.sep) ? canonicalDir : canonicalDir + path.sep;
+  if (process.platform === "win32") {
+    const targetLower = canonicalTarget.toLowerCase();
+    return (
+      targetLower === canonicalDir.toLowerCase() ||
+      targetLower.startsWith(prefix.toLowerCase())
+    );
+  }
   return canonicalTarget === canonicalDir || canonicalTarget.startsWith(prefix);
 }
 
@@ -92,6 +106,7 @@ async function runGit(args: readonly string[], cwd?: string): Promise<string> {
     env: buildSanitizedEnv(),
     maxBuffer: GIT_MAX_BUFFER,
     encoding: "utf8",
+    windowsHide: true,
   });
   return stdout;
 }
@@ -256,7 +271,7 @@ export async function prepareGitWorktree(
   const canonicalRepo = fs.realpathSync(input.repoPath);
   const topLevel = (await runGit(["-C", canonicalRepo, "rev-parse", "--show-toplevel"])).trim();
   const canonicalTopLevel = fs.realpathSync(topLevel);
-  if (canonicalTopLevel !== canonicalRepo) {
+  if (!sameCanonicalPath(canonicalTopLevel, canonicalRepo)) {
     throw new Error(
       `repoPath "${input.repoPath}" must be the repository root "${canonicalTopLevel}"`,
     );
@@ -326,7 +341,9 @@ export async function prepareGitWorktree(
       prePushHookPath,
       `#!/bin/sh\necho "kiln: git push is disabled inside isolated task worktree" >&2\nexit 1\n`,
     );
-    fs.chmodSync(prePushHookPath, 0o755);
+    if (process.platform !== "win32") {
+      fs.chmodSync(prePushHookPath, 0o755);
+    }
 
     await runGit([
       "-C",

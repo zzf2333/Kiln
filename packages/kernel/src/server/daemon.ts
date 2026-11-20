@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { serve, type ServerType } from "@hono/node-server";
@@ -6,7 +7,7 @@ import type { Hono } from "hono";
 import type { RoleId, RunMeta, RunTokenClaims } from "@kiln/protocol";
 import { BackendRegistry } from "../backend/index.js";
 import { TaskStateMachine } from "../state/index.js";
-import { KilnStore, type AcquireStageLeaseResult } from "../store/index.js";
+import { KilnStore, writeFileAtomic, type AcquireStageLeaseResult } from "../store/index.js";
 import { CaffeinateController } from "./caffeinate.js";
 import {
   KilnChatEngine,
@@ -61,6 +62,8 @@ export interface KilndServerOptions {
   rateTickIntervalMs?: number;
   backendQueryTimeoutMs?: number;
   rateLimitCooldownMs?: number;
+  shutdownToken?: string;
+  onShutdownRequested?: () => Promise<void> | void;
 }
 
 export interface KilndServerAddress {
@@ -115,8 +118,10 @@ export class KilndServer {
   private readonly ownsStore: boolean;
   private readonly ownsBackendRegistry: boolean;
   private readonly tokenSecret: Buffer;
+  private readonly pinnedShutdownToken: string | undefined;
   private readonly mcpRpcServer: McpRpcServer;
 
+  private activeShutdownToken: string | null = null;
   private httpServer: ServerType | null = null;
   private activeAddress: KilndServerAddress | null = null;
 
@@ -136,6 +141,7 @@ export class KilndServer {
     this.requestedPort = options.port ?? DEFAULT_KILND_PORT;
     this.socketPath = options.socketPath ?? this.store.paths.kilndSock;
     this.tokenSecret = normalizeTokenSecret(options.tokenSecret);
+    this.pinnedShutdownToken = options.shutdownToken;
 
     this.rateTracker = new LiveRateTracker({
       ...(options.rateWindowMs !== undefined ? { windowMs: options.rateWindowMs } : {}),
@@ -254,6 +260,8 @@ export class KilndServer {
       tokenSecret: this.tokenSecret,
       socketPath: this.socketPath,
       maxBodyBytes: options.maxRpcBodyBytes,
+      shutdownToken: this.pinnedShutdownToken,
+      onShutdownRequested: options.onShutdownRequested ?? (() => this.stop()),
       onTaskQueued: () => {
         void this.orchestrator.wake();
       },
@@ -276,9 +284,32 @@ export class KilndServer {
     return this.activeAddress ? { ...this.activeAddress } : null;
   }
 
+  get shutdownToken(): string | null {
+    return this.activeShutdownToken ?? this.pinnedShutdownToken ?? null;
+  }
+
+  private removeShutdownTokenFileIfOwned(): void {
+    const token = this.activeShutdownToken;
+    this.activeShutdownToken = null;
+    this.mcpRpcServer.setShutdownToken(this.pinnedShutdownToken);
+    if (!token) {
+      return;
+    }
+    const tokenPath = this.store.paths.shutdownTokenFile;
+    try {
+      const current = fs.readFileSync(tokenPath, "utf8").trim();
+      if (current === token) {
+        fs.rmSync(tokenPath, { force: true });
+      }
+    } catch {
+      // File may already have been cleaned up externally.
+    }
+  }
+
   /**
-   * Hydrates disk-persisted pending decisions, syncs caffeinate state, and starts
-   * both the `0600` Unix Domain Socket RPC server and the loopback HTTP+SSE server.
+   * Hydrates disk-persisted pending decisions, syncs sleep prevention state, writes
+   * the `0600` shutdown control token, and starts both the local IPC RPC server and
+   * the loopback HTTP+SSE server.
    */
   async start(): Promise<KilndServerAddress> {
     if (this.activeAddress) {
@@ -291,7 +322,23 @@ export class KilndServer {
     }
     this.syncCaffeinate();
 
+    const instanceShutdownToken =
+      this.pinnedShutdownToken ?? crypto.randomBytes(32).toString("hex");
+    this.activeShutdownToken = instanceShutdownToken;
+    this.mcpRpcServer.setShutdownToken(instanceShutdownToken);
+
     await this.mcpRpcServer.start();
+    try {
+      writeFileAtomic(
+        this.store.paths.shutdownTokenFile,
+        `${instanceShutdownToken}\n`,
+        { mode: 0o600 },
+      );
+    } catch (err) {
+      this.removeShutdownTokenFileIfOwned();
+      await this.mcpRpcServer.stop();
+      throw err;
+    }
 
     let server: ServerType;
     try {
@@ -322,6 +369,7 @@ export class KilndServer {
         createdServer.once("error", onError);
       });
     } catch (err) {
+      this.removeShutdownTokenFileIfOwned();
       await this.mcpRpcServer.stop();
       throw err;
     }
@@ -329,6 +377,7 @@ export class KilndServer {
     const rawAddr = server.address() as AddressInfo | string | null;
     if (!rawAddr || typeof rawAddr === "string") {
       server.close();
+      this.removeShutdownTokenFileIfOwned();
       await this.mcpRpcServer.stop();
       throw new Error("KilndServer HTTP server failed to bind a TCP port");
     }
@@ -417,6 +466,7 @@ export class KilndServer {
       });
     }
 
+    this.removeShutdownTokenFileIfOwned();
     await this.mcpRpcServer.stop();
 
     if (this.ownsBackendRegistry) {

@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -20,8 +21,12 @@ import {
   appendNdjsonLine,
   assertSafeSegment,
   deriveTaskStatus,
+  detectSqliteRuntime,
+  isWindowsNamedPipe,
+  openSqliteDatabase,
   readNdjsonValidated,
   readYamlValidated,
+  resolveDefaultIpcPath,
   resolveKilnHome,
   writeFileAtomic,
   writeYamlAtomic,
@@ -137,13 +142,41 @@ describe("paths & traversal protection", () => {
     }
 
     expect(paths.configFile("roles")).toBe(path.resolve("/tmp/kiln-safe-test/config/roles.yaml"));
-    expect(paths.kilndSock).toBe(path.resolve("/tmp/kiln-safe-test/run/kilnd.sock"));
+    expect(paths.kilndSock).toBe(resolveDefaultIpcPath(paths.home));
+    expect(paths.shutdownTokenFile).toBe(path.resolve("/tmp/kiln-safe-test/run/kilnd.shutdown"));
     expect(paths.stagedDir("t-101")).toBe(
       path.resolve("/tmp/kiln-safe-test/workspaces/t-101/staged"),
     );
     expect(paths.backupManifest("t-101")).toBe(
       path.resolve("/tmp/kiln-safe-test/backups/t-101/manifest.json"),
     );
+  });
+
+  it("resolves cross-platform local IPC paths and identifies Windows Named Pipes", () => {
+    expect(isWindowsNamedPipe("\\\\.\\pipe\\kiln-rpc-0123456789abcdef")).toBe(true);
+    expect(isWindowsNamedPipe("\\\\?\\pipe\\kiln-rpc-0123456789abcdef")).toBe(true);
+    expect(isWindowsNamedPipe("\\\\.\\PIPE\\KILN-RPC-TEST")).toBe(true);
+    expect(isWindowsNamedPipe("/tmp/kiln/run/kilnd.sock")).toBe(false);
+    expect(isWindowsNamedPipe("C:\\Users\\Alice\\.kiln\\run\\kilnd.sock")).toBe(false);
+
+    expect(resolveDefaultIpcPath("/tmp/kiln-xplat", "darwin")).toBe(
+      path.join(path.resolve("/tmp/kiln-xplat"), "run", "kilnd.sock"),
+    );
+    expect(resolveDefaultIpcPath("/tmp/kiln-xplat", "linux")).toBe(
+      path.join(path.resolve("/tmp/kiln-xplat"), "run", "kilnd.sock"),
+    );
+
+    const winPipeA = resolveDefaultIpcPath("C:\\Users\\Alice\\.kiln", "win32");
+    const winPipeB = resolveDefaultIpcPath("c:/users/alice/.kiln/", "win32");
+    const expectedHash = crypto
+      .createHash("sha256")
+      .update("c:\\users\\alice\\.kiln")
+      .digest("hex")
+      .slice(0, 16);
+    expect(winPipeA).toBe(`\\\\.\\pipe\\kiln-rpc-${expectedHash}`);
+    expect(winPipeB).toBe(winPipeA);
+    expect(isWindowsNamedPipe(winPipeA)).toBe(true);
+    expect(winPipeA.length).toBeLessThanOrEqual(256);
   });
 });
 
@@ -211,10 +244,66 @@ describe("KilnStore concurrency, contract bump, locks, usage, and isolation", ()
   });
 
   it("initializes SQLite with WAL, synchronous=NORMAL, and foreign_keys=ON", () => {
+    expect(store.sqlite.driver).toBe(detectSqliteRuntime());
     const pragmas = store.sqlite.getPragmaSettings();
     expect(pragmas.journalMode.toLowerCase()).toBe("wal");
     expect(pragmas.synchronous).toBe(1);
     expect(pragmas.foreignKeys).toBe(1);
+  });
+
+  it("normalizes dual SQLite driver rows, undefined misses, number changes, and nested SAVEPOINT rollback", () => {
+    const dbPath = path.join(tempHome, "driver-check.sqlite");
+    const db = openSqliteDatabase(dbPath);
+    try {
+      db.exec("CREATE TABLE items (id TEXT PRIMARY KEY, val TEXT NOT NULL)");
+      const ins = db.prepare("INSERT INTO items (id, val) VALUES (@id, @val)");
+      const runInfo = ins.run({ id: "a", val: "one", ignoredExtraKey: 42 });
+      expect(typeof runInfo.changes).toBe("number");
+      expect(runInfo.changes).toBe(1);
+
+      const getStmt = db.prepare("SELECT * FROM items WHERE id = ?");
+      expect(getStmt.get("missing")).toBeUndefined();
+      const hit = getStmt.get("a");
+      expect(hit).toEqual({ id: "a", val: "one" });
+      expect(Object.getPrototypeOf(hit)).toBe(Object.prototype);
+
+      const allRows = db.prepare("SELECT * FROM items").all();
+      expect(allRows).toEqual([{ id: "a", val: "one" }]);
+      expect(Object.getPrototypeOf(allRows[0])).toBe(Object.prototype);
+
+      // Nested SAVEPOINT rollback keeps outer transaction intact when inner error is caught
+      db.transaction(() => {
+        ins.run({ id: "outer", val: "kept" });
+        expect(() =>
+          db.transaction(() => {
+            ins.run({ id: "inner", val: "rolled-back" });
+            throw new Error("abort inner savepoint");
+          }),
+        ).toThrow("abort inner savepoint");
+      });
+
+      expect(getStmt.get("outer")).toEqual({ id: "outer", val: "kept" });
+      expect(getStmt.get("inner")).toBeUndefined();
+
+      // Outer transaction rollback reverts all statements
+      expect(() =>
+        db.transaction(() => {
+          ins.run({ id: "reverted", val: "nope" });
+          throw new Error("abort outer tx");
+        }),
+      ).toThrow("abort outer tx");
+      expect(getStmt.get("reverted")).toBeUndefined();
+    } finally {
+      db.close();
+    }
+
+    // writeFileAtomic honors mode 0o600 on POSIX without throwing on Windows
+    const secretFile = path.join(tempHome, "secret.token");
+    writeFileAtomic(secretFile, "token-value\n", { mode: 0o600 });
+    expect(fs.readFileSync(secretFile, "utf8")).toBe("token-value\n");
+    if (process.platform !== "win32") {
+      expect(fs.statSync(secretFile).mode & 0o777).toBe(0o600);
+    }
   });
 
   it("handles dual-runner concurrent lease acquisition and stale receipt archiving", () => {

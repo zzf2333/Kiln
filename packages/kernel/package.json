@@ -10,7 +10,7 @@
     }
   },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --clean --external better-sqlite3",
+    "build": "tsup src/index.ts --format esm --dts --clean --external bun:sqlite --external node:sqlite --external bun:ffi",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --root ../.. packages/kernel/src"
   },
@@ -18,12 +18,8 @@
     "@getpaseo/client": "^0.16.1",
     "@hono/node-server": "^1.13.0",
     "@kiln/protocol": "workspace:*",
-    "better-sqlite3": "^13.2.0",
     "hono": "^4.7.0",
     "yaml": "^2.7.0",
     "zod": "^3.24.2"
-  },
-  "devDependencies": {
-    "@types/better-sqlite3": "^9.6.0"
   }
 }

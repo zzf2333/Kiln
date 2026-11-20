@@ -52,10 +52,13 @@ import {
   stopManagedDaemon,
   uninstallService,
   type ExecGitFn,
+  type GracefulShutdownRequestFn,
+  type KillProcessTreeFn,
   type ServiceOptions,
   type SignalProcessFn,
   type SupportedServicePlatform,
   type SystemControlFn,
+  type WindowsRegistryBackend,
 } from "./service.js";
 
 const execFileAsync = promisify(execFile);
@@ -91,6 +94,10 @@ export interface CliRuntimeOptions {
   homeDir?: string;
   launchAgentsDir?: string;
   systemdDir?: string;
+  windowsRunKey?: string;
+  windowsValueName?: string;
+  windowsRegistry?: WindowsRegistryBackend;
+  socketPath?: string;
   port?: number;
   host?: string;
   fetchImpl?: typeof fetch;
@@ -99,6 +106,8 @@ export interface CliRuntimeOptions {
     ctx: SpawnDaemonContext,
   ) => Promise<SpawnDaemonResult> | SpawnDaemonResult;
   stopDaemon?: () => Promise<boolean | void> | boolean | void;
+  requestGracefulShutdown?: GracefulShutdownRequestFn;
+  killProcessTree?: KillProcessTreeFn;
   isDaemonRunning?: () => Promise<boolean> | boolean;
   platform?: NodeJS.Platform;
   stdout?: CliOutputSink;
@@ -184,7 +193,7 @@ const GLOBAL_HELP = [
   "",
   "Commands:",
   "  up [--port <port>] [--host <host>] [--foreground]  Start kilnd (idempotent)",
-  "        [--paseo-url <url>] [--no-paseo]",
+  "        [--kiln-home <dir>] [--paseo-url <url>] [--no-paseo]",
   "  down                                               Stop managed kilnd",
   "  open [--port <port>] [--host <host>]               Open Kiln web UI",
   "  status [--port <port>] [--host <host>] [--json]    Show tasks, pending decisions, usage",
@@ -203,7 +212,7 @@ const GLOBAL_HELP = [
 ].join("\n");
 
 const COMMAND_HELP: Record<string, string> = {
-  up: "Usage: kiln up [--port <port>] [--host <host>] [--foreground] [--paseo-url <url>] [--no-paseo]",
+  up: "Usage: kiln up [--port <port>] [--host <host>] [--kiln-home <dir>] [--foreground] [--paseo-url <url>] [--no-paseo]",
   down: "Usage: kiln down",
   open: "Usage: kiln open [--port <port>] [--host <host>]",
   status: "Usage: kiln status [--port <port>] [--host <host>] [--json]",
@@ -219,8 +228,8 @@ const COMMAND_HELP: Record<string, string> = {
   ].join("\n"),
   doctor: "Usage: kiln doctor [--port <port>] [--host <host>] [--json]",
   service:
-    "Usage: kiln service <install|uninstall|status> [--platform <darwin|linux>] [--label <label>] [--service-name <name>]",
-  uninstall: "Usage: kiln uninstall [--purge-data] [--platform <darwin|linux>]",
+    "Usage: kiln service <install|uninstall|status> [--platform <darwin|linux|win32>] [--label <label>] [--service-name <name>]",
+  uninstall: "Usage: kiln uninstall [--purge-data] [--platform <darwin|linux|win32>]",
 };
 
 function createOutputCollector(options: CliRuntimeOptions): {
@@ -380,9 +389,9 @@ function parsePlatformFlag(
   if (rawPlatform === undefined) {
     return fallback ?? process.platform;
   }
-  if (rawPlatform !== "darwin" && rawPlatform !== "linux") {
+  if (rawPlatform !== "darwin" && rawPlatform !== "linux" && rawPlatform !== "win32") {
     throw new CliUsageError(
-      `Invalid --platform "${rawPlatform}": expected "darwin" or "linux"`,
+      `Invalid --platform "${rawPlatform}": expected "darwin", "linux", or "win32"`,
       COMMAND_HELP.service,
     );
   }
@@ -399,6 +408,9 @@ function buildServiceOptions(
     kilnHome: options.kilnHome,
     launchAgentsDir: options.launchAgentsDir,
     systemdDir: options.systemdDir,
+    windowsRunKey: options.windowsRunKey,
+    windowsValueName: options.windowsValueName,
+    windowsRegistry: options.windowsRegistry,
     executeSystemControl: options.executeSystemControl,
   };
 }
@@ -703,6 +715,7 @@ async function defaultExecFile(
     env: buildSanitizedEnv(),
     encoding: "utf8",
     timeout: 5_000,
+    windowsHide: true,
   });
   return { stdout: result.stdout, stderr: result.stderr };
 }
@@ -717,6 +730,7 @@ async function handleUp(
     options: {
       port: { type: "string", short: "p" },
       host: { type: "string" },
+      "kiln-home": { type: "string" },
       foreground: { type: "boolean", short: "f", default: false },
       "paseo-url": { type: "string" },
       "no-paseo": { type: "boolean", default: false },
@@ -731,7 +745,12 @@ async function handleUp(
     return { exitCode: 0, stdout: io.getStdout(), stderr: io.getStderr() };
   }
 
-  const kilnHome = resolveCliKilnHome(options);
+  const kilnHome = resolveCliKilnHome({
+    ...options,
+    ...(parsed.values["kiln-home"] !== undefined
+      ? { kilnHome: parsed.values["kiln-home"] }
+      : {}),
+  });
   const host = parseHostValue(parsed.values.host, options.host);
   const allowZeroPort =
     Boolean(parsed.values.foreground) || Boolean(options.spawnDaemon);
@@ -825,12 +844,17 @@ async function handleUp(
         backendRegistry.register(paseoBackend);
       }
 
+      const shutdownAc = new AbortController();
       server = new KilndServer({
         kilnHome,
         host,
         port,
+        ...(options.socketPath !== undefined ? { socketPath: options.socketPath } : {}),
         enableOrchestrator: true,
         backendRegistry,
+        onShutdownRequested: () => {
+          shutdownAc.abort();
+        },
       });
       const addr = await server.start();
       writeFileAtomic(pidFile, `${process.pid}\n`);
@@ -841,13 +865,17 @@ async function handleUp(
 
       if (options.foregroundSignal) {
         await new Promise<void>((resolve) => {
-          if (options.foregroundSignal!.aborted) {
+          if (options.foregroundSignal!.aborted || shutdownAc.signal.aborted) {
             resolve();
             return;
           }
-          options.foregroundSignal!.addEventListener("abort", () => resolve(), {
-            once: true,
-          });
+          const done = (): void => {
+            options.foregroundSignal?.removeEventListener("abort", done);
+            shutdownAc.signal.removeEventListener("abort", done);
+            resolve();
+          };
+          options.foregroundSignal!.addEventListener("abort", done, { once: true });
+          shutdownAc.signal.addEventListener("abort", done, { once: true });
         });
         await server.stop();
         fs.rmSync(pidFile, { force: true });
@@ -902,6 +930,7 @@ async function handleUp(
       spawnArgs,
       {
         detached: true,
+        windowsHide: true,
         stdio: ["ignore", outFd, outFd],
         env: { ...process.env, KILN_HOME: kilnHome },
       },
@@ -971,8 +1000,12 @@ async function handleDown(
   const kilnHome = resolveCliKilnHome(options);
   const res = await stopManagedDaemon({
     kilnHome,
+    platform: options.platform,
+    socketPath: options.socketPath,
     stopDaemon: options.stopDaemon,
+    requestGracefulShutdown: options.requestGracefulShutdown,
     signalProcess: options.signalProcess,
+    killProcessTree: options.killProcessTree,
   });
 
   if (res.stopped) {
@@ -1040,6 +1073,15 @@ async function handleOpen(
   if (platform === "linux") {
     try {
       await execImpl("xdg-open", [url]);
+      io.out(`Opened ${url}`);
+    } catch {
+      io.out(`Open Kiln UI in your browser: ${url}`);
+    }
+    return { exitCode: 0, stdout: io.getStdout(), stderr: io.getStderr(), data: { url } };
+  }
+  if (platform === "win32") {
+    try {
+      await execImpl("rundll32.exe", ["url.dll,FileProtocolHandler", url]);
       io.out(`Opened ${url}`);
     } catch {
       io.out(`Open Kiln UI in your browser: ${url}`);
@@ -2130,7 +2172,7 @@ async function handleDoctor(
 
   checks.push(await checkDoctorPaseo(fetchImpl, baseUrl, kilndOnline));
 
-  if (platform === "darwin" || platform === "linux") {
+  if (platform === "darwin" || platform === "linux" || platform === "win32") {
     const svc = getServiceStatus(buildServiceOptions(options, platform));
     checks.push({
       id: "service",
@@ -2271,9 +2313,12 @@ async function handleUninstall(
   const platformOverride = parsePlatformFlag(parsed.values.platform, options.platform);
   const result = await runUninstall({
     ...buildServiceOptions(options, platformOverride),
+    socketPath: options.socketPath,
     purgeData: parsed.values["purge-data"],
     stopDaemon: options.stopDaemon,
+    requestGracefulShutdown: options.requestGracefulShutdown,
     signalProcess: options.signalProcess,
+    killProcessTree: options.killProcessTree,
     execGit: options.execGit,
   });
 

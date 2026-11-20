@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 
 const EXPLICIT_SENSITIVE_ENV_VARS = new Set<string>([
@@ -28,6 +28,19 @@ const SENSITIVE_ENV_NAME_PATTERN =
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024;
+const WINDOWS_TASKKILL_NOT_FOUND_EXIT_CODE = 128;
+
+export type ExecTaskkillFn = (
+  command: string,
+  args: readonly string[],
+  options: { windowsHide: true },
+) => Promise<void>;
+
+export interface TerminateProcessTreeOptions {
+  platform?: NodeJS.Platform;
+  signalProcess?: (pid: number, signal?: NodeJS.Signals | 0) => void;
+  execTaskkill?: ExecTaskkillFn;
+}
 
 export interface RunIsolatedCommandOptions {
   cwd: string;
@@ -36,6 +49,8 @@ export interface RunIsolatedCommandOptions {
   env?: NodeJS.ProcessEnv;
   extraSafeEnv?: Record<string, string>;
   signal?: AbortSignal;
+  platform?: NodeJS.Platform;
+  execTaskkill?: ExecTaskkillFn;
 }
 
 export interface IsolatedCommandResult {
@@ -132,19 +147,85 @@ class CappedStreamCollector {
   }
 }
 
-function killChildProcessGroup(pid: number | undefined): boolean {
+function defaultExecTaskkill(
+  command: string,
+  args: readonly string[],
+  options: { windowsHide: true },
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    execFile(command, [...args], options, (err) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
+function getNumericExitCode(err: unknown): number | null {
+  if (typeof err !== "object" || err === null) {
+    return null;
+  }
+  const code = (err as { code?: unknown }).code;
+  if (typeof code === "number" && Number.isInteger(code)) {
+    return code;
+  }
+  const status = (err as { status?: unknown }).status;
+  if (typeof status === "number" && Number.isInteger(status)) {
+    return status;
+  }
+  return null;
+}
+
+/**
+ * Terminates a child process and its entire descendant tree:
+ * - POSIX: sends `SIGKILL` to the detached process group `-pid` (falling back to `pid`).
+ * - Windows (`win32`): executes `taskkill /PID <pid> /T /F` with `windowsHide: true`,
+ *   treating exit code `128` (process already exited) as non-fatal.
+ */
+export async function terminateProcessTree(
+  pid: number | undefined,
+  options: TerminateProcessTreeOptions = {},
+): Promise<boolean> {
   if (pid === undefined || pid <= 0) {
     return false;
   }
+
+  const platform = options.platform ?? process.platform;
+  const signalProcess =
+    options.signalProcess ??
+    ((targetPid: number, sig?: NodeJS.Signals | number) => process.kill(targetPid, sig));
+
+  if (platform === "win32") {
+    const execTaskkill = options.execTaskkill ?? defaultExecTaskkill;
+    try {
+      await execTaskkill("taskkill", ["/PID", String(pid), "/T", "/F"], {
+        windowsHide: true,
+      });
+      return true;
+    } catch (err) {
+      if (getNumericExitCode(err) === WINDOWS_TASKKILL_NOT_FOUND_EXIT_CODE) {
+        return false;
+      }
+      try {
+        signalProcess(pid, "SIGKILL");
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+
   try {
-    process.kill(-pid, "SIGKILL");
+    signalProcess(-pid, "SIGKILL");
     return true;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ESRCH") {
       return false;
     }
     try {
-      process.kill(pid, "SIGKILL");
+      signalProcess(pid, "SIGKILL");
       return true;
     } catch {
       return false;
@@ -177,8 +258,9 @@ function resolveExitCode(
 }
 
 /**
- * Runs a verification command in an isolated detached process group with stripped
- * credentials, bounded output collection, and `-pid` SIGKILL cleanup on timeout/abort.
+ * Runs a verification command in an isolated process group/tree with stripped credentials,
+ * bounded output collection, and OS-native tree cleanup on timeout/abort
+ * (`process.kill(-pid, "SIGKILL")` on POSIX; `taskkill /PID <pid> /T /F` on Windows).
  */
 export function runIsolatedCommand(
   command: string,
@@ -217,6 +299,8 @@ export function runIsolatedCommand(
     });
   }
 
+  const platform = options.platform ?? process.platform;
+  const isWindows = platform === "win32";
   const sanitizedEnv = buildSanitizedEnv(options.env, options.extraSafeEnv);
   const collector = new CappedStreamCollector(maxOutputBytes);
   const startTime = Date.now();
@@ -226,15 +310,34 @@ export function runIsolatedCommand(
     let timedOut = false;
     let aborted = false;
     let killedProcessGroup = false;
+    let killPromise: Promise<boolean> | null = null;
     let timer: NodeJS.Timeout | undefined;
 
     const child = spawn(command, {
       cwd: options.cwd,
       env: sanitizedEnv,
       shell: true,
-      detached: true,
+      detached: !isWindows,
+      windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
+
+    const triggerTreeKill = (): void => {
+      if (killPromise !== null) {
+        return;
+      }
+      killPromise = terminateProcessTree(child.pid, {
+        platform,
+        execTaskkill: options.execTaskkill,
+      })
+        .then((killed) => {
+          if (killed) {
+            killedProcessGroup = true;
+          }
+          return killed;
+        })
+        .catch(() => false);
+    };
 
     const cleanupListeners = (): void => {
       if (timer !== undefined) {
@@ -251,9 +354,7 @@ export function runIsolatedCommand(
         return;
       }
       aborted = true;
-      if (killChildProcessGroup(child.pid)) {
-        killedProcessGroup = true;
-      }
+      triggerTreeKill();
     };
 
     timer = setTimeout(() => {
@@ -261,9 +362,7 @@ export function runIsolatedCommand(
         return;
       }
       timedOut = true;
-      if (killChildProcessGroup(child.pid)) {
-        killedProcessGroup = true;
-      }
+      triggerTreeKill();
     }, timeoutMs);
 
     if (options.signal) {
@@ -293,18 +392,26 @@ export function runIsolatedCommand(
       }
       settled = true;
       cleanupListeners();
-      const durationMs = Math.max(0, Date.now() - startTime);
-      const { stdout, stderr } = collector.readOutputs();
-      resolve({
-        exitCode: resolveExitCode(code, signal, timedOut, aborted),
-        timedOut,
-        killedProcessGroup,
-        stdout,
-        stderr,
-        durationMs,
-        aborted,
-        truncated: collector.truncated,
-      });
+      const finish = (): void => {
+        const durationMs = Math.max(0, Date.now() - startTime);
+        const { stdout, stderr } = collector.readOutputs();
+        resolve({
+          exitCode: resolveExitCode(code, signal, timedOut, aborted),
+          timedOut,
+          killedProcessGroup,
+          stdout,
+          stderr,
+          durationMs,
+          aborted,
+          truncated: collector.truncated,
+        });
+      };
+
+      if (killPromise !== null) {
+        void killPromise.finally(finish);
+      } else {
+        finish();
+      }
     });
   });
 }

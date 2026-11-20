@@ -28,24 +28,40 @@ function toBuffer(content: string | Uint8Array): Buffer {
     : Buffer.from(content.buffer, content.byteOffset, content.byteLength);
 }
 
+export interface WriteFileAtomicOptions {
+  /**
+   * Optional POSIX file permission mode (e.g. `0o600`). Enforced on non-Windows platforms
+   * before atomic rename; safely ignored on Windows NTFS.
+   */
+  mode?: number;
+}
+
 /**
  * Writes a file atomically via a same-directory temp file, fsync, and renameSync.
  * Cleans up the temp file on failure before rethrowing.
  */
-export function writeFileAtomic(filePath: string, content: string | Uint8Array): void {
+export function writeFileAtomic(
+  filePath: string,
+  content: string | Uint8Array,
+  options?: WriteFileAtomicOptions,
+): void {
   const dir = path.dirname(filePath);
   ensureDir(dir);
 
   const tmpPath = path.join(dir, `.tmp.${process.pid}.${randomUUID()}`);
   const buf = toBuffer(content);
+  const posixMode = process.platform !== "win32" ? options?.mode : undefined;
 
   let fd: number | null = null;
   try {
-    fd = fs.openSync(tmpPath, "wx");
+    fd = posixMode !== undefined ? fs.openSync(tmpPath, "wx", posixMode) : fs.openSync(tmpPath, "wx");
     writeAllSync(fd, buf, tmpPath);
     fs.fsyncSync(fd);
     fs.closeSync(fd);
     fd = null;
+    if (posixMode !== undefined) {
+      fs.chmodSync(tmpPath, posixMode);
+    }
     fs.renameSync(tmpPath, filePath);
   } catch (err) {
     if (fd !== null) {

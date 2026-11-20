@@ -1,5 +1,9 @@
 import { spawn, type SpawnOptions } from "node:child_process";
 import fs from "node:fs";
+import {
+  WindowsPowerController,
+  type WindowsPowerApi,
+} from "./windows-power.js";
 
 export const CAFFEINATE_BIN_PATH = "/usr/bin/caffeinate";
 
@@ -22,12 +26,15 @@ export interface CaffeinateControllerOptions {
   existsSync?: (filePath: string) => boolean;
   pid?: number;
   caffeinatePath?: string;
+  windowsPower?: WindowsPowerController;
+  windowsPowerApi?: WindowsPowerApi | null;
 }
 
 /**
- * Dynamic macOS sleep prevention controller (`AGENTS.md §4.6`):
- * - Spawns `/usr/bin/caffeinate -i -w <pid>` only on `0 -> >=1` running task transition.
- * - Immediately terminates the child via `SIGTERM` when running task count returns to `0`.
+ * Dynamic cross-platform sleep prevention controller (`AGENTS.md §4.6`):
+ * - macOS (`darwin`): spawns `/usr/bin/caffeinate -i -w <pid>` on `0 -> >=1` running tasks,
+ *   terminates immediately via `SIGTERM` when count returns to `0`.
+ * - Windows (`win32`): acquires/releases Win32 `SetThreadExecutionState` via `WindowsPowerController`.
  * - Idempotent across concurrent/repeated `syncRunningCount` calls.
  */
 export class CaffeinateController {
@@ -36,6 +43,7 @@ export class CaffeinateController {
   private readonly existsSync: (filePath: string) => boolean;
   private readonly pid: number;
   private readonly caffeinatePath: string;
+  private readonly windowsPower: WindowsPowerController;
 
   private runningCount = 0;
   private child: CaffeinateChildProcess | null = null;
@@ -48,10 +56,19 @@ export class CaffeinateController {
     this.existsSync = options.existsSync ?? fs.existsSync;
     this.pid = options.pid ?? process.pid;
     this.caffeinatePath = options.caffeinatePath ?? CAFFEINATE_BIN_PATH;
+    this.windowsPower =
+      options.windowsPower ??
+      new WindowsPowerController(
+        options.windowsPowerApi !== undefined
+          ? { powerApi: options.windowsPowerApi }
+          : this.platform === "win32"
+            ? {}
+            : { powerApi: null },
+      );
   }
 
   get isActive(): boolean {
-    return this.child !== null;
+    return this.child !== null || this.windowsPower.isActive;
   }
 
   get currentRunningCount(): number {
@@ -59,7 +76,7 @@ export class CaffeinateController {
   }
 
   /**
-   * Synchronizes the active `caffeinate` child with the current running leaf task count.
+   * Synchronizes active OS sleep prevention with the current running leaf task count.
    */
   syncRunningCount(runningCount: number): void {
     if (!Number.isInteger(runningCount) || runningCount < 0) {
@@ -69,6 +86,15 @@ export class CaffeinateController {
     }
 
     this.runningCount = runningCount;
+
+    if (this.platform === "win32") {
+      if (runningCount === 0) {
+        this.windowsPower.release();
+      } else {
+        this.windowsPower.acquire({ requireAc: false });
+      }
+      return;
+    }
 
     if (runningCount === 0) {
       if (this.child !== null) {
@@ -106,9 +132,10 @@ export class CaffeinateController {
   }
 
   /**
-   * Stops any active `caffeinate` process immediately during daemon shutdown.
+   * Stops any active sleep prevention process or assertion immediately during daemon shutdown.
    */
   stop(): void {
     this.syncRunningCount(0);
+    this.windowsPower.release();
   }
 }

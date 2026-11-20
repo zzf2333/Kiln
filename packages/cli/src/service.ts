@@ -1,5 +1,6 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,26 +12,44 @@ import {
   buildSanitizedEnv,
   ensureDir,
   readYamlOptional,
+  resolveDefaultIpcPath,
   resolveKilnHome,
+  terminateProcessTree,
   writeFileAtomic,
 } from "@kiln/kernel";
 
 const execFileAsync = promisify(execFile);
 const CONTROL_CHAR_REGEX = /[\u0000-\u001f\u007f]/;
 const GIT_MAX_BUFFER = 10 * 1024 * 1024;
-const DEFAULT_STOP_TIMEOUT_MS = 2_000;
+const DEFAULT_STOP_TIMEOUT_MS = 3_000;
+const SHUTDOWN_RPC_TIMEOUT_MS = 1_500;
 const STOP_POLL_INTERVAL_MS = 25;
 
 export const MACOS_LAUNCH_AGENT_LABEL = "work.kiln.daemon";
 export const LINUX_SYSTEMD_SERVICE_NAME = "kilnd.service";
+export const WINDOWS_RUN_REGISTRY_KEY =
+  "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+export const WINDOWS_RUN_VALUE_NAME = "KilnDaemon";
 
-export type SupportedServicePlatform = "darwin" | "linux";
+export type SupportedServicePlatform = "darwin" | "linux" | "win32";
 
 export type SystemControlFn = (
   command: string,
   args: readonly string[],
 ) => Promise<void> | void;
 
+export interface WindowsRegistryBackend {
+  add(key: string, valueName: string, data: string): Promise<void> | void;
+  delete(key: string, valueName: string): Promise<boolean> | boolean;
+  query(key: string, valueName: string): string | null;
+}
+
+export type GracefulShutdownRequestFn = (ctx: {
+  socketPath: string;
+  shutdownToken: string;
+}) => Promise<boolean>;
+
+export type KillProcessTreeFn = (pid: number) => Promise<boolean> | boolean;
 export type SignalProcessFn = (pid: number, signal?: NodeJS.Signals | 0) => void;
 export type ExecGitFn = (args: readonly string[], cwd?: string) => Promise<string>;
 
@@ -52,6 +71,13 @@ export interface RenderSystemdUnitInput {
   args?: readonly string[];
 }
 
+export interface RenderWindowsRunCommandInput {
+  executable: string;
+  kilndEntrypoint?: string;
+  kilnHome: string;
+  args?: readonly string[];
+}
+
 export interface ServiceOptions {
   platform?: NodeJS.Platform;
   homeDir?: string;
@@ -60,6 +86,9 @@ export interface ServiceOptions {
   systemdDir?: string;
   label?: string;
   serviceName?: string;
+  windowsRunKey?: string;
+  windowsValueName?: string;
+  windowsRegistry?: WindowsRegistryBackend;
   nodeExecutable?: string;
   kilndEntrypoint?: string;
   args?: readonly string[];
@@ -72,6 +101,7 @@ export interface InstallServiceResult {
   platform: SupportedServicePlatform;
   servicePath: string;
   executedControl: boolean;
+  command?: string;
 }
 
 export interface UninstallServiceResult {
@@ -91,6 +121,7 @@ export interface StopDaemonResult {
   stopped: boolean;
   pid: number | null;
   removedStalePid: boolean;
+  method?: "callback" | "ipc_shutdown" | "signal" | "taskkill";
 }
 
 export interface DetectedWorktreeRef {
@@ -105,8 +136,11 @@ export interface DetectedWorktreeRef {
 
 export interface UninstallOptions extends ServiceOptions {
   purgeData?: boolean;
+  socketPath?: string;
   stopDaemon?: () => Promise<boolean | void> | boolean | void;
+  requestGracefulShutdown?: GracefulShutdownRequestFn;
   signalProcess?: SignalProcessFn;
+  killProcessTree?: KillProcessTreeFn;
   execGit?: ExecGitFn;
   waitTimeoutMs?: number;
 }
@@ -168,6 +202,90 @@ function escapeSystemdPathValue(value: string, fieldLabel: string): string {
   return value.replaceAll("%", "%%");
 }
 
+function stripTrailingNonRootBackslashes(rawPath: string): string {
+  // Preserve Windows drive roots ("C:\") and UNC roots while stripping trailing "\"
+  // that could otherwise escape a closing quote in Win32 CommandLineToArgvW.
+  if (/^[A-Za-z]:\\+$/.test(rawPath)) {
+    return `${rawPath.slice(0, 2)}\\`;
+  }
+  return rawPath.replace(/\\+$/, "");
+}
+
+function quoteWindowsCommandArg(value: string, fieldLabel: string): string {
+  assertNoControlChars(value, fieldLabel);
+  // Follow Microsoft CommandLineToArgvW escaping rules:
+  // double any run of backslashes immediately before a quote or the closing quote.
+  let out = '"';
+  let pendingBackslashes = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i]!;
+    if (ch === "\\") {
+      pendingBackslashes += 1;
+    } else if (ch === '"') {
+      out += "\\".repeat(pendingBackslashes * 2 + 1) + '"';
+      pendingBackslashes = 0;
+    } else {
+      if (pendingBackslashes > 0) {
+        out += "\\".repeat(pendingBackslashes);
+        pendingBackslashes = 0;
+      }
+      out += ch;
+    }
+  }
+  if (pendingBackslashes > 0) {
+    out += "\\".repeat(pendingBackslashes * 2);
+  }
+  out += '"';
+  return out;
+}
+
+function assertValidWindowsUserRunKey(rawKey: string): string {
+  const key = assertNoControlChars(rawKey, "windowsRunKey").trim();
+  if (!/^HKCU\\/i.test(key) && !/^HKEY_CURRENT_USER\\/i.test(key)) {
+    throw new Error(
+      `windowsRunKey must be user-level under HKCU\\ (no UAC/HKLM): got "${rawKey}"`,
+    );
+  }
+  return key;
+}
+
+function assertValidWindowsValueName(rawName: string): string {
+  const name = assertNoControlChars(rawName, "windowsValueName").trim();
+  if (name.length === 0 || name.includes("\\") || name.includes("/")) {
+    throw new Error(`Invalid windowsValueName "${rawName}": path separators are forbidden`);
+  }
+  return name;
+}
+
+function queryHostWindowsRegistryValue(key: string, valueName: string): string | null {
+  if (process.platform !== "win32") {
+    return null;
+  }
+  try {
+    const stdout = execFileSync("reg.exe", ["query", key, "/v", valueName], {
+      windowsHide: true,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    for (const line of stdout.split(/\r?\n/)) {
+      const match = /^\s*(\S+)\s+REG_(?:EXPAND_)?SZ\s+(.*)$/i.exec(line);
+      if (match && match[1] && match[1].toLowerCase() === valueName.toLowerCase()) {
+        return (match[2] ?? "").trim();
+      }
+    }
+    return stdout.trim().length > 0 ? stdout.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Returns the canonical `kilnd.shutdown` control token path inside `<kilnHome>/run/kilnd.shutdown`.
+ */
+export function resolveKilnShutdownTokenPath(kilnHome: string): string {
+  return new KilnPaths(kilnHome).shutdownTokenFile;
+}
+
 /**
  * Resolves the user home directory, honoring an explicit `homeDir` override to avoid
  * touching host user directories during tests.
@@ -220,11 +338,11 @@ export function resolveDefaultCliEntrypoint(): string {
 
 function resolveSupportedPlatform(platform?: NodeJS.Platform): SupportedServicePlatform {
   const effective = platform ?? process.platform;
-  if (effective === "darwin" || effective === "linux") {
+  if (effective === "darwin" || effective === "linux" || effective === "win32") {
     return effective;
   }
   throw new Error(
-    `Unsupported service platform "${effective}": only darwin and linux are supported`,
+    `Unsupported service platform "${effective}": only darwin, linux, and win32 are supported`,
   );
 }
 
@@ -233,8 +351,28 @@ function resolveServiceDescriptor(options: ServiceOptions): {
   servicePath: string;
   label: string;
   serviceName: string;
+  windowsRunKey: string;
+  windowsValueName: string;
 } {
   const platform = resolveSupportedPlatform(options.platform);
+
+  if (platform === "win32") {
+    const windowsRunKey = assertValidWindowsUserRunKey(
+      options.windowsRunKey ?? WINDOWS_RUN_REGISTRY_KEY,
+    );
+    const windowsValueName = assertValidWindowsValueName(
+      options.windowsValueName ?? options.serviceName ?? WINDOWS_RUN_VALUE_NAME,
+    );
+    return {
+      platform,
+      servicePath: `${windowsRunKey}\\${windowsValueName}`,
+      label: MACOS_LAUNCH_AGENT_LABEL,
+      serviceName: LINUX_SYSTEMD_SERVICE_NAME,
+      windowsRunKey,
+      windowsValueName,
+    };
+  }
+
   const homeDir = resolveCliHomeDir(options.homeDir);
 
   if (platform === "darwin") {
@@ -251,6 +389,8 @@ function resolveServiceDescriptor(options: ServiceOptions): {
       servicePath: path.join(launchAgentsDir, `${label}.plist`),
       label,
       serviceName: LINUX_SYSTEMD_SERVICE_NAME,
+      windowsRunKey: WINDOWS_RUN_REGISTRY_KEY,
+      windowsValueName: WINDOWS_RUN_VALUE_NAME,
     };
   }
 
@@ -272,6 +412,8 @@ function resolveServiceDescriptor(options: ServiceOptions): {
     servicePath: path.join(systemdDir, serviceName),
     label: MACOS_LAUNCH_AGENT_LABEL,
     serviceName,
+    windowsRunKey: WINDOWS_RUN_REGISTRY_KEY,
+    windowsValueName: WINDOWS_RUN_VALUE_NAME,
   };
 }
 
@@ -375,9 +517,46 @@ export function renderSystemdUnit(input: RenderSystemdUnitInput): string {
 }
 
 /**
- * Explicitly installs the platform startup descriptor (`LaunchAgent` plist on macOS or
- * `systemd --user` unit on Linux). Never invokes `launchctl` or `systemctl` unless an
- * `executeSystemControl` hook is explicitly supplied.
+ * Renders a sanitized Windows user-level `HKCU\...\Run` command line with Win32
+ * `CommandLineToArgvW` quoting, stripped trailing backslashes, and explicit `--kiln-home`.
+ */
+export function renderWindowsRunCommand(input: RenderWindowsRunCommandInput): string {
+  const cleanExecutable = stripTrailingNonRootBackslashes(
+    assertNoControlChars(input.executable, "executable"),
+  );
+  const cleanKilnHome = stripTrailingNonRootBackslashes(
+    assertNoControlChars(input.kilnHome, "kilnHome"),
+  );
+
+  const tokens: string[] = [quoteWindowsCommandArg(cleanExecutable, "executable")];
+  if (input.kilndEntrypoint !== undefined) {
+    const cleanEntrypoint = stripTrailingNonRootBackslashes(
+      assertNoControlChars(input.kilndEntrypoint, "kilndEntrypoint"),
+    );
+    tokens.push(quoteWindowsCommandArg(cleanEntrypoint, "kilndEntrypoint"));
+  }
+
+  const extraArgs = input.args ?? ["up"];
+  let hasKilnHomeFlag = false;
+  for (let i = 0; i < extraArgs.length; i += 1) {
+    const arg = extraArgs[i]!;
+    if (arg === "--kiln-home" || arg.startsWith("--kiln-home=")) {
+      hasKilnHomeFlag = true;
+    }
+    tokens.push(quoteWindowsCommandArg(arg, `programArg[${i}]`));
+  }
+
+  if (!hasKilnHomeFlag) {
+    tokens.push("--kiln-home", quoteWindowsCommandArg(cleanKilnHome, "kilnHome"));
+  }
+
+  return tokens.join(" ");
+}
+
+/**
+ * Explicitly installs the platform startup descriptor (`LaunchAgent` plist on macOS,
+ * `systemd --user` unit on Linux, or user-level `HKCU\...\Run` entry on Windows without UAC).
+ * Never invoked automatically during installation.
  */
 export async function installService(
   options: ServiceOptions = {},
@@ -391,6 +570,66 @@ export async function installService(
   const nodeExecutable = options.nodeExecutable ?? process.execPath;
   const usingDefaultEntrypoint = options.kilndEntrypoint === undefined;
   const kilndEntrypoint = options.kilndEntrypoint ?? resolveDefaultCliEntrypoint();
+
+  if (descriptor.platform === "win32") {
+    const winArgs = options.args ?? ["up"];
+    const command = renderWindowsRunCommand({
+      executable: nodeExecutable,
+      kilndEntrypoint,
+      kilnHome,
+      args: winArgs,
+    });
+    ensureDir(logDir);
+
+    if (options.windowsRegistry) {
+      await options.windowsRegistry.add(
+        descriptor.windowsRunKey,
+        descriptor.windowsValueName,
+        command,
+      );
+    } else if (options.executeSystemControl) {
+      await options.executeSystemControl("reg.exe", [
+        "add",
+        descriptor.windowsRunKey,
+        "/v",
+        descriptor.windowsValueName,
+        "/t",
+        "REG_SZ",
+        "/d",
+        command,
+        "/f",
+      ]);
+    } else if (process.platform === "win32") {
+      await execFileAsync(
+        "reg.exe",
+        [
+          "add",
+          descriptor.windowsRunKey,
+          "/v",
+          descriptor.windowsValueName,
+          "/t",
+          "REG_SZ",
+          "/d",
+          command,
+          "/f",
+        ],
+        { windowsHide: true, encoding: "utf8" },
+      );
+    } else {
+      throw new Error(
+        `Cannot install win32 HKCU Run entry on ${process.platform} without windowsRegistry or executeSystemControl hook`,
+      );
+    }
+
+    return {
+      installed: true,
+      platform: "win32",
+      servicePath: descriptor.servicePath,
+      executedControl: true,
+      command,
+    };
+  }
+
   const args =
     options.args ?? (usingDefaultEntrypoint ? ["up", "--foreground"] : []);
 
@@ -443,12 +682,86 @@ export async function installService(
 }
 
 /**
- * Idempotently removes the platform startup descriptor (`LaunchAgent` or `systemd` unit).
+ * Idempotently removes the platform startup descriptor (`LaunchAgent`, `systemd` unit,
+ * or Windows user-level `HKCU\...\Run` entry).
  */
 export async function uninstallService(
   options: ServiceOptions = {},
 ): Promise<UninstallServiceResult> {
   const descriptor = resolveServiceDescriptor(options);
+
+  if (descriptor.platform === "win32") {
+    if (options.windowsRegistry) {
+      const removed = await options.windowsRegistry.delete(
+        descriptor.windowsRunKey,
+        descriptor.windowsValueName,
+      );
+      return {
+        removed,
+        platform: "win32",
+        servicePath: descriptor.servicePath,
+        executedControl: removed,
+      };
+    }
+
+    if (options.executeSystemControl) {
+      const existed =
+        process.platform === "win32"
+          ? queryHostWindowsRegistryValue(
+              descriptor.windowsRunKey,
+              descriptor.windowsValueName,
+            ) !== null
+          : true;
+      if (existed) {
+        await options.executeSystemControl("reg.exe", [
+          "delete",
+          descriptor.windowsRunKey,
+          "/v",
+          descriptor.windowsValueName,
+          "/f",
+        ]);
+      }
+      return {
+        removed: existed,
+        platform: "win32",
+        servicePath: descriptor.servicePath,
+        executedControl: existed,
+      };
+    }
+
+    const existed =
+      queryHostWindowsRegistryValue(
+        descriptor.windowsRunKey,
+        descriptor.windowsValueName,
+      ) !== null;
+    if (!existed) {
+      return {
+        removed: false,
+        platform: "win32",
+        servicePath: descriptor.servicePath,
+        executedControl: false,
+      };
+    }
+
+    await execFileAsync(
+      "reg.exe",
+      [
+        "delete",
+        descriptor.windowsRunKey,
+        "/v",
+        descriptor.windowsValueName,
+        "/f",
+      ],
+      { windowsHide: true, encoding: "utf8" },
+    );
+    return {
+      removed: true,
+      platform: "win32",
+      servicePath: descriptor.servicePath,
+      executedControl: true,
+    };
+  }
+
   const existed = fs.existsSync(descriptor.servicePath);
   let executedControl = false;
 
@@ -485,6 +798,24 @@ export async function uninstallService(
  */
 export function getServiceStatus(options: ServiceOptions = {}): ServiceStatusResult {
   const descriptor = resolveServiceDescriptor(options);
+
+  if (descriptor.platform === "win32") {
+    const value = options.windowsRegistry
+      ? options.windowsRegistry.query(
+          descriptor.windowsRunKey,
+          descriptor.windowsValueName,
+        )
+      : queryHostWindowsRegistryValue(
+          descriptor.windowsRunKey,
+          descriptor.windowsValueName,
+        );
+    return {
+      installed: value !== null,
+      platform: "win32",
+      servicePath: descriptor.servicePath,
+    };
+  }
+
   return {
     installed: fs.existsSync(descriptor.servicePath),
     platform: descriptor.platform,
@@ -556,25 +887,100 @@ async function waitForProcessExit(
 }
 
 /**
- * Stops a managed `kilnd` process via `stopDaemon` or `kilnd.pid` (`SIGTERM`) and cleans up
- * stale or stopped PID files. Never signals `pid <= 0`.
+ * Reads a non-empty per-instance shutdown token from `<kilnHome>/run/kilnd.shutdown`, or `null`.
+ */
+export function readShutdownTokenFile(tokenFile: string): string | null {
+  try {
+    const raw = fs.readFileSync(tokenFile, "utf8").trim();
+    return raw.length > 0 ? raw : null;
+  } catch (err) {
+    if (isErrCode(err, "ENOENT")) {
+      return null;
+    }
+    return null;
+  }
+}
+
+/**
+ * Sends a token-authenticated `POST /rpc/shutdown` request over the local IPC endpoint
+ * (POSIX UDS or Windows Named Pipe) to trigger graceful daemon shutdown.
+ */
+export async function requestDaemonGracefulShutdown(ctx: {
+  socketPath: string;
+  shutdownToken: string;
+  timeoutMs?: number;
+}): Promise<boolean> {
+  const timeoutMs = ctx.timeoutMs ?? SHUTDOWN_RPC_TIMEOUT_MS;
+  return await new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (ok: boolean): void => {
+      if (!settled) {
+        settled = true;
+        resolve(ok);
+      }
+    };
+
+    const req = http.request(
+      {
+        socketPath: ctx.socketPath,
+        method: "POST",
+        path: "/rpc/shutdown",
+        headers: {
+          Host: "kilnd.local",
+          Authorization: `Bearer ${ctx.shutdownToken}`,
+          "Content-Length": "0",
+        },
+      },
+      (res) => {
+        res.resume();
+        res.once("end", () => {
+          const status = res.statusCode ?? 0;
+          finish(status >= 200 && status < 300);
+        });
+        res.once("error", () => finish(false));
+      },
+    );
+
+    req.setTimeout(timeoutMs, () => {
+      req.destroy();
+      finish(false);
+    });
+    req.once("error", () => finish(false));
+    req.end();
+  });
+}
+
+/**
+ * Stops a managed `kilnd` process:
+ * 1. If `stopDaemon` callback is injected, delegates directly;
+ * 2. Otherwise attempts local IPC `POST /rpc/shutdown` using `kilnd.shutdown` token first
+ *    (required on Windows where POSIX `SIGTERM` terminates immediately without cleanup);
+ * 3. Falls back to `SIGTERM` (POSIX) or `taskkill /PID <pid> /T /F` (Windows) on timeout/failure,
+ *    and cleans up `kilnd.pid` & `kilnd.shutdown`. Never signals `pid <= 0`.
  */
 export async function stopManagedDaemon(options: {
   kilnHome: string;
+  platform?: NodeJS.Platform;
+  socketPath?: string;
   stopDaemon?: () => Promise<boolean | void> | boolean | void;
+  requestGracefulShutdown?: GracefulShutdownRequestFn;
   signalProcess?: SignalProcessFn;
+  killProcessTree?: KillProcessTreeFn;
   waitTimeoutMs?: number;
 }): Promise<StopDaemonResult> {
   const pidFile = resolveKilnPidPath(options.kilnHome);
+  const shutdownTokenFile = resolveKilnShutdownTokenPath(options.kilnHome);
   const pidState = readPidFile(pidFile);
 
   if (options.stopDaemon) {
     const callbackResult = await options.stopDaemon();
     fs.rmSync(pidFile, { force: true });
+    fs.rmSync(shutdownTokenFile, { force: true });
     return {
       stopped: callbackResult !== false,
       pid: pidState.pid,
       removedStalePid: pidState.exists && callbackResult === false,
+      method: "callback",
     };
   }
 
@@ -584,15 +990,69 @@ export async function stopManagedDaemon(options: {
 
   if (pidState.pid === null) {
     fs.rmSync(pidFile, { force: true });
+    fs.rmSync(shutdownTokenFile, { force: true });
     return { stopped: false, pid: null, removedStalePid: true };
   }
 
+  const platform = options.platform ?? process.platform;
+  const waitTimeoutMs = options.waitTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
   const signalProcess: SignalProcessFn =
     options.signalProcess ?? ((pid, sig) => process.kill(pid, sig));
 
   if (!isProcessAlive(pidState.pid, signalProcess)) {
     fs.rmSync(pidFile, { force: true });
+    fs.rmSync(shutdownTokenFile, { force: true });
     return { stopped: false, pid: pidState.pid, removedStalePid: true };
+  }
+
+  // Step 1: Prefer graceful shutdown via local IPC + per-instance 0600 control token.
+  const shutdownToken = readShutdownTokenFile(shutdownTokenFile);
+  if (shutdownToken !== null) {
+    const socketPath =
+      options.socketPath ?? resolveDefaultIpcPath(options.kilnHome, platform);
+    const requestShutdown =
+      options.requestGracefulShutdown ?? requestDaemonGracefulShutdown;
+    const accepted = await requestShutdown({ socketPath, shutdownToken }).catch(
+      () => false,
+    );
+    if (accepted) {
+      const exitedGracefully = await waitForProcessExit(
+        pidState.pid,
+        signalProcess,
+        waitTimeoutMs,
+      );
+      if (exitedGracefully) {
+        fs.rmSync(pidFile, { force: true });
+        fs.rmSync(shutdownTokenFile, { force: true });
+        return {
+          stopped: true,
+          pid: pidState.pid,
+          removedStalePid: false,
+          method: "ipc_shutdown",
+        };
+      }
+    }
+  }
+
+  // Step 2: Platform fallback when IPC shutdown is unavailable or timed out.
+  if (platform === "win32") {
+    const killTree: KillProcessTreeFn =
+      options.killProcessTree ??
+      ((pid) =>
+        terminateProcessTree(pid, {
+          platform: "win32",
+          signalProcess,
+        }));
+    await killTree(pidState.pid);
+    await waitForProcessExit(pidState.pid, signalProcess, waitTimeoutMs);
+    fs.rmSync(pidFile, { force: true });
+    fs.rmSync(shutdownTokenFile, { force: true });
+    return {
+      stopped: true,
+      pid: pidState.pid,
+      removedStalePid: false,
+      method: "taskkill",
+    };
   }
 
   try {
@@ -600,22 +1060,21 @@ export async function stopManagedDaemon(options: {
   } catch (err) {
     if (isErrCode(err, "ESRCH")) {
       fs.rmSync(pidFile, { force: true });
+      fs.rmSync(shutdownTokenFile, { force: true });
       return { stopped: false, pid: pidState.pid, removedStalePid: true };
     }
     throw err;
   }
 
-  await waitForProcessExit(
-    pidState.pid,
-    signalProcess,
-    options.waitTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS,
-  );
+  await waitForProcessExit(pidState.pid, signalProcess, waitTimeoutMs);
   fs.rmSync(pidFile, { force: true });
+  fs.rmSync(shutdownTokenFile, { force: true });
 
   return {
     stopped: true,
     pid: pidState.pid,
     removedStalePid: false,
+    method: "signal",
   };
 }
 
@@ -625,6 +1084,7 @@ async function defaultExecGit(args: readonly string[], cwd?: string): Promise<st
     env: buildSanitizedEnv(),
     maxBuffer: GIT_MAX_BUFFER,
     encoding: "utf8",
+    windowsHide: true,
   });
   return stdout;
 }
@@ -678,6 +1138,13 @@ function isInsideDirectory(candidatePath: string, parentDir: string): boolean {
   const prefix = resolvedParent.endsWith(path.sep)
     ? resolvedParent
     : resolvedParent + path.sep;
+  if (process.platform === "win32") {
+    const candLower = resolvedCandidate.toLowerCase();
+    return (
+      candLower === resolvedParent.toLowerCase() ||
+      candLower.startsWith(prefix.toLowerCase())
+    );
+  }
   return resolvedCandidate === resolvedParent || resolvedCandidate.startsWith(prefix);
 }
 
@@ -774,8 +1241,12 @@ export async function runUninstall(
 
   const stopRes = await stopManagedDaemon({
     kilnHome,
+    platform: options.platform,
+    socketPath: options.socketPath,
     stopDaemon: options.stopDaemon,
+    requestGracefulShutdown: options.requestGracefulShutdown,
     signalProcess: options.signalProcess,
+    killProcessTree: options.killProcessTree,
     waitTimeoutMs: options.waitTimeoutMs,
   });
 

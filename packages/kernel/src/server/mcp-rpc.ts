@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import crypto, { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import net from "node:net";
@@ -37,6 +37,7 @@ import {
   assertSafeSegment,
   deriveTaskStatus,
   ensureDir,
+  isWindowsNamedPipe,
   readYamlOptional,
 } from "../store/index.js";
 import type { CaffeinateController } from "./caffeinate.js";
@@ -68,9 +69,18 @@ export interface McpRpcServerOptions {
   tokenSecret: string | Buffer;
   socketPath?: string;
   maxBodyBytes?: number;
+  shutdownToken?: string;
+  onShutdownRequested?: () => Promise<void> | void;
   onTaskQueued?: (taskId: string) => void;
   onContractUpdated?: (taskId: string) => void;
   onDecisionRequested?: (taskId: string) => void;
+}
+
+export interface PrepareIpcSocketPathDeps {
+  ensureDirFn?: (dirPath: string) => void;
+  lstatSyncFn?: (filePath: string) => fs.Stats;
+  unlinkSyncFn?: (filePath: string) => void;
+  probeActiveFn?: (socketPath: string) => Promise<boolean>;
 }
 
 export interface McpRpcHttpRequest {
@@ -85,13 +95,32 @@ export interface McpRpcHttpResponse {
   body: unknown;
 }
 
-function sendJson(res: ServerResponse, statusCode: number, body: unknown): void {
+function constantTimeEqualUtf8(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, "utf8");
+  const bufB = Buffer.from(b, "utf8");
+  if (bufA.length !== bufB.length) {
+    crypto.timingSafeEqual(bufB, bufB);
+    return false;
+  }
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function sendJson(
+  res: ServerResponse,
+  statusCode: number,
+  body: unknown,
+  onFinished?: () => void,
+): void {
   const payload = JSON.stringify(body);
   res.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": Buffer.byteLength(payload),
   });
-  res.end(payload);
+  if (onFinished) {
+    res.end(payload, onFinished);
+  } else {
+    res.end(payload);
+  }
 }
 
 async function readRawBody(req: IncomingMessage, maxBodyBytes: number): Promise<string> {
@@ -174,12 +203,29 @@ async function probeUnixSocketActive(socketPath: string): Promise<boolean> {
   });
 }
 
-async function prepareUnixSocketPath(socketPath: string): Promise<void> {
-  ensureDir(path.dirname(socketPath));
+/**
+ * Prepares the local IPC endpoint before `server.listen(socketPath)`.
+ * On Windows Named Pipes (`\\.\pipe\...`), skips all filesystem operations because
+ * named pipes are kernel objects rather than disk files.
+ */
+export async function prepareIpcSocketPath(
+  socketPath: string,
+  deps: PrepareIpcSocketPathDeps = {},
+): Promise<void> {
+  if (isWindowsNamedPipe(socketPath)) {
+    return;
+  }
+
+  const ensureDirFn = deps.ensureDirFn ?? ensureDir;
+  const lstatSyncFn = deps.lstatSyncFn ?? fs.lstatSync;
+  const unlinkSyncFn = deps.unlinkSyncFn ?? fs.unlinkSync;
+  const probeActiveFn = deps.probeActiveFn ?? probeUnixSocketActive;
+
+  ensureDirFn(path.dirname(socketPath));
 
   let stat: fs.Stats | null = null;
   try {
-    stat = fs.lstatSync(socketPath);
+    stat = lstatSyncFn(socketPath);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
       throw err;
@@ -194,12 +240,12 @@ async function prepareUnixSocketPath(socketPath: string): Promise<void> {
     throw new Error(`Refusing to overwrite non-socket path at "${socketPath}"`);
   }
 
-  const active = await probeUnixSocketActive(socketPath);
+  const active = await probeActiveFn(socketPath);
   if (active) {
     throw new Error(`Another kilnd instance is already listening at "${socketPath}"`);
   }
 
-  fs.unlinkSync(socketPath);
+  unlinkSyncFn(socketPath);
 }
 
 function findRunByRunId(
@@ -227,8 +273,9 @@ function findRunByRunId(
 }
 
 /**
- * Local Unix Domain Socket RPC server (`~/.kiln/run/kilnd.sock`, mode `0600`)
- * authenticating `KILN_RUN_TOKEN` and enforcing the 7-tool `kiln-mcp` role allowlist.
+ * Local IPC RPC server (POSIX Unix Domain Socket `~/.kiln/run/kilnd.sock` mode `0600`
+ * or Windows Named Pipe `\\.\pipe\kiln-rpc-<hash>`) authenticating `KILN_RUN_TOKEN`,
+ * enforcing the 7-tool `kiln-mcp` role allowlist, and handling token-authenticated graceful shutdown.
  */
 export class McpRpcServer {
   readonly socketPath: string;
@@ -239,10 +286,13 @@ export class McpRpcServer {
   private readonly caffeinate: CaffeinateController;
   private readonly tokenSecret: string | Buffer;
   private readonly maxBodyBytes: number;
+  private readonly onShutdownRequested: (() => Promise<void> | void) | undefined;
   private readonly onTaskQueued: ((taskId: string) => void) | undefined;
   private readonly onContractUpdated: ((taskId: string) => void) | undefined;
   private readonly onDecisionRequested: ((taskId: string) => void) | undefined;
 
+  private shutdownToken: string | undefined;
+  private shutdownTriggered = false;
   private server: http.Server | null = null;
   private listening = false;
 
@@ -255,9 +305,16 @@ export class McpRpcServer {
     this.tokenSecret = options.tokenSecret;
     this.socketPath = options.socketPath ?? options.store.paths.kilndSock;
     this.maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+    this.shutdownToken = options.shutdownToken;
+    this.onShutdownRequested = options.onShutdownRequested;
     this.onTaskQueued = options.onTaskQueued;
     this.onContractUpdated = options.onContractUpdated;
     this.onDecisionRequested = options.onDecisionRequested;
+  }
+
+  setShutdownToken(token: string | undefined): void {
+    this.shutdownToken = token;
+    this.shutdownTriggered = false;
   }
 
   async start(): Promise<string> {
@@ -265,7 +322,8 @@ export class McpRpcServer {
       return this.socketPath;
     }
 
-    await prepareUnixSocketPath(this.socketPath);
+    this.shutdownTriggered = false;
+    await prepareIpcSocketPath(this.socketPath);
 
     const server = http.createServer((req, res) => {
       void this.handleRequest(req, res);
@@ -279,7 +337,9 @@ export class McpRpcServer {
       const onListening = (): void => {
         server.removeListener("error", onError);
         try {
-          fs.chmodSync(this.socketPath, 0o600);
+          if (!isWindowsNamedPipe(this.socketPath) && process.platform !== "win32") {
+            fs.chmodSync(this.socketPath, 0o600);
+          }
           this.listening = true;
           resolve();
         } catch (err) {
@@ -315,14 +375,14 @@ export class McpRpcServer {
       });
     }
 
-    if (wasListening) {
+    if (wasListening && !isWindowsNamedPipe(this.socketPath)) {
       fs.rmSync(this.socketPath, { force: true });
     }
   }
 
-  private authenticateHeaders(
+  private extractBearerToken(
     headers: Record<string, string | undefined> | undefined,
-  ): RunTokenClaims {
+  ): string {
     const rawAuth = headers?.authorization ?? headers?.Authorization;
     if (typeof rawAuth !== "string") {
       throw new ServerHttpError(401, {
@@ -337,9 +397,16 @@ export class McpRpcServer {
         message: "Malformed Authorization Bearer token",
       });
     }
+    return match[1];
+  }
+
+  private authenticateHeaders(
+    headers: Record<string, string | undefined> | undefined,
+  ): RunTokenClaims {
+    const bearer = this.extractBearerToken(headers);
 
     try {
-      return verifyRunToken(match[1], this.tokenSecret);
+      return verifyRunToken(bearer, this.tokenSecret);
     } catch (err) {
       if (err instanceof RunTokenAuthError) {
         throw new ServerHttpError(401, {
@@ -352,16 +419,63 @@ export class McpRpcServer {
     }
   }
 
-  /**
-   * Dispatches an MCP RPC HTTP request directly against `McpRpcServer` auth,
-   * 7-tool whitelist, and role allowlist rules (shared by live Unix socket and in-process tests).
-   */
-  async dispatchHttpRequest(input: McpRpcHttpRequest): Promise<McpRpcHttpResponse> {
+  private triggerShutdownOnce(): void {
+    if (this.shutdownTriggered) {
+      return;
+    }
+    this.shutdownTriggered = true;
+    void Promise.resolve(this.onShutdownRequested?.()).catch(() => {
+      // Shutdown errors are logged/handled by the owning daemon entrypoint.
+    });
+  }
+
+  private dispatchHttpRequestInternal(
+    input: McpRpcHttpRequest,
+    deferShutdownCallback: boolean,
+  ): { response: McpRpcHttpResponse; shouldTriggerShutdown: boolean } {
     try {
       const url = new URL(input.url, "http://kilnd.local");
+      const method = input.method.toUpperCase();
+
+      if (method === "POST" && url.pathname === "/rpc/shutdown") {
+        if (!this.shutdownToken || !this.onShutdownRequested) {
+          return {
+            response: {
+              status: 404,
+              body: { error: "not_found", message: "Route not found" },
+            },
+            shouldTriggerShutdown: false,
+          };
+        }
+
+        const bearer = this.extractBearerToken(input.headers);
+        if (!constantTimeEqualUtf8(bearer, this.shutdownToken)) {
+          throw new ServerHttpError(401, {
+            error: "unauthorized",
+            message: "Invalid shutdown control token",
+          });
+        }
+
+        if (!deferShutdownCallback) {
+          setImmediate(() => {
+            this.triggerShutdownOnce();
+          });
+        }
+        return {
+          response: { status: 200, body: { ok: true, shuttingDown: true } },
+          shouldTriggerShutdown: deferShutdownCallback,
+        };
+      }
+
       const routeMatch = /^\/rpc\/mcp\/([^/]+)$/.exec(url.pathname);
-      if (input.method.toUpperCase() !== "POST" || !routeMatch || !routeMatch[1]) {
-        return { status: 404, body: { error: "not_found", message: "Route not found" } };
+      if (method !== "POST" || !routeMatch || !routeMatch[1]) {
+        return {
+          response: {
+            status: 404,
+            body: { error: "not_found", message: "Route not found" },
+          },
+          shouldTriggerShutdown: false,
+        };
       }
 
       let toolSegment: string;
@@ -369,8 +483,11 @@ export class McpRpcServer {
         toolSegment = decodeURIComponent(routeMatch[1]);
       } catch {
         return {
-          status: 400,
-          body: { error: "invalid_tool", message: "Malformed tool path encoding" },
+          response: {
+            status: 400,
+            body: { error: "invalid_tool", message: "Malformed tool path encoding" },
+          },
+          shouldTriggerShutdown: false,
         };
       }
 
@@ -379,12 +496,15 @@ export class McpRpcServer {
       const parsedTool = McpToolNameSchema.safeParse(toolSegment);
       if (!parsedTool.success) {
         return {
-          status: 404,
-          body: {
-            error: "unknown_tool",
-            tool: toolSegment,
-            message: `Unknown MCP tool "${toolSegment}"`,
+          response: {
+            status: 404,
+            body: {
+              error: "unknown_tool",
+              tool: toolSegment,
+              message: `Unknown MCP tool "${toolSegment}"`,
+            },
           },
+          shouldTriggerShutdown: false,
         };
       }
       const tool = parsedTool.data;
@@ -396,33 +516,64 @@ export class McpRpcServer {
           tool,
           message: `Role "${claims.role}" is not allowed to invoke "${tool}"`,
         });
-        return { status: 403, body: forbidden };
+        return {
+          response: { status: 403, body: forbidden },
+          shouldTriggerShutdown: false,
+        };
       }
 
       const rawBody = parseRawJsonBody(input.rawBody, this.maxBodyBytes);
       const result = this.dispatchTool(tool, rawBody, claims);
-      return { status: 200, body: result };
+      return {
+        response: { status: 200, body: result },
+        shouldTriggerShutdown: false,
+      };
     } catch (err) {
       const mapped = mapDomainError(err);
-      return { status: mapped.statusCode, body: mapped.payload };
+      return {
+        response: { status: mapped.statusCode, body: mapped.payload },
+        shouldTriggerShutdown: false,
+      };
     }
+  }
+
+  /**
+   * Dispatches an MCP RPC HTTP request directly against `McpRpcServer` auth,
+   * 7-tool whitelist, and role allowlist rules (shared by live local IPC and in-process tests).
+   */
+  async dispatchHttpRequest(input: McpRpcHttpRequest): Promise<McpRpcHttpResponse> {
+    return this.dispatchHttpRequestInternal(input, false).response;
   }
 
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
       const rawBody = await readRawBody(req, this.maxBodyBytes);
-      const response = await this.dispatchHttpRequest({
-        method: req.method ?? "GET",
-        url: req.url ?? "/",
-        headers: {
-          authorization:
-            typeof req.headers.authorization === "string"
-              ? req.headers.authorization
-              : undefined,
+      const { response, shouldTriggerShutdown } = this.dispatchHttpRequestInternal(
+        {
+          method: req.method ?? "GET",
+          url: req.url ?? "/",
+          headers: {
+            authorization:
+              typeof req.headers.authorization === "string"
+                ? req.headers.authorization
+                : undefined,
+          },
+          rawBody,
         },
-        rawBody,
-      });
-      sendJson(res, response.status, response.body);
+        true,
+      );
+      sendJson(
+        res,
+        response.status,
+        response.body,
+        shouldTriggerShutdown
+          ? () => {
+              setImmediate(() => {
+                this.triggerShutdownOnce();
+              });
+            }
+          : undefined,
+      );
     } catch (err) {
       if (res.writableEnded) {
         return;

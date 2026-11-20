@@ -12,6 +12,8 @@ import {
   KilnSocketRpcClient,
   createKilnMcpServer,
   isRoleForbiddenError,
+  isWindowsNamedPipe,
+  resolveDefaultIpcPath,
   resolveKilnSocketPath,
   type KilnRpcTransport,
 } from "../index.js";
@@ -95,6 +97,8 @@ describe("@kiln/mcp server & client", () => {
     const forbiddenPatterns = [
       "@kiln/kernel",
       "better-sqlite3",
+      "bun:sqlite",
+      "node:sqlite",
       "index.sqlite",
       "kiln-store",
       "tasks_index",
@@ -142,11 +146,29 @@ describe("@kiln/mcp server & client", () => {
     expect(
       resolveKilnSocketPath(undefined, {
         KILN_HOME: "/env/home",
+      }, "darwin"),
+    ).toBe(path.join(path.resolve("/env/home"), "run", "kilnd.sock"));
+
+    expect(resolveKilnSocketPath(undefined, {}, "linux")).toBe(
+      path.join(path.resolve(os.homedir(), ".kiln"), "run", "kilnd.sock"),
+    );
+
+    const winPipe = resolveKilnSocketPath(
+      undefined,
+      { KILN_HOME: "C:\\Users\\Alice\\.kiln" },
+      "win32",
+    );
+    expect(isWindowsNamedPipe(winPipe)).toBe(true);
+    expect(winPipe).toBe(resolveDefaultIpcPath("c:/users/alice/.kiln/", "win32"));
+
+    expect(
+      resolveKilnSocketPath(undefined, {
+        KILN_HOME: "/env/home",
       }),
-    ).toBe(path.join("/env/home", "run", "kilnd.sock"));
+    ).toBe(resolveDefaultIpcPath("/env/home"));
 
     expect(resolveKilnSocketPath(undefined, {})).toBe(
-      path.join(os.homedir(), ".kiln", "run", "kilnd.sock"),
+      resolveDefaultIpcPath(path.join(os.homedir(), ".kiln")),
     );
   });
 
@@ -551,7 +573,7 @@ describe("@kiln/mcp server & client", () => {
     );
     cleanups.push(handle.close);
 
-    expect(handle.client.socketPath).toBe(path.join("/tmp/kiln-mcp-env-home", "run", "kilnd.sock"));
+    expect(handle.client.socketPath).toBe(resolveDefaultIpcPath("/tmp/kiln-mcp-env-home"));
 
     const mcpClient = new Client({ name: "bin-test-client", version: "0.1.0" });
     await mcpClient.connect(clientTransport);
