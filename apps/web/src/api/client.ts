@@ -18,10 +18,24 @@ import type {
   HostBackupManifestInfo,
   HostRestoreConflictDetail,
   InspectSpaceResult,
+  LogoutResponse,
+  PairAuthResponse,
+  PairCompleteRequest,
+  RemoteAuthStatusResponse,
+  RemoteConfig,
+  RemoteDevicesResponse,
+  RemoteNotificationTestRequest,
+  RemoteNotificationTestResponse,
+  RemotePairChallengeResponse,
+  RemoteSettingsResponse,
   RestoreHostBackupResult,
+  RevokeAllDevicesResponse,
+  RevokeDeviceResponse,
   SettingsSectionMap,
   SubmitDecisionPayload,
+  TailscaleStatusResponse,
   TaskDetailResponse,
+  UpdateRemoteSettingsResponse,
   UpsertDraftPayload,
   UpsertSpacePayload,
 } from "./types";
@@ -38,6 +52,56 @@ export class ApiError extends Error {
   }
 }
 
+export type UnauthorizedHandler = (url: string, error: ApiError) => void;
+
+const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+let unauthorizedHandler: UnauthorizedHandler | null = null;
+
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): void {
+  unauthorizedHandler = handler;
+}
+
+function buildFetchInit(init?: RequestInit): RequestInit {
+  const method = (init?.method ?? "GET").toUpperCase();
+  const extraHeaders = init?.headers;
+  const normalizedExtra: Record<string, string> = {};
+  if (extraHeaders instanceof Headers) {
+    extraHeaders.forEach((value, key) => {
+      normalizedExtra[key] = value;
+    });
+  } else if (Array.isArray(extraHeaders)) {
+    for (const [key, value] of extraHeaders) {
+      normalizedExtra[key] = value;
+    }
+  } else if (extraHeaders) {
+    Object.assign(normalizedExtra, extraHeaders);
+  }
+
+  return {
+    ...init,
+    credentials: "same-origin",
+    headers: {
+      ...(init?.body !== undefined ? { "Content-Type": "application/json" } : {}),
+      ...(MUTATING_METHODS.has(method) ? { "X-Kiln-Client": "web" } : {}),
+      ...normalizedExtra,
+    },
+  };
+}
+
+async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
+  return await fetch(url, buildFetchInit(init));
+}
+
+function shouldNotifyUnauthorized(url: string): boolean {
+  return url !== "/api/auth/pair" && url !== "/api/auth/status";
+}
+
+function notifyIfUnauthorized(url: string, error: ApiError): void {
+  if (error.status === 401 && shouldNotifyUnauthorized(url)) {
+    unauthorizedHandler?.(url, error);
+  }
+}
+
 async function parseJsonSafe(res: Response): Promise<Record<string, unknown>> {
   const text = await res.text();
   if (!text) return {};
@@ -51,27 +115,135 @@ async function parseJsonSafe(res: Response): Promise<Record<string, unknown>> {
   }
 }
 
+function makeApiError(
+  res: Response,
+  data: Record<string, unknown>,
+  fallbackMessage?: string,
+): ApiError {
+  const code =
+    typeof data.code === "string"
+      ? data.code
+      : typeof data.error === "string"
+        ? data.error
+        : `http_${res.status}`;
+  const message =
+    typeof data.message === "string"
+      ? data.message
+      : fallbackMessage ?? `请求失败 (${res.status})`;
+  return new ApiError(res.status, code, message, data);
+}
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    ...init,
-    headers: {
-      ...(init?.body !== undefined ? { "Content-Type": "application/json" } : {}),
-      ...init?.headers,
-    },
-  });
+  const res = await apiFetch(url, init);
   const data = await parseJsonSafe(res);
   if (!res.ok) {
-    const code =
-      typeof data.code === "string"
-        ? data.code
-        : typeof data.error === "string"
-          ? data.error
-          : `http_${res.status}`;
-    const message =
-      typeof data.message === "string" ? data.message : `请求失败 (${res.status})`;
-    throw new ApiError(res.status, code, message, data);
+    const err = makeApiError(res, data);
+    notifyIfUnauthorized(url, err);
+    throw err;
   }
   return data as unknown as T;
+}
+
+export async function fetchAuthStatus(): Promise<RemoteAuthStatusResponse> {
+  const res = await apiFetch("/api/auth/status");
+  if (res.status === 404) {
+    return { ok: true, mode: "local", authenticated: true, device: null };
+  }
+  const data = await parseJsonSafe(res);
+  if (!res.ok) {
+    throw makeApiError(res, data, "检查连接状态失败");
+  }
+  if (
+    (data.mode === "local" || data.mode === "remote") &&
+    typeof data.authenticated === "boolean"
+  ) {
+    return {
+      ok: true,
+      mode: data.mode,
+      authenticated: data.authenticated,
+      device:
+        data.device && typeof data.device === "object"
+          ? (data.device as RemoteAuthStatusResponse["device"])
+          : null,
+    };
+  }
+  // Graceful fallback when test harnesses or legacy servers only mock /api/bootstrap.
+  return { ok: true, mode: "local", authenticated: true, device: null };
+}
+
+export async function pairRemoteDevice(
+  payload: PairCompleteRequest,
+): Promise<PairAuthResponse> {
+  return await requestJson<PairAuthResponse>("/api/auth/pair", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function logoutRemoteDevice(): Promise<LogoutResponse> {
+  return await requestJson<LogoutResponse>("/api/auth/logout", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function fetchRemoteSettings(): Promise<RemoteSettingsResponse> {
+  return await requestJson<RemoteSettingsResponse>("/api/settings/remote");
+}
+
+export async function updateRemoteSettings(
+  config: RemoteConfig,
+): Promise<UpdateRemoteSettingsResponse> {
+  return await requestJson<UpdateRemoteSettingsResponse>("/api/settings/remote", {
+    method: "PUT",
+    body: JSON.stringify(config),
+  });
+}
+
+export async function createRemotePairingChallenge(): Promise<RemotePairChallengeResponse> {
+  return await requestJson<RemotePairChallengeResponse>("/api/remote/pair", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function fetchRemoteDevices(): Promise<RemoteDevicesResponse> {
+  return await requestJson<RemoteDevicesResponse>("/api/remote/devices");
+}
+
+export async function revokeRemoteDevice(
+  deviceId: string,
+): Promise<RevokeDeviceResponse> {
+  return await requestJson<RevokeDeviceResponse>(
+    `/api/remote/devices/${encodeURIComponent(deviceId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function revokeAllRemoteDevices(): Promise<RevokeAllDevicesResponse> {
+  return await requestJson<RevokeAllDevicesResponse>(
+    "/api/remote/devices/revoke-all",
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+    },
+  );
+}
+
+export async function sendRemoteNotificationTest(
+  payload?: RemoteNotificationTestRequest,
+): Promise<RemoteNotificationTestResponse> {
+  return await requestJson<RemoteNotificationTestResponse>(
+    "/api/remote/notifications/test",
+    {
+      method: "POST",
+      body: JSON.stringify(payload ?? {}),
+    },
+  );
+}
+
+export async function fetchTailscaleStatus(): Promise<TailscaleStatusResponse> {
+  return await requestJson<TailscaleStatusResponse>("/api/remote/tailscale");
 }
 
 export async function fetchBootstrap(): Promise<BootstrapResponse> {
@@ -135,10 +307,8 @@ export async function submitDecision(
 export async function restoreHostBackup(
   taskId: string,
 ): Promise<RestoreHostBackupResult> {
-  const res = await fetch(
-    `/api/tasks/${encodeURIComponent(taskId)}/restore-backup`,
-    { method: "POST" },
-  );
+  const url = `/api/tasks/${encodeURIComponent(taskId)}/restore-backup`;
+  const res = await apiFetch(url, { method: "POST" });
   const data = await parseJsonSafe(res);
 
   if (res.ok) {
@@ -219,12 +389,9 @@ export async function restoreHostBackup(
     };
   }
 
-  throw new ApiError(
-    res.status,
-    typeof data.error === "string" ? data.error : `http_${res.status}`,
-    typeof data.message === "string" ? data.message : `恢复备份失败 (${res.status})`,
-    data,
-  );
+  const err = makeApiError(res, data, `恢复备份失败 (${res.status})`);
+  notifyIfUnauthorized(url, err);
+  throw err;
 }
 
 export async function upsertDraft(
@@ -340,16 +507,14 @@ export async function updateSettings<K extends keyof SettingsSectionMap>(
 }
 
 export async function fetchDraftChat(draftId: string): Promise<ChatMessage[] | null> {
-  const res = await fetch(`/api/drafts/${encodeURIComponent(draftId)}/chat`);
+  const url = `/api/drafts/${encodeURIComponent(draftId)}/chat`;
+  const res = await apiFetch(url);
   if (res.status === 404) return null;
   const data = await parseJsonSafe(res);
   if (!res.ok) {
-    throw new ApiError(
-      res.status,
-      typeof data.error === "string" ? data.error : `http_${res.status}`,
-      typeof data.message === "string" ? data.message : "读取草稿对话失败",
-      data,
-    );
+    const err = makeApiError(res, data, "读取草稿对话失败");
+    notifyIfUnauthorized(url, err);
+    throw err;
   }
   return Array.isArray(data.messages) ? (data.messages as ChatMessage[]) : [];
 }
@@ -368,16 +533,14 @@ export async function sendIntakeChat(
 }
 
 export async function fetchTaskChat(taskId: string): Promise<ChatMessage[] | null> {
-  const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/chat`);
+  const url = `/api/tasks/${encodeURIComponent(taskId)}/chat`;
+  const res = await apiFetch(url);
   if (res.status === 404) return null;
   const data = await parseJsonSafe(res);
   if (!res.ok) {
-    throw new ApiError(
-      res.status,
-      typeof data.error === "string" ? data.error : `http_${res.status}`,
-      typeof data.message === "string" ? data.message : "读取讨论记录失败",
-      data,
-    );
+    const err = makeApiError(res, data, "读取讨论记录失败");
+    notifyIfUnauthorized(url, err);
+    throw err;
   }
   return Array.isArray(data.messages) ? (data.messages as ChatMessage[]) : [];
 }
@@ -399,16 +562,14 @@ export async function fetchAgents(options?: {
   refresh?: boolean;
 }): Promise<{ agents: AgentDescriptorInfo[]; backends: BackendConnectionInfo[] } | null> {
   const qs = options?.refresh ? "?refresh=1" : "";
-  const res = await fetch(`/api/agents${qs}`);
+  const url = `/api/agents${qs}`;
+  const res = await apiFetch(url);
   if (res.status === 404) return null;
   const data = await parseJsonSafe(res);
   if (!res.ok) {
-    throw new ApiError(
-      res.status,
-      typeof data.error === "string" ? data.error : `http_${res.status}`,
-      typeof data.message === "string" ? data.message : "获取 Agent 列表失败",
-      data,
-    );
+    const err = makeApiError(res, data, "获取 Agent 列表失败");
+    notifyIfUnauthorized(url, err);
+    throw err;
   }
   return {
     agents: Array.isArray(data.agents) ? (data.agents as AgentDescriptorInfo[]) : [],
@@ -419,16 +580,14 @@ export async function fetchAgents(options?: {
 export async function fetchLedgers(): Promise<
   Record<string, LedgerFile> | LedgerFile[] | Array<{ space: string; entries: LedgerEntry[] }> | null
 > {
-  const res = await fetch("/api/ledgers");
+  const url = "/api/ledgers";
+  const res = await apiFetch(url);
   if (res.status === 404) return null;
   const data = await parseJsonSafe(res);
   if (!res.ok) {
-    throw new ApiError(
-      res.status,
-      typeof data.error === "string" ? data.error : `http_${res.status}`,
-      typeof data.message === "string" ? data.message : "获取决策账本失败",
-      data,
-    );
+    const err = makeApiError(res, data, "获取决策账本失败");
+    notifyIfUnauthorized(url, err);
+    throw err;
   }
   if (data.ledgers !== undefined) {
     return data.ledgers as Record<string, LedgerFile> | LedgerFile[];

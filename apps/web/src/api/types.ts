@@ -10,10 +10,17 @@ import type {
   LedgerEntry,
   LedgerFile,
   LimitsConfig,
+  PairCompleteRequest,
   PendingDecision,
   PricingConfig,
   Priority,
+  PublicPairedDevice,
   ReasoningEffort,
+  RemoteAuthStatusResponse,
+  RemoteConfig,
+  RemoteNotificationChannel,
+  RemoteNotificationTestRequest,
+  RemotePairChallengeResponse,
   RoleId,
   RolesConfig,
   RunEvent,
@@ -21,6 +28,7 @@ import type {
   SpaceConfig,
   StageId,
   StateEvent,
+  TailscaleStatusResponse,
   TaskCard,
   TaskStatus,
   Track,
@@ -345,3 +353,70 @@ export type SettingsSectionMap = {
 
 export type InspectSpaceResult = InspectSpaceResponse;
 export type UpsertSpacePayload = UpsertSpaceRequest;
+
+export interface RemoteRuntimeStatus {
+  listening: boolean;
+  port: number | null;
+  baseUrl: string | null;
+}
+
+export interface RemoteSettingsResponse {
+  ok: true;
+  remote: RemoteConfig;
+  runtime: RemoteRuntimeStatus;
+  activeDeviceCount: number;
+}
+
+export interface UpdateRemoteSettingsResponse {
+  ok: true;
+  section: "remote";
+  data: RemoteConfig;
+  runtime: RemoteRuntimeStatus;
+}
+
+export interface PairAuthResponse {
+  ok: true;
+  device: PublicPairedDevice;
+}
+
+export interface LogoutResponse {
+  ok: true;
+  loggedOut: boolean;
+  revokedDeviceId: string | null;
+}
+
+export interface RemoteDevicesResponse {
+  ok: true;
+  devices: PublicPairedDevice[];
+}
+
+export interface RevokeDeviceResponse {
+  ok: true;
+  revoked: boolean;
+  device: PublicPairedDevice;
+  closedStreams: number;
+}
+
+export interface RevokeAllDevicesResponse {
+  ok: true;
+  revokedCount: number;
+  closedStreams: number;
+}
+
+export interface RemoteNotificationTestResponse {
+  ok: true;
+  delivered: true;
+  channel?: RemoteNotificationChannel;
+  status?: number;
+}
+
+export type {
+  PairCompleteRequest,
+  PublicPairedDevice,
+  RemoteAuthStatusResponse,
+  RemoteConfig,
+  RemoteNotificationChannel,
+  RemoteNotificationTestRequest,
+  RemotePairChallengeResponse,
+  TailscaleStatusResponse,
+};

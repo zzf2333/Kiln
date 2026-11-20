@@ -9,6 +9,7 @@ import {
   type RolesConfig,
 } from "@kiln/protocol/web";
 import type { AgentDescriptorInfo, AgentModeInfo } from "../api/types";
+import { RemoteSettingsPanel } from "../components/RemoteSettingsPanel";
 import { ViewFrame } from "../components/ViewFrame";
 import { isProjectSpace, useKilnStore, type SettingsTab } from "../state/store";
 
@@ -126,6 +127,7 @@ export function SettingsView() {
     ["spaces", "项目空间"],
     ["limits", "限额与熔断"],
     ["pricing", "模型单价"],
+    ["remote", "远程访问"],
     ["conn", "连接与底座"],
   ];
 
@@ -939,11 +941,11 @@ export function SettingsView() {
 
       <div class="setting-row">
         <div>
-          <span>外部只读巡检 / 手机推送</span>
-          <p>external_only 巡检、Passkey 与 Web Push 属于 Post-MVP（M4）</p>
+          <span>外部只读巡检 / Passkey</span>
+          <p>external_only 巡检与 Passkey / Web Push 属于后续版本；远程访问与 Bark/ntfy/Webhook 推送请在「远程访问」标签页管理</p>
         </div>
         <span class="chip" style={{ justifySelf: "end" }}>
-          Post-MVP 未启用
+          后续规划
         </span>
       </div>
     </>
@@ -975,7 +977,9 @@ export function SettingsView() {
                 ? renderLimitsTab()
                 : settingsTab === "pricing"
                   ? renderPricingTab()
-                  : renderConnTab()}
+                  : settingsTab === "remote"
+                    ? <RemoteSettingsPanel />
+                    : renderConnTab()}
         </div>
       </div>
     </ViewFrame>

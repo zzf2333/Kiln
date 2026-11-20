@@ -490,7 +490,7 @@ export function BoardView() {
         </>
       }
     >
-      {state.bootstrapError ? (
+      {state.bootstrapError && !state.bootstrapLoaded ? (
         <div class="page">
           <div class="conflict-box">
             <div class="conflict-head">
@@ -498,7 +498,7 @@ export function BoardView() {
               <button
                 type="button"
                 class="btn btn-sm"
-                onClick={() => void store.bootstrap()}
+                onClick={() => void store.retryConnection()}
               >
                 重试
               </button>
