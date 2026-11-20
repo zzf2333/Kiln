@@ -36,6 +36,10 @@ export function CommandPalette() {
 
       if (e.key === "Escape") {
         const cur = store.getState();
+        if (cur.spaceModalOpen) {
+          store.closeSpaceModal();
+          return;
+        }
         if (cur.paletteOpen) {
           store.setPaletteOpen(false);
           return;
@@ -82,6 +86,7 @@ export function CommandPalette() {
     { label: "用量与费用", run: nav("usage") },
     { label: "决策账本", run: nav("ledger") },
     { label: "设置 · 角色与模型", run: nav("settings", "roles") },
+    { label: "设置 · 项目空间", run: nav("settings", "spaces") },
     { label: "设置 · 模型单价", run: nav("settings", "pricing") },
   ];
 

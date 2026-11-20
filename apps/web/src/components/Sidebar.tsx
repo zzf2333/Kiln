@@ -154,7 +154,18 @@ export function Sidebar() {
           </span>
         </button>
 
-        <div class="nav-label">空间</div>
+        <div class="side-label-row">
+          <div class="nav-label">空间</div>
+          <button
+            type="button"
+            class="side-add-btn"
+            aria-label="添加项目空间"
+            title="添加项目空间"
+            onClick={() => store.openAddSpaceModal(false)}
+          >
+            +
+          </button>
+        </div>
         <div id="spaceNav">
           <button
             type="button"

@@ -6,6 +6,7 @@ import type {
   DraftCard,
   GateReport,
   HashMismatchError,
+  InspectSpaceResponse,
   LedgerEntry,
   LedgerFile,
   LimitsConfig,
@@ -23,6 +24,7 @@ import type {
   TaskCard,
   TaskStatus,
   Track,
+  UpsertSpaceRequest,
   WorkspaceMode,
 } from "@kiln/protocol/web";
 
@@ -339,3 +341,6 @@ export type SettingsSectionMap = {
   limits: LimitsConfig;
   pricing: PricingConfig;
 };
+
+export type InspectSpaceResult = InspectSpaceResponse;
+export type UpsertSpacePayload = UpsertSpaceRequest;

@@ -10,7 +10,7 @@ import {
 } from "@kiln/protocol/web";
 import type { AgentDescriptorInfo, AgentModeInfo } from "../api/types";
 import { ViewFrame } from "../components/ViewFrame";
-import { useKilnStore, type SettingsTab } from "../state/store";
+import { isProjectSpace, useKilnStore, type SettingsTab } from "../state/store";
 
 const ROLE_INFO: Record<
   RoleId,
@@ -89,7 +89,7 @@ function modelsForAgent(
 
 export function SettingsView() {
   const { store, state } = useKilnStore();
-  const { settingsTab, roles, limits, pricing, agents, backends, sseStatus } =
+  const { settingsTab, roles, limits, pricing, spaces, agents, backends, sseStatus } =
     state;
 
   const [rolesDraft, setRolesDraft] = useState<RolesConfig>(() => ({
@@ -101,6 +101,9 @@ export function SettingsView() {
     ...limits,
   }));
   const [pendingConfirmRole, setPendingConfirmRole] = useState<RoleId | null>(
+    null,
+  );
+  const [pendingDeleteSpaceId, setPendingDeleteSpaceId] = useState<string | null>(
     null,
   );
   const [newModelName, setNewModelName] = useState("");
@@ -119,6 +122,7 @@ export function SettingsView() {
 
   const tabs: Array<[SettingsTab, string]> = [
     ["roles", "角色与模型"],
+    ["spaces", "项目空间"],
     ["limits", "限额与熔断"],
     ["pricing", "模型单价"],
     ["conn", "连接与底座"],
@@ -520,6 +524,133 @@ export function SettingsView() {
     );
   };
 
+  const renderSpacesTab = () => {
+    const customSpaces = Object.values(spaces)
+      .filter((sp) => sp.id !== "local")
+      .sort((a, b) => a.id.localeCompare(b.id));
+
+    return (
+      <>
+        <div class="sync-line">
+          <span>
+            项目空间决定代码任务的仓库路径、工作树基准分支与默认验收命令，立项对话将直接进入对应仓库目录探索。
+          </span>
+          <button
+            type="button"
+            class="btn btn-light btn-sm"
+            onClick={() => store.openAddSpaceModal(false)}
+          >
+            + 添加项目空间
+          </button>
+        </div>
+
+        <div class="setting-row">
+          <div>
+            <span>
+              本机与临时 <span class="mono muted">local</span>
+            </span>
+            <p>内置空间：用于本机配置修改（host_scoped）与临时沙盒任务（scratch_dir），不可删除</p>
+          </div>
+          <span class="chip" style={{ justifySelf: "end" }}>
+            内置
+          </span>
+        </div>
+
+        {customSpaces.length === 0 ? (
+          <div class="empty">
+            暂无已登记的项目空间。点击右上角「+ 添加项目空间」或在项目根目录运行{" "}
+            <span class="mono">kiln space add .</span>。
+          </div>
+        ) : (
+          <table class="t" style={{ marginTop: "8px" }}>
+            <thead>
+              <tr>
+                <th style={{ width: "20%" }}>空间</th>
+                <th>仓库路径</th>
+                <th style={{ width: "100px" }}>默认分支</th>
+                <th style={{ width: "160px" }}>默认验收命令</th>
+                <th style={{ width: "140px" }}>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {customSpaces.map((sp) => {
+                const validRepo = isProjectSpace(sp);
+                return (
+                  <tr key={sp.id}>
+                    <td>
+                      <div class="role-name">{sp.name}</div>
+                      <div class="role-desc mono">{sp.id}</div>
+                    </td>
+                    <td class="mono" style={{ fontSize: "12px", wordBreak: "break-all" }}>
+                      {validRepo ? (
+                        sp.repo_path
+                      ) : (
+                        <span class="warn-line" style={{ marginTop: "0" }}>
+                          缺少 repo_path，请点击编辑绑定本地 Git 仓库
+                        </span>
+                      )}
+                    </td>
+                    <td class="mono">{sp.default_branch}</td>
+                    <td class="mono" style={{ fontSize: "12px" }}>
+                      {sp.default_accept_cmd || <span class="muted">—</span>}
+                    </td>
+                    <td>
+                      <div style={{ display: "flex", gap: "6px" }}>
+                        <button
+                          type="button"
+                          class="btn btn-sm"
+                          onClick={() => store.openEditSpaceModal(sp.id)}
+                        >
+                          编辑
+                        </button>
+                        <button
+                          type="button"
+                          class="btn btn-sm btn-danger"
+                          onClick={() => setPendingDeleteSpaceId(sp.id)}
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+
+        {pendingDeleteSpaceId ? (
+          <div class="confirm-bar" role="alertdialog" aria-label="确认删除项目空间">
+            <p>
+              确认删除项目空间 <span class="mono">{pendingDeleteSpaceId}</span>
+              ？仅删除 <span class="mono">space.yaml</span> 配置，不会删除磁盘代码仓库或历史任务记录。
+            </p>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button
+                type="button"
+                class="btn btn-danger btn-sm"
+                onClick={async () => {
+                  const id = pendingDeleteSpaceId;
+                  setPendingDeleteSpaceId(null);
+                  await store.removeSpace(id);
+                }}
+              >
+                确认删除
+              </button>
+              <button
+                type="button"
+                class="btn btn-sm"
+                onClick={() => setPendingDeleteSpaceId(null)}
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </>
+    );
+  };
+
   const renderLimitsTab = () => {
     const numFields: Array<{
       key: Exclude<keyof LimitsConfig, "schema_version" | "p0_extra_slot">;
@@ -830,11 +961,13 @@ export function SettingsView() {
           </div>
           {settingsTab === "roles"
             ? renderRolesTab()
-            : settingsTab === "limits"
-              ? renderLimitsTab()
-              : settingsTab === "pricing"
-                ? renderPricingTab()
-                : renderConnTab()}
+            : settingsTab === "spaces"
+              ? renderSpacesTab()
+              : settingsTab === "limits"
+                ? renderLimitsTab()
+                : settingsTab === "pricing"
+                  ? renderPricingTab()
+                  : renderConnTab()}
         </div>
       </div>
     </ViewFrame>

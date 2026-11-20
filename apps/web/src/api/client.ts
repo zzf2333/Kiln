@@ -4,6 +4,7 @@ import type {
   LedgerEntry,
   LedgerFile,
   Priority,
+  SpaceConfig,
   SseEvent,
   TaskCard,
 } from "@kiln/protocol/web";
@@ -15,11 +16,13 @@ import type {
   CommitDraftPayload,
   HostBackupManifestInfo,
   HostRestoreConflictDetail,
+  InspectSpaceResult,
   RestoreHostBackupResult,
   SettingsSectionMap,
   SubmitDecisionPayload,
   TaskDetailResponse,
   UpsertDraftPayload,
+  UpsertSpacePayload,
 } from "./types";
 
 export class ApiError extends Error {
@@ -229,6 +232,39 @@ export async function upsertDraft(
   return await requestJson("/api/drafts", {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteDraft(
+  draftId: string,
+): Promise<{ ok: boolean; deleted: boolean; id: string }> {
+  return await requestJson(`/api/drafts/${encodeURIComponent(draftId)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function inspectSpacePath(rawPath: string): Promise<InspectSpaceResult> {
+  return await requestJson<InspectSpaceResult>("/api/spaces/inspect", {
+    method: "POST",
+    body: JSON.stringify({ path: rawPath }),
+  });
+}
+
+export async function upsertSpace(
+  spaceId: string,
+  payload: UpsertSpacePayload,
+): Promise<{ ok: boolean; space: SpaceConfig }> {
+  return await requestJson(`/api/spaces/${encodeURIComponent(spaceId)}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteSpace(
+  spaceId: string,
+): Promise<{ ok: boolean; deleted: boolean; id: string }> {
+  return await requestJson(`/api/spaces/${encodeURIComponent(spaceId)}`, {
+    method: "DELETE",
   });
 }
 

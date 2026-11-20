@@ -17,12 +17,15 @@ import type {
 import {
   cancelTask as apiCancelTask,
   commitDraft as apiCommitDraft,
+  deleteDraft as apiDeleteDraft,
+  deleteSpace as apiDeleteSpace,
   fetchAgents as apiFetchAgents,
   fetchBootstrap as apiFetchBootstrap,
   fetchDraftChat as apiFetchDraftChat,
   fetchLedgers as apiFetchLedgers,
   fetchTaskChat as apiFetchTaskChat,
   fetchTaskDetail as apiFetchTaskDetail,
+  inspectSpacePath as apiInspectSpacePath,
   pauseTask as apiPauseTask,
   restoreHostBackup as apiRestoreHostBackup,
   resumeTask as apiResumeTask,
@@ -33,6 +36,7 @@ import {
   updatePriority as apiUpdatePriority,
   updateSettings as apiUpdateSettings,
   upsertDraft as apiUpsertDraft,
+  upsertSpace as apiUpsertSpace,
 } from "../api/client";
 import type {
   AgentDescriptorInfo,
@@ -41,11 +45,13 @@ import type {
   BootstrapTask,
   ChatMessage,
   CommitDraftPayload,
+  InspectSpaceResult,
   RawProviderUsageEntry,
   RestoreHostBackupResult,
   SettingsSectionMap,
   SubmitDecisionPayload,
   TaskDetailResponse,
+  UpsertSpacePayload,
   UsageSnapshot,
 } from "../api/types";
 
@@ -59,10 +65,12 @@ export type MvpView =
   | "ledger"
   | "settings";
 
-export type SettingsTab = "roles" | "limits" | "pricing" | "conn";
+export type SettingsTab = "roles" | "spaces" | "limits" | "pricing" | "conn";
 export type PeriodFilter = "week" | "month" | "year" | "all";
+export type IntakeMode = "project" | "local";
 
 export interface IntakeFormState {
+  mode: IntakeMode;
   title: string;
   priority: Priority | "";
   space: string;
@@ -119,6 +127,10 @@ export interface KilnStoreState {
   intakeMessages: ChatMessage[];
   intakeBusy: boolean;
 
+  spaceModalOpen: boolean;
+  editingSpaceId: string | null;
+  spaceModalSelectInIntake: boolean;
+
   resolveMessagesByTask: Record<string, ChatMessage[]>;
   resolveBusy: boolean;
 }
@@ -136,6 +148,7 @@ const VALID_VIEWS = new Set<MvpView>([
 
 const VALID_SETTINGS_TABS = new Set<SettingsTab>([
   "roles",
+  "spaces",
   "limits",
   "pricing",
   "conn",
@@ -173,18 +186,61 @@ const EMPTY_USAGE: UsageSnapshot = {
   byModel: {},
 };
 
-export function createEmptyIntakeForm(): IntakeFormState {
+export function isProjectSpace(sp: SpaceConfig | undefined): sp is SpaceConfig {
+  return Boolean(
+    sp &&
+      sp.id !== "local" &&
+      typeof sp.repo_path === "string" &&
+      sp.repo_path.trim().length > 0,
+  );
+}
+
+export function getProjectSpaces(spaces: Record<string, SpaceConfig>): SpaceConfig[] {
+  return Object.values(spaces)
+    .filter((sp) => isProjectSpace(sp))
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+export function createDefaultIntakeForm(
+  spaces: Record<string, SpaceConfig> = {},
+  preferredSpace?: string,
+): IntakeFormState {
+  if (preferredSpace === "local") {
+    return {
+      mode: "local",
+      title: "",
+      priority: "P2",
+      space: "local",
+      track: "L1",
+      workspace_mode: "scratch_dir",
+      end: "",
+      accept_cmd: "",
+      scope: "",
+      depends_on: "",
+    };
+  }
+  const projects = getProjectSpaces(spaces);
+  const preferred =
+    preferredSpace && isProjectSpace(spaces[preferredSpace])
+      ? spaces[preferredSpace]
+      : undefined;
+  const chosen = preferred ?? projects[0];
   return {
+    mode: "project",
     title: "",
     priority: "P2",
-    space: "local",
+    space: chosen?.id ?? "",
     track: "L2",
     workspace_mode: "git_worktree",
     end: "",
-    accept_cmd: "",
+    accept_cmd: chosen?.default_accept_cmd ?? "",
     scope: "",
     depends_on: "",
   };
+}
+
+export function createEmptyIntakeForm(): IntakeFormState {
+  return createDefaultIntakeForm({});
 }
 
 function defaultWelcomeIntakeMessages(): ChatMessage[] {
@@ -316,9 +372,13 @@ export class KilnWebStore {
       restoreResult: null,
 
       intakeDraftId: null,
-      intakeForm: createEmptyIntakeForm(),
+      intakeForm: createDefaultIntakeForm({}),
       intakeMessages: defaultWelcomeIntakeMessages(),
       intakeBusy: false,
+
+      spaceModalOpen: false,
+      editingSpaceId: null,
+      spaceModalSelectInIntake: false,
 
       resolveMessagesByTask: {},
       resolveBusy: false,
@@ -483,6 +543,37 @@ export class KilnWebStore {
           ? { ...this.state.ratesByTask, ...data.liveRates.rates }
           : this.state.ratesByTask;
 
+        const nextSpaces = data.spaces ?? {};
+        let nextIntakeForm = this.state.intakeForm;
+        if (
+          !this.state.intakeDraftId &&
+          nextIntakeForm.mode === "project" &&
+          !isProjectSpace(nextSpaces[nextIntakeForm.space])
+        ) {
+          const preferred =
+            this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
+          const projects = getProjectSpaces(nextSpaces);
+          const chosen =
+            (preferred && isProjectSpace(nextSpaces[preferred])
+              ? nextSpaces[preferred]
+              : undefined) ?? projects[0];
+          if (chosen) {
+            nextIntakeForm = {
+              ...nextIntakeForm,
+              space: chosen.id,
+              workspace_mode: "git_worktree",
+              ...(nextIntakeForm.accept_cmd.trim() === "" && chosen.default_accept_cmd
+                ? { accept_cmd: chosen.default_accept_cmd }
+                : {}),
+            };
+          } else if (nextIntakeForm.space && !nextSpaces[nextIntakeForm.space]) {
+            nextIntakeForm = {
+              ...nextIntakeForm,
+              space: "",
+            };
+          }
+        }
+
         this.setState({
           bootstrapping: false,
           bootstrapLoaded: true,
@@ -490,7 +581,8 @@ export class KilnWebStore {
           tasks: data.tasks ?? [],
           pendingDecisions: data.pendingDecisions ?? [],
           drafts: data.drafts ?? [],
-          spaces: data.spaces ?? {},
+          spaces: nextSpaces,
+          intakeForm: nextIntakeForm,
           roles,
           limits,
           pricing,
@@ -620,6 +712,15 @@ export class KilnWebStore {
   }
 
   go(view: MvpView, options?: { space?: string; settingsTab?: SettingsTab }): void {
+    const shouldInitIntake =
+      view === "intake" &&
+      !this.state.intakeDraftId &&
+      !this.state.intakeForm.title.trim() &&
+      this.state.intakeMessages.length <= 1;
+
+    const preferredSpace =
+      this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
+
     const patch: Partial<KilnStoreState> = {
       view,
       navOpen: false,
@@ -629,6 +730,9 @@ export class KilnWebStore {
       ...(view !== "detail" && view !== "resolve" ? { taskId: null, selectedRunIdx: null } : {}),
       ...(options?.space !== undefined ? { spaceFilter: options.space } : {}),
       ...(options?.settingsTab !== undefined ? { settingsTab: options.settingsTab } : {}),
+      ...(shouldInitIntake
+        ? { intakeForm: createDefaultIntakeForm(this.state.spaces, preferredSpace) }
+        : {}),
     };
     this.setState(patch);
     this.syncHashFromState();
@@ -841,28 +945,111 @@ export class KilnWebStore {
     });
   }
 
-  applyIntakePreset(
-    presetForm: Partial<IntakeFormState>,
-    messages: ChatMessage[],
-  ): void {
+  setIntakeMode(mode: IntakeMode): void {
+    const cur = this.state.intakeForm;
+    if (mode === cur.mode) return;
+    if (mode === "project") {
+      const projects = getProjectSpaces(this.state.spaces);
+      const preferred =
+        this.state.spaceFilter !== "all" && isProjectSpace(this.state.spaces[this.state.spaceFilter])
+          ? this.state.spaces[this.state.spaceFilter]
+          : undefined;
+      const chosen =
+        (isProjectSpace(this.state.spaces[cur.space])
+          ? this.state.spaces[cur.space]
+          : undefined) ??
+        preferred ??
+        projects[0];
+      const prevDefault = this.state.spaces[cur.space]?.default_accept_cmd ?? "";
+      const shouldFillAccept =
+        cur.accept_cmd.trim() === "" || cur.accept_cmd === prevDefault;
+      this.setState({
+        intakeForm: {
+          ...cur,
+          mode: "project",
+          space: chosen?.id ?? "",
+          workspace_mode: "git_worktree",
+          track: cur.track || "L2",
+          accept_cmd:
+            shouldFillAccept && chosen?.default_accept_cmd
+              ? chosen.default_accept_cmd
+              : cur.accept_cmd,
+        },
+      });
+      return;
+    }
+
+    const prevDefault = this.state.spaces[cur.space]?.default_accept_cmd ?? "";
     this.setState({
-      intakeForm: { ...this.state.intakeForm, ...presetForm },
-      intakeMessages: [...this.state.intakeMessages, ...messages],
+      intakeForm: {
+        ...cur,
+        mode: "local",
+        space: "local",
+        workspace_mode:
+          cur.workspace_mode === "host_scoped" ? "host_scoped" : "scratch_dir",
+        ...(cur.accept_cmd === prevDefault ? { accept_cmd: "" } : {}),
+      },
     });
   }
 
+  selectIntakeProjectSpace(spaceId: string): void {
+    const cur = this.state.intakeForm;
+    const prevDefault = this.state.spaces[cur.space]?.default_accept_cmd ?? "";
+    const nextSpace = this.state.spaces[spaceId];
+    const shouldUpdateAccept =
+      cur.accept_cmd.trim() === "" || cur.accept_cmd === prevDefault;
+    this.setState({
+      intakeForm: {
+        ...cur,
+        mode: "project",
+        space: spaceId,
+        workspace_mode: "git_worktree",
+        accept_cmd: shouldUpdateAccept
+          ? (nextSpace?.default_accept_cmd ?? "")
+          : cur.accept_cmd,
+      },
+    });
+  }
+
+  startNewIntake(): void {
+    const preferred =
+      this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
+    this.setState({
+      intakeDraftId: null,
+      intakeForm: createDefaultIntakeForm(this.state.spaces, preferred),
+      intakeMessages: defaultWelcomeIntakeMessages(),
+      draftOpen: false,
+    });
+  }
+
+  async deleteIntakeDraft(draftId: string): Promise<void> {
+    try {
+      await apiDeleteDraft(draftId);
+      if (this.state.intakeDraftId === draftId) {
+        this.startNewIntake();
+      }
+      await this.bootstrap();
+      this.showToast("已删除草稿");
+    } catch (err) {
+      this.showToast(err instanceof Error ? err.message : "删除草稿失败");
+    }
+  }
+
   async loadDraftIntoIntake(draft: DraftCard): Promise<void> {
+    const isLocal = draft.space === "local";
+    const mode: IntakeMode = isLocal ? "local" : "project";
+    const workspaceMode: Exclude<WorkspaceMode, "external_only"> = isLocal
+      ? (draft.workspace_mode === "host_scoped" ? "host_scoped" : "scratch_dir")
+      : "git_worktree";
     this.setState({
       intakeDraftId: draft.id,
       intakeForm: {
+        mode,
         title: draft.title,
         priority: draft.priority,
         space: draft.space,
         track: draft.track === "L3" ? "L2" : draft.track,
-        workspace_mode:
-          draft.workspace_mode === "external_only"
-            ? "scratch_dir"
-            : draft.workspace_mode,
+        workspace_mode: workspaceMode,
         end: draft.contract.end ?? "",
         accept_cmd: draft.contract.accept_cmd ?? "",
         scope: (draft.contract.scope ?? []).join("\n"),
@@ -870,9 +1057,10 @@ export class KilnWebStore {
       },
     });
     const msgs = await apiFetchDraftChat(draft.id).catch(() => null);
-    if (msgs && msgs.length > 0) {
-      this.setState({ intakeMessages: msgs });
-    }
+    this.setState({
+      intakeMessages:
+        msgs && msgs.length > 0 ? msgs : defaultWelcomeIntakeMessages(),
+    });
   }
 
   private buildDraftContractFromForm(): {
@@ -894,16 +1082,26 @@ export class KilnWebStore {
   async saveIntakeDraft(): Promise<DraftCard | null> {
     const f = this.state.intakeForm;
     if (!f.title.trim()) return null;
+    if (f.mode === "project" && !isProjectSpace(this.state.spaces[f.space])) {
+      this.showToast("请先选择或添加一个项目空间");
+      return null;
+    }
     const { depends_on, scopeList } = this.buildDraftContractFromForm();
+    const effectiveSpace = f.mode === "local" ? "local" : f.space;
+    const effectiveWorkspaceMode: Exclude<WorkspaceMode, "external_only"> =
+      f.mode === "project"
+        ? "git_worktree"
+        : (f.workspace_mode === "host_scoped" ? "host_scoped" : "scratch_dir");
+
     this.setState({ intakeBusy: true });
     try {
       const res = await apiUpsertDraft({
         ...(this.state.intakeDraftId ? { id: this.state.intakeDraftId } : {}),
         title: f.title.trim(),
-        space: f.space || "local",
+        space: effectiveSpace,
         priority: (f.priority || "P2") as Priority,
         track: (f.track || "L2") as Track,
-        workspace_mode: (f.workspace_mode || "git_worktree") as WorkspaceMode,
+        workspace_mode: effectiveWorkspaceMode,
         depends_on,
         contract: {
           goal: f.title.trim(),
@@ -946,12 +1144,23 @@ export class KilnWebStore {
   async commitIntakeTask(): Promise<boolean> {
     const f = this.state.intakeForm;
     const { depends_on, scopeList } = this.buildDraftContractFromForm();
+    const effectiveSpace = f.mode === "local" ? "local" : f.space;
+    const effectiveWorkspaceMode: Exclude<WorkspaceMode, "external_only"> =
+      f.mode === "project"
+        ? "git_worktree"
+        : (f.workspace_mode === "host_scoped" ? "host_scoped" : "scratch_dir");
+
+    if (f.mode === "project" && !isProjectSpace(this.state.spaces[effectiveSpace])) {
+      this.showToast("请先选择或添加一个项目空间");
+      return false;
+    }
+
     if (
       !f.title.trim() ||
       !f.priority ||
-      !f.space ||
+      !effectiveSpace ||
       !f.track ||
-      !f.workspace_mode ||
+      !effectiveWorkspaceMode ||
       !f.end.trim() ||
       !f.accept_cmd.trim() ||
       scopeList.length === 0
@@ -965,10 +1174,10 @@ export class KilnWebStore {
       if (!draftId) {
         const saved = await apiUpsertDraft({
           title: f.title.trim(),
-          space: f.space,
+          space: effectiveSpace,
           priority: f.priority,
           track: f.track,
-          workspace_mode: f.workspace_mode,
+          workspace_mode: effectiveWorkspaceMode,
           depends_on,
           contract: {
             goal: f.title.trim(),
@@ -982,15 +1191,15 @@ export class KilnWebStore {
 
       const taskId = this.generateNextTaskId();
       const deliverMode =
-        f.workspace_mode === "git_worktree" ? "merge_main" : "manual";
+        effectiveWorkspaceMode === "git_worktree" ? "merge_main" : "manual";
 
       const payload: CommitDraftPayload = {
         id: taskId,
         title: f.title.trim(),
-        space: f.space,
+        space: effectiveSpace,
         priority: f.priority,
         track: f.track,
-        workspace_mode: f.workspace_mode,
+        workspace_mode: effectiveWorkspaceMode,
         depends_on,
         contract: {
           goal: f.title.trim(),
@@ -1006,10 +1215,12 @@ export class KilnWebStore {
       };
 
       const committed = await apiCommitDraft(draftId, payload);
+      const preferred =
+        this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
       this.setState({
         intakeBusy: false,
         intakeDraftId: null,
-        intakeForm: createEmptyIntakeForm(),
+        intakeForm: createDefaultIntakeForm(this.state.spaces, preferred),
         intakeMessages: defaultWelcomeIntakeMessages(),
         draftOpen: false,
       });
@@ -1027,6 +1238,19 @@ export class KilnWebStore {
   async sendIntakeChat(text: string): Promise<void> {
     const trimmed = text.trim();
     if (!trimmed || this.state.intakeBusy) return;
+
+    const f = this.state.intakeForm;
+    const effectiveSpace = f.mode === "local" ? "local" : f.space;
+    const effectiveWorkspaceMode: Exclude<WorkspaceMode, "external_only"> =
+      f.mode === "project"
+        ? "git_worktree"
+        : (f.workspace_mode === "host_scoped" ? "host_scoped" : "scratch_dir");
+
+    if (f.mode === "project" && !isProjectSpace(this.state.spaces[effectiveSpace])) {
+      this.showToast("请先添加或选择目标项目空间，再开始项目立项对话");
+      return;
+    }
+
     const userMsg: ChatMessage = { who: "me", text: trimmed };
     this.setState({
       intakeMessages: [...this.state.intakeMessages, userMsg],
@@ -1034,17 +1258,32 @@ export class KilnWebStore {
     });
 
     try {
-      let draftId = this.state.intakeDraftId;
-      if (!draftId) {
-        const created = await apiUpsertDraft({
-          title: this.state.intakeForm.title.trim() || trimmed.slice(0, 32),
-          space: this.state.intakeForm.space || "local",
-          priority: (this.state.intakeForm.priority || "P2") as Priority,
-          track: (this.state.intakeForm.track || "L2") as Track,
-          workspace_mode: (this.state.intakeForm.workspace_mode ||
-            "git_worktree") as WorkspaceMode,
-        });
-        draftId = created.draft.id;
+      const { depends_on, scopeList } = this.buildDraftContractFromForm();
+      const contractPatch: Partial<{
+        goal: string;
+        end: string;
+        accept_cmd: string;
+        scope: string[];
+      }> = {};
+      if (f.title.trim()) contractPatch.goal = f.title.trim();
+      if (f.end.trim()) contractPatch.end = f.end.trim();
+      if (f.accept_cmd.trim()) contractPatch.accept_cmd = f.accept_cmd.trim();
+      if (scopeList.length > 0) contractPatch.scope = scopeList;
+
+      const synced = await apiUpsertDraft({
+        ...(this.state.intakeDraftId ? { id: this.state.intakeDraftId } : {}),
+        ...(this.state.intakeDraftId
+          ? (f.title.trim() ? { title: f.title.trim() } : {})
+          : { title: f.title.trim() || trimmed.slice(0, 32) }),
+        space: effectiveSpace,
+        priority: (f.priority || "P2") as Priority,
+        track: (f.track || "L2") as Track,
+        workspace_mode: effectiveWorkspaceMode,
+        depends_on,
+        ...(Object.keys(contractPatch).length > 0 ? { contract: contractPatch } : {}),
+      });
+      const draftId = synced.draft.id;
+      if (this.state.intakeDraftId !== draftId) {
         this.setState({ intakeDraftId: draftId });
       }
 
@@ -1062,16 +1301,15 @@ export class KilnWebStore {
 
       const nextForm = { ...this.state.intakeForm };
       if (res.draft) {
+        const resIsLocal = res.draft.space === "local";
+        nextForm.mode = resIsLocal ? "local" : "project";
         if (res.draft.title) nextForm.title = res.draft.title;
         if (res.draft.priority) nextForm.priority = res.draft.priority;
         if (res.draft.space) nextForm.space = res.draft.space;
         if (res.draft.track && res.draft.track !== "L3") nextForm.track = res.draft.track;
-        if (
-          res.draft.workspace_mode &&
-          res.draft.workspace_mode !== "external_only"
-        ) {
-          nextForm.workspace_mode = res.draft.workspace_mode;
-        }
+        nextForm.workspace_mode = resIsLocal
+          ? (res.draft.workspace_mode === "host_scoped" ? "host_scoped" : "scratch_dir")
+          : "git_worktree";
         if (res.draft.contract.end) nextForm.end = res.draft.contract.end;
         if (res.draft.contract.accept_cmd) {
           nextForm.accept_cmd = res.draft.contract.accept_cmd;
@@ -1088,6 +1326,7 @@ export class KilnWebStore {
         intakeForm: nextForm,
         intakeBusy: false,
       });
+      void this.bootstrap();
     } catch (err) {
       this.setState({
         intakeBusy: false,
@@ -1237,6 +1476,85 @@ export class KilnWebStore {
       }
     } catch (err) {
       this.showToast(err instanceof Error ? err.message : "读取账本失败");
+    }
+  }
+
+  openAddSpaceModal(selectInIntake = false): void {
+    this.setState({
+      spaceModalOpen: true,
+      editingSpaceId: null,
+      spaceModalSelectInIntake: selectInIntake,
+    });
+  }
+
+  openEditSpaceModal(spaceId: string): void {
+    this.setState({
+      spaceModalOpen: true,
+      editingSpaceId: spaceId,
+      spaceModalSelectInIntake: false,
+    });
+  }
+
+  closeSpaceModal(): void {
+    this.setState({
+      spaceModalOpen: false,
+      editingSpaceId: null,
+      spaceModalSelectInIntake: false,
+    });
+  }
+
+  async inspectSpace(rawPath: string): Promise<InspectSpaceResult> {
+    return await apiInspectSpacePath(rawPath);
+  }
+
+  async saveSpace(
+    spaceId: string,
+    payload: UpsertSpacePayload,
+  ): Promise<SpaceConfig> {
+    const shouldSelectInIntake =
+      this.state.spaceModalSelectInIntake ||
+      (this.state.view === "intake" &&
+        this.state.intakeForm.mode === "project" &&
+        !isProjectSpace(this.state.spaces[this.state.intakeForm.space]));
+    const res = await apiUpsertSpace(spaceId, payload);
+    this.closeSpaceModal();
+    await this.bootstrap();
+    if (shouldSelectInIntake) {
+      this.selectIntakeProjectSpace(res.space.id);
+    }
+    this.showToast(`已保存项目空间 ${res.space.name}`);
+    return res.space;
+  }
+
+  async removeSpace(spaceId: string): Promise<boolean> {
+    try {
+      await apiDeleteSpace(spaceId);
+      const nextSpaces = { ...this.state.spaces };
+      delete nextSpaces[spaceId];
+      const remainingProjects = getProjectSpaces(nextSpaces);
+      const patch: Partial<KilnStoreState> = {};
+      if (this.state.spaceFilter === spaceId) {
+        patch.spaceFilter = "all";
+      }
+      if (
+        this.state.intakeForm.mode === "project" &&
+        this.state.intakeForm.space === spaceId
+      ) {
+        patch.intakeForm = {
+          ...this.state.intakeForm,
+          space: remainingProjects[0]?.id ?? "",
+          accept_cmd: remainingProjects[0]?.default_accept_cmd ?? "",
+        };
+      }
+      if (Object.keys(patch).length > 0) {
+        this.setState(patch);
+      }
+      await this.bootstrap();
+      this.showToast(`已删除项目空间 ${spaceId}`);
+      return true;
+    } catch (err) {
+      this.showToast(err instanceof Error ? err.message : "删除项目空间失败");
+      return false;
     }
   }
 }

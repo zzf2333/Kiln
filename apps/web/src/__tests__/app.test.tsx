@@ -30,6 +30,7 @@ function makeBaseBootstrap(
         schema_version: 1,
         id: "kiln",
         name: "Kiln 本体",
+        repo_path: "/repos/kiln",
         default_branch: "main",
         copy_untracked: [],
         clone_deps: [],
@@ -1002,15 +1003,21 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       expect(document.body.classList.contains("in-converse")).toBe(true);
     });
 
-    // No L3 or external_only options allowed in MVP
+    // Default mode is 项目任务 with project space kiln -> workspace locked to git_worktree
     const trackSelect = screen.getByLabelText("轨道") as HTMLSelectElement;
     expect(Array.from(trackSelect.options).map((o) => o.value)).toEqual(["L1", "L2"]);
 
-    const wsSelect = screen.getByLabelText("工作区") as HTMLSelectElement;
-    expect(Array.from(wsSelect.options).map((o) => o.value)).toEqual([
+    const projectWsSelect = screen.getByLabelText("工作区") as HTMLSelectElement;
+    expect(Array.from(projectWsSelect.options).map((o) => o.value)).toEqual([
       "git_worktree",
-      "host_scoped",
+    ]);
+
+    // Switch to 本机 / 临时任务 -> workspace options are only scratch_dir and host_scoped (no L3/external_only)
+    fireEvent.click(screen.getByRole("button", { name: "本机 / 临时任务" }));
+    const localWsSelect = screen.getByLabelText("工作区") as HTMLSelectElement;
+    expect(Array.from(localWsSelect.options).map((o) => o.value)).toEqual([
       "scratch_dir",
+      "host_scoped",
     ]);
 
     // Collapsible drawer toggle on IntakeView
@@ -1020,13 +1027,24 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     fireEvent.click(toggleBtn);
     expect(draftAside.classList.contains("open")).toBe(true);
 
-    // focusin on input triggers kb-open
+    // focusin on textarea triggers kb-open
     const chatInput = document.getElementById("chatIn")!;
     fireEvent.focusIn(chatInput);
     expect(document.body.classList.contains("kb-open")).toBe(true);
 
-    // Apply scratch preset containing <新任务> placeholder and commit
-    fireEvent.click(screen.getByRole("button", { name: "临时沙盒脚本" }));
+    // Fill local scratch task containing <新任务> placeholder and commit
+    fireEvent.input(screen.getByLabelText("标题"), {
+      target: { value: "临时沙盒统计脚本" },
+    });
+    fireEvent.input(screen.getByLabelText("交付终点"), {
+      target: { value: "output.md 生成且非空" },
+    });
+    fireEvent.input(screen.getByLabelText("验收命令"), {
+      target: { value: "test -s workspaces/<新任务>/output.md" },
+    });
+    fireEvent.input(screen.getByLabelText("可改范围"), {
+      target: { value: "workspaces/<新任务>/**" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "开始推进" }));
 
     await waitFor(() => {
@@ -2040,5 +2058,277 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     });
     expect(screen.queryByText("待落盘暂存 Diff")).toBeNull();
     rApplied.unmount();
+  });
+
+  it("supports space onboarding when no project spaces exist, SpaceModal inspect/save, dual-mode form sync before chat, draft deletion, sidebar space inheritance, and Settings spaces tab", async () => {
+    const now = new Date().toISOString();
+    let spacesState: BootstrapResponse["spaces"] = {};
+    let draftsState: BootstrapResponse["drafts"] = [
+      {
+        schema_version: 1,
+        id: "d-old",
+        title: "旧草稿",
+        space: "local",
+        priority: "P2",
+        track: "L1",
+        workspace_mode: "scratch_dir",
+        depends_on: [],
+        contract: {},
+        created_at: now,
+        updated_at: now,
+      },
+    ];
+    const calls: Array<{ url: string; method: string; body?: Record<string, unknown> }> = [];
+
+    fetchMock.mockImplementation(async (url, init) => {
+      const method = init?.method ?? "GET";
+      const parsedBody = init?.body
+        ? (JSON.parse(String(init.body)) as Record<string, unknown>)
+        : undefined;
+      calls.push({ url, method, ...(parsedBody ? { body: parsedBody } : {}) });
+
+      if (url === "/api/bootstrap") {
+        return jsonResponse(
+          makeBaseBootstrap({ spaces: spacesState, drafts: draftsState }),
+        );
+      }
+      if (url === "/api/spaces/inspect" && method === "POST") {
+        return jsonResponse({
+          ok: true,
+          repo_path: "/Users/me/Projects/alpha",
+          suggested_id: "alpha",
+          suggested_name: "Alpha",
+          default_branch: "main",
+          default_accept_cmd: "pnpm test",
+          copy_untracked: [],
+          clone_deps: ["node_modules"],
+        });
+      }
+      if (url === "/api/spaces/alpha" && method === "PUT") {
+        const saved = {
+          schema_version: 1 as const,
+          id: "alpha",
+          name: String(parsedBody?.name ?? "Alpha"),
+          repo_path: String(parsedBody?.repo_path ?? "/Users/me/Projects/alpha"),
+          default_branch: String(parsedBody?.default_branch ?? "main"),
+          copy_untracked: [],
+          clone_deps: ["node_modules"],
+          default_accept_cmd: String(parsedBody?.default_accept_cmd ?? "pnpm test"),
+          freeze_patterns: [],
+        };
+        spacesState = { ...spacesState, alpha: saved };
+        return jsonResponse({ ok: true, space: saved }, 201);
+      }
+      if (url === "/api/spaces/beta" && method === "DELETE") {
+        return jsonResponse(
+          { error: "space_in_use", message: "空间 beta 仍有 1 个未完成任务" },
+          409,
+        );
+      }
+      if (url === "/api/spaces/alpha" && method === "DELETE") {
+        const next = { ...spacesState };
+        delete next.alpha;
+        spacesState = next;
+        return jsonResponse({ ok: true, deleted: true, id: "alpha" });
+      }
+      if (url === "/api/drafts/d-old" && method === "DELETE") {
+        draftsState = [];
+        return jsonResponse({ ok: true, deleted: true, id: "d-old" });
+      }
+      if (url === "/api/drafts" && method === "POST") {
+        const draft = {
+          schema_version: 1 as const,
+          id: String(parsedBody?.id ?? "d-sync-1"),
+          title: String(parsedBody?.title ?? "Alpha task"),
+          space: String(parsedBody?.space ?? "alpha"),
+          priority: "P2" as const,
+          track: (parsedBody?.track ?? "L2") as "L1" | "L2",
+          workspace_mode: (parsedBody?.workspace_mode ?? "git_worktree") as
+            | "git_worktree"
+            | "scratch_dir"
+            | "host_scoped",
+          depends_on: [],
+          contract: (parsedBody?.contract ?? {}) as Record<string, unknown>,
+          created_at: now,
+          updated_at: now,
+        };
+        draftsState = [draft];
+        return jsonResponse({ ok: true, draft }, 201);
+      }
+      if (url === "/api/drafts/d-sync-1/chat" && method === "POST") {
+        return jsonResponse({
+          ok: true,
+          messages: [
+            { who: "me", text: String(parsedBody?.message ?? "") },
+            { who: "agent", name: "intake", text: "已在项目目录分析完成" },
+          ],
+          draft: draftsState[0],
+        });
+      }
+      return jsonResponse({});
+    });
+
+    // 1. Empty spaces -> Intake defaults to 项目任务 with onboarding guide & disabled chat input
+    window.location.hash = "#view=intake";
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("还没有登记项目空间")).toBeTruthy();
+    });
+    const chatArea = document.getElementById("chatIn") as HTMLTextAreaElement;
+    expect(chatArea.disabled).toBe(true);
+
+    // 2. Open SpaceModal via empty guide, inspect path, save -> auto-selected in Intake & chat unlocked
+    fireEvent.click(screen.getByRole("button", { name: "+ 添加本地 Git 项目" }));
+    const modal = await screen.findByRole("dialog", { name: "添加项目空间" });
+    fireEvent.input(within(modal).getByLabelText("仓库路径"), {
+      target: { value: "~/Projects/alpha" },
+    });
+    fireEvent.click(within(modal).getByRole("button", { name: "识别仓库" }));
+
+    await waitFor(() => {
+      expect((within(modal).getByLabelText("空间标识") as HTMLInputElement).value).toBe("alpha");
+    });
+    expect((within(modal).getByLabelText("默认验收命令") as HTMLInputElement).value).toBe(
+      "pnpm test",
+    );
+
+    fireEvent.click(within(modal).getByRole("button", { name: "保存空间" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "添加项目空间" })).toBeNull();
+    });
+
+    await waitFor(() => {
+      expect((document.getElementById("chatIn") as HTMLTextAreaElement).disabled).toBe(false);
+    });
+    expect((screen.getByLabelText("目标项目空间") as HTMLSelectElement).value).toBe("alpha");
+    expect((screen.getByLabelText("验收命令") as HTMLInputElement).value).toBe("pnpm test");
+
+    // 3. Delete old draft via × button
+    fireEvent.click(screen.getByRole("button", { name: "删除草稿 旧草稿" }));
+    await waitFor(() => {
+      expect(calls.some((c) => c.url === "/api/drafts/d-old" && c.method === "DELETE")).toBe(
+        true,
+      );
+    });
+
+    // 4. Add second space beta, test switching space/mode syncs POST /api/drafts before POST /chat
+    spacesState = {
+      ...spacesState,
+      beta: {
+        schema_version: 1,
+        id: "beta",
+        name: "Beta",
+        repo_path: "/Users/me/Projects/beta",
+        default_branch: "main",
+        copy_untracked: [],
+        clone_deps: [],
+        default_accept_cmd: "cargo test",
+        freeze_patterns: [],
+      },
+    };
+    // Trigger sidebar space click -> beta -> click 新需求 -> inherits beta
+    fireEvent.click(screen.getByRole("button", { name: "返回看板" }));
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "总览" })).toBeTruthy();
+    });
+    // Bootstrap reload via settings save or re-mount not needed if we inspect Settings & spaces
+    fireEvent.click(screen.getByRole("button", { name: "新需求 N" }));
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "新需求" })).toBeTruthy();
+    });
+    fireEvent.input(document.getElementById("chatIn")!, {
+      target: { value: "帮我加个导出接口" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => {
+      const chatIdx = calls.findIndex((c) => c.url === "/api/drafts/d-sync-1/chat");
+      expect(chatIdx).toBeGreaterThan(-1);
+      const syncCall = calls
+        .slice(0, chatIdx)
+        .reverse()
+        .find((c) => c.url === "/api/drafts" && c.method === "POST");
+      expect(syncCall?.body).toMatchObject({
+        space: "alpha",
+        workspace_mode: "git_worktree",
+      });
+    });
+
+    // Switch to 本机 / 临时任务 and send follow-up -> syncs local + scratch_dir before chat
+    fireEvent.click(screen.getByRole("button", { name: "本机 / 临时任务" }));
+    fireEvent.input(document.getElementById("chatIn")!, {
+      target: { value: "改用沙盒先跑脚本" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => {
+      const syncCalls = calls.filter((c) => c.url === "/api/drafts" && c.method === "POST");
+      expect(syncCalls.at(-1)?.body).toMatchObject({
+        id: "d-sync-1",
+        space: "local",
+        workspace_mode: "scratch_dir",
+      });
+    });
+
+    // 5. Settings -> 项目空间 tab lists spaces, handles 409 on busy delete and 200 on free delete
+    fireEvent.click(screen.getByRole("button", { name: /设置/ }));
+    fireEvent.click(await screen.findByRole("tab", { name: "项目空间" }));
+    expect(screen.getByText("/Users/me/Projects/alpha")).toBeTruthy();
+    expect(screen.getByText("/Users/me/Projects/beta")).toBeTruthy();
+
+    const delButtons = screen.getAllByRole("button", { name: "删除" });
+    fireEvent.click(delButtons[1]!); // beta
+    const confirmDelBeta = await screen.findByRole("alertdialog", { name: "确认删除项目空间" });
+    fireEvent.click(within(confirmDelBeta).getByRole("button", { name: "确认删除" }));
+    await waitFor(() => {
+      expect(document.getElementById("toast")?.textContent).toContain("未完成任务");
+    });
+
+    fireEvent.click(screen.getAllByRole("button", { name: "删除" })[0]!); // alpha
+    const confirmDelAlpha = await screen.findByRole("alertdialog", { name: "确认删除项目空间" });
+    fireEvent.click(within(confirmDelAlpha).getByRole("button", { name: "确认删除" }));
+    await waitFor(() => {
+      expect(calls.some((c) => c.url === "/api/spaces/alpha" && c.method === "DELETE")).toBe(
+        true,
+      );
+    });
+  });
+
+  it("inherits selected sidebar space when navigating to 新需求", async () => {
+    const spaces: BootstrapResponse["spaces"] = {
+      alpha: {
+        schema_version: 1,
+        id: "alpha",
+        name: "Alpha",
+        repo_path: "/repos/alpha",
+        default_branch: "main",
+        copy_untracked: [],
+        clone_deps: [],
+        default_accept_cmd: "pnpm alpha:test",
+        freeze_patterns: [],
+      },
+      beta: {
+        schema_version: 1,
+        id: "beta",
+        name: "Beta",
+        repo_path: "/repos/beta",
+        default_branch: "main",
+        copy_untracked: [],
+        clone_deps: [],
+        default_accept_cmd: "cargo test",
+        freeze_patterns: [],
+      },
+    };
+    fetchMock.mockImplementation(async () => jsonResponse(makeBaseBootstrap({ spaces })));
+
+    render(<App />);
+    const betaNav = await screen.findByRole("button", { name: /Beta/ });
+    fireEvent.click(betaNav);
+    fireEvent.click(screen.getByRole("button", { name: "新需求 N" }));
+
+    await waitFor(() => {
+      expect((screen.getByLabelText("目标项目空间") as HTMLSelectElement).value).toBe("beta");
+    });
+    expect((screen.getByLabelText("验收命令") as HTMLInputElement).value).toBe("cargo test");
   });
 });

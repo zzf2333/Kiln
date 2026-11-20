@@ -3,98 +3,58 @@ import type { Priority, Track, WorkspaceMode } from "@kiln/protocol/web";
 import { CheckIcon } from "../components/Icons";
 import { ViewFrame } from "../components/ViewFrame";
 import { fmtTime } from "../state/format";
-import { useKilnStore, type IntakeFormState } from "../state/store";
-
-interface PresetDef {
-  key: string;
-  label: string;
-  ask: string;
-  tools: string[];
-  reply: string;
-  form: Partial<IntakeFormState>;
-}
-
-const MVP_PRESETS: readonly PresetDef[] = [
-  {
-    key: "local",
-    label: "清理本机 zsh 配置",
-    ask: "终端启动越来越慢，PATH 里好像有很多重复的路径，帮我清一下",
-    tools: ["wb_read_ledger · local", "wb_list_tasks · 检查同路径锁冲突"],
-    reply:
-      "走本机白名单（host_scoped 两阶段暂存）：Agent 只在沙盒生成补丁，内核备份原文件并请你批准后原子写入。",
-    form: {
-      title: "清理 zsh PATH 重复项",
-      priority: "P2",
-      space: "local",
-      track: "L1",
-      workspace_mode: "host_scoped",
-      end: "本机生效，新开终端 PATH 无重复项",
-      accept_cmd: "zsh -i -c 'echo $PATH | tr \":\" \"\\n\" | sort | uniq -d'",
-      scope: "~/.zshrc\n~/.zprofile",
-    },
-  },
-  {
-    key: "code",
-    label: "新功能标准交付",
-    ask: "给工作台新增列表导出功能，需要自动测试和独立审查",
-    tools: ["wb_read_ledger · 检查代码规范", "wb_list_tasks · 检查在途依赖"],
-    reply:
-      "走 L2 标准交付（git_worktree）：包含实施、确定性门禁验真与异构独立审查。",
-    form: {
-      title: "新增列表导出功能",
-      priority: "P2",
-      space: "local",
-      track: "L2",
-      workspace_mode: "git_worktree",
-      end: "合入 main，单测与审查通过",
-      accept_cmd: "pnpm test",
-      scope: "src/**",
-    },
-  },
-  {
-    key: "scratch",
-    label: "临时沙盒脚本",
-    ask: "在独立沙盒目录整理一份日志分析脚本并输出报告",
-    tools: ["wb_list_tasks · 检查工作区可用性"],
-    reply:
-      "走 L1 快车道 + scratch_dir 临时沙盒，产物限定在 workspaces/<新任务>/ 下，提交时自动替换为真实任务 ID。",
-    form: {
-      title: "日志统计脚本与报告",
-      priority: "P3",
-      space: "local",
-      track: "L1",
-      workspace_mode: "scratch_dir",
-      end: "output.md 生成且非空",
-      accept_cmd: "test -s workspaces/<新任务>/output.md",
-      scope: "workspaces/<新任务>/**",
-    },
-  },
-];
+import {
+  getProjectSpaces,
+  isProjectSpace,
+  useKilnStore,
+  type IntakeFormState,
+} from "../state/store";
 
 export function IntakeView() {
   const { store, state } = useKilnStore();
   const [chatInput, setChatInput] = useState("");
   const msgsRef = useRef<HTMLDivElement | null>(null);
 
-  const { intakeForm, intakeMessages, intakeBusy, drafts, spaces, draftOpen } =
-    state;
+  const {
+    intakeDraftId,
+    intakeForm,
+    intakeMessages,
+    intakeBusy,
+    drafts,
+    spaces,
+    draftOpen,
+  } = state;
 
   useEffect(() => {
     if (msgsRef.current) {
       msgsRef.current.scrollTop = msgsRef.current.scrollHeight;
     }
-  }, [intakeMessages.length]);
+  }, [intakeMessages.length, intakeBusy]);
 
-  const spaceOptions = Array.from(
-    new Set(["local", ...Object.keys(spaces), intakeForm.space].filter(Boolean)),
-  );
+  const isProjectMode = intakeForm.mode === "project";
+  const projectSpaces = getProjectSpaces(spaces);
+  const selectedProject =
+    isProjectMode && isProjectSpace(spaces[intakeForm.space])
+      ? spaces[intakeForm.space]
+      : undefined;
+  const projectBlocked = isProjectMode && !selectedProject;
+  const hasDraftOrChat =
+    Boolean(intakeDraftId) ||
+    intakeMessages.length > 1 ||
+    intakeForm.title.trim().length > 0;
 
   const requiredChecks: Array<[keyof IntakeFormState, boolean]> = [
     ["title", intakeForm.title.trim().length > 0],
     ["priority", intakeForm.priority !== ""],
-    ["space", intakeForm.space.trim().length > 0],
+    ["space", isProjectMode ? Boolean(selectedProject) : intakeForm.space === "local"],
     ["track", intakeForm.track !== ""],
-    ["workspace_mode", intakeForm.workspace_mode !== ""],
+    [
+      "workspace_mode",
+      isProjectMode
+        ? intakeForm.workspace_mode === "git_worktree"
+        : intakeForm.workspace_mode === "scratch_dir" ||
+          intakeForm.workspace_mode === "host_scoped",
+    ],
     ["end", intakeForm.end.trim().length > 0],
     ["accept_cmd", intakeForm.accept_cmd.trim().length > 0],
     [
@@ -110,7 +70,7 @@ export function IntakeView() {
 
   const handleSend = async (): Promise<void> => {
     const val = chatInput.trim();
-    if (!val || intakeBusy) return;
+    if (!val || intakeBusy || projectBlocked) return;
     setChatInput("");
     await store.sendIntakeChat(val);
   };
@@ -126,13 +86,25 @@ export function IntakeView() {
         </>
       }
       right={
-        <button
-          type="button"
-          class="btn btn-ghost"
-          onClick={() => store.go("board")}
-        >
-          返回看板
-        </button>
+        <>
+          {hasDraftOrChat ? (
+            <button
+              type="button"
+              class="btn btn-ghost"
+              disabled={intakeBusy}
+              onClick={() => store.startNewIntake()}
+            >
+              新建需求
+            </button>
+          ) : null}
+          <button
+            type="button"
+            class="btn btn-ghost"
+            onClick={() => store.go("board")}
+          >
+            返回看板
+          </button>
+        </>
       }
     >
       <div class="converse">
@@ -141,22 +113,165 @@ export function IntakeView() {
             <div class="drafts">
               <span>未完成的立项</span>
               {drafts.map((d) => (
-                <button
+                <div
                   key={d.id}
-                  type="button"
-                  class="btn btn-sm"
-                  onClick={() => void store.loadDraftIntoIntake(d)}
+                  class={`draft-chip ${intakeDraftId === d.id ? "is-active" : ""}`}
                 >
-                  <span>{d.title || d.id}</span>
-                  <span class="muted mono">{fmtTime(d.updated_at)}</span>
-                </button>
+                  <button
+                    type="button"
+                    class="btn btn-sm"
+                    onClick={() => void store.loadDraftIntoIntake(d)}
+                  >
+                    <span>{d.title || d.id}</span>
+                    <span class="muted mono">{fmtTime(d.updated_at)}</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="draft-del"
+                    aria-label={`删除草稿 ${d.title || d.id}`}
+                    title="删除草稿"
+                    disabled={intakeBusy}
+                    onClick={() => void store.deleteIntakeDraft(d.id)}
+                  >
+                    ×
+                  </button>
+                </div>
               ))}
             </div>
           ) : null}
 
+          <div class="intake-bar">
+            <div class="seg" role="group" aria-label="任务模式">
+              <button
+                type="button"
+                class={isProjectMode ? "on" : ""}
+                onClick={() => store.setIntakeMode("project")}
+              >
+                项目任务
+              </button>
+              <button
+                type="button"
+                class={!isProjectMode ? "on" : ""}
+                onClick={() => store.setIntakeMode("local")}
+              >
+                本机 / 临时任务
+              </button>
+            </div>
+
+            {isProjectMode ? (
+              projectSpaces.length > 0 ? (
+                <div class="intake-target">
+                  <select
+                    class="select"
+                    aria-label="目标项目空间"
+                    value={intakeForm.space}
+                    onChange={(e) =>
+                      store.selectIntakeProjectSpace(
+                        (e.currentTarget as HTMLSelectElement).value,
+                      )
+                    }
+                  >
+                    {intakeForm.space && !selectedProject ? (
+                      <option value={intakeForm.space} disabled>
+                        {intakeForm.space}（未登记或缺少仓库路径）
+                      </option>
+                    ) : null}
+                    {projectSpaces.map((sp) => (
+                      <option key={sp.id} value={sp.id}>
+                        {sp.name} ({sp.id})
+                      </option>
+                    ))}
+                  </select>
+                  {selectedProject?.repo_path ? (
+                    <span
+                      class="intake-path mono muted"
+                      title={selectedProject.repo_path}
+                    >
+                      {selectedProject.repo_path}
+                    </span>
+                  ) : null}
+                  <button
+                    type="button"
+                    class="btn btn-sm"
+                    onClick={() => store.openAddSpaceModal(true)}
+                  >
+                    + 添加项目
+                  </button>
+                </div>
+              ) : (
+                <div class="intake-target">
+                  <button
+                    type="button"
+                    class="btn btn-sm btn-light"
+                    onClick={() => store.openAddSpaceModal(true)}
+                  >
+                    + 添加项目
+                  </button>
+                </div>
+              )
+            ) : (
+              <div class="intake-target">
+                <span class="chip">本机与临时 (local)</span>
+                <div class="seg" role="group" aria-label="本机工作区模式">
+                  <button
+                    type="button"
+                    class={intakeForm.workspace_mode !== "host_scoped" ? "on" : ""}
+                    onClick={() =>
+                      store.updateIntakeForm({ workspace_mode: "scratch_dir" })
+                    }
+                  >
+                    临时沙盒
+                  </button>
+                  <button
+                    type="button"
+                    class={intakeForm.workspace_mode === "host_scoped" ? "on" : ""}
+                    onClick={() =>
+                      store.updateIntakeForm({ workspace_mode: "host_scoped" })
+                    }
+                  >
+                    本机配置修改
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
           <div class="msgs" id="msgs" ref={msgsRef}>
+            {projectBlocked ? (
+              <div class="intake-empty">
+                <h3>
+                  {projectSpaces.length === 0
+                    ? "还没有登记项目空间"
+                    : "当前所选空间未绑定 Git 仓库"}
+                </h3>
+                <p>
+                  {projectSpaces.length === 0
+                    ? "先绑定一个本地 Git 项目目录，立项对话就会直接进入该项目仓库只读探索代码与测试命令。"
+                    : "当前草稿指向的空间尚未登记或缺少本地 Git 仓库路径，请在上方下拉框改选项目空间，或添加/补全对应空间。"}
+                </p>
+                <div class="intake-empty-actions">
+                  <button
+                    type="button"
+                    class="btn btn-light"
+                    onClick={() => store.openAddSpaceModal(true)}
+                  >
+                    + 添加本地 Git 项目
+                  </button>
+                  <button
+                    type="button"
+                    class="btn"
+                    onClick={() => store.setIntakeMode("local")}
+                  >
+                    改用本机 / 临时任务
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
             {intakeMessages.map((m, idx) => {
-              const who = m.who ?? (m.role === "user" ? "me" : m.role === "tool" ? "tool" : "agent");
+              const who =
+                m.who ??
+                (m.role === "user" ? "me" : m.role === "tool" ? "tool" : "agent");
               if (who === "tool") {
                 return (
                   <div key={idx} class="msg tool">
@@ -174,48 +289,39 @@ export function IntakeView() {
                 </div>
               );
             })}
-          </div>
 
-          <div class="presets">
-            {MVP_PRESETS.map((p) => (
-              <button
-                key={p.key}
-                type="button"
-                class="btn btn-sm"
-                onClick={() =>
-                  store.applyIntakePreset(
-                    {
-                      ...p.form,
-                      space:
-                        p.key === "code" && Object.keys(spaces).length > 0
-                          ? (Object.keys(spaces)[0] ?? "local")
-                          : p.form.space,
-                    },
-                    [
-                      { who: "me", text: p.ask },
-                      ...p.tools.map((t) => ({ who: "tool" as const, text: t })),
-                      { who: "agent", name: "intake", text: p.reply },
-                    ],
-                  )
-                }
-              >
-                {p.label}
-              </button>
-            ))}
+            {intakeBusy ? (
+              <div class="msg msg-thinking">
+                <div class="msg-who">intake</div>
+                <div class="msg-text muted">
+                  {isProjectMode && selectedProject
+                    ? `正在探索 ${selectedProject.name} 并整理立项草稿…`
+                    : "正在思考并更新立项草稿…"}
+                </div>
+              </div>
+            ) : null}
           </div>
 
           <div class="composer">
-            <input
+            <textarea
               id="chatIn"
               class="input"
-              placeholder="描述需求（回车发送）"
+              rows={2}
+              placeholder={
+                projectBlocked
+                  ? "请先添加或选择项目空间"
+                  : isProjectMode && selectedProject
+                    ? `描述「${selectedProject.name}」需求（Enter 发送，Shift+Enter 换行）`
+                    : "描述本机或临时任务需求（Enter 发送，Shift+Enter 换行）"
+              }
               value={chatInput}
-              disabled={intakeBusy}
+              disabled={intakeBusy || projectBlocked}
               onInput={(e) =>
-                setChatInput((e.currentTarget as HTMLInputElement).value)
+                setChatInput((e.currentTarget as HTMLTextAreaElement).value)
               }
               onKeyDown={(e) => {
-                if (e.key === "Enter") {
+                if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+                  e.preventDefault();
                   void handleSend();
                 }
               }}
@@ -223,7 +329,7 @@ export function IntakeView() {
             <button
               type="button"
               class="btn btn-light"
-              disabled={intakeBusy || !chatInput.trim()}
+              disabled={intakeBusy || projectBlocked || !chatInput.trim()}
               onClick={() => void handleSend()}
             >
               发送
@@ -303,22 +409,36 @@ export function IntakeView() {
               <div>
                 <dt>空间</dt>
                 <dd>
-                  <select
-                    aria-label="空间"
-                    class="draft-edit"
-                    value={intakeForm.space}
-                    onChange={(e) =>
-                      store.updateIntakeForm({
-                        space: (e.currentTarget as HTMLSelectElement).value,
-                      })
-                    }
-                  >
-                    {spaceOptions.map((spId) => (
-                      <option key={spId} value={spId}>
-                        {spaces[spId]?.name ?? spId}
-                      </option>
-                    ))}
-                  </select>
+                  {isProjectMode ? (
+                    <select
+                      aria-label="空间"
+                      class="draft-edit"
+                      value={intakeForm.space}
+                      onChange={(e) =>
+                        store.selectIntakeProjectSpace(
+                          (e.currentTarget as HTMLSelectElement).value,
+                        )
+                      }
+                    >
+                      {projectSpaces.length === 0 && !intakeForm.space ? (
+                        <option value="">未配置项目空间</option>
+                      ) : null}
+                      {intakeForm.space && !selectedProject ? (
+                        <option value={intakeForm.space} disabled>
+                          {intakeForm.space}（未登记或缺少仓库路径）
+                        </option>
+                      ) : null}
+                      {projectSpaces.map((sp) => (
+                        <option key={sp.id} value={sp.id}>
+                          {sp.name} ({sp.id})
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div class="draft-static" aria-label="空间">
+                      本机与临时 (local)
+                    </div>
+                  )}
                 </dd>
               </div>
               <span class="field-mark">
@@ -336,10 +456,8 @@ export function IntakeView() {
                     value={intakeForm.track}
                     onChange={(e) =>
                       store.updateIntakeForm({
-                        track: (e.currentTarget as HTMLSelectElement).value as Exclude<
-                          Track,
-                          "L3"
-                        >,
+                        track: (e.currentTarget as HTMLSelectElement)
+                          .value as Exclude<Track, "L3">,
                       })
                     }
                   >
@@ -357,23 +475,39 @@ export function IntakeView() {
               <div>
                 <dt>工作区</dt>
                 <dd>
-                  <select
-                    aria-label="工作区"
-                    class="draft-edit"
-                    value={intakeForm.workspace_mode}
-                    onChange={(e) =>
-                      store.updateIntakeForm({
-                        workspace_mode: (e.currentTarget as HTMLSelectElement)
-                          .value as Exclude<WorkspaceMode, "external_only">,
-                      })
-                    }
-                  >
-                    <option value="git_worktree">git_worktree · 代码工作树</option>
-                    <option value="host_scoped">
-                      host_scoped · 本机白名单（两阶段暂存）
-                    </option>
-                    <option value="scratch_dir">scratch_dir · 临时沙盒</option>
-                  </select>
+                  {isProjectMode ? (
+                    <select
+                      aria-label="工作区"
+                      class="draft-edit"
+                      value="git_worktree"
+                      onChange={() =>
+                        store.updateIntakeForm({ workspace_mode: "git_worktree" })
+                      }
+                    >
+                      <option value="git_worktree">git_worktree · 代码工作树</option>
+                    </select>
+                  ) : (
+                    <select
+                      aria-label="工作区"
+                      class="draft-edit"
+                      value={
+                        intakeForm.workspace_mode === "host_scoped"
+                          ? "host_scoped"
+                          : "scratch_dir"
+                      }
+                      onChange={(e) =>
+                        store.updateIntakeForm({
+                          workspace_mode: (e.currentTarget as HTMLSelectElement)
+                            .value as Exclude<WorkspaceMode, "external_only">,
+                        })
+                      }
+                    >
+                      <option value="scratch_dir">scratch_dir · 临时沙盒</option>
+                      <option value="host_scoped">
+                        host_scoped · 本机白名单（两阶段暂存）
+                      </option>
+                    </select>
+                  )}
                 </dd>
               </div>
               <span class="field-mark">
@@ -476,7 +610,7 @@ export function IntakeView() {
               class="btn btn-light"
               id="btnCreateTask"
               style={{ height: "36px", justifyContent: "center" }}
-              disabled={!ready || intakeBusy}
+              disabled={!ready || intakeBusy || projectBlocked}
               onClick={() => void store.commitIntakeTask()}
             >
               开始推进
@@ -486,15 +620,17 @@ export function IntakeView() {
               class="btn"
               id="btnSaveDraft"
               style={{ height: "32px", justifyContent: "center" }}
-              disabled={!intakeForm.title.trim() || intakeBusy}
+              disabled={!intakeForm.title.trim() || intakeBusy || projectBlocked}
               onClick={() => void store.saveIntakeDraft()}
             >
               先存为草稿
             </button>
             <span class="note" id="draftNote">
-              {ready
-                ? "确认后写入 card.yaml 和 BRIEF.md，进入队列调度"
-                : `还差 ${8 - doneCount} 项，继续对话或直接点击字段补齐`}
+              {projectBlocked
+                ? "请先添加或选择目标项目空间"
+                : ready
+                  ? "确认后写入 card.yaml 和 BRIEF.md，进入队列调度"
+                  : `还差 ${8 - doneCount} 项，继续对话或直接点击字段补齐`}
             </span>
           </div>
         </aside>

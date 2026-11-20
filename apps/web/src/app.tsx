@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from "preact/hooks";
 import { CommandPalette } from "./components/CommandPalette";
 import { Sidebar } from "./components/Sidebar";
+import { SpaceModal } from "./components/SpaceModal";
 import { Tabbar } from "./components/Tabbar";
 import { KilnWebStore, StoreContext, useKilnStore } from "./state/store";
 import { BoardView } from "./views/BoardView";
@@ -97,6 +98,7 @@ function AppShell() {
       />
       <Tabbar />
       <CommandPalette />
+      <SpaceModal />
       <div
         class={`toast ${state.toastMessage ? "show" : ""}`}
         id="toast"
