@@ -4,7 +4,9 @@ import path from "node:path";
 import { z } from "zod";
 import {
   DraftCardSchema,
+  PrioritySchema,
   SessionRefSchema,
+  StageIdSchema,
   type DraftCard,
   type PendingDecision,
   type ReasoningEffort,
@@ -16,6 +18,7 @@ import {
 } from "@kiln/protocol";
 import {
   assertRoleAgentEligible,
+  isFullAccessMode,
   type BackendAgentDescriptor,
   type BackendModelDescriptor,
   type BackendRegistry,
@@ -23,18 +26,79 @@ import {
   type ExecutionBackend,
   type McpStdioMountSpec,
 } from "../backend/index.js";
+import type { TaskStateMachine } from "../state/index.js";
 import {
   appendNdjsonLine,
   assertSafeSegment,
+  deriveTaskStatus,
   ensureDir,
   KilnStore,
   readNdjsonValidated,
   writeFileAtomic,
 } from "../store/index.js";
+import type { CaffeinateController } from "./caffeinate.js";
 import { ServerHttpError } from "./errors.js";
-import { PendingDecisionStore, readOptionalText } from "./pending-decisions.js";
+import {
+  countRunningLeafTasks,
+  PendingDecisionStore,
+  readOptionalText,
+} from "./pending-decisions.js";
+import type { SseHub } from "./sse.js";
 
-const DEFAULT_BACKEND_QUERY_TIMEOUT_MS = 1_500;
+const DEFAULT_BACKEND_QUERY_TIMEOUT_MS = 5_000;
+const DEFAULT_BACKEND_REFRESH_TIMEOUT_MS = 15_000;
+
+const LAST_BACKEND_AGENTS_CACHE = new WeakMap<
+  ExecutionBackend,
+  { agents: AgentSnapshotEntry[]; updatedAt: number }
+>();
+
+const NonMcpDraftPatchSchema = z.object({
+  title: z.string().min(1).optional(),
+  priority: PrioritySchema.optional(),
+  track: z.enum(["L1", "L2"]).optional(),
+  workspace_mode: z.enum(["git_worktree", "host_scoped", "scratch_dir"]).optional(),
+  depends_on: z.array(z.string().min(1)).optional(),
+  contract: z
+    .object({
+      goal: z.string().min(1).optional(),
+      end: z.string().min(1).optional(),
+      accept_cmd: z.string().min(1).optional(),
+      scope: z.array(z.string().min(1)).optional(),
+    })
+    .optional(),
+});
+
+const NonMcpContractPatchSchema = z.object({
+  contract: z
+    .object({
+      goal: z.string().min(1).optional(),
+      end: z.string().min(1).optional(),
+      accept_cmd: z.string().min(1).optional(),
+      accept_files_hash: z.string().min(1).optional(),
+      scope: z.array(z.string().min(1)).optional(),
+    })
+    .optional(),
+  affected_stages: z.array(StageIdSchema).min(1),
+  rationale: z.string().min(1),
+});
+
+function extractLabeledJsonPatchBlock(
+  rawText: string,
+  label: string,
+): { displayText: string; rawJson: string | null } {
+  const pattern = new RegExp("```" + label + "[ \\t]*\\r?\\n?([\\s\\S]*?)```", "gi");
+  const matches = Array.from(rawText.matchAll(pattern));
+  if (matches.length === 0) {
+    return { displayText: rawText, rawJson: null };
+  }
+  const rawJson = (matches[matches.length - 1]?.[1] ?? "").trim();
+  const displayText = rawText
+    .replace(pattern, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return { displayText, rawJson };
+}
 
 export const ChatMessageRecordSchema = z.object({
   id: z.string().min(1).optional(),
@@ -213,7 +277,7 @@ function normalizeProviderUsageWindows(
  */
 export async function snapshotBackends(
   registry: BackendRegistry | undefined,
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; refresh?: boolean } = {},
 ): Promise<BackendsSnapshot> {
   if (!registry) {
     return { agents: [], backends: [], providerUsage: [] };
@@ -224,17 +288,34 @@ export async function snapshotBackends(
     return { agents: [], backends: [], providerUsage: [] };
   }
 
-  const timeoutMs = options.timeoutMs ?? DEFAULT_BACKEND_QUERY_TIMEOUT_MS;
+  const baseTimeoutMs = options.timeoutMs ?? DEFAULT_BACKEND_QUERY_TIMEOUT_MS;
+  const refresh = options.refresh === true;
+  const effectiveTimeoutMs = refresh
+    ? Math.max(baseTimeoutMs, DEFAULT_BACKEND_REFRESH_TIMEOUT_MS)
+    : baseTimeoutMs;
   const agents: AgentSnapshotEntry[] = [];
   const backends: BackendConnectionSnapshot[] = [];
   const providerUsage: NormalizedProviderUsageEntry[] = [];
 
   await Promise.all(
     backendsList.map(async (backend) => {
+      const prevCached = LAST_BACKEND_AGENTS_CACHE.get(backend);
+      const prevModelsByAgent = new Map(
+        prevCached?.agents.map((entry) => [entry.id, entry.models]) ?? [],
+      );
+
       try {
+        if (refresh && typeof backend.refreshProviders === "function") {
+          await withTimeout(
+            backend.refreshProviders(),
+            effectiveTimeoutMs,
+            `refreshProviders(${backend.backendId})`,
+          );
+        }
+
         const listedAgents = await withTimeout(
           backend.listAgents(),
-          timeoutMs,
+          effectiveTimeoutMs,
           `listAgents(${backend.backendId})`,
         );
 
@@ -243,18 +324,26 @@ export async function snapshotBackends(
             try {
               return await withTimeout(
                 backend.listModels(agentDesc.id),
-                timeoutMs,
+                effectiveTimeoutMs,
                 `listModels(${backend.backendId}:${agentDesc.id})`,
               );
             } catch {
+              const prevModels = prevModelsByAgent.get(agentDesc.id);
+              if (!refresh && prevModels && prevModels.length > 0) {
+                return prevModels.map((m) => ({
+                  ...m,
+                  thinkingOptions: [...m.thinkingOptions],
+                }));
+              }
               return [] as BackendModelDescriptor[];
             }
           }),
         );
 
+        const backendAgents: AgentSnapshotEntry[] = [];
         for (let i = 0; i < listedAgents.length; i++) {
           const agentDesc = listedAgents[i]!;
-          agents.push({
+          backendAgents.push({
             id: agentDesc.id,
             label: agentDesc.label,
             backendId: backend.backendId,
@@ -264,6 +353,12 @@ export async function snapshotBackends(
             models: modelsByAgent[i] ?? [],
           });
         }
+
+        LAST_BACKEND_AGENTS_CACHE.set(backend, {
+          agents: backendAgents,
+          updatedAt: Date.now(),
+        });
+        agents.push(...backendAgents);
 
         backends.push({
           backendId: backend.backendId,
@@ -278,7 +373,7 @@ export async function snapshotBackends(
           try {
             const windows = await withTimeout(
               maybeUsageBackend.listProviderUsage(),
-              timeoutMs,
+              effectiveTimeoutMs,
               `listProviderUsage(${backend.backendId})`,
             );
             if (Array.isArray(windows)) {
@@ -290,6 +385,17 @@ export async function snapshotBackends(
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        if (!refresh && prevCached) {
+          agents.push(...prevCached.agents);
+          backends.push({
+            backendId: backend.backendId,
+            id: backend.backendId,
+            connected: true,
+            status: "connected",
+            detail: `${prevCached.agents.length} agent(s) (cached; refresh delayed: ${msg})`,
+          });
+          return;
+        }
         backends.push({
           backendId: backend.backendId,
           id: backend.backendId,
@@ -361,6 +467,9 @@ export interface KilnChatEngineOptions {
   store: KilnStore;
   backendRegistry: BackendRegistry;
   pendingDecisions: PendingDecisionStore;
+  stateMachine?: TaskStateMachine;
+  sseHub?: SseHub;
+  caffeinate?: CaffeinateController;
   socketPath: string;
   issueRunToken: (input: {
     taskId: string;
@@ -371,6 +480,7 @@ export interface KilnChatEngineOptions {
   }) => string;
   mcpServerCommand?: McpCommandSpec;
   chatResponder?: ChatResponder;
+  onContractUpdated?: (taskId: string) => void;
 }
 
 interface ResolvedInteractiveExecutor {
@@ -379,31 +489,40 @@ interface ResolvedInteractiveExecutor {
   model: string;
   reasoningEffort?: ReasoningEffort;
   allowFullAccessFallback: boolean;
+  mcpEnabled: boolean;
 }
 
 /**
  * Interactive chat engine backing `intake` (draft planning) and `resolver` (pending decision
- * discussion & contract refinement), enforcing `interactiveChat && mcpInjection` capabilities
- * and persisting conversation logs atomically to disk.
+ * discussion & contract refinement), enforcing `interactiveChat` and routing non-MCP agents
+ * through structured patch blocks while persisting conversation logs atomically to disk.
  */
 export class KilnChatEngine {
   private readonly store: KilnStore;
   private readonly backendRegistry: BackendRegistry;
   private readonly pendingDecisions: PendingDecisionStore;
+  private readonly stateMachine: TaskStateMachine | undefined;
+  private readonly sseHub: SseHub | undefined;
+  private readonly caffeinate: CaffeinateController | undefined;
   private readonly socketPath: string;
   private readonly issueRunToken: KilnChatEngineOptions["issueRunToken"];
   private readonly mcpServerCommand: McpCommandSpec;
   private readonly chatResponder: ChatResponder | undefined;
+  private readonly onContractUpdated: ((taskId: string) => void) | undefined;
   private readonly locks = new Map<string, Promise<unknown>>();
 
   constructor(options: KilnChatEngineOptions) {
     this.store = options.store;
     this.backendRegistry = options.backendRegistry;
     this.pendingDecisions = options.pendingDecisions;
+    this.stateMachine = options.stateMachine;
+    this.sseHub = options.sseHub;
+    this.caffeinate = options.caffeinate;
     this.socketPath = options.socketPath;
     this.issueRunToken = options.issueRunToken;
     this.mcpServerCommand = resolveMcpServerCommand(options.mcpServerCommand);
     this.chatResponder = options.chatResponder;
+    this.onContractUpdated = options.onContractUpdated;
   }
 
   draftChatPath(draftId: string): string {
@@ -495,33 +614,50 @@ export class KilnChatEngine {
           ? { reasoningEffort: assignment.reasoning_effort }
           : {}),
         allowFullAccessFallback: assignment.allow_full_access_fallback ?? false,
+        mcpEnabled: caps.mcpInjection,
       };
     }
 
-    // No explicit role configured: auto-select first eligible interactiveChat + mcpInjection agent.
+    // No explicit role configured: prefer non-full-access interactive+MCP agents,
+    // then non-full-access interactive agents without MCP (never auto-select full-access-only).
+    let nonMcpFallback: ResolvedInteractiveExecutor | null = null;
     let firstIneligible: { agent: string; caps: BackendAgentDescriptor["capabilities"] } | null =
       null;
     for (const backend of this.backendRegistry.list()) {
       try {
         const listed = await backend.listAgents();
         for (const agentDesc of listed) {
-          if (agentDesc.capabilities.interactiveChat && agentDesc.capabilities.mcpInjection) {
+          const fullAccessOnly =
+            agentDesc.modes.length > 0 && agentDesc.modes.every((mode) => isFullAccessMode(mode));
+          if (agentDesc.capabilities.interactiveChat && !fullAccessOnly) {
             const models = await backend.listModels(agentDesc.id).catch(() => []);
             const model = models[0]?.id ?? "default";
-            return {
+            const candidate: ResolvedInteractiveExecutor = {
               backend,
               agent: agentDesc.id,
               model,
               allowFullAccessFallback: false,
+              mcpEnabled: agentDesc.capabilities.mcpInjection,
             };
+            if (agentDesc.capabilities.mcpInjection) {
+              return candidate;
+            }
+            if (!nonMcpFallback) {
+              nonMcpFallback = candidate;
+            }
+            continue;
           }
-          if (!firstIneligible) {
+          if (!agentDesc.capabilities.interactiveChat && !firstIneligible) {
             firstIneligible = { agent: agentDesc.id, caps: agentDesc.capabilities };
           }
         }
       } catch {
         // Ignore offline backend while scanning fallback candidates
       }
+    }
+
+    if (nonMcpFallback) {
+      return nonMcpFallback;
     }
 
     if (this.chatResponder) {
@@ -654,6 +790,175 @@ export class KilnChatEngine {
     return `切换空间/工作目录前的前序对话摘要：\n${recent.join("\n")}`;
   }
 
+  private formatDraftSnapshotLine(draft: DraftCard): string {
+    return `[当前右侧草稿最新字段: title=${draft.title || "(未填)"}, space=${draft.space}, priority=${draft.priority}, track=${draft.track}, workspace_mode=${draft.workspace_mode}, end=${draft.contract.end ?? "(未填)"}, accept_cmd=${draft.contract.accept_cmd ?? "(未填)"}, scope=${draft.contract.scope?.join(", ") || "(未填)"}, depends_on=${draft.depends_on.join(", ") || "无"}]`;
+  }
+
+  private applyNonMcpDraftPatch(params: {
+    safeDraftId: string;
+    fallbackDraft: DraftCard;
+    rawJson: string;
+  }): { applied: boolean; updatedFields: string[]; errorDetail?: string } {
+    try {
+      const parsedJson = JSON.parse(params.rawJson) as unknown;
+      const patch = NonMcpDraftPatchSchema.parse(parsedJson);
+      const latest = this.store.readDraft(params.safeDraftId) ?? params.fallbackDraft;
+      const updatedFields: string[] = [];
+
+      let nextWorkspaceMode = latest.workspace_mode;
+      if (latest.space === "local") {
+        if (patch.workspace_mode === "scratch_dir" || patch.workspace_mode === "host_scoped") {
+          nextWorkspaceMode = patch.workspace_mode;
+          updatedFields.push("workspace_mode");
+        } else if (nextWorkspaceMode === "git_worktree") {
+          nextWorkspaceMode = "scratch_dir";
+        }
+      } else {
+        nextWorkspaceMode = "git_worktree";
+      }
+
+      const nextContract = { ...latest.contract };
+      if (patch.contract) {
+        if (patch.contract.goal !== undefined) {
+          nextContract.goal = patch.contract.goal;
+          updatedFields.push("contract.goal");
+        }
+        if (patch.contract.end !== undefined) {
+          nextContract.end = patch.contract.end;
+          updatedFields.push("contract.end");
+        }
+        if (patch.contract.accept_cmd !== undefined) {
+          nextContract.accept_cmd = patch.contract.accept_cmd;
+          updatedFields.push("contract.accept_cmd");
+        }
+        if (patch.contract.scope !== undefined) {
+          nextContract.scope = patch.contract.scope;
+          updatedFields.push("contract.scope");
+        }
+      }
+
+      if (patch.title !== undefined) updatedFields.push("title");
+      if (patch.priority !== undefined) updatedFields.push("priority");
+      if (patch.track !== undefined) updatedFields.push("track");
+      if (patch.depends_on !== undefined) updatedFields.push("depends_on");
+
+      const merged = DraftCardSchema.parse({
+        ...latest,
+        ...(patch.title !== undefined ? { title: patch.title } : {}),
+        ...(patch.priority !== undefined ? { priority: patch.priority } : {}),
+        ...(patch.track !== undefined ? { track: patch.track } : {}),
+        workspace_mode: nextWorkspaceMode,
+        ...(patch.depends_on !== undefined ? { depends_on: patch.depends_on } : {}),
+        contract: nextContract,
+        updated_at: new Date().toISOString(),
+      });
+      this.store.writeDraft(merged);
+      return { applied: true, updatedFields };
+    } catch (err) {
+      return {
+        applied: false,
+        updatedFields: [],
+        errorDetail: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  private applyNonMcpContractPatch(params: {
+    safeTaskId: string;
+    rawJson: string;
+  }): { applied: boolean; message: string } {
+    if (!this.stateMachine) {
+      return {
+        applied: false,
+        message: "contract_patch · 当前服务器未挂载状态机，已跳过契约自动更新",
+      };
+    }
+
+    try {
+      const parsedJson = JSON.parse(params.rawJson) as unknown;
+      const patch = NonMcpContractPatchSchema.parse(parsedJson);
+      if (!patch.contract || Object.keys(patch.contract).length === 0) {
+        return {
+          applied: false,
+          message: "contract_patch · 补丁未包含任何契约字段改动，已跳过",
+        };
+      }
+
+      const card = this.store.readTaskCard(params.safeTaskId);
+      const previousStatus = deriveTaskStatus(
+        card,
+        this.store.readStateEvents(params.safeTaskId),
+      ).status;
+      if (previousStatus === "done" || previousStatus === "cancelled") {
+        return {
+          applied: false,
+          message: `contract_patch · 任务已处于终态（${previousStatus}），已跳过契约修改`,
+        };
+      }
+
+      if (
+        patch.contract.accept_cmd !== undefined &&
+        patch.contract.accept_cmd !== card.contract.accept_cmd &&
+        (patch.contract.accept_files_hash === undefined ||
+          patch.contract.accept_files_hash === card.contract.accept_files_hash)
+      ) {
+        return {
+          applied: false,
+          message: "contract_patch · 修改 accept_cmd 需同步提供新的 accept_files_hash，已跳过自动修改",
+        };
+      }
+
+      const updated = this.stateMachine.updateContract({
+        taskId: params.safeTaskId,
+        contractPatch: patch.contract,
+        affectedStages: patch.affected_stages,
+        ...(patch.contract.accept_files_hash !== undefined
+          ? { acceptFilesHash: patch.contract.accept_files_hash }
+          : {}),
+        now: new Date().toISOString(),
+      });
+
+      if (updated.state.status === "waiting") {
+        const rebound = this.pendingDecisions.rebindContractVersion(
+          params.safeTaskId,
+          updated.newVersion,
+        );
+        if (previousStatus !== "waiting" && rebound) {
+          this.sseHub?.publish({
+            type: "decision.requested",
+            taskId: params.safeTaskId,
+            priority:
+              this.store.getTaskIndex(params.safeTaskId)?.priority ?? updated.state.priority,
+            question: rebound.question,
+          });
+        }
+      }
+
+      this.caffeinate?.syncRunningCount(countRunningLeafTasks(this.store));
+      this.sseHub?.publish({
+        type: "task.updated",
+        taskId: params.safeTaskId,
+        patch: {
+          status: updated.state.status,
+          ...(updated.state.stage !== null ? { stage: updated.state.stage } : {}),
+          contractVersion: updated.newVersion,
+        },
+      });
+      this.onContractUpdated?.(params.safeTaskId);
+
+      return {
+        applied: true,
+        message: `contract_patch · 契约已升至 v${updated.newVersion}（${patch.rationale}）`,
+      };
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      return {
+        applied: false,
+        message: `contract_patch · 契约补丁校验未通过（${detail}），请核对或直接使用右侧选项拍板`,
+      };
+    }
+  }
+
   private buildIntakeSystemPrompt(params: {
     draft: DraftCard;
     spaceConfig: SpaceConfig | null;
@@ -661,8 +966,9 @@ export class KilnChatEngine {
     cwd: string;
     isProjectRepo: boolean;
     priorHistory: readonly ChatMessageRecord[];
+    mcpEnabled: boolean;
   }): string {
-    const { draft, spaceConfig, allSpaces, cwd, isProjectRepo, priorHistory } = params;
+    const { draft, spaceConfig, allSpaces, cwd, isProjectRepo, priorHistory, mcpEnabled } = params;
     const tasks = this.store.listTasks().slice(0, 20);
     const ledger = this.store.readLedger(draft.space);
     const taskLines =
@@ -695,7 +1001,11 @@ export class KilnChatEngine {
               ? `, default_accept_cmd=${spaceConfig.default_accept_cmd}`
               : ""
           }`,
-          `**只读探索约束**：你当前位于项目仓库目录 (${cwd})，可只读检索代码、目录结构与测试脚本以确定准确的可改范围 (scope) 与验收命令 (accept_cmd)；**严禁直接修改项目源码文件或执行 git 写入命令**，只允许通过 wb_plan(mode: "upsert_draft") 更新草稿。`,
+          `**只读探索约束**：你当前位于项目仓库目录 (${cwd})，可只读检索代码、目录结构与测试脚本以确定准确的可改范围 (scope) 与验收命令 (accept_cmd)；**严禁直接修改项目源码文件或执行 git 写入命令**${
+            mcpEnabled
+              ? `，只允许通过 wb_plan(mode: "upsert_draft") 更新草稿`
+              : `，只允许通过回复末尾 \`\`\`kiln-draft-patch\`\`\` JSON 块回填草稿`
+          }。`,
         ].join("\n")
       : [
           `当前任务模式：本机 / 临时任务（非 Git 项目空间，cwd=${cwd}）`,
@@ -716,11 +1026,17 @@ export class KilnChatEngine {
     ].join("\n");
 
     const priorSummary = this.formatPriorChatSummary(priorHistory);
+    const protocolInstruction = mcpEnabled
+      ? `你拥有 kiln-mcp 工具权限（wb_list_tasks, wb_read_ledger, wb_plan），请协助用户梳理目标、验收标准、可改范围、依赖前置并调用 wb_plan(mode: "upsert_draft") 更新草稿。`
+      : [
+          `当前对话运行在无 MCP 模式：已将项目空间、在途任务、长期账本与草稿字段注入上下文，无需调用 kiln-mcp 工具。`,
+          `如本次对话确认或变更了任何立项字段，请在正常回复末尾附一个 \`\`\`kiln-draft-patch\\n{...}\\n\`\`\` JSON 代码块（仅填需更新的可选字段：title、priority、track ("L1"|"L2")、workspace_mode、depends_on、contract: { goal, end, accept_cmd, scope }；严禁更改 space 或直接建卡）。系统会自动剥离该代码块并回填右侧立项单。`,
+        ].join("\n");
 
     return [
       `你是 Kiln 的 intake 立项对话角色。当前草稿 ID: ${draft.id}，空间: ${draft.space}，cwd: ${cwd}。`,
       modeSummary,
-      `你拥有 kiln-mcp 工具权限（wb_list_tasks, wb_read_ledger, wb_plan），请协助用户梳理目标、验收标准、可改范围、依赖前置并调用 wb_plan(mode: "upsert_draft") 更新草稿。`,
+      protocolInstruction,
       `已登记项目空间列表：\n${registeredSpacesText}`,
       draftSummary,
       `当前在途任务：\n${taskLines}`,
@@ -734,20 +1050,33 @@ export class KilnChatEngine {
   private buildResolverSystemPrompt(
     card: TaskCard,
     pendingDecision: PendingDecision | null,
+    mcpEnabled: boolean,
   ): string {
     const brief = readOptionalText(this.store.paths.briefMd(card.id)) ?? "";
     const decisions = readOptionalText(this.store.paths.decisionsMd(card.id)) ?? "";
+    const ledger = this.store.readLedger(card.space);
+    const ledgerLines =
+      ledger && ledger.entries.length > 0
+        ? ledger.entries.map((e) => `- ${e.rule}`).join("\n")
+        : "";
     const decisionSection = pendingDecision
       ? `当前待决 (${pendingDecision.id}): ${pendingDecision.question}\n选项:\n${pendingDecision.options
           .map((o) => `- ${o.id} (${o.action}): ${o.label}`)
           .join("\n")}`
       : "(当前无激活的待决项)";
+    const protocolSection = mcpEnabled
+      ? `可使用 wb_get_context / wb_list_tasks / wb_read_ledger / wb_plan(mode: "update_contract")。`
+      : [
+          `当前对话运行在无 MCP 模式，请仅做只读分析与方案讨论，严禁直接修改文件。`,
+          `仅当用户明确要求修改当前任务契约（goal、end、scope 或 accept_cmd）时，在回复末尾附一个 \`\`\`kiln-contract-patch\\n{...}\\n\`\`\` JSON 代码块（含 affected_stages 阶段数组、rationale 修改原因与 contract 变更字段；若改 accept_cmd 须同步提供新 accept_files_hash）。`,
+        ].join("\n");
 
     return [
       `你是 Kiln 的 resolver 讨论角色，负责协助用户讨论任务 "${card.id}"（${card.title}，契约 v${card.contract_version}）。`,
-      `可使用 wb_get_context / wb_list_tasks / wb_read_ledger / wb_plan(mode: "update_contract")。`,
+      protocolSection,
       `当前契约：\n- goal: ${card.contract.goal}\n- end: ${card.contract.end}\n- accept_cmd: ${card.contract.accept_cmd}\n- scope: ${card.contract.scope.join(", ")}`,
       decisionSection,
+      ledgerLines ? `空间 ${card.space} 长期决策账本：\n${ledgerLines}` : "",
       brief ? `立项 BRIEF:\n${brief}` : "",
       decisions ? `历史 decisions:\n${decisions}` : "",
     ]
@@ -789,7 +1118,6 @@ export class KilnChatEngine {
         text: trimmed,
         at: userNow,
       };
-      appendNdjsonLine(chatFile, userRecord);
 
       const runId = `chat-intake-${randomUUID().slice(0, 8)}`;
       const token = this.issueRunToken({
@@ -812,6 +1140,7 @@ export class KilnChatEngine {
           draft,
           token,
         });
+        appendNdjsonLine(chatFile, userRecord);
         replyText = res.replyText;
         toolMessages = res.toolMessages ?? [];
       } else {
@@ -838,7 +1167,10 @@ export class KilnChatEngine {
           reusableMeta?.kiln_chat_cwd === resolvedWorkspace.cwd
         ) {
           sessionRef = reusable.sessionRef;
-          await activeBackend.send(sessionRef, trimmed);
+          const promptForAgent = !executor.mcpEnabled
+            ? `${this.formatDraftSnapshotLine(draft)}\n\n${trimmed}`
+            : trimmed;
+          await activeBackend.send(sessionRef, promptForAgent);
         } else {
           const allSpaces = this.store.listSpaces();
           const spec: BackendRunSpec = {
@@ -859,10 +1191,11 @@ export class KilnChatEngine {
               cwd: resolvedWorkspace.cwd,
               isProjectRepo: resolvedWorkspace.isProjectRepo,
               priorHistory: historyBefore,
+              mcpEnabled: executor.mcpEnabled,
             }),
             freshContext: false,
             allowFullAccessFallback: executor.allowFullAccessFallback,
-            mcpServers: [this.buildMcpMount(token)],
+            ...(executor.mcpEnabled ? { mcpServers: [this.buildMcpMount(token)] } : {}),
           };
           sessionRef = await activeBackend.start(spec);
           const taggedSessionRef: SessionRef = {
@@ -883,9 +1216,40 @@ export class KilnChatEngine {
           this.store.writeDraft(updatedDraft);
         }
 
+        appendNdjsonLine(chatFile, userRecord);
         const consumed = await this.consumeTurnEvents(activeBackend, sessionRef, "intake");
         replyText = consumed.replyText;
         toolMessages = consumed.toolMessages;
+
+        if (!executor.mcpEnabled) {
+          const extracted = extractLabeledJsonPatchBlock(replyText, "kiln-draft-patch");
+          replyText = extracted.displayText;
+          if (extracted.rawJson !== null) {
+            const patchRes = this.applyNonMcpDraftPatch({
+              safeDraftId,
+              fallbackDraft: this.store.readDraft(safeDraftId) ?? draft,
+              rawJson: extracted.rawJson,
+            });
+            toolMessages.push({
+              id: `msg-${randomUUID().slice(0, 8)}`,
+              role: "tool",
+              who: "tool",
+              name: "intake",
+              toolName: "draft_patch",
+              text: patchRes.applied
+                ? patchRes.updatedFields.length > 0
+                  ? `draft_patch · 已更新草稿字段：${patchRes.updatedFields.join(", ")}`
+                  : "draft_patch · 已同步立项单草稿"
+                : "draft_patch · 自动回填格式校验失败，请直接在右侧核对填写",
+              at: new Date().toISOString(),
+            });
+            if (!replyText) {
+              replyText = patchRes.applied
+                ? "已更新右侧立项单草稿。"
+                : "已回复（自动回填格式未识别，请直接在右侧核对立项字段）。";
+            }
+          }
+        }
       }
 
       for (const toolMsg of toolMessages) {
@@ -955,7 +1319,6 @@ export class KilnChatEngine {
         text: trimmed,
         at: new Date().toISOString(),
       };
-      appendNdjsonLine(chatFile, userRecord);
 
       const runId = `chat-resolver-${randomUUID().slice(0, 8)}`;
       const token = this.issueRunToken({
@@ -979,6 +1342,7 @@ export class KilnChatEngine {
           pendingDecision,
           token,
         });
+        appendNdjsonLine(chatFile, userRecord);
         replyText = res.replyText;
         toolMessages = res.toolMessages ?? [];
       } else {
@@ -1014,7 +1378,10 @@ export class KilnChatEngine {
           reusableMeta?.kiln_chat_model === executor.model
         ) {
           sessionRef = reusable.sessionRef;
-          await executor.backend.send(sessionRef, trimmed);
+          const promptForAgent = !executor.mcpEnabled
+            ? `[当前任务契约 v${card.contract_version}: goal=${card.contract.goal}, end=${card.contract.end}, accept_cmd=${card.contract.accept_cmd}, scope=${card.contract.scope.join(", ")}]\n\n${trimmed}`
+            : trimmed;
+          await executor.backend.send(sessionRef, promptForAgent);
         } else {
           const spec: BackendRunSpec = {
             runId,
@@ -1027,10 +1394,14 @@ export class KilnChatEngine {
               : {}),
             cwd: this.store.paths.taskDir(safeTaskId),
             prompt: trimmed,
-            systemPrompt: this.buildResolverSystemPrompt(card, pendingDecision),
+            systemPrompt: this.buildResolverSystemPrompt(
+              card,
+              pendingDecision,
+              executor.mcpEnabled,
+            ),
             freshContext: false,
             allowFullAccessFallback: executor.allowFullAccessFallback,
-            mcpServers: [this.buildMcpMount(token)],
+            ...(executor.mcpEnabled ? { mcpServers: [this.buildMcpMount(token)] } : {}),
           };
           sessionRef = await executor.backend.start(spec);
           const taggedSessionRef: SessionRef = {
@@ -1056,9 +1427,35 @@ export class KilnChatEngine {
           );
         }
 
+        appendNdjsonLine(chatFile, userRecord);
         const consumed = await this.consumeTurnEvents(executor.backend, sessionRef, "resolver");
         replyText = consumed.replyText;
         toolMessages = consumed.toolMessages;
+
+        if (!executor.mcpEnabled) {
+          const extracted = extractLabeledJsonPatchBlock(replyText, "kiln-contract-patch");
+          replyText = extracted.displayText;
+          if (extracted.rawJson !== null) {
+            const patchRes = this.applyNonMcpContractPatch({
+              safeTaskId,
+              rawJson: extracted.rawJson,
+            });
+            toolMessages.push({
+              id: `msg-${randomUUID().slice(0, 8)}`,
+              role: "tool",
+              who: "tool",
+              name: "resolver",
+              toolName: "contract_patch",
+              text: patchRes.message,
+              at: new Date().toISOString(),
+            });
+            if (!replyText) {
+              replyText = patchRes.applied
+                ? "已按讨论更新当前任务契约。"
+                : "已记录讨论回复（契约未自动变更，请核对后在右侧拍板）。";
+            }
+          }
+        }
       }
 
       for (const toolMsg of toolMessages) {

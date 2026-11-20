@@ -329,13 +329,21 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     expect(bootJson.providerUsage).toEqual([]);
     expect(bootJson.liveRates.totals.tokPerSec).toBe(0);
 
-    // Configure intake -> pi (mcpInjection: false) => rejected with 409 role_agent_ineligible & never starts session
+    // Configure intake -> antigravity-full-only without allow_full_access_fallback => rejected with 409 full_access_only_provider
     const badRoles: RolesConfig = {
       schema_version: 1,
       heterogeneous_review: true,
       roles: {
-        intake: { agent: "pi", model: "magpie/group/work", allow_full_access_fallback: false },
-        resolver: { agent: "pi", model: "magpie/group/work", allow_full_access_fallback: false },
+        intake: {
+          agent: "antigravity-full-only",
+          model: "gemini-3-pro",
+          allow_full_access_fallback: false,
+        },
+        resolver: {
+          agent: "antigravity-full-only",
+          model: "gemini-3-pro",
+          allow_full_access_fallback: false,
+        },
       },
     };
     server.store.writeConfig("roles", badRoles);
@@ -348,17 +356,17 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
       }),
     );
 
-    const piIntakeRes = await server.app.request(
+    const blockedRes = await server.app.request(
       new Request("http://127.0.0.1/api/drafts/d-chat-1/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: "帮我立项" }),
       }),
     );
-    expect(piIntakeRes.status).toBe(409);
-    const piErr = (await piIntakeRes.json()) as { error: string; missingCapabilities: string[] };
-    expect(piErr.error).toBe("role_agent_ineligible");
-    expect(piErr.missingCapabilities).toContain("mcpInjection");
+    expect(blockedRes.status).toBe(409);
+    const blockedErr = (await blockedRes.json()) as { error: string; agent: string };
+    expect(blockedErr.error).toBe("full_access_only_provider");
+    expect(blockedErr.agent).toBe("antigravity-full-only");
     expect(fakeBackend.getRecordedSpecs()).toHaveLength(0);
 
     // Switch intake/resolver -> codex => multi-turn chat works & persists to drafts/<id>-chat.ndjson
@@ -936,5 +944,429 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     expect(specs[1]!.cwd).toBe(repoBeta);
     expect(specs[1]!.systemPrompt).toContain("帮我看看测试怎么跑");
     expect(specs[1]!.systemPrompt).toContain("已在 Alpha 仓库检查结构");
+  });
+
+  it("allows non-MCP interactive agents (pi) on intake & resolver via structured patches, blocks batch interactiveChat=false, supports Antigravity fallback opt-in, and handles /api/agents?refresh=1 & cached timeout", async () => {
+    const kilnHome = makeTempDir("kiln-m2-nonmcp-chat-");
+    const repoDir = makeTempDir("kiln-m2-nonmcp-repo-");
+    const fakeBackend = new FakeBackend();
+
+    let modelListVersion = 1;
+    let refreshCalls = 0;
+    let shouldTimeOut = false;
+    const customBackend: ExecutionBackend = {
+      backendId: "custom-probe",
+      async listAgents() {
+        if (shouldTimeOut) {
+          await new Promise((r) => setTimeout(r, 200));
+        }
+        return [
+          {
+            id: "batch-only",
+            label: "Batch Runner",
+            capabilities: {
+              interactiveChat: false,
+              approvals: false,
+              mcpInjection: false,
+              usageCacheBreakdown: false,
+              interrupt: true,
+            },
+            modes: [],
+            defaultModeId: null,
+          },
+          {
+            id: "dyn-pi",
+            label: "Dynamic Pi",
+            capabilities: {
+              interactiveChat: true,
+              approvals: false,
+              mcpInjection: false,
+              usageCacheBreakdown: true,
+              interrupt: true,
+            },
+            modes: [],
+            defaultModeId: null,
+          },
+        ];
+      },
+      async listModels(agent) {
+        if (agent === "dyn-pi") {
+          return modelListVersion >= 2
+            ? [
+                { id: "magpie/group/fast", label: "Fast", thinkingOptions: ["low"] },
+                { id: "magpie/group/strong", label: "Strong", thinkingOptions: ["high"] },
+              ]
+            : [{ id: "magpie/group/fast", label: "Fast", thinkingOptions: ["low"] }];
+        }
+        return [{ id: "batch-v1", label: "Batch", thinkingOptions: [] }];
+      },
+      async refreshProviders() {
+        refreshCalls += 1;
+        modelListVersion = 2;
+      },
+      async capabilities(agent) {
+        return {
+          interactiveChat: agent === "dyn-pi",
+          approvals: false,
+          mcpInjection: false,
+          usageCacheBreakdown: false,
+          interrupt: true,
+        };
+      },
+      async start(spec) {
+        return await fakeBackend.start({
+          ...spec,
+          agent: "pi",
+          model: "magpie/group/fast",
+        });
+      },
+      async send(ref, msg) {
+        await fakeBackend.send({ ...ref, backendId: fakeBackend.backendId }, msg);
+      },
+      events(ref) {
+        return fakeBackend.events({ ...ref, backendId: fakeBackend.backendId });
+      },
+      onApproval(h) {
+        return fakeBackend.onApproval(h);
+      },
+      async answer(id, allow, msg) {
+        await fakeBackend.answer(id, allow, msg);
+      },
+      async cancel(ref) {
+        await fakeBackend.cancel({ ...ref, backendId: fakeBackend.backendId });
+      },
+      async probe(ref) {
+        return await fakeBackend.probe({ ...ref, backendId: fakeBackend.backendId });
+      },
+      async liveViewUrl() {
+        return null;
+      },
+    };
+
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      publicDir: null,
+      backendQueryTimeoutMs: 50,
+      tokenSecret: "m2-nonmcp-chat-secret-0123456789abcd",
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    server.backendRegistry.register(customBackend);
+    await server.start();
+
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "proj",
+      name: "Proj",
+      repo_path: repoDir,
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    });
+
+    // 1. Non-refresh populates cache, cached fallback returns last snapshot on transient timeout, and ?refresh=1 calls refreshProviders()
+    const firstAgentsRes = await server.app.request(new Request("http://127.0.0.1/api/agents"));
+    expect(firstAgentsRes.status).toBe(200);
+    const firstAgentsJson = (await firstAgentsRes.json()) as {
+      agents: Array<{ id: string; models: Array<{ id: string }> }>;
+    };
+    expect(firstAgentsJson.agents.find((a) => a.id === "dyn-pi")?.models.map((m) => m.id)).toEqual([
+      "magpie/group/fast",
+    ]);
+
+    shouldTimeOut = true;
+    const cachedAgentsRes = await server.app.request(new Request("http://127.0.0.1/api/agents"));
+    expect(cachedAgentsRes.status).toBe(200);
+    const cachedAgentsJson = (await cachedAgentsRes.json()) as {
+      agents: Array<{ id: string }>;
+      backends: Array<{ backendId: string; connected: boolean; detail: string }>;
+    };
+    expect(cachedAgentsJson.agents.some((a) => a.id === "dyn-pi")).toBe(true);
+    expect(
+      cachedAgentsJson.backends.find((b) => b.backendId === "custom-probe")?.detail,
+    ).toContain("cached");
+
+    shouldTimeOut = false;
+    const refreshedRes = await server.app.request(
+      new Request("http://127.0.0.1/api/agents?refresh=1"),
+    );
+    expect(refreshedRes.status).toBe(200);
+    expect(refreshCalls).toBe(1);
+    const refreshedJson = (await refreshedRes.json()) as {
+      agents: Array<{ id: string; models: Array<{ id: string }> }>;
+    };
+    expect(refreshedJson.agents.find((a) => a.id === "dyn-pi")?.models.map((m) => m.id)).toEqual([
+      "magpie/group/fast",
+      "magpie/group/strong",
+    ]);
+
+    // 2. interactiveChat: false is rejected with 409 role_agent_ineligible (missingCapabilities: ["interactiveChat"])
+    await server.app.request(
+      new Request("http://127.0.0.1/api/drafts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: "d-nonmcp-1", title: "Local Non-MCP", space: "local", workspace_mode: "scratch_dir" }),
+      }),
+    );
+    server.store.writeConfig("roles", {
+      schema_version: 1,
+      heterogeneous_review: true,
+      roles: {
+        intake: {
+          backend_id: "custom-probe",
+          agent: "batch-only",
+          model: "batch-v1",
+          allow_full_access_fallback: false,
+        },
+      },
+    });
+    const batchRes = await server.app.request(
+      new Request("http://127.0.0.1/api/drafts/d-nonmcp-1/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "hi" }),
+      }),
+    );
+    expect(batchRes.status).toBe(409);
+    expect((await batchRes.json()) as Record<string, unknown>).toMatchObject({
+      error: "role_agent_ineligible",
+      missingCapabilities: ["interactiveChat"],
+    });
+
+    // 3. Antigravity full-access-only allowed on intake ONLY when allow_full_access_fallback is true
+    server.store.writeConfig("roles", {
+      schema_version: 1,
+      heterogeneous_review: true,
+      roles: {
+        intake: {
+          backend_id: "fake",
+          agent: "antigravity-full-only",
+          model: "gemini-3-pro",
+          allow_full_access_fallback: true,
+        },
+      },
+    });
+    fakeBackend.enqueueScript(
+      [{ kind: "message", text: "Antigravity opt-in reply", delta: false }, { kind: "exit", reason: "completed" }],
+      { role: "intake" },
+    );
+    const agyOkRes = await server.app.request(
+      new Request("http://127.0.0.1/api/drafts/d-nonmcp-1/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "用 Antigravity 试试" }),
+      }),
+    );
+    expect(agyOkRes.status).toBe(200);
+
+    // 4. Pi non-MCP intake applies kiln-draft-patch, strips JSON block from visible reply, preserves local mode invariant, and degrades safely on malformed JSON
+    server.store.writeConfig("roles", {
+      schema_version: 1,
+      heterogeneous_review: true,
+      roles: {
+        intake: {
+          backend_id: "fake",
+          agent: "pi",
+          model: "magpie/group/fast",
+          allow_full_access_fallback: false,
+        },
+        resolver: {
+          backend_id: "fake",
+          agent: "pi",
+          model: "magpie/group/fast",
+          allow_full_access_fallback: false,
+        },
+      },
+    });
+    fakeBackend.enqueueScript(
+      [
+        {
+          kind: "message",
+          text: [
+            "好的，我已经帮你整理好本机任务立项单。",
+            "```kiln-draft-patch",
+            JSON.stringify({
+              title: "整理本地配置文件",
+              priority: "P1",
+              track: "L1",
+              workspace_mode: "git_worktree",
+              contract: {
+                end: "完成配置模板整理",
+                accept_cmd: "echo ok",
+                scope: ["notes.md"],
+              },
+            }),
+            "```",
+          ].join("\n"),
+          delta: false,
+        },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "intake" },
+    );
+    fakeBackend.enqueueScript(
+      [
+        {
+          kind: "message",
+          text: "这是正文提示。\n```kiln-draft-patch\n{ broken json }\n```",
+          delta: false,
+        },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "intake" },
+    );
+
+    const piTurn1 = await server.app.request(
+      new Request("http://127.0.0.1/api/drafts/d-nonmcp-1/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "帮我立一个本机配置任务" }),
+      }),
+    );
+    expect(piTurn1.status).toBe(200);
+    const piTurn1Json = (await piTurn1.json()) as {
+      reply: { text: string };
+      draft: {
+        title: string;
+        priority: string;
+        track: string;
+        space: string;
+        workspace_mode: string;
+        contract: { end?: string; accept_cmd?: string; scope?: string[] };
+      };
+      messages: Array<{ who: string; text: string }>;
+    };
+    expect(piTurn1Json.reply.text).toBe("好的，我已经帮你整理好本机任务立项单。");
+    expect(piTurn1Json.reply.text).not.toContain("kiln-draft-patch");
+    expect(piTurn1Json.draft.title).toBe("整理本地配置文件");
+    expect(piTurn1Json.draft.priority).toBe("P1");
+    expect(piTurn1Json.draft.track).toBe("L1");
+    expect(piTurn1Json.draft.space).toBe("local");
+    // local invariant rejects git_worktree patch
+    expect(piTurn1Json.draft.workspace_mode).toBe("scratch_dir");
+    expect(piTurn1Json.draft.contract.end).toBe("完成配置模板整理");
+    expect(piTurn1Json.draft.contract.accept_cmd).toBe("echo ok");
+    expect(piTurn1Json.draft.contract.scope).toEqual(["notes.md"]);
+
+    const piTurn2 = await server.app.request(
+      new Request("http://127.0.0.1/api/drafts/d-nonmcp-1/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "再调整一下" }),
+      }),
+    );
+    expect(piTurn2.status).toBe(200);
+    const piTurn2Json = (await piTurn2.json()) as {
+      reply: { text: string };
+      messages: Array<{ who: string; text: string }>;
+    };
+    expect(piTurn2Json.reply.text).toBe("这是正文提示。");
+    expect(piTurn2Json.messages.some((m) => m.who === "tool" && m.text.includes("格式校验失败"))).toBe(
+      true,
+    );
+
+    const piIntakeSpecs = fakeBackend
+      .getRecordedSpecs()
+      .filter((s) => s.agent === "pi" && s.role === "intake");
+    expect(piIntakeSpecs).toHaveLength(1);
+    expect(piIntakeSpecs[0]!.mcpServers).toBeUndefined();
+    expect(piIntakeSpecs[0]!.systemPrompt).toContain("无 MCP 模式");
+
+    // 5. Pi non-MCP resolver applies kiln-contract-patch, bumps contract_version & rebinds PendingDecision
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-nonmcp-res",
+        title: "Non-MCP Resolver Task",
+        space: "proj",
+        priority: "P1",
+        track: "L2",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        contract_version: 1,
+        contract: {
+          goal: "Old goal",
+          end: "Old end",
+          accept_cmd: "pnpm test",
+          accept_files_hash: "sha256:old",
+          scope: ["src/a.ts"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 100_000 },
+        created_at: "2026-11-20T00:00:00.000Z",
+        updated_at: "2026-11-20T00:00:00.000Z",
+      },
+      "# Non-MCP Resolver",
+    );
+    const nonMcpDecision = {
+      id: "dec-nonmcp-1",
+      task_id: "t-nonmcp-res",
+      contract_version: 1,
+      reason: "needs_scope",
+      category: "scope" as const,
+      question: "是否需要扩大可改范围？",
+      options: [{ id: "resume", label: "继续推进", action: "resume" as const, recommended: true }],
+      created_at: "2026-11-20T00:02:00.000Z",
+    };
+    server.pendingDecisions.set(nonMcpDecision);
+    server.stateMachine.requestDecision(
+      "t-nonmcp-res",
+      nonMcpDecision,
+      "2026-11-20T00:02:00.000Z",
+    );
+
+    fakeBackend.enqueueScript(
+      [
+        {
+          kind: "message",
+          text: [
+            "已扩展可改范围到 src/** 并更新终点。",
+            "```kiln-contract-patch",
+            JSON.stringify({
+              contract: {
+                end: "New end",
+                scope: ["src/**"],
+              },
+              affected_stages: ["implement"],
+              rationale: "Need wider scope",
+            }),
+            "```",
+          ].join("\n"),
+          delta: false,
+        },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "resolver" },
+    );
+
+    const piResolverRes = await server.app.request(
+      new Request("http://127.0.0.1/api/tasks/t-nonmcp-res/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "请把可改范围放宽到 src/**" }),
+      }),
+    );
+    expect(piResolverRes.status).toBe(200);
+    const piResolverJson = (await piResolverRes.json()) as {
+      reply: { text: string };
+      card: { contract_version: number; contract: { end: string; scope: string[] } };
+      pendingDecision: { contract_version: number } | null;
+    };
+    expect(piResolverJson.reply.text).toBe("已扩展可改范围到 src/** 并更新终点。");
+    expect(piResolverJson.card.contract_version).toBe(2);
+    expect(piResolverJson.card.contract.end).toBe("New end");
+    expect(piResolverJson.card.contract.scope).toEqual(["src/**"]);
+    expect(piResolverJson.pendingDecision?.contract_version).toBe(2);
+
+    const piResolverSpecs = fakeBackend
+      .getRecordedSpecs()
+      .filter((s) => s.agent === "pi" && s.role === "resolver");
+    expect(piResolverSpecs).toHaveLength(1);
+    expect(piResolverSpecs[0]!.mcpServers).toBeUndefined();
   });
 });

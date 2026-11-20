@@ -76,6 +76,7 @@ export interface ExecutionBackend {
   readonly backendId: string;
   listAgents(): Promise<BackendAgentDescriptor[]>;
   listModels(agent: string): Promise<BackendModelDescriptor[]>;
+  refreshProviders?(): Promise<void>;
   capabilities(agent: string): Promise<BackendCapabilities>;
   start(runSpec: BackendRunSpec): Promise<SessionRef>;
   send(sessionRef: SessionRef, message: string): Promise<void>;
@@ -185,30 +186,22 @@ export function selectSafeModeId(
   throw new FullAccessOnlyProviderError(agent, modes);
 }
 
-const INTERACTIVE_MCP_ROLES: ReadonlySet<RoleId> = new Set<RoleId>(["intake", "resolver"]);
+const INTERACTIVE_CHAT_ROLES: ReadonlySet<RoleId> = new Set<RoleId>(["intake", "resolver"]);
 
 /**
  * Enforces role-level capability requirements: interactive chat roles (intake, resolver)
- * require both interactiveChat and mcpInjection.
+ * require `interactiveChat`. Agents lacking `mcpInjection` run with structured patch blocks.
  */
 export function assertRoleAgentEligible(
   role: RoleId,
   agent: string,
   caps: BackendCapabilities,
 ): void {
-  if (!INTERACTIVE_MCP_ROLES.has(role)) {
+  if (!INTERACTIVE_CHAT_ROLES.has(role)) {
     return;
   }
 
-  const missing: (keyof BackendCapabilities)[] = [];
   if (!caps.interactiveChat) {
-    missing.push("interactiveChat");
-  }
-  if (!caps.mcpInjection) {
-    missing.push("mcpInjection");
-  }
-
-  if (missing.length > 0) {
-    throw new IneligibleRoleAgentError(role, agent, missing);
+    throw new IneligibleRoleAgentError(role, agent, ["interactiveChat"]);
   }
 }

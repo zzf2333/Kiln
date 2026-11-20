@@ -161,8 +161,17 @@ export class KilndServer {
       store: this.store,
       backendRegistry: this.backendRegistry,
       pendingDecisions: this.pendingDecisions,
+      stateMachine: this.stateMachine,
+      sseHub: this.sseHub,
+      caffeinate: this.caffeinate,
       socketPath: this.socketPath,
       issueRunToken: issueToken,
+      onContractUpdated: (taskId) => {
+        void (async () => {
+          await this.orchestrator.abortActiveRun(taskId);
+          await this.orchestrator.wake();
+        })();
+      },
       ...(options.mcpServerCommand !== undefined
         ? { mcpServerCommand: options.mcpServerCommand }
         : {}),

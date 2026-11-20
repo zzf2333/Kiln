@@ -394,7 +394,7 @@ describe("resolveRoleAssignment", () => {
     expect(sameModelAllowed.freshContext).toBe(true);
   });
 
-  it("rejects intake and resolver agents lacking interactiveChat or mcpInjection", () => {
+  it("allows interactiveChat agents like pi for intake/resolver while rejecting non-interactive agents", () => {
     const config = makeRolesConfig({
       roles: {
         intake: {
@@ -425,15 +425,17 @@ describe("resolveRoleAssignment", () => {
       ["codex", CODEX_CAPS],
     ]);
 
-    expect(() =>
-      resolveRoleAssignment(config, "intake", { agentCapabilitiesMap: capsMap }),
-    ).toThrow(CapabilityMismatchError);
-    expect(() =>
-      resolveRoleAssignment(config, "intake", { capabilities: PI_CAPS }),
-    ).toThrow(IneligibleRoleAgentError);
+    const piIntake = resolveRoleAssignment(config, "intake", { agentCapabilitiesMap: capsMap });
+    expect(piIntake.agent).toBe("pi");
+    const piSingle = resolveRoleAssignment(config, "intake", { capabilities: PI_CAPS });
+    expect(piSingle.agent).toBe("pi");
+
     expect(() =>
       resolveRoleAssignment(config, "resolver", { agentCapabilitiesMap: capsMap }),
     ).toThrow(CapabilityMismatchError);
+    expect(() =>
+      resolveRoleAssignment(config, "resolver", { agentCapabilitiesMap: capsMap }),
+    ).toThrow(IneligibleRoleAgentError);
 
     const validIntake = resolveRoleAssignment(makeRolesConfig(), "intake", {
       agentCapabilitiesMap: capsMap,

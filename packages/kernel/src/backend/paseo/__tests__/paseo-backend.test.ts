@@ -160,6 +160,8 @@ class MockPaseoDaemon implements PaseoDaemonLike {
   deleteErrors = new Set<string>();
   readyDelayMs = 0;
   emitCancelOnCancelAgent = true;
+  refreshSnapshotCalls = 0;
+  onRefreshSnapshot?: () => void;
 
   private agentSeq = 0;
   private readonly agents = new Map<string, MockAgentRuntime>();
@@ -275,6 +277,16 @@ class MockPaseoDaemon implements PaseoDaemonLike {
       requestId: "snap-mock-1",
       entries: structuredClone(this.providers),
     };
+  }
+
+  async refreshProvidersSnapshot(options?: {
+    cwd?: string;
+    requestId?: string;
+  }): Promise<{ requestId: string }> {
+    this.refreshSnapshotCalls += 1;
+    this.callOrder.push("refreshProvidersSnapshot");
+    this.onRefreshSnapshot?.();
+    return { requestId: options?.requestId ?? `refresh-${this.refreshSnapshotCalls}` };
   }
 
   async createAgent(options: PaseoCreateAgentOptions): Promise<PaseoAgentSnapshot> {
@@ -1123,18 +1135,31 @@ describe("PaseoBackend V3: MCP injection, strict toolPolicy & Pi capability guar
     await backend.dispose();
   });
 
-  it("omits background when host lacks backgroundWorkspaces, blocks Pi on intake/resolver, and omits mcpServers/toolPolicy for Pi worker", async () => {
+  it("omits background when host lacks backgroundWorkspaces, allows Pi on intake/resolver without mcpServers/toolPolicy, and enforces Antigravity full-access opt-in", async () => {
     const daemon = new MockPaseoDaemon({
       serverInfo: { serverId: "srv_old", features: { backgroundWorkspaces: false } },
     });
     const backend = createPaseoBackendForTest({ daemonClient: daemon });
 
-    await expect(
-      backend.start(makeRunSpec({ agent: "pi", model: "magpie/group/fast", role: "intake" })),
-    ).rejects.toBeInstanceOf(IneligibleRoleAgentError);
-    await expect(
-      backend.start(makeRunSpec({ agent: "pi", model: "magpie/group/fast", role: "resolver" })),
-    ).rejects.toBeInstanceOf(IneligibleRoleAgentError);
+    const piIntakeRef = await backend.start(
+      makeRunSpec({
+        agent: "pi",
+        model: "magpie/group/fast",
+        role: "intake",
+        mcpServers: [{ name: "kiln", command: "node", args: ["mcp.js"] }],
+      }),
+    );
+    await collectAll(backend.events(piIntakeRef));
+
+    const piResolverRef = await backend.start(
+      makeRunSpec({
+        agent: "pi",
+        model: "magpie/group/fast",
+        role: "resolver",
+        mcpServers: [{ name: "kiln", command: "node", args: ["mcp.js"] }],
+      }),
+    );
+    await collectAll(backend.events(piResolverRef));
 
     const ref = await backend.start(
       makeRunSpec({
@@ -1146,10 +1171,38 @@ describe("PaseoBackend V3: MCP injection, strict toolPolicy & Pi capability guar
     );
     await collectAll(backend.events(ref));
 
-    const createOpt = daemon.createdOptions[0]!;
-    expect("background" in createOpt).toBe(false);
-    expect("mcpServers" in createOpt.config).toBe(false);
-    expect("toolPolicy" in createOpt.config).toBe(false);
+    for (const createOpt of daemon.createdOptions.slice(0, 3)) {
+      expect("background" in createOpt).toBe(false);
+      expect("mcpServers" in createOpt.config).toBe(false);
+      expect("toolPolicy" in createOpt.config).toBe(false);
+    }
+
+    // Antigravity on intake still requires allowFullAccessFallback, and also omits MCP when enabled
+    await expect(
+      backend.start(
+        makeRunSpec({
+          agent: "antigravity",
+          model: "gemini-3-pro",
+          role: "intake",
+          allowFullAccessFallback: false,
+        }),
+      ),
+    ).rejects.toBeInstanceOf(FullAccessOnlyProviderError);
+
+    const agyIntakeRef = await backend.start(
+      makeRunSpec({
+        agent: "antigravity",
+        model: "gemini-3-pro",
+        role: "intake",
+        allowFullAccessFallback: true,
+        mcpServers: [{ name: "kiln", command: "node", args: ["mcp.js"] }],
+      }),
+    );
+    await collectAll(backend.events(agyIntakeRef));
+    const agyOpt = daemon.createdOptions[3]!;
+    expect(agyOpt.config.modeId).toBe("full-access");
+    expect("mcpServers" in agyOpt.config).toBe(false);
+    expect("toolPolicy" in agyOpt.config).toBe(false);
 
     // Intake role receives intake-allowed MCP tools (excluding worker receipt/decision tools)
     const intakeRef = await backend.start(
@@ -1160,7 +1213,7 @@ describe("PaseoBackend V3: MCP injection, strict toolPolicy & Pi capability guar
       }),
     );
     await collectAll(backend.events(intakeRef));
-    expect(daemon.createdOptions[1]?.config.toolPolicy).toEqual({
+    expect(daemon.createdOptions[4]?.config.toolPolicy).toEqual({
       preapproved: [
         { kind: "mcp", server: "kiln", tool: "wb_get_context" },
         { kind: "mcp", server: "kiln", tool: "wb_list_tasks" },
@@ -2138,6 +2191,36 @@ describe("PaseoBackend Round 1 review fixes: isolation, observations, reconnect 
       cachedInputTokens: 2,
       outputTokens: 3,
     });
+    await backend.dispose();
+  });
+
+  it("refreshProviders() triggers daemon refreshProvidersSnapshot and updates cached models", async () => {
+    const daemon = new MockPaseoDaemon();
+    const backend = createPaseoBackendForTest({ daemonClient: daemon });
+
+    expect((await backend.listModels("pi")).map((m) => m.id)).toEqual(["magpie/group/fast"]);
+
+    daemon.onRefreshSnapshot = () => {
+      const piEntry = daemon.providers.find((p) => p.provider === "pi")!;
+      piEntry.models = [
+        ...(piEntry.models ?? []),
+        {
+          provider: "pi",
+          id: "magpie/group/strong",
+          label: "Magpie Strong",
+          thinkingOptions: [{ id: "high", label: "High" }],
+          defaultThinkingOptionId: "high",
+        },
+      ];
+    };
+
+    await backend.refreshProviders();
+    expect(daemon.refreshSnapshotCalls).toBe(1);
+    expect((await backend.listModels("pi")).map((m) => m.id)).toEqual([
+      "magpie/group/fast",
+      "magpie/group/strong",
+    ]);
+
     await backend.dispose();
   });
 });

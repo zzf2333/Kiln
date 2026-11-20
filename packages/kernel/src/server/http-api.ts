@@ -386,8 +386,11 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
   });
 
   app.get("/api/agents", async (c) => {
+    const refreshParam = c.req.query("refresh");
+    const refresh = refreshParam === "1" || refreshParam === "true";
     const snap = await snapshotBackends(backendRegistry, {
       timeoutMs: backendQueryTimeoutMs,
+      refresh,
     });
     return c.json({
       ok: true,

@@ -6,7 +6,7 @@ import type {
 } from "@kiln/protocol";
 import { IneligibleRoleAgentError } from "../backend/types.js";
 
-const INTERACTIVE_MCP_ROLES: ReadonlySet<RoleId> = new Set<RoleId>(["intake", "resolver"]);
+const INTERACTIVE_CHAT_ROLES: ReadonlySet<RoleId> = new Set<RoleId>(["intake", "resolver"]);
 const FRESH_CONTEXT_ROLES: ReadonlySet<RoleId> = new Set<RoleId>([
   "intake",
   "reviewer",
@@ -16,8 +16,8 @@ const FRESH_CONTEXT_ROLES: ReadonlySet<RoleId> = new Set<RoleId>([
 ]);
 
 /**
- * Raised when a role requiring interactive chat and MCP injection (`intake` / `resolver`)
- * is assigned an agent whose capabilities lack either feature (`REVIEW.md §3.4 #15`).
+ * Raised when a role requiring interactive chat (`intake` / `resolver`)
+ * is assigned an agent whose capabilities lack `interactiveChat`.
  */
 export class CapabilityMismatchError extends IneligibleRoleAgentError {
   constructor(
@@ -99,7 +99,7 @@ function sameAgentModel(
  * 1. Enforces `heterogeneous_review`: auto-switches `reviewer` (or any role with
  *    `avoid_same_model_as`) to `fallback` when `(agent, model)` collides with the peer role,
  *    or throws `HeterogeneousReviewConflictError` if no non-colliding fallback exists.
- * 2. Enforces `interactiveChat && mcpInjection` for `intake` and `resolver` whenever
+ * 2. Enforces `interactiveChat` for `intake` and `resolver` whenever
  *    capabilities are provided, throwing `CapabilityMismatchError` otherwise.
  * 3. Always sets `freshContext: true` for `reviewer`, `verifier`, and `advisor` (`REVIEW.md §3.4 #16`).
  * 4. Passes through `allowFullAccessFallback` for backend mode enforcement.
@@ -161,17 +161,8 @@ export function resolveRoleAssignment(
   const caps =
     options?.capabilities ?? options?.agentCapabilitiesMap?.get(selectedAgent);
 
-  if (INTERACTIVE_MCP_ROLES.has(role) && caps !== undefined) {
-    const missing: (keyof BackendCapabilities)[] = [];
-    if (!caps.interactiveChat) {
-      missing.push("interactiveChat");
-    }
-    if (!caps.mcpInjection) {
-      missing.push("mcpInjection");
-    }
-    if (missing.length > 0) {
-      throw new CapabilityMismatchError(role, selectedAgent, missing);
-    }
+  if (INTERACTIVE_CHAT_ROLES.has(role) && caps !== undefined && !caps.interactiveChat) {
+    throw new CapabilityMismatchError(role, selectedAgent, ["interactiveChat"]);
   }
 
   return {

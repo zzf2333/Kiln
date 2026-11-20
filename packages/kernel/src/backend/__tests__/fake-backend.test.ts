@@ -178,24 +178,13 @@ describe("assertRoleAgentEligible", () => {
     interrupt: true,
   };
 
-  it("blocks Pi (mcpInjection=false) from intake and resolver roles", () => {
+  it("allows Pi (interactiveChat=true, mcpInjection=false) for intake and resolver roles", () => {
     for (const role of ["intake", "resolver"] as const) {
-      expect(() => assertRoleAgentEligible(role, "pi", piCaps)).toThrowError(
-        IneligibleRoleAgentError,
-      );
-      try {
-        assertRoleAgentEligible(role, "pi", piCaps);
-      } catch (err) {
-        expect(err).toBeInstanceOf(IneligibleRoleAgentError);
-        const typed = err as IneligibleRoleAgentError;
-        expect(typed.role).toBe(role);
-        expect(typed.agent).toBe("pi");
-        expect(typed.missingCapabilities).toEqual(["mcpInjection"]);
-      }
+      expect(() => assertRoleAgentEligible(role, "pi", piCaps)).not.toThrow();
     }
   });
 
-  it("reports both missing capabilities when interactiveChat and mcpInjection are false", () => {
+  it("blocks agents lacking interactiveChat from intake and resolver roles", () => {
     const batchOnlyCaps: BackendCapabilities = {
       interactiveChat: false,
       approvals: false,
@@ -207,8 +196,9 @@ describe("assertRoleAgentEligible", () => {
       assertRoleAgentEligible("intake", "batch", batchOnlyCaps);
       expect.unreachable("Expected IneligibleRoleAgentError");
     } catch (err) {
+      expect(err).toBeInstanceOf(IneligibleRoleAgentError);
       const typed = err as IneligibleRoleAgentError;
-      expect(typed.missingCapabilities).toEqual(["interactiveChat", "mcpInjection"]);
+      expect(typed.missingCapabilities).toEqual(["interactiveChat"]);
     }
   });
 
@@ -249,10 +239,11 @@ describe("FakeBackend behavior & diagnostics", () => {
     );
     await collectAll(backend.events(codexRef));
 
-    // Pi omits modeId when starting as worker, and rejects intake
-    await expect(
-      backend.start(makeRunSpec({ agent: "pi", role: "intake" })),
-    ).rejects.toBeInstanceOf(IneligibleRoleAgentError);
+    // Pi omits modeId and is allowed for both intake and worker
+    const piIntakeRef = await backend.start(makeRunSpec({ agent: "pi", role: "intake" }));
+    expect(piIntakeRef.meta?.modeId).toBeUndefined();
+    await collectAll(backend.events(piIntakeRef));
+
     const piRef = await backend.start(makeRunSpec({ agent: "pi", role: "worker" }));
     expect(piRef.meta?.modeId).toBeUndefined();
     expect("modeId" in (piRef.meta ?? {})).toBe(false);
@@ -274,7 +265,7 @@ describe("FakeBackend behavior & diagnostics", () => {
     expect(backend.getSelectedModeId(agyRef)).toBe("full-access");
     await collectAll(backend.events(agyRef));
 
-    expect(backend.getRecordedSpecs()).toHaveLength(3);
+    expect(backend.getRecordedSpecs()).toHaveLength(4);
     await backend.dispose();
   });
 

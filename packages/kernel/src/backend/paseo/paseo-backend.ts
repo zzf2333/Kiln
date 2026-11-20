@@ -284,6 +284,11 @@ function createPaseoApiAdapter(
         daemonClient.getProvidersSnapshot(
           options?.cwd !== undefined ? { cwd: options.cwd } : undefined,
         ),
+      ...(daemonClient.refreshProvidersSnapshot
+        ? {
+            refresh: (options) => daemonClient.refreshProvidersSnapshot!(options),
+          }
+        : {}),
       listUsage: (options) => {
         if (!daemonClient.listProviderUsage) {
           return Promise.reject(new Error("Provider usage listing is not supported"));
@@ -410,6 +415,18 @@ export class PaseoBackend implements ExecutionBackend {
       });
     }
     return agents;
+  }
+
+  async refreshProviders(): Promise<void> {
+    this.assertNotDisposed();
+    await this.ensureConnected();
+    if (this.api.providers.refresh) {
+      await this.api.providers.refresh();
+    }
+    const snapshot = await this.api.providers.waitForReady({
+      timeoutMs: this.providerReadyTimeoutMs,
+    });
+    this.updateProviderCache(snapshot.entries);
   }
 
   async listModels(agent: string): Promise<BackendModelDescriptor[]> {

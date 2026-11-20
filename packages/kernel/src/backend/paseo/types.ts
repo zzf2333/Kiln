@@ -483,6 +483,10 @@ export interface PaseoDaemonLike {
     ifNoneMatch?: string;
     requestId?: string;
   }): Promise<PaseoProvidersSnapshot>;
+  refreshProvidersSnapshot?(options?: {
+    cwd?: string;
+    requestId?: string;
+  }): Promise<unknown>;
   createAgent(options: PaseoCreateAgentOptions): Promise<PaseoAgentSnapshot>;
   fetchAgent(options: {
     agentId: string;
@@ -526,6 +530,7 @@ export interface PaseoDaemonLike {
 export interface PaseoApiLike {
   readonly providers: {
     waitForReady(options?: { cwd?: string; timeoutMs?: number }): Promise<PaseoProvidersSnapshot>;
+    refresh?(options?: { cwd?: string; requestId?: string }): Promise<unknown>;
     listUsage(options?: { requestId?: string }): Promise<PaseoProviderUsageResponse>;
   };
   dispose?(): Promise<void>;
