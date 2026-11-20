@@ -1,30 +1,16 @@
 import { z } from "zod";
+import {
+  REASONING_EFFORTS,
+  ROLE_IDS,
+  type ReasoningEffort,
+  type RoleId,
+} from "./constants.js";
 
-export const ROLE_IDS = [
-  "intake",
-  "worker",
-  "reviewer",
-  "verifier",
-  "triage",
-  "advisor",
-  "resolver",
-] as const;
+export { REASONING_EFFORTS, ROLE_IDS, type ReasoningEffort, type RoleId };
 
 export const RoleIdSchema = z.enum(ROLE_IDS);
-export type RoleId = z.infer<typeof RoleIdSchema>;
-
-export const REASONING_EFFORTS = [
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-  "ultra",
-] as const;
 
 export const ReasoningEffortSchema = z.enum(REASONING_EFFORTS);
-export type ReasoningEffort = z.infer<typeof ReasoningEffortSchema>;
 
 export const RoleFallbackSchema = z.object({
   agent: z.string().min(1),

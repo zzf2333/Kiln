@@ -1,58 +1,46 @@
 import { z } from "zod";
 import { RoleIdSchema } from "./config.js";
+import {
+  DECISION_ACTIONS,
+  PRIORITIES,
+  PRIORITY_RANK,
+  STAGE_IDS,
+  TASK_STATUSES,
+  TRACKS,
+  WORKSPACE_MODES,
+  type DecisionAction,
+  type Priority,
+  type StageId,
+  type TaskStatus,
+  type Track,
+  type WorkspaceMode,
+} from "./constants.js";
 
-export const TASK_STATUSES = [
-  "queued",
-  "running",
-  "paused",
-  "waiting",
-  "external",
-  "done",
-  "cancelled",
-] as const;
-
-export const TaskStatusSchema = z.enum(TASK_STATUSES);
-export type TaskStatus = z.infer<typeof TaskStatusSchema>;
-
-export const PRIORITIES = ["P0", "P1", "P2", "P3"] as const;
-export const PrioritySchema = z.enum(PRIORITIES);
-export type Priority = z.infer<typeof PrioritySchema>;
-
-export const PRIORITY_RANK: Record<Priority, number> = {
-  P0: 0,
-  P1: 1,
-  P2: 2,
-  P3: 3,
+export {
+  DECISION_ACTIONS,
+  PRIORITIES,
+  PRIORITY_RANK,
+  STAGE_IDS,
+  TASK_STATUSES,
+  TRACKS,
+  WORKSPACE_MODES,
+  type DecisionAction,
+  type Priority,
+  type StageId,
+  type TaskStatus,
+  type Track,
+  type WorkspaceMode,
 };
 
-export const TRACKS = ["L1", "L2", "L3"] as const;
-export const TrackSchema = z.enum(TRACKS);
-export type Track = z.infer<typeof TrackSchema>;
+export const TaskStatusSchema = z.enum(TASK_STATUSES);
 
-export const WORKSPACE_MODES = [
-  "git_worktree",
-  "host_scoped",
-  "scratch_dir",
-  "external_only",
-] as const;
+export const PrioritySchema = z.enum(PRIORITIES);
+
+export const TrackSchema = z.enum(TRACKS);
 
 export const WorkspaceModeSchema = z.enum(WORKSPACE_MODES);
-export type WorkspaceMode = z.infer<typeof WorkspaceModeSchema>;
-
-export const STAGE_IDS = [
-  "intake",
-  "implement",
-  "research",
-  "verify",
-  "review",
-  "accept",
-  "triage",
-  "advise",
-  "deliver",
-] as const;
 
 export const StageIdSchema = z.enum(STAGE_IDS);
-export type StageId = z.infer<typeof StageIdSchema>;
 
 export const DeliverConfigSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("merge_main"), cmd: z.null().optional() }),
@@ -140,15 +128,7 @@ export const RunMetaSchema = z.object({
 });
 export type RunMeta = z.infer<typeof RunMetaSchema>;
 
-export const DECISION_ACTIONS = [
-  "resume",
-  "return_external",
-  "finish",
-  "cancel",
-] as const;
-
 export const DecisionActionSchema = z.enum(DECISION_ACTIONS);
-export type DecisionAction = z.infer<typeof DecisionActionSchema>;
 
 export const DecisionOptionSchema = z.object({
   id: z.string().min(1),

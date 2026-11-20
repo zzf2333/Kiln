@@ -9,34 +9,17 @@ import {
   TrackSchema,
   WorkspaceModeSchema,
 } from "./card.js";
-import { ROLE_IDS, RoleIdSchema, type RoleId } from "./config.js";
+import { RoleIdSchema } from "./config.js";
+import {
+  MCP_ROLE_ALLOWLIST,
+  MCP_TOOL_NAMES,
+  isRoleAllowedForTool,
+  type McpToolName,
+} from "./constants.js";
 
-export const MCP_TOOL_NAMES = [
-  "wb_get_context",
-  "wb_list_tasks",
-  "wb_read_ledger",
-  "wb_plan",
-  "wb_ask_decision",
-  "wb_submit_receipt",
-  "wb_propose_ledger",
-] as const;
+export { MCP_ROLE_ALLOWLIST, MCP_TOOL_NAMES, isRoleAllowedForTool, type McpToolName };
 
 export const McpToolNameSchema = z.enum(MCP_TOOL_NAMES);
-export type McpToolName = z.infer<typeof McpToolNameSchema>;
-
-export const MCP_ROLE_ALLOWLIST: Record<McpToolName, readonly RoleId[]> = {
-  wb_get_context: ROLE_IDS,
-  wb_list_tasks: ["intake", "triage", "resolver"],
-  wb_read_ledger: ROLE_IDS,
-  wb_plan: ["intake", "triage", "resolver"],
-  wb_ask_decision: ["worker", "reviewer", "verifier", "triage", "advisor"],
-  wb_submit_receipt: ["worker", "reviewer", "verifier", "triage", "advisor"],
-  wb_propose_ledger: ROLE_IDS,
-};
-
-export function isRoleAllowedForTool(role: RoleId, tool: McpToolName): boolean {
-  return MCP_ROLE_ALLOWLIST[tool].includes(role);
-}
 
 export const RunTokenClaimsSchema = z.object({
   taskId: z.string().min(1),
