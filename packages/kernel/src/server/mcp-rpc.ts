@@ -7,6 +7,7 @@ import {
   DraftCardSchema,
   McpToolNameSchema,
   PendingDecisionSchema,
+  RECEIPT_KINDS,
   RoleForbiddenErrorSchema,
   RunMetaSchema,
   TaskCardSchema,
@@ -18,7 +19,9 @@ import {
   WbReadLedgerInputSchema,
   WbSubmitReceiptInputSchema,
   isRoleAllowedForTool,
+  parseAndValidateReceipt,
   type McpToolName,
+  type ReceiptKind,
   type RunMeta,
   type RunTokenClaims,
   type SpaceConfig,
@@ -50,6 +53,10 @@ import type { SseHub } from "./sse.js";
 import { RunTokenAuthError, verifyRunToken } from "./token.js";
 
 const DEFAULT_MAX_BODY_BYTES = 2 * 1024 * 1024;
+
+function isReceiptKind(role: string): role is ReceiptKind {
+  return (RECEIPT_KINDS as readonly string[]).includes(role);
+}
 
 export interface McpRpcServerOptions {
   store: KilnStore;
@@ -874,6 +881,41 @@ export class McpRpcServer {
         taskId: claims.taskId,
         runId: claims.runId,
         message: `No RUN.yaml found for task "${claims.taskId}" and run "${claims.runId}"`,
+      });
+    }
+
+    if (!isReceiptKind(claims.role)) {
+      throw new ServerHttpError(400, {
+        error: "invalid_receipt",
+        role: claims.role,
+        errors: [`Role "${claims.role}" is not a valid receipt role`],
+        message: `Invalid receipt role "${claims.role}"`,
+      });
+    }
+
+    // Validate schema, required sections, and token identity BEFORE consuming the active lease
+    // so an agent can fix formatting errors and resubmit within the same turn.
+    const validation = parseAndValidateReceipt(claims.role, input.markdown);
+    const errors: string[] = validation.ok ? [] : [...validation.errors];
+    if (validation.ok) {
+      if (validation.frontmatter.run_id !== claims.runId) {
+        errors.push(
+          `frontmatter.run_id "${validation.frontmatter.run_id}" does not match run token runId "${claims.runId}"`,
+        );
+      }
+      if (validation.frontmatter.contract_version !== claims.contractVersion) {
+        errors.push(
+          `frontmatter.contract_version (${validation.frontmatter.contract_version}) does not match run token contractVersion (${claims.contractVersion})`,
+        );
+      }
+    }
+
+    if (errors.length > 0) {
+      throw new ServerHttpError(400, {
+        error: "invalid_receipt",
+        role: claims.role,
+        errors,
+        message: `Invalid ${claims.role} receipt: ${errors.join("; ")}`,
       });
     }
 

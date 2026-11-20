@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   HashMismatchErrorSchema,
   SseEventSchema,
+  parseAndValidateReceipt,
   serializeFrontmatterMarkdown,
   type LimitsConfig,
   type PricingConfig,
@@ -3737,5 +3738,777 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     releaseDeliver();
     expect((await pauseDeliverPromise).status).toBe(200);
     expect(deliverServer.store.getTaskIndex("t-r3-deliver-race")?.status).toBe("paused");
+  }, 20_000);
+
+  it("P0 #2: early wb_submit_receipt during delayed or failing backend.start() never stalls in running and preserves single-commit lease semantics", async () => {
+    const kilnHome = makeTempDir("kiln-m2-p0-2-");
+    const fakeBackend = new FakeBackend();
+    const origStart = fakeBackend.start.bind(fakeBackend);
+
+    let slowEnteredResolve!: () => void;
+    const slowEntered = new Promise<void>((r) => {
+      slowEnteredResolve = r;
+    });
+    let releaseSlow!: () => void;
+    const slowGate = new Promise<void>((r) => {
+      releaseSlow = r;
+    });
+
+    let errEnteredResolve!: () => void;
+    const errEntered = new Promise<void>((r) => {
+      errEnteredResolve = r;
+    });
+    let releaseErr!: () => void;
+    const errGate = new Promise<void>((r) => {
+      releaseErr = r;
+    });
+
+    fakeBackend.start = async (spec) => {
+      if (spec.taskId === "t-p0-2-slow" && spec.role === "worker") {
+        const sessionRef = await origStart(spec);
+        slowEnteredResolve();
+        await slowGate;
+        return sessionRef;
+      }
+      if (spec.taskId === "t-p0-2-err" && spec.role === "worker") {
+        await origStart(spec);
+        errEnteredResolve();
+        await errGate;
+        throw new Error("simulated backend.start() timeout after receipt");
+      }
+      return origStart(spec);
+    };
+
+    const lateThirdReceiptRef: { body: Record<string, unknown> | null } = { body: null };
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: true,
+      tokenSecret: "m2-e2e-p0-2-secret-0123456789abcdef",
+      approvalHandler: async (req, ctx) => {
+        const token =
+          fakeBackend
+            .getRecordedSpecs()
+            .find((s) => s.runId === ctx.runId)
+            ?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+
+        if (req.action === "p0_2_after_start") {
+          // 3rd late submission AFTER backend.start() resolved MUST still be rejected
+          const lateRes = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeWorkerReceiptMarkdown({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                input_ref: "scratch_dir",
+                output_ref: "out.txt",
+                changed_paths: ["out.txt"],
+              }),
+            }),
+          });
+          expect(lateRes.status).toBe(200);
+          lateThirdReceiptRef.body = lateRes.body as Record<string, unknown>;
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "p0_2_review") {
+          const revRes = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeReviewerReceiptMarkdown({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                reviewed_ref: "out.txt",
+                verdict: "pass",
+              }),
+            }),
+          });
+          expect(revRes.status).toBe(200);
+          expect((revRes.body as { accepted: boolean }).accepted).toBe(true);
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        await ctx.backend.answer(req.id, true);
+      },
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "local",
+      name: "Local",
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    });
+    const baseRolesP02 = defaultRoles();
+    server.store.writeConfig("roles", {
+      ...baseRolesP02,
+      roles: {
+        ...baseRolesP02.roles,
+        reviewer: { agent: "codex", model: "gpt-6-luna", allow_full_access_fallback: false },
+      },
+    });
+    server.store.writeConfig(
+      "limits",
+      defaultLimits({ max_concurrent_slots: 4, retries_per_stage: 0 }),
+    );
+    server.store.writeConfig("pricing", defaultPricing());
+
+    await server.start();
+
+    const makeL2ScratchCard = (id: string) => ({
+      schema_version: 1 as const,
+      id,
+      title: `P0-2 ${id}`,
+      space: "local",
+      priority: "P2" as const,
+      track: "L2" as const,
+      workspace_mode: "scratch_dir" as const,
+      parent: null,
+      depends_on: [],
+      contract_version: 1,
+      contract: {
+        goal: "Converge receipt submitted before backend.start() returns",
+        end: "Done",
+        accept_cmd: "node -e \"process.exit(0)\"",
+        accept_files_hash: "sha256:p02",
+        scope: ["out.txt"],
+        deliver: { mode: "manual" as const, cmd: null },
+        human_accept: false,
+        external_actions: "ask" as const,
+      },
+      limits: { retries_per_stage: 0, review_rounds: 2, advisor_calls: 0, max_tokens: 5_000_000 },
+      created_at: "2026-11-19T12:00:00.000Z",
+      updated_at: "2026-11-19T12:00:00.000Z",
+    });
+
+    // Scenario A: delayed backend.start() returns after 2 concurrent early wb_submit_receipt calls
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "p0_2_after_start", detail: "late receipt check" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-p0-2-slow", role: "worker" },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "p0_2_review", detail: "review slow" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-p0-2-slow", role: "reviewer" },
+    );
+    server.stateMachine.createTask(makeL2ScratchCard("t-p0-2-slow"), "# Slow start race");
+
+    // Scenario B: backend.start() throws after early wb_submit_receipt committed RECEIPT.md
+    fakeBackend.enqueueScript(
+      [{ kind: "exit", reason: "completed" }],
+      { taskId: "t-p0-2-err", role: "worker" },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "p0_2_review", detail: "review err" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-p0-2-err", role: "reviewer" },
+    );
+    server.stateMachine.createTask(makeL2ScratchCard("t-p0-2-err"), "# Start error after receipt");
+
+    void server.orchestrator.wake();
+    await Promise.all([slowEntered, errEntered]);
+
+    // Write artifact & submit 2 concurrent receipts for t-p0-2-slow while start() is still pending
+    writeFileAtomic(
+      path.join(server.store.paths.workspaceDir("t-p0-2-slow"), "out.txt"),
+      "early slow output\n",
+    );
+    const slowToken =
+      fakeBackend
+        .getRecordedSpecs()
+        .find((s) => s.taskId === "t-p0-2-slow" && s.role === "worker")
+        ?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+    const slowSpec = fakeBackend
+      .getRecordedSpecs()
+      .find((s) => s.taskId === "t-p0-2-slow" && s.role === "worker")!;
+
+    const [slowSub1, slowSub2] = await Promise.all([
+      server.invokeMcpRpc({
+        method: "POST",
+        url: "/rpc/mcp/wb_submit_receipt",
+        headers: { Authorization: `Bearer ${slowToken}` },
+        rawBody: JSON.stringify({
+          markdown: makeWorkerReceiptMarkdown({
+            run_id: slowSpec.runId,
+            contract_version: 1,
+            input_ref: "scratch_dir",
+            output_ref: "out.txt",
+            changed_paths: ["out.txt"],
+            extraBody: "Submission A",
+          }),
+        }),
+      }),
+      server.invokeMcpRpc({
+        method: "POST",
+        url: "/rpc/mcp/wb_submit_receipt",
+        headers: { Authorization: `Bearer ${slowToken}` },
+        rawBody: JSON.stringify({
+          markdown: makeWorkerReceiptMarkdown({
+            run_id: slowSpec.runId,
+            contract_version: 1,
+            input_ref: "scratch_dir",
+            output_ref: "out.txt",
+            changed_paths: ["out.txt"],
+            extraBody: "Submission B",
+          }),
+        }),
+      }),
+    ]);
+    expect(slowSub1.status).toBe(200);
+    expect(slowSub2.status).toBe(200);
+    const slowFlags = [
+      Boolean((slowSub1.body as { accepted: boolean }).accepted),
+      Boolean((slowSub2.body as { accepted: boolean }).accepted),
+    ].sort();
+    expect(slowFlags).toEqual([false, true]);
+    const slowRejectedBody = (slowSub1.body as { accepted: boolean }).accepted
+      ? (slowSub2.body as { reason: string; archivedPath: string })
+      : (slowSub1.body as { reason: string; archivedPath: string });
+    expect(slowRejectedBody.reason).toBe("lease_mismatch_or_expired");
+    expect(fs.existsSync(slowRejectedBody.archivedPath)).toBe(true);
+    expect(slowRejectedBody.archivedPath).toContain(`${path.sep}history${path.sep}`);
+    expect(server.store.getStageLease("t-p0-2-slow")?.state).toBe("completed");
+
+    // Write artifact & submit receipt for t-p0-2-err while start() is pending, then reject start()
+    writeFileAtomic(
+      path.join(server.store.paths.workspaceDir("t-p0-2-err"), "out.txt"),
+      "early err output\n",
+    );
+    const errToken =
+      fakeBackend
+        .getRecordedSpecs()
+        .find((s) => s.taskId === "t-p0-2-err" && s.role === "worker")
+        ?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+    const errSpec = fakeBackend
+      .getRecordedSpecs()
+      .find((s) => s.taskId === "t-p0-2-err" && s.role === "worker")!;
+
+    const errSub = await server.invokeMcpRpc({
+      method: "POST",
+      url: "/rpc/mcp/wb_submit_receipt",
+      headers: { Authorization: `Bearer ${errToken}` },
+      rawBody: JSON.stringify({
+        markdown: makeWorkerReceiptMarkdown({
+          run_id: errSpec.runId,
+          contract_version: 1,
+          input_ref: "scratch_dir",
+          output_ref: "out.txt",
+          changed_paths: ["out.txt"],
+        }),
+      }),
+    });
+    expect(errSub.status).toBe(200);
+    expect((errSub.body as { accepted: boolean }).accepted).toBe(true);
+
+    // Release both delayed starts: slow returns sessionRef, err throws Error
+    releaseSlow();
+    releaseErr();
+
+    await waitUntil(() => server.store.getTaskIndex("t-p0-2-slow")?.status === "done", "t-p0-2-slow done");
+    await waitUntil(() => server.store.getTaskIndex("t-p0-2-err")?.status === "done", "t-p0-2-err done");
+
+    expect(lateThirdReceiptRef.body).not.toBeNull();
+    expect(lateThirdReceiptRef.body?.accepted).toBe(false);
+    expect(lateThirdReceiptRef.body?.reason).toBe("lease_mismatch_or_expired");
+    expect(fs.existsSync(lateThirdReceiptRef.body?.archivedPath as string)).toBe(true);
+    expect(server.pendingDecisions.get("t-p0-2-err")).toBeNull();
+  }, 20_000);
+
+  it("P1 #3 & P1 #6: kilnd auto-commits clean git_worktree changes after gate pass, blocks out-of-scope auto-commit, and emits parseable role receipt templates in HANDOFF.md", async () => {
+    const kilnHome = makeTempDir("kiln-m2-p1-3-");
+    const { repoPath, baseCommit } = initGitRepo("p1-3");
+    const fakeBackend = new FakeBackend();
+
+    const extractTemplateFromHandoff = (handoff: string): string => {
+      const m = /```markdown\n([\s\S]*?)\n```/.exec(handoff);
+      if (!m) {
+        throw new Error("Missing markdown template fence in HANDOFF.md");
+      }
+      return m[1]!;
+    };
+
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: true,
+      tokenSecret: "m2-e2e-p1-3-secret-0123456789abcdef",
+      approvalHandler: async (req, ctx) => {
+        const token =
+          fakeBackend
+            .getRecordedSpecs()
+            .find((s) => s.runId === ctx.runId)
+            ?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+        const wtPath = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
+
+        if (req.action === "p1_3_worker_no_git") {
+          const runDir = fs
+            .readdirSync(server.store.paths.runsDir(ctx.taskId))
+            .filter((d) => d.endsWith("-implement"))
+            .sort()
+            .at(-1)!;
+          const handoff = fs.readFileSync(
+            server.store.paths.handoffMd(ctx.taskId, runDir),
+            "utf8",
+          );
+          expect(handoff).toContain("严禁在受限沙箱里执行 git commit、git merge 或 git push");
+          expect(handoff).toContain("## 阶段回执格式要求");
+          const workerTpl = extractTemplateFromHandoff(handoff);
+          const validatedTpl = parseAndValidateReceipt("worker", workerTpl);
+          expect(validatedTpl.ok).toBe(true);
+
+          // Edit file WITHOUT running git add or git commit
+          fs.writeFileSync(path.join(wtPath, "src", "app.ts"), "export const v = 303;\n");
+          const subRes = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeWorkerReceiptMarkdown({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                input_ref: baseCommit,
+                output_ref: "src/app.ts",
+                changed_paths: ["src/app.ts"],
+              }),
+            }),
+          });
+          expect(subRes.status).toBe(200);
+          expect((subRes.body as { accepted: boolean }).accepted).toBe(true);
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "p1_3_reviewer") {
+          // Worktree must already be cleanly committed by kilnd before reviewer runs
+          expect(git(["status", "--porcelain"], wtPath).trim()).toBe("");
+          const headCommit = git(["rev-parse", "HEAD"], wtPath).trim();
+          expect(headCommit).not.toBe(baseCommit);
+          expect(git(["log", "-1", "--pretty=%s"], wtPath).trim()).toBe(
+            "kiln(t-p1-3-auto): Auto commit worktree (round 1)",
+          );
+
+          const runDir = fs
+            .readdirSync(server.store.paths.runsDir(ctx.taskId))
+            .filter((d) => d.endsWith("-review"))
+            .sort()
+            .at(-1)!;
+          const handoff = fs.readFileSync(
+            server.store.paths.handoffMd(ctx.taskId, runDir),
+            "utf8",
+          );
+          expect(handoff).toContain("绝不能写成数组 `[]`");
+          const reviewerTpl = extractTemplateFromHandoff(handoff);
+          const validatedTpl = parseAndValidateReceipt("reviewer", reviewerTpl);
+          expect(validatedTpl.ok).toBe(true);
+
+          const revRes = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeReviewerReceiptMarkdown({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                reviewed_ref: headCommit,
+                verdict: "pass",
+              }),
+            }),
+          });
+          expect(revRes.status).toBe(200);
+          expect((revRes.body as { accepted: boolean }).accepted).toBe(true);
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "p1_3_oob_dirty") {
+          fs.writeFileSync(path.join(wtPath, "src", "app.ts"), "export const v = 404;\n");
+          const subRes = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeWorkerReceiptMarkdown({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                input_ref: baseCommit,
+                output_ref: "src/app.ts",
+                changed_paths: ["src/app.ts"],
+              }),
+            }),
+          });
+          expect(subRes.status).toBe(200);
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        await ctx.backend.answer(req.id, true);
+      },
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "kiln",
+      name: "Kiln",
+      repo_path: repoPath,
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    });
+    const baseRolesP13 = defaultRoles();
+    server.store.writeConfig("roles", {
+      ...baseRolesP13,
+      roles: {
+        ...baseRolesP13.roles,
+        reviewer: { agent: "codex", model: "gpt-6-luna", allow_full_access_fallback: false },
+      },
+    });
+    server.store.writeConfig("limits", defaultLimits());
+    server.store.writeConfig("pricing", defaultPricing());
+
+    await server.start();
+
+    // 1. L2 git_worktree + merge_main with zero git commands from worker -> done
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "p1_3_worker_no_git", detail: "edit without git commit" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-p1-3-auto", role: "worker" },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "p1_3_reviewer", detail: "verify auto-committed HEAD" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-p1-3-auto", role: "reviewer" },
+    );
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-p1-3-auto",
+        title: "Auto commit worktree",
+        space: "kiln",
+        priority: "P2",
+        track: "L2",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        contract_version: 1,
+        contract: {
+          goal: "Modify src/app.ts without running git commit in worker sandbox",
+          end: "Merged into main",
+          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_files_hash: "pending",
+          scope: ["src/app.ts"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 5_000_000 },
+        created_at: "2026-11-19T12:00:00.000Z",
+        updated_at: "2026-11-19T12:00:00.000Z",
+      },
+      "# Auto commit test",
+    );
+
+    await server.orchestrator.wake();
+    await waitUntil(() => server.store.getTaskIndex("t-p1-3-auto")?.status === "done", "t-p1-3-auto done");
+    expect(fs.readFileSync(path.join(repoPath, "src", "app.ts"), "utf8")).toBe("export const v = 303;\n");
+    expect(git(["log", "-1", "--pretty=%s"], repoPath).trim()).toContain(
+      "kiln(t-p1-3-auto): Auto commit worktree (round 1)",
+    );
+
+    // 2. If accept_cmd leaves an out-of-scope file dirty, kilnd refuses to auto-commit and blocks at deliver
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "p1_3_oob_dirty", detail: "edit app.ts" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-p1-3-oob", role: "worker" },
+    );
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-p1-3-oob",
+        title: "Refuse OOB auto commit",
+        space: "kiln",
+        priority: "P2",
+        track: "L1",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        contract_version: 1,
+        contract: {
+          goal: "Do not auto-commit out-of-scope files produced during accept_cmd",
+          end: "Blocked safely before merge_main",
+          accept_cmd: "node -e \"require('fs').writeFileSync('stray-outside-scope.tmp','oob')\"",
+          accept_files_hash: "pending",
+          scope: ["src/app.ts"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 0, review_rounds: 1, advisor_calls: 0, max_tokens: 5_000_000 },
+        created_at: "2026-11-19T12:00:00.000Z",
+        updated_at: "2026-11-19T12:00:00.000Z",
+      },
+      "# OOB dirty test",
+    );
+    await server.orchestrator.wake();
+    await waitUntil(() => server.store.getTaskIndex("t-p1-3-oob")?.status === "waiting", "t-p1-3-oob waiting");
+    expect(server.pendingDecisions.get("t-p1-3-oob")?.reason).toBe("worktree_dirty_before_merge");
+    expect(fs.readFileSync(path.join(repoPath, "src", "app.ts"), "utf8")).toBe("export const v = 303;\n");
+  }, 20_000);
+
+  it("P1 #6: HANDOFF.md embeds valid parseable receipt templates for verifier, triage, and advisor stages", async () => {
+    const kilnHome = makeTempDir("kiln-m2-p1-6-roles-");
+    const fakeBackend = new FakeBackend();
+
+    const extractTemplateFromHandoff = (handoff: string): string => {
+      const m = /```markdown\n([\s\S]*?)\n```/.exec(handoff);
+      if (!m) {
+        throw new Error("Missing markdown template fence in HANDOFF.md");
+      }
+      return m[1]!;
+    };
+
+    const validatedRoles: string[] = [];
+
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: true,
+      tokenSecret: "m2-e2e-p1-6-roles-secret-0123456789abcdef",
+      approvalHandler: async (req, ctx) => {
+        const token =
+          fakeBackend
+            .getRecordedSpecs()
+            .find((s) => s.runId === ctx.runId)
+            ?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+
+        const runDir = fs
+          .readdirSync(server.store.paths.runsDir(ctx.taskId))
+          .filter((d) => {
+            if (ctx.role === "triage") return d.endsWith("-triage");
+            if (ctx.role === "advisor") return d.endsWith("-advise");
+            if (ctx.role === "verifier") return d.endsWith("-accept");
+            if (ctx.role === "reviewer") return d.endsWith("-review");
+            return d.endsWith("-implement");
+          })
+          .sort()
+          .at(-1)!;
+        const handoff = fs.readFileSync(
+          server.store.paths.handoffMd(ctx.taskId, runDir),
+          "utf8",
+        );
+        const tpl = extractTemplateFromHandoff(handoff);
+
+        if (req.action === "p1_6_triage") {
+          expect(parseAndValidateReceipt("triage", tpl).ok).toBe(true);
+          validatedRoles.push("triage");
+          const res = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: serializeFrontmatterMarkdown(
+                {
+                  run_id: ctx.runId,
+                  contract_version: ctx.card.contract_version,
+                  recommendation: "escalate_advisor",
+                  summary: "Consult advisor",
+                },
+                "## 异常事实\n首次失败\n\n## 研判结论\n转顾问\n",
+              ),
+            }),
+          });
+          expect(res.status).toBe(200);
+        } else if (req.action === "p1_6_advisor") {
+          expect(parseAndValidateReceipt("advisor", tpl).ok).toBe(true);
+          validatedRoles.push("advisor");
+          const res = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: serializeFrontmatterMarkdown(
+                {
+                  run_id: ctx.runId,
+                  contract_version: ctx.card.contract_version,
+                  outcome: "resolved",
+                  chosen_approach: "Write out.txt",
+                },
+                "## 技术取舍\n最小修改\n\n## 授权裁决\n继续实施\n",
+              ),
+            }),
+          });
+          expect(res.status).toBe(200);
+        } else if (req.action === "p1_6_worker_ok") {
+          writeFileAtomic(
+            path.join(server.store.paths.workspaceDir(ctx.taskId), "out.txt"),
+            "ok\n",
+          );
+          const res = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeWorkerReceiptMarkdown({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                input_ref: "scratch_dir",
+                output_ref: "out.txt",
+                changed_paths: ["out.txt"],
+              }),
+            }),
+          });
+          expect(res.status).toBe(200);
+        } else if (req.action === "p1_6_reviewer_ok") {
+          const res = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeReviewerReceiptMarkdown({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                reviewed_ref: "out.txt",
+                verdict: "pass",
+              }),
+            }),
+          });
+          expect(res.status).toBe(200);
+        } else if (req.action === "p1_6_verifier") {
+          expect(parseAndValidateReceipt("verifier", tpl).ok).toBe(true);
+          validatedRoles.push("verifier");
+          const res = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: serializeFrontmatterMarkdown(
+                {
+                  run_id: ctx.runId,
+                  contract_version: ctx.card.contract_version,
+                  verified_ref: "out.txt",
+                  verdict: "pass",
+                  passed_scenarios: 1,
+                  failed_scenarios: 0,
+                },
+                "## 验收场景明细\n- 场景 1：验证通过\n",
+              ),
+            }),
+          });
+          expect(res.status).toBe(200);
+        }
+
+        await ctx.backend.answer(req.id, true);
+      },
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "local",
+      name: "Local",
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    });
+    const baseRoles = defaultRoles();
+    server.store.writeConfig("roles", {
+      ...baseRoles,
+      roles: {
+        ...baseRoles.roles,
+        reviewer: { agent: "codex", model: "gpt-6-luna", allow_full_access_fallback: false },
+        verifier: { agent: "codex", model: "gpt-5.4", allow_full_access_fallback: false },
+        triage: { agent: "codex", model: "gpt-5.4", allow_full_access_fallback: false },
+        advisor: { agent: "codex", model: "gpt-6-luna", allow_full_access_fallback: false },
+      },
+    });
+    server.store.writeConfig("limits", defaultLimits({ retries_per_stage: 0, advisor_calls: 1 }));
+    server.store.writeConfig("pricing", defaultPricing());
+
+    await server.start();
+
+    fakeBackend.enqueueScript(
+      [{ kind: "exit", reason: "failed", detail: "trigger triage" }],
+      { taskId: "t-p1-6-roles", role: "worker" },
+    );
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "p1_6_triage", detail: "triage" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-p1-6-roles", role: "triage" },
+    );
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "p1_6_advisor", detail: "advisor" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-p1-6-roles", role: "advisor" },
+    );
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "p1_6_worker_ok", detail: "worker ok" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-p1-6-roles", role: "worker" },
+    );
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "p1_6_reviewer_ok", detail: "reviewer ok" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-p1-6-roles", role: "reviewer" },
+    );
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "p1_6_verifier", detail: "verifier" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-p1-6-roles", role: "verifier" },
+    );
+
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-p1-6-roles",
+        title: "Verify role receipt templates",
+        space: "local",
+        priority: "P2",
+        track: "L2",
+        workspace_mode: "scratch_dir",
+        parent: null,
+        depends_on: [],
+        contract_version: 1,
+        contract: {
+          goal: "Verify triage, advisor, verifier HANDOFF receipt templates",
+          end: "Done",
+          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_files_hash: "sha256:p16roles",
+          scope: ["out.txt"],
+          deliver: { mode: "manual", cmd: null },
+          human_accept: true,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 0, review_rounds: 2, advisor_calls: 1, max_tokens: 5_000_000 },
+        created_at: "2026-11-19T12:00:00.000Z",
+        updated_at: "2026-11-19T12:00:00.000Z",
+      },
+      "# Role templates test",
+    );
+
+    await server.orchestrator.wake();
+    await waitUntil(() => server.store.getTaskIndex("t-p1-6-roles")?.status === "done", "t-p1-6-roles done");
+    expect(validatedRoles).toEqual(["triage", "advisor", "verifier"]);
   }, 20_000);
 });

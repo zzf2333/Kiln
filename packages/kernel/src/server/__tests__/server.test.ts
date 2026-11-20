@@ -8,6 +8,7 @@ import {
   HashMismatchErrorSchema,
   RoleForbiddenErrorSchema,
   SseEventSchema,
+  serializeFrontmatterMarkdown,
   type CardContract,
   type PricingConfig,
   type RunMeta,
@@ -97,6 +98,31 @@ function makeRunMeta(overrides: Partial<RunMeta> = {}): RunMeta {
     started_at: "2026-11-19T10:01:00.000Z",
     ...overrides,
   };
+}
+
+function makeValidWorkerReceiptMarkdown(
+  runId: string,
+  contractVersion: number,
+  summary = "Implemented server RPC changes",
+): string {
+  return serializeFrontmatterMarkdown(
+    {
+      run_id: runId,
+      contract_version: contractVersion,
+      outcome: "completed",
+      input_ref: "deadbeef123",
+      output_ref: "deadbeef456",
+      changed_paths: ["packages/kernel/src/server/mcp-rpc.ts"],
+      accept_result: "pass",
+      is_bugfix: false,
+      complexity_escalate: false,
+    },
+    [
+      `## 改动说明\n${summary}\n`,
+      "## 验证命令与真实输出\npnpm --filter @kiln/kernel test -> pass\n",
+      "## 未完成或待决问题\n无\n",
+    ].join("\n"),
+  );
 }
 
 function makeFakeChild(): CaffeinateChildProcess & {
@@ -586,7 +612,7 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     expect(server.store.readLedger("kiln")?.entries).toHaveLength(1);
 
     // 7. worker submits receipt -> accepted once; second submission -> archived stale
-    const receiptMd = "---\nrun_id: run-w-1\ncontract_version: 1\n---\n# Receipt";
+    const receiptMd = makeValidWorkerReceiptMarkdown("run-w-1", 1, "Worker receipt 1");
     const submit1 = await requestMcpRpc(server, {
       method: "POST",
       path: "/rpc/mcp/wb_submit_receipt",
@@ -1125,13 +1151,13 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
         method: "POST",
         path: "/rpc/mcp/wb_submit_receipt",
         headers: { Authorization: `Bearer ${raceToken}` },
-        body: { markdown: "---\nrun_id: run-race-1\ncontract_version: 1\n---\n# Winner 1" },
+        body: { markdown: makeValidWorkerReceiptMarkdown("run-race-1", 1, "Winner 1") },
       }),
       requestMcpRpc(server, {
         method: "POST",
         path: "/rpc/mcp/wb_submit_receipt",
         headers: { Authorization: `Bearer ${raceToken}` },
-        body: { markdown: "---\nrun_id: run-race-1\ncontract_version: 1\n---\n# Winner 2" },
+        body: { markdown: makeValidWorkerReceiptMarkdown("run-race-1", 1, "Winner 2") },
       }),
     ]);
     expect(r1.status).toBe(200);
@@ -1902,5 +1928,176 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
 
     sseAbort.abort();
     await reader.cancel().catch(() => {});
+  });
+
+  it("P1 #6: wb_submit_receipt rejects malformed or mismatched receipts with 400 invalid_receipt without consuming the active lease, allowing same-turn resubmission", async () => {
+    const kilnHome = makeTempDir();
+    tempDirs.push(kilnHome);
+
+    const server = new KilndServer({ kilnHome, port: 0, tokenSecret: "p1-6-receipt-secret-123" });
+    servers.push(server);
+    await server.start();
+
+    server.stateMachine.createTask(
+      makeTaskCard({ id: "t-p1-6", workspace_mode: "scratch_dir" }),
+      "# Receipt validation test",
+    );
+    server.persistRunForDispatch(
+      makeRunMeta({
+        task_id: "t-p1-6",
+        run_id: "run-p1-6-rev",
+        stage: "review",
+        round: 1,
+        role: "reviewer",
+        contract_version: 1,
+        input_ref: "deadbeef",
+      }),
+      "001-review",
+    );
+    const reviewerToken = server.issueRunToken({
+      taskId: "t-p1-6",
+      runId: "run-p1-6-rev",
+      role: "reviewer",
+      contractVersion: 1,
+    });
+
+    // 1. Reviewer sends p0: [] (array instead of integer) AND misses required sections -> 400 invalid_receipt, lease remains active
+    const badArrayRes = await requestMcpRpc(server, {
+      method: "POST",
+      path: "/rpc/mcp/wb_submit_receipt",
+      headers: { Authorization: `Bearer ${reviewerToken}` },
+      body: {
+        markdown: serializeFrontmatterMarkdown(
+          {
+            run_id: "run-p1-6-rev",
+            contract_version: 1,
+            reviewed_ref: "deadbeef",
+            verdict: "pass",
+            p0: [],
+            p1: 0,
+            p2: 0,
+          },
+          "## 结论\npass\n",
+        ),
+      },
+    });
+    expect(badArrayRes.status).toBe(400);
+    expect(badArrayRes.json.error).toBe("invalid_receipt");
+    expect(badArrayRes.json.role).toBe("reviewer");
+    expect(Array.isArray(badArrayRes.json.errors)).toBe(true);
+    expect((badArrayRes.json.errors as string[]).some((e) => e.includes("p0"))).toBe(true);
+    expect(
+      (badArrayRes.json.errors as string[]).some((e) => e.includes("缺陷清单")),
+    ).toBe(true);
+    expect(server.store.getStageLease("t-p1-6")?.state).toBe("active");
+    expect(fs.existsSync(server.store.paths.receiptMd("t-p1-6", "001-review"))).toBe(false);
+
+    // 2. Reviewer sends mismatched run_id -> 400 invalid_receipt, lease STILL active
+    const mismatchRes = await requestMcpRpc(server, {
+      method: "POST",
+      path: "/rpc/mcp/wb_submit_receipt",
+      headers: { Authorization: `Bearer ${reviewerToken}` },
+      body: {
+        markdown: serializeFrontmatterMarkdown(
+          {
+            run_id: "run-wrong",
+            contract_version: 1,
+            reviewed_ref: "deadbeef",
+            verdict: "pass",
+            p0: 0,
+            p1: 0,
+            p2: 0,
+          },
+          "## 结论\nok\n\n## 缺陷清单\n无\n\n## 测试真实性与复现核查\nok\n",
+        ),
+      },
+    });
+    expect(mismatchRes.status).toBe(400);
+    expect(mismatchRes.json.error).toBe("invalid_receipt");
+    expect(server.store.getStageLease("t-p1-6")?.state).toBe("active");
+    expect(fs.existsSync(server.store.paths.receiptMd("t-p1-6", "001-review"))).toBe(false);
+
+    // 3. Same-turn corrected resubmission succeeds -> 200 accepted: true and completes lease
+    const goodReviewerRes = await requestMcpRpc(server, {
+      method: "POST",
+      path: "/rpc/mcp/wb_submit_receipt",
+      headers: { Authorization: `Bearer ${reviewerToken}` },
+      body: {
+        markdown: serializeFrontmatterMarkdown(
+          {
+            run_id: "run-p1-6-rev",
+            contract_version: 1,
+            reviewed_ref: "deadbeef",
+            verdict: "pass",
+            p0: 0,
+            p1: 0,
+            p2: 0,
+          },
+          "## 结论\n通过\n\n## 缺陷清单\n无\n\n## 测试真实性与复现核查\n已验证\n",
+        ),
+      },
+    });
+    expect(goodReviewerRes.status).toBe(200);
+    expect(goodReviewerRes.json.accepted).toBe(true);
+    expect(server.store.getStageLease("t-p1-6")?.state).toBe("completed");
+    expect(fs.existsSync(server.store.paths.receiptMd("t-p1-6", "001-review"))).toBe(true);
+
+    // 4. Worker missing required section fails 400 without consuming lease, then valid worker receipt succeeds
+    server.stateMachine.createTask(
+      makeTaskCard({ id: "t-p1-6-w", workspace_mode: "scratch_dir" }),
+      "# Worker validation test",
+    );
+    server.persistRunForDispatch(
+      makeRunMeta({
+        task_id: "t-p1-6-w",
+        run_id: "run-p1-6-w",
+        stage: "implement",
+        round: 1,
+        role: "worker",
+        contract_version: 1,
+        input_ref: undefined,
+      }),
+      "001-implement",
+    );
+    const workerToken = server.issueRunToken({
+      taskId: "t-p1-6-w",
+      runId: "run-p1-6-w",
+      role: "worker",
+      contractVersion: 1,
+    });
+    const badWorkerRes = await requestMcpRpc(server, {
+      method: "POST",
+      path: "/rpc/mcp/wb_submit_receipt",
+      headers: { Authorization: `Bearer ${workerToken}` },
+      body: {
+        markdown: serializeFrontmatterMarkdown(
+          {
+            run_id: "run-p1-6-w",
+            contract_version: 1,
+            outcome: "completed",
+            input_ref: "scratch_dir",
+            output_ref: "out.txt",
+            changed_paths: ["out.txt"],
+            accept_result: "pass",
+            is_bugfix: false,
+            complexity_escalate: false,
+          },
+          "## 改动说明\n只写了部分章节\n",
+        ),
+      },
+    });
+    expect(badWorkerRes.status).toBe(400);
+    expect(badWorkerRes.json.error).toBe("invalid_receipt");
+    expect(server.store.getStageLease("t-p1-6-w")?.state).toBe("active");
+
+    const goodWorkerRes = await requestMcpRpc(server, {
+      method: "POST",
+      path: "/rpc/mcp/wb_submit_receipt",
+      headers: { Authorization: `Bearer ${workerToken}` },
+      body: { markdown: makeValidWorkerReceiptMarkdown("run-p1-6-w", 1) },
+    });
+    expect(goodWorkerRes.status).toBe(200);
+    expect(goodWorkerRes.json.accepted).toBe(true);
+    expect(server.store.getStageLease("t-p1-6-w")?.state).toBe("completed");
   });
 });

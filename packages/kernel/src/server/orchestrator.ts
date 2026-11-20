@@ -38,6 +38,7 @@ import {
 import {
   applyApprovedHostScopedChanges,
   buildSanitizedEnv,
+  checkScope,
   cleanupGitWorktree,
   computeFrozenSnapshot,
   isHostTargetWithinScope,
@@ -203,6 +204,208 @@ async function runGitCommand(args: readonly string[], cwd?: string): Promise<str
     encoding: "utf8",
   });
   return stdout;
+}
+
+interface ParsedPorcelainStatus {
+  dirtyPaths: string[];
+  pathsToStage: string[];
+}
+
+function parseGitPorcelainStatusZ(raw: string): ParsedPorcelainStatus {
+  const dirtySet = new Set<string>();
+  const stageSet = new Set<string>();
+  const tokens = raw.split("\0");
+  let idx = 0;
+
+  while (idx < tokens.length) {
+    const token = tokens[idx];
+    idx++;
+    if (!token || token.length < 4) {
+      continue;
+    }
+
+    const xy = token.slice(0, 2);
+    const filePath = normalizeRepoRelativePath(token.slice(3));
+    dirtySet.add(filePath);
+
+    if (xy === "??" || xy[1] !== " ") {
+      stageSet.add(filePath);
+    }
+
+    if (xy[0] === "R" || xy[0] === "C" || xy[1] === "R" || xy[1] === "C") {
+      const origPath = tokens[idx];
+      idx++;
+      if (origPath && origPath.length > 0) {
+        dirtySet.add(normalizeRepoRelativePath(origPath));
+      }
+    }
+  }
+
+  return {
+    dirtyPaths: Array.from(dirtySet).sort(),
+    pathsToStage: Array.from(stageSet).sort(),
+  };
+}
+
+function buildReceiptTemplateSection(params: {
+  role: RoleId;
+  runId: string;
+  contractVersion: number;
+  workspaceMode: TaskCard["workspace_mode"];
+  inputRef?: string;
+}): string {
+  const { role, runId, contractVersion, workspaceMode, inputRef } = params;
+  const fallbackRef = inputRef ?? (workspaceMode === "git_worktree" ? "HEAD" : workspaceMode);
+
+  let templateMarkdown: string;
+  let fieldNotes: string[];
+
+  switch (role) {
+    case "worker": {
+      templateMarkdown = serializeFrontmatterMarkdown(
+        {
+          run_id: runId,
+          contract_version: contractVersion,
+          outcome: "completed",
+          input_ref: fallbackRef,
+          output_ref: "<产物路径或提交Hash>",
+          changed_paths: ["<改动文件相对路径>"],
+          accept_result: "pass",
+          is_bugfix: false,
+          complexity_escalate: false,
+        },
+        [
+          "## 改动说明",
+          "<简要说明本次修改内容>",
+          "",
+          "## 验证命令与真实输出",
+          "<粘贴真实执行的验收命令与输出摘要>",
+          "",
+          "## 未完成或待决问题",
+          "无",
+          "",
+        ].join("\n"),
+      );
+      fieldNotes = [
+        "- `outcome`: 仅允许 `completed` | `need_decision`",
+        "- `accept_result`: 仅允许 `pass` | `fail` | `skipped`",
+        "- `changed_paths`: 字符串数组（相对路径，或 `host_scoped` 下的绝对白名单路径）",
+        "- `is_bugfix`: 布尔值；若为 `true`，必须额外包含非空的 `## 修前复现证据` 二级标题章节",
+      ];
+      break;
+    }
+    case "reviewer": {
+      templateMarkdown = serializeFrontmatterMarkdown(
+        {
+          run_id: runId,
+          contract_version: contractVersion,
+          reviewed_ref: fallbackRef,
+          verdict: "pass",
+          p0: 0,
+          p1: 0,
+          p2: 0,
+        },
+        [
+          "## 结论",
+          "<审查总结与放行/退回结论>",
+          "",
+          "## 缺陷清单",
+          "无",
+          "",
+          "## 测试真实性与复现核查",
+          "<核查验收命令与测试是否真实有效>",
+          "",
+        ].join("\n"),
+      );
+      fieldNotes = [
+        "- `verdict`: 仅允许 `pass` | `changes_requested`",
+        "- **重要**：`p0`、`p1`、`p2` 必须为非负整数（如 `0`、`1`），**绝不能写成数组 `[]`**；具体问题明细请写在 `## 缺陷清单` 正文中",
+        "- `reviewed_ref`: 被审查的提交 Hash 或工作区产物引用（非空字符串）",
+      ];
+      break;
+    }
+    case "verifier": {
+      templateMarkdown = serializeFrontmatterMarkdown(
+        {
+          run_id: runId,
+          contract_version: contractVersion,
+          verified_ref: fallbackRef,
+          verdict: "pass",
+          passed_scenarios: 1,
+          failed_scenarios: 0,
+        },
+        [
+          "## 验收场景明细",
+          "- 场景 1：<逐项记录真实输入、动作与观察结果>",
+          "",
+        ].join("\n"),
+      );
+      fieldNotes = [
+        "- `verdict`: 仅允许 `pass` | `fail`",
+        "- `passed_scenarios`、`failed_scenarios`: 必须为非负整数",
+        "- `verified_ref`: 被验收对象引用（非空字符串）",
+      ];
+      break;
+    }
+    case "triage": {
+      templateMarkdown = serializeFrontmatterMarkdown(
+        {
+          run_id: runId,
+          contract_version: contractVersion,
+          recommendation: "retry",
+          summary: "<一句异常研判摘要>",
+        },
+        [
+          "## 异常事实",
+          "<列出观察到的错误日志、状态与失败证据>",
+          "",
+          "## 研判结论",
+          "<给出根因判断与推荐动作>",
+          "",
+        ].join("\n"),
+      );
+      fieldNotes = [
+        "- `recommendation`: 仅允许 `retry` | `escalate_advisor` | `ask_human`",
+        "- `summary`: 非空字符串摘要",
+      ];
+      break;
+    }
+    case "advisor": {
+      templateMarkdown = serializeFrontmatterMarkdown(
+        {
+          run_id: runId,
+          contract_version: contractVersion,
+          outcome: "resolved",
+          chosen_approach: "<选定技术方案>",
+        },
+        [
+          "## 技术取舍",
+          "<说明备选方案对比与选型依据>",
+          "",
+          "## 授权裁决",
+          "<明确后续实施方向与边界>",
+          "",
+        ].join("\n"),
+      );
+      fieldNotes = [
+        "- `outcome`: 仅允许 `resolved` | `need_decision`",
+        "- `chosen_approach`: 非空字符串",
+      ];
+      break;
+    }
+    default:
+      return "";
+  }
+
+  return [
+    `## 阶段回执格式要求`,
+    `请严格按以下 \`${role}\` 角色模板提交回执（YAML frontmatter 与必需二级标题缺一不可；格式校验失败将返回 \`400 invalid_receipt\` 且不会消耗当前阶段租约，可按报错修正后同回合重提）：`,
+    ...fieldNotes,
+    ``,
+    "```markdown",
+    templateMarkdown.trimEnd(),
+    "```",
+  ].join("\n");
 }
 
 function collectRelativeFiles(dir: string, relPrefix = ""): string[] {
@@ -1203,8 +1406,16 @@ export class KilnOrchestrator {
       card.workspace_mode === "host_scoped"
         ? `当前为 host_scoped 模式：只能把待写文件写入沙盒暂存目录 ${this.store.paths.stagedDir(card.id)}，严禁直接修改宿主机目标文件！`
         : card.workspace_mode === "git_worktree"
-          ? `当前为 git_worktree 模式：工作区位于 ${cwd}，严禁执行 git push。`
+          ? `当前为 git_worktree 模式：工作区位于 ${cwd}。你只需编辑工作区内 scope 允许的文件并运行验收命令，严禁在受限沙箱里执行 git commit、git merge 或 git push；通过门禁后将由 kilnd 内核统一提交并合入。`
           : `当前为 scratch_dir 模式：独立目录位于 ${cwd}。`;
+
+    const receiptTemplateSection = buildReceiptTemplateSection({
+      role,
+      runId,
+      contractVersion: card.contract_version,
+      workspaceMode: card.workspace_mode,
+      inputRef,
+    });
 
     return [
       `# HANDOFF (${stage} · round ${round})`,
@@ -1227,6 +1438,7 @@ export class KilnOrchestrator {
       modeNote,
       protocolNote,
       ``,
+      ...(receiptTemplateSection ? [receiptTemplateSection, ``] : []),
       `## 空间决策账本 (${card.space})`,
       ledgerText,
       ``,
@@ -1480,15 +1692,16 @@ export class KilnOrchestrator {
       ? deriveTaskStatus(latestCard, this.store.readStateEvents(plan.taskId))
       : null;
     const existingLease = this.store.getStageLease(plan.taskId);
-    const leaseStillActive =
+    const runStillValid =
       !this.stopped &&
       latestDerived?.status === "running" &&
       latestDerived.activeRunId === runId &&
       latestCard?.contract_version === plan.contractVersion &&
-      existingLease?.state === "active" &&
-      existingLease.run_id === runId;
+      existingLease?.run_id === runId &&
+      existingLease.contract_version === plan.contractVersion &&
+      (existingLease.state === "active" || existingLease.state === "completed");
 
-    if (!leaseStillActive) {
+    if (!runStillValid) {
       if (existingLease?.state === "active" && existingLease.run_id === runId) {
         this.store.sqlite.expireActiveLeaseByTask(
           plan.taskId,
@@ -1501,16 +1714,18 @@ export class KilnOrchestrator {
       return;
     }
 
-    this.store.sqlite.acquireStageLease({
-      task_id: plan.taskId,
-      run_id: runId,
-      stage: plan.stage,
-      round: plan.round,
-      contract_version: plan.contractVersion,
-      session_ref: JSON.stringify(sessionRef),
-      started_at: now,
-      heartbeat_at: new Date().toISOString(),
-    });
+    if (existingLease.state === "active") {
+      this.store.sqlite.acquireStageLease({
+        task_id: plan.taskId,
+        run_id: runId,
+        stage: plan.stage,
+        round: plan.round,
+        contract_version: plan.contractVersion,
+        session_ref: JSON.stringify(sessionRef),
+        started_at: now,
+        heartbeat_at: new Date().toISOString(),
+      });
+    }
 
     this.attachSessionConsumer(
       plan.taskId,
@@ -1532,6 +1747,64 @@ export class KilnOrchestrator {
       !this.isRunStillCurrent(plan.taskId, runMeta.run_id, plan.contractVersion, true)
     ) {
       const existingLease = this.store.getStageLease(plan.taskId);
+      const latestCard = readYamlOptional(
+        this.store.paths.cardYaml(plan.taskId),
+        TaskCardSchema,
+      );
+      if (
+        this.isRunStillCurrent(plan.taskId, runMeta.run_id, plan.contractVersion, false) &&
+        latestCard?.contract_version === plan.contractVersion &&
+        existingLease?.state === "completed" &&
+        existingLease.run_id === runMeta.run_id &&
+        existingLease.contract_version === plan.contractVersion &&
+        fs.existsSync(this.store.paths.receiptMd(plan.taskId, runDirName))
+      ) {
+        await this.runTrackedStageOperation(
+          plan.taskId,
+          runMeta.run_id,
+          async (signal) => {
+            try {
+              await this.finalizeActiveRun(
+                plan.taskId,
+                runDirName,
+                runMeta,
+                null,
+                signal,
+              );
+            } catch (finalizeErr) {
+              if (
+                !signal.aborted &&
+                this.isRunStillCurrent(
+                  plan.taskId,
+                  runMeta.run_id,
+                  plan.contractVersion,
+                )
+              ) {
+                await this.applyStageFailure(
+                  plan.taskId,
+                  plan.stage,
+                  runMeta,
+                  {
+                    kind: "runtime_error",
+                    message:
+                      finalizeErr instanceof Error
+                        ? finalizeErr.message
+                        : String(finalizeErr),
+                  },
+                  {
+                    runId: runMeta.run_id,
+                    contractVersion: plan.contractVersion,
+                  },
+                ).catch(() => {
+                  this.syncCaffeinate();
+                });
+              }
+            }
+          },
+        );
+        return;
+      }
+
       if (
         existingLease?.state === "active" &&
         existingLease.run_id === runMeta.run_id
@@ -2010,7 +2283,9 @@ export class KilnOrchestrator {
       stage: nextStage,
       contractVersion: nextState.contractVersion,
     });
-    await this.wake();
+    // Use void wake() so callers on KilnScheduler.onDispatch (e.g. handleBackendStartError,
+    // dispatchVerifyStage) never deadlock awaiting the currently executing scheduler tick.
+    void this.wake();
     return true;
   }
 
@@ -2313,6 +2588,27 @@ export class KilnOrchestrator {
 
     const latestCard = this.store.readTaskCard(taskId);
 
+    if (
+      gateResult.passed &&
+      gateResult.report.scope_ok &&
+      latestCard.workspace_mode === "git_worktree" &&
+      worktreePath &&
+      fs.existsSync(worktreePath)
+    ) {
+      await this.commitVerifiedWorktreeChanges(
+        latestCard,
+        worktreePath,
+        runMeta.round,
+      );
+      if (
+        signal?.aborted ||
+        !this.isRunStillCurrent(taskId, activeRunId, latestCard.contract_version)
+      ) {
+        this.syncCaffeinate();
+        return;
+      }
+    }
+
     if (stageDecision.action === "advance_stage") {
       const next =
         stageDecision.nextStage === "verify"
@@ -2392,6 +2688,84 @@ export class KilnOrchestrator {
       created_at: new Date().toISOString(),
     });
     this.transitionTaskToWaiting(taskId, pending, guard);
+  }
+
+  private async commitVerifiedWorktreeChanges(
+    card: TaskCard,
+    worktreePath: string,
+    round: number,
+  ): Promise<void> {
+    const statusRaw = await runGitCommand([
+      "-C",
+      worktreePath,
+      "status",
+      "--porcelain=v1",
+      "-z",
+      "-uall",
+    ]);
+    if (statusRaw.length === 0) {
+      return;
+    }
+
+    let parsed: ParsedPorcelainStatus;
+    try {
+      parsed = parseGitPorcelainStatusZ(statusRaw);
+    } catch {
+      return;
+    }
+    if (parsed.dirtyPaths.length === 0) {
+      return;
+    }
+
+    // Re-verify all dirty/untracked paths remain strictly within contract scope before committing.
+    const scopeCheck = checkScope(parsed.dirtyPaths, card.contract.scope);
+    if (!scopeCheck.ok) {
+      return;
+    }
+
+    if (parsed.pathsToStage.length > 0) {
+      await runGitCommand([
+        "-C",
+        worktreePath,
+        "add",
+        "--",
+        ...parsed.pathsToStage,
+      ]);
+    }
+
+    const stagedRaw = await runGitCommand([
+      "-C",
+      worktreePath,
+      "diff",
+      "--cached",
+      "--name-only",
+      "-z",
+    ]);
+    if (stagedRaw.length === 0) {
+      return;
+    }
+
+    const userName = (
+      await runGitCommand(["-C", worktreePath, "config", "user.name"]).catch(() => "")
+    ).trim();
+    const userEmail = (
+      await runGitCommand(["-C", worktreePath, "config", "user.email"]).catch(() => "")
+    ).trim();
+
+    const commitArgs = ["-C", worktreePath];
+    if (!userName) {
+      commitArgs.push("-c", "user.name=Kiln");
+    }
+    if (!userEmail) {
+      commitArgs.push("-c", "user.email=kiln@local");
+    }
+    const cleanTitle = card.title.replace(/[\r\n]+/g, " ").trim();
+    commitArgs.push(
+      "commit",
+      "-m",
+      `kiln(${card.id}): ${cleanTitle} (round ${round})`,
+    );
+    await runGitCommand(commitArgs);
   }
 
   private async finalizeReviewerRun(
