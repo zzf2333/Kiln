@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { RoleForbiddenErrorSchema, type SseEvent, SseEventSchema } from "@kiln/protocol";
+import { isWindowsNamedPipe } from "../../store/index.js";
 import { KilndServer } from "../index.js";
 
 function makeTempDir(prefix = "kiln-srv-socket-"): string {
@@ -28,6 +29,7 @@ async function requestUnixSocket(
         path: options.path,
         method: options.method,
         headers: {
+          Host: "kilnd.local",
           ...(payload !== undefined
             ? {
                 "Content-Type": "application/json",
@@ -98,7 +100,9 @@ describe("KilndServer OS socket smoke suite (requires unsandboxed connect)", () 
     servers.push(server);
     const addr = await server.start();
 
-    expect(fs.statSync(addr.socketPath).mode & 0o777).toBe(0o600);
+    if (!isWindowsNamedPipe(addr.socketPath)) {
+      expect(fs.statSync(addr.socketPath).mode & 0o777).toBe(0o600);
+    }
 
     const healthRes = await fetch(`${addr.baseUrl}/api/health`);
     expect(healthRes.status).toBe(200);
@@ -442,5 +446,49 @@ describe("KilndServer OS socket smoke suite (requires unsandboxed connect)", () 
     const stopPromise = server.stop();
     await Promise.all([inflightEnable, stopPromise]);
     expect(server.remoteAddress).toBeNull();
+  });
+
+  it("authenticates POST /rpc/shutdown over live local IPC with 0600 control token and stops cleanly", async () => {
+    const kilnHome = makeTempDir("kiln-srv-rpc-shutdown-");
+    tempDirs.push(kilnHome);
+
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      tokenSecret: "socket-shutdown-secret-1234567890",
+    });
+    servers.push(server);
+    const addr = await server.start();
+
+    const tokenPath = server.store.paths.shutdownTokenFile;
+    expect(fs.existsSync(tokenPath)).toBe(true);
+    if (process.platform !== "win32") {
+      expect(fs.statSync(tokenPath).mode & 0o777).toBe(0o600);
+    }
+    const shutdownToken = fs.readFileSync(tokenPath, "utf8").trim();
+    expect(shutdownToken.length).toBeGreaterThanOrEqual(32);
+
+    const badRes = await requestUnixSocket(addr.socketPath, {
+      method: "POST",
+      path: "/rpc/shutdown",
+      headers: { Authorization: "Bearer wrong-shutdown-token" },
+    });
+    expect(badRes.status).toBe(401);
+    expect(server.address).not.toBeNull();
+
+    const okRes = await requestUnixSocket(addr.socketPath, {
+      method: "POST",
+      path: "/rpc/shutdown",
+      headers: { Authorization: `Bearer ${shutdownToken}` },
+    });
+    expect(okRes.status).toBe(200);
+    expect(okRes.json).toEqual({ ok: true, shuttingDown: true });
+
+    const deadline = Date.now() + 3_000;
+    while (server.address !== null && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(server.address).toBeNull();
+    expect(fs.existsSync(tokenPath)).toBe(false);
   });
 });

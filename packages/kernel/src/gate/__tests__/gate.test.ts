@@ -33,6 +33,7 @@ import {
   runIsolatedCommand,
   runVerificationGate,
   stageHostScopedChanges,
+  terminateProcessTree,
   verifyScratchWorkspace,
 } from "../index.js";
 
@@ -345,16 +346,24 @@ describe("command-runner isolation & process group kill", () => {
       buildSanitizedEnv(pollutedEnv, { EXTRA_TOKEN: "nope" }),
     ).toThrow();
 
+    const probeScript = path.join(cwd, "env-probe.cjs");
+    fs.writeFileSync(
+      probeScript,
+      [
+        "console.log(JSON.stringify({",
+        "  gh: process.env.GH_TOKEN ?? null,",
+        "  ssh: process.env.SSH_AUTH_SOCK ?? null,",
+        "  aws: process.env.AWS_SECRET_ACCESS_KEY ?? null,",
+        "  runTok: process.env.KILN_RUN_TOKEN ?? null,",
+        "  customSec: process.env.MY_SERVICE_SECRET ?? null,",
+        "  prompt: process.env.GIT_TERMINAL_PROMPT ?? null,",
+        "  safe: process.env.KILN_SAFE_FLAG ?? null,",
+        "}));",
+      ].join("\n"),
+    );
+
     const result = await runIsolatedCommand(
-      `node -e 'console.log(JSON.stringify({
-        gh: process.env.GH_TOKEN ?? null,
-        ssh: process.env.SSH_AUTH_SOCK ?? null,
-        aws: process.env.AWS_SECRET_ACCESS_KEY ?? null,
-        runTok: process.env.KILN_RUN_TOKEN ?? null,
-        customSec: process.env.MY_SERVICE_SECRET ?? null,
-        prompt: process.env.GIT_TERMINAL_PROMPT ?? null,
-        safe: process.env.KILN_SAFE_FLAG ?? null
-      }))'`,
+      `${JSON.stringify(process.execPath)} ${JSON.stringify(probeScript)}`,
       {
         cwd,
         env: pollutedEnv,
@@ -404,12 +413,22 @@ describe("command-runner isolation & process group kill", () => {
       ].join("\n"),
     );
 
-    // Spawn grandchild in background inside the shell's process group, then block in parent shell
-    const command = `node ${JSON.stringify(scriptFile)} & wait`;
+    const parentScript = path.join(cwd, "parent.cjs");
+    fs.writeFileSync(
+      parentScript,
+      [
+        'const { spawn } = require("node:child_process");',
+        `spawn(process.execPath, [${JSON.stringify(scriptFile)}], { stdio: "ignore" });`,
+        "setInterval(() => {}, 1000);",
+      ].join("\n"),
+    );
+
+    // Spawn parent + grandchild inside the command tree, then time out and verify full tree cleanup
+    const command = `${JSON.stringify(process.execPath)} ${JSON.stringify(parentScript)}`;
 
     const result = await runIsolatedCommand(command, {
       cwd,
-      timeoutMs: 350,
+      timeoutMs: 500,
     });
 
     expect(result.timedOut).toBe(true);
@@ -472,7 +491,7 @@ describe("command-runner isolation & process group kill", () => {
   it("caps large command output without hanging or blowing memory", async () => {
     const cwd = makeTempDir("kiln-cmd-cap-");
     const result = await runIsolatedCommand(
-      `node -e 'process.stdout.write("A".repeat(4096)); process.stderr.write("B".repeat(4096));'`,
+      `node -e "process.stdout.write('A'.repeat(4096)); process.stderr.write('B'.repeat(4096));"`,
       {
         cwd,
         maxOutputBytes: 512,
@@ -482,6 +501,83 @@ describe("command-runner isolation & process group kill", () => {
     expect(result.exitCode).toBe(0);
     expect(result.truncated).toBe(true);
     expect(Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr)).toBeLessThanOrEqual(512);
+  });
+
+  it("terminates Windows process trees via hidden taskkill /PID <pid> /T /F and tolerates exit code 128", async () => {
+    const calls: Array<{ command: string; args: readonly string[]; windowsHide: boolean }> = [];
+    const killed = await terminateProcessTree(4242, {
+      platform: "win32",
+      execTaskkill: async (command, args, opts) => {
+        calls.push({ command, args, windowsHide: opts.windowsHide });
+      },
+    });
+    expect(killed).toBe(true);
+    expect(calls).toEqual([
+      { command: "taskkill", args: ["/PID", "4242", "/T", "/F"], windowsHide: true },
+    ]);
+
+    // Exit code 128 (process already exited) is treated as non-fatal without fallback kill
+    const signals: Array<{ pid: number; sig: NodeJS.Signals | number | undefined }> = [];
+    const alreadyGone = await terminateProcessTree(9999, {
+      platform: "win32",
+      signalProcess: (pid, sig) => {
+        signals.push({ pid, sig });
+      },
+      execTaskkill: async () => {
+        const err = new Error("ERROR: The process \"9999\" not found.") as Error & { code: number };
+        err.code = 128;
+        throw err;
+      },
+    });
+    expect(alreadyGone).toBe(false);
+    expect(signals).toEqual([]);
+
+    // Non-128 taskkill failure falls back to direct process kill
+    const fallbackKilled = await terminateProcessTree(8888, {
+      platform: "win32",
+      signalProcess: (pid, sig) => {
+        signals.push({ pid, sig });
+      },
+      execTaskkill: async () => {
+        const err = new Error("spawn taskkill ENOENT") as NodeJS.ErrnoException;
+        err.code = "ENOENT";
+        throw err;
+      },
+    });
+    expect(fallbackKilled).toBe(true);
+    expect(signals).toEqual([{ pid: 8888, sig: "SIGKILL" }]);
+
+    // runIsolatedCommand under platform="win32" invokes injectable taskkill on timeout
+    const cwd = makeTempDir("kiln-cmd-win-taskkill-");
+    const sleeper = path.join(cwd, "sleep.cjs");
+    fs.writeFileSync(sleeper, "setInterval(() => {}, 1000);\n");
+    const winKills: Array<{ command: string; args: readonly string[]; windowsHide: boolean }> = [];
+    const winRes = await runIsolatedCommand(
+      `${JSON.stringify(process.execPath)} ${JSON.stringify(sleeper)}`,
+      {
+        cwd,
+        timeoutMs: 150,
+        platform: "win32",
+        execTaskkill: async (command, args, opts) => {
+          winKills.push({ command, args, windowsHide: opts.windowsHide });
+          const targetPid = Number(args[1]);
+          if (Number.isInteger(targetPid) && targetPid > 0) {
+            try {
+              process.kill(targetPid, "SIGKILL");
+            } catch {
+              // Ignore if already exited.
+            }
+          }
+        },
+      },
+    );
+    expect(winRes.timedOut).toBe(true);
+    expect(winRes.killedProcessGroup).toBe(true);
+    expect(winKills).toHaveLength(1);
+    expect(winKills[0]?.command).toBe("taskkill");
+    expect(winKills[0]?.args[0]).toBe("/PID");
+    expect(winKills[0]?.args.slice(2)).toEqual(["/T", "/F"]);
+    expect(winKills[0]?.windowsHide).toBe(true);
   });
 });
 
@@ -709,8 +805,10 @@ describe("host_scoped two-stage staging, locking, rollback, and 409 hash conflic
       );
 
       // Symlink escape inside staged/ is rejected
+      const outsideHostSecret = path.join(outsideDir, "host-secret.conf");
+      fs.writeFileSync(outsideHostSecret, "top=secret\n");
       const escapeLink = path.join(store.paths.stagedDir("t-host-b"), "evil-link");
-      fs.symlinkSync("/etc/hosts", escapeLink);
+      fs.symlinkSync(outsideHostSecret, escapeLink);
       expect(() =>
         stageHostScopedChanges(store, {
           taskId: "t-host-b",
@@ -1695,7 +1793,9 @@ describe("runVerificationGate end-to-end", () => {
       const hostDir = makeTempDir("kiln-host-mode-");
       const secretConf = path.join(hostDir, "secret.conf");
       fs.writeFileSync(secretConf, "secret=1\n");
-      fs.chmodSync(secretConf, 0o600);
+      if (process.platform !== "win32") {
+        fs.chmodSync(secretConf, 0o600);
+      }
       const canonicalSecret = fs.realpathSync(secretConf);
 
       const hostModeCard = makeTaskCard({
@@ -1764,7 +1864,9 @@ describe("runVerificationGate end-to-end", () => {
       store.createTask(hostCompeteCard, "# Compete");
 
       fs.writeFileSync(secretConf, "secret=external\n");
-      fs.chmodSync(secretConf, 0o600);
+      if (process.platform !== "win32") {
+        fs.chmodSync(secretConf, 0o600);
+      }
       const mismatchApply = await applyApprovedHostScopedChanges(store, {
         taskId: hostModeCard.id,
         approved: true,
@@ -1789,18 +1891,24 @@ describe("runVerificationGate end-to-end", () => {
 
       // Reset target to original v1 (pre_sha256 match) -> apply preserves 0o600 -> restore preserves 0o600
       fs.writeFileSync(secretConf, "secret=1\n");
-      fs.chmodSync(secretConf, 0o600);
+      if (process.platform !== "win32") {
+        fs.chmodSync(secretConf, 0o600);
+      }
       const applied = await applyApprovedHostScopedChanges(store, {
         taskId: hostModeCard.id,
         approved: true,
       });
       expect(applied.ok).toBe(true);
-      expect(fs.statSync(canonicalSecret).mode & 0o777).toBe(0o600);
+      if (process.platform !== "win32") {
+        expect(fs.statSync(canonicalSecret).mode & 0o777).toBe(0o600);
+      }
 
       const restored = restoreHostScopedBackup(store, { taskId: hostModeCard.id });
       expect(restored.ok).toBe(true);
       expect(fs.readFileSync(canonicalSecret, "utf8")).toBe("secret=1\n");
-      expect(fs.statSync(canonicalSecret).mode & 0o777).toBe(0o600);
+      if (process.platform !== "win32") {
+        expect(fs.statSync(canonicalSecret).mode & 0o777).toBe(0o600);
+      }
     } finally {
       store.close();
     }

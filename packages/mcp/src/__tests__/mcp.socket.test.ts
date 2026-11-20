@@ -11,6 +11,8 @@ import {
   KilnSocketRpcClient,
   createKilnMcpServer,
   isRoleForbiddenError,
+  isWindowsNamedPipe,
+  resolveDefaultIpcPath,
 } from "../index.js";
 
 function readRequestBody(req: http.IncomingMessage): Promise<string> {
@@ -39,12 +41,17 @@ describe("@kiln/mcp OS Unix Domain Socket smoke suite (requires unsandboxed conn
     }
   });
 
-  it("connects KilnSocketRpcClient and MCP server over real Unix Domain Socket", async () => {
+  it("connects KilnSocketRpcClient and MCP server over real local IPC (UDS / Named Pipe) with Host header", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kiln-mcp-"));
     tempDirs.push(dir);
-    const socketPath = path.join(dir, "kilnd.sock");
+    const socketPath =
+      process.platform === "win32"
+        ? resolveDefaultIpcPath(dir, "win32")
+        : path.join(dir, "kilnd.sock");
+    const seenHosts: Array<string | undefined> = [];
 
     const server = http.createServer(async (req, res) => {
+      seenHosts.push(req.headers.host);
       const rawBody = await readRequestBody(req);
       const auth = req.headers.authorization;
       if (auth !== "Bearer tok-live-socket") {
@@ -99,7 +106,9 @@ describe("@kiln/mcp OS Unix Domain Socket smoke suite (requires unsandboxed conn
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(socketPath, () => {
-        fs.chmodSync(socketPath, 0o600);
+        if (!isWindowsNamedPipe(socketPath) && process.platform !== "win32") {
+          fs.chmodSync(socketPath, 0o600);
+        }
         resolve();
       });
     });
@@ -115,6 +124,7 @@ describe("@kiln/mcp OS Unix Domain Socket smoke suite (requires unsandboxed conn
     };
     expect(ctx.ok).toBe(true);
     expect(ctx.taskId).toBe("t-sock-smoke");
+    expect(seenHosts[0]).toBe("kilnd.local");
 
     let forbiddenErr: unknown;
     try {

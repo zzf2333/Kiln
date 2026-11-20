@@ -20,15 +20,20 @@ import {
   applyApprovedHostScopedChanges,
   stageHostScopedChanges,
 } from "../../gate/index.js";
-import { ensureDir, writeFileAtomic } from "../../store/index.js";
+import { ensureDir, isWindowsNamedPipe, writeFileAtomic } from "../../store/index.js";
 import {
   CaffeinateController,
+  ES_CONTINUOUS,
+  ES_SYSTEM_REQUIRED,
   KilndServer,
   RunTokenAuthError,
   SseHub,
+  WindowsPowerController,
   formatSseFrame,
+  prepareIpcSocketPath,
   signRunToken,
   verifyRunToken,
+  type AcPowerStatus,
   type CaffeinateChildProcess,
 } from "../index.js";
 
@@ -364,6 +369,277 @@ describe("CaffeinateController state machine", () => {
     missingBinCtrl.syncRunningCount(1);
     expect(spawned).toBe(0);
   });
+
+  it("prevents idle sleep on win32 via SetThreadExecutionState and enforces AC-only gating on battery", () => {
+    const flagsSeen: number[] = [];
+    let powerState: AcPowerStatus = "ac";
+
+    const fakePowerApi = {
+      setThreadExecutionState(flags: number): number {
+        flagsSeen.push(flags >>> 0);
+        return ES_CONTINUOUS >>> 0;
+      },
+      getAcPowerStatus(): AcPowerStatus {
+        return powerState;
+      },
+    };
+
+    const winCtrl = new CaffeinateController({
+      platform: "win32",
+      windowsPowerApi: fakePowerApi,
+      spawnProcess: () => {
+        throw new Error("win32 must not spawn /usr/bin/caffeinate");
+      },
+    });
+
+    expect(winCtrl.isActive).toBe(false);
+    winCtrl.syncRunningCount(0);
+    expect(flagsSeen).toEqual([]);
+
+    winCtrl.syncRunningCount(1);
+    expect(winCtrl.isActive).toBe(true);
+    expect(flagsSeen).toEqual([(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) >>> 0]);
+
+    winCtrl.syncRunningCount(3);
+    winCtrl.syncRunningCount(1);
+    expect(flagsSeen).toHaveLength(1);
+
+    winCtrl.syncRunningCount(0);
+    expect(winCtrl.isActive).toBe(false);
+    expect(flagsSeen).toEqual([
+      (ES_CONTINUOUS | ES_SYSTEM_REQUIRED) >>> 0,
+      ES_CONTINUOUS >>> 0,
+    ]);
+
+    // AC-only standby mode: fails closed on battery/unknown and releases immediately when unplugged
+    const acFlags: number[] = [];
+    let pollCb: (() => void) | null = null;
+    let clearedCount = 0;
+    const acController = new WindowsPowerController({
+      powerApi: {
+        setThreadExecutionState(flags: number): number {
+          acFlags.push(flags >>> 0);
+          return ES_CONTINUOUS >>> 0;
+        },
+        getAcPowerStatus(): AcPowerStatus {
+          return powerState;
+        },
+      },
+      acPollIntervalMs: 15_000,
+      setIntervalFn: (cb) => {
+        pollCb = cb;
+        return { unref: () => {} };
+      },
+      clearIntervalFn: () => {
+        clearedCount += 1;
+        pollCb = null;
+      },
+    });
+
+    powerState = "battery";
+    expect(acController.acquire({ requireAc: true })).toBe(false);
+    expect(acController.isActive).toBe(false);
+    expect(acFlags).toEqual([]);
+
+    powerState = "ac";
+    expect(pollCb).not.toBeNull();
+    pollCb!();
+    expect(acController.isActive).toBe(true);
+    expect(acFlags).toEqual([(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) >>> 0]);
+
+    // Unplugging AC immediately releases the execution state assertion
+    powerState = "battery";
+    pollCb!();
+    expect(acController.isActive).toBe(false);
+    expect(acFlags).toEqual([
+      (ES_CONTINUOUS | ES_SYSTEM_REQUIRED) >>> 0,
+      ES_CONTINUOUS >>> 0,
+    ]);
+
+    acController.release();
+    expect(clearedCount).toBe(1);
+  });
+
+  it("maps CaffeinateController active_tasks and remote_ac_standby onto win32 WindowsPowerController with fail-closed battery gating", () => {
+    const flagsSeen: number[] = [];
+    let powerState: AcPowerStatus = "battery";
+    let pollCb: (() => void) | null = null;
+    let clearedCount = 0;
+
+    const windowsPower = new WindowsPowerController({
+      powerApi: {
+        setThreadExecutionState(flags: number): number {
+          flagsSeen.push(flags >>> 0);
+          return ES_CONTINUOUS >>> 0;
+        },
+        getAcPowerStatus(): AcPowerStatus {
+          return powerState;
+        },
+      },
+      acPollIntervalMs: 15_000,
+      setIntervalFn: (cb) => {
+        pollCb = cb;
+        return { unref: () => {} };
+      },
+      clearIntervalFn: () => {
+        clearedCount += 1;
+        pollCb = null;
+      },
+    });
+
+    const winCtrl = new CaffeinateController({
+      platform: "win32",
+      windowsPower,
+      spawnProcess: () => {
+        throw new Error("win32 must not spawn /usr/bin/caffeinate");
+      },
+    });
+
+    // 1. remote_ac_standby on battery -> fails closed (no execution state asserted)
+    winCtrl.setRemoteKeepAwakeOnAc(true);
+    expect(winCtrl.mode).toBe("remote_ac_standby");
+    expect(winCtrl.isActive).toBe(false);
+    expect(windowsPower.isRequireAcMode).toBe(true);
+    expect(flagsSeen).toEqual([]);
+    expect(pollCb).not.toBeNull();
+
+    // 2. AC plugged in -> poll asserts ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+    powerState = "ac";
+    pollCb!();
+    expect(winCtrl.isActive).toBe(true);
+    expect(flagsSeen).toEqual([(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) >>> 0]);
+
+    // 3. Task starts -> active_tasks switches requireAc=false and stops AC poll
+    winCtrl.syncRunningCount(1);
+    expect(winCtrl.mode).toBe("active_tasks");
+    expect(winCtrl.isActive).toBe(true);
+    expect(windowsPower.isRequireAcMode).toBe(false);
+    expect(clearedCount).toBe(1);
+
+    // 4. Task finishes while on battery & remote_ac_standby enabled -> immediately releases
+    powerState = "battery";
+    winCtrl.syncRunningCount(0);
+    expect(winCtrl.mode).toBe("remote_ac_standby");
+    expect(windowsPower.isRequireAcMode).toBe(true);
+    expect(winCtrl.isActive).toBe(false);
+    expect(flagsSeen).toEqual([
+      (ES_CONTINUOUS | ES_SYSTEM_REQUIRED) >>> 0,
+      ES_CONTINUOUS >>> 0,
+    ]);
+
+    // 5. stop() transitions to off and clears AC poll
+    winCtrl.stop();
+    expect(winCtrl.mode).toBe("off");
+    expect(winCtrl.isActive).toBe(false);
+    expect(windowsPower.isRequireAcMode).toBe(false);
+    expect(clearedCount).toBe(2);
+  });
+});
+
+describe("Windows Named Pipe guards & local IPC /rpc/shutdown authentication", () => {
+  const tempDirs: string[] = [];
+  const servers: KilndServer[] = [];
+
+  afterEach(async () => {
+    while (servers.length > 0) {
+      await servers.pop()!.stop();
+    }
+    while (tempDirs.length > 0) {
+      fs.rmSync(tempDirs.pop()!, { recursive: true, force: true });
+    }
+  });
+
+  it("skips ensureDir, lstatSync, unlinkSync, and probe on Windows Named Pipe paths", async () => {
+    let fsCalls = 0;
+    await prepareIpcSocketPath("\\\\.\\pipe\\kiln-rpc-0123456789abcdef", {
+      ensureDirFn: () => {
+        fsCalls += 1;
+      },
+      lstatSyncFn: () => {
+        fsCalls += 1;
+        throw new Error("should not call lstatSync on named pipe");
+      },
+      unlinkSyncFn: () => {
+        fsCalls += 1;
+      },
+      probeActiveFn: async () => {
+        fsCalls += 1;
+        return false;
+      },
+    });
+    expect(fsCalls).toBe(0);
+  });
+
+  it("authenticates POST /rpc/shutdown via timingSafeEqual and manages 0600 kilnd.shutdown lifecycle", async () => {
+    const kilnHome = makeTempDir("kiln-srv-shutdown-");
+    tempDirs.push(kilnHome);
+
+    let shutdownCount = 0;
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      shutdownToken: "unit-test-shutdown-token-abcdef0123456789",
+      onShutdownRequested: () => {
+        shutdownCount += 1;
+      },
+    });
+    servers.push(server);
+
+    const addr = await server.start();
+    expect(addr.socketPath.length).toBeGreaterThan(0);
+
+    const tokenFile = server.store.paths.shutdownTokenFile;
+    expect(fs.existsSync(tokenFile)).toBe(true);
+    expect(fs.readFileSync(tokenFile, "utf8").trim()).toBe(
+      "unit-test-shutdown-token-abcdef0123456789",
+    );
+    if (process.platform !== "win32") {
+      expect(fs.statSync(tokenFile).mode & 0o777).toBe(0o600);
+    }
+
+    // Missing auth -> 401
+    const noAuth = await server.invokeMcpRpc({
+      method: "POST",
+      url: "/rpc/shutdown",
+    });
+    expect(noAuth.status).toBe(401);
+
+    // Wrong length & wrong value -> 401
+    const shortWrong = await server.invokeMcpRpc({
+      method: "POST",
+      url: "/rpc/shutdown",
+      headers: { Authorization: "Bearer short" },
+    });
+    expect(shortWrong.status).toBe(401);
+
+    const sameLenWrong = await server.invokeMcpRpc({
+      method: "POST",
+      url: "/rpc/shutdown",
+      headers: { Authorization: "Bearer unit-test-shutdown-token-abcdef0123456780" },
+    });
+    expect(sameLenWrong.status).toBe(401);
+    expect(shutdownCount).toBe(0);
+
+    // Valid token -> 200 and idempotent trigger
+    const ok1 = await server.invokeMcpRpc({
+      method: "POST",
+      url: "/rpc/shutdown",
+      headers: { Authorization: "Bearer unit-test-shutdown-token-abcdef0123456789" },
+    });
+    const ok2 = await server.invokeMcpRpc({
+      method: "POST",
+      url: "/rpc/shutdown",
+      headers: { Authorization: "Bearer unit-test-shutdown-token-abcdef0123456789" },
+    });
+    expect(ok1).toEqual({ status: 200, body: { ok: true, shuttingDown: true } });
+    expect(ok2).toEqual({ status: 200, body: { ok: true, shuttingDown: true } });
+
+    await new Promise((r) => setImmediate(r));
+    expect(shutdownCount).toBe(1);
+
+    await server.stop();
+    expect(fs.existsSync(tokenFile)).toBe(false);
+  });
 });
 
 describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)", () => {
@@ -393,8 +669,10 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     servers.push(server);
     const addr = await server.start();
 
-    const sockMode = fs.statSync(addr.socketPath).mode & 0o777;
-    expect(sockMode).toBe(0o600);
+    if (!isWindowsNamedPipe(addr.socketPath)) {
+      const sockMode = fs.statSync(addr.socketPath).mode & 0o777;
+      expect(sockMode).toBe(0o600);
+    }
 
     server.store.writeSpace({
       schema_version: 1,
@@ -1058,21 +1336,25 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     const kilnHome = makeTempDir();
     tempDirs.push(kilnHome);
 
-    // Create a stale Unix socket file left behind by a crashed daemon
-    const staleSockPath = path.join(kilnHome, "run", "kilnd.sock");
-    ensureDir(path.dirname(staleSockPath));
-    const deadServer = net.createServer();
-    await new Promise<void>((resolve) => deadServer.listen(staleSockPath, resolve));
-    const tempSock = path.join(kilnHome, "run", "tmp-stale.sock");
-    fs.renameSync(staleSockPath, tempSock);
-    await new Promise<void>((resolve) => deadServer.close(() => resolve()));
-    fs.renameSync(tempSock, staleSockPath);
-    expect(fs.lstatSync(staleSockPath).isSocket()).toBe(true);
+    // Create a stale Unix socket file left behind by a crashed daemon (POSIX only; Windows Named Pipes have no disk files)
+    if (process.platform !== "win32") {
+      const staleSockPath = path.join(kilnHome, "run", "kilnd.sock");
+      ensureDir(path.dirname(staleSockPath));
+      const deadServer = net.createServer();
+      await new Promise<void>((resolve) => deadServer.listen(staleSockPath, resolve));
+      const tempSock = path.join(kilnHome, "run", "tmp-stale.sock");
+      fs.renameSync(staleSockPath, tempSock);
+      await new Promise<void>((resolve) => deadServer.close(() => resolve()));
+      fs.renameSync(tempSock, staleSockPath);
+      expect(fs.lstatSync(staleSockPath).isSocket()).toBe(true);
+    }
 
     const server = new KilndServer({ kilnHome, port: 0 });
     servers.push(server);
     const addr = await server.start();
-    expect(fs.statSync(addr.socketPath).mode & 0o777).toBe(0o600);
+    if (!isWindowsNamedPipe(addr.socketPath)) {
+      expect(fs.statSync(addr.socketPath).mode & 0o777).toBe(0o600);
+    }
 
     // Settings validation for roles & limits
     const putRoles = await requestHttp(server, "/api/settings/roles", {

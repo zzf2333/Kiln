@@ -15,15 +15,21 @@ import {
 import {
   LINUX_SYSTEMD_SERVICE_NAME,
   MACOS_LAUNCH_AGENT_LABEL,
+  WINDOWS_RUN_REGISTRY_KEY,
+  WINDOWS_RUN_VALUE_NAME,
   buildDaemonForegroundArgs,
   getServiceStatus,
   installService,
   renderLaunchAgentPlist,
   renderSystemdUnit,
+  renderWindowsRunCommand,
   resolveKilnPidPath,
+  resolveKilnShutdownTokenPath,
   runCli,
+  stopManagedDaemon,
   uninstallService,
   type DoctorReport,
+  type WindowsRegistryBackend,
 } from "../index.js";
 
 const tempDirs: string[] = [];
@@ -1626,5 +1632,270 @@ describe("@kiln/cli", () => {
     });
     expect(offlineStatus.exitCode).toBe(1);
     expect(offlineStatus.stderr).toContain("offline");
+  });
+
+  it("supports win32 user-level HKCU Run service install/status/uninstall, CommandLineToArgvW escaping, and kiln doctor", async () => {
+    const h = makeTestHarness("kiln-cli-win-svc-");
+    const regStore = new Map<string, string>();
+    const fakeRegistry: WindowsRegistryBackend = {
+      add(key, valueName, data) {
+        regStore.set(`${key}\\${valueName}`, data);
+      },
+      delete(key, valueName) {
+        return regStore.delete(`${key}\\${valueName}`);
+      },
+      query(key, valueName) {
+        return regStore.get(`${key}\\${valueName}`) ?? null;
+      },
+    };
+
+    // Strict Windows CommandLineToArgvW quoting & trailing backslash stripping
+    const cmd = renderWindowsRunCommand({
+      executable: "C:\\Program Files\\Kiln App\\kiln.exe",
+      kilnHome: "C:\\Users\\Alice Smith\\.kiln\\",
+    });
+    expect(cmd).toBe(
+      '"C:\\Program Files\\Kiln App\\kiln.exe" "up" --kiln-home "C:\\Users\\Alice Smith\\.kiln"',
+    );
+
+    const driveRootCmd = renderWindowsRunCommand({
+      executable: "C:\\kiln.exe",
+      kilnHome: "D:\\",
+    });
+    expect(driveRootCmd).toContain('--kiln-home "D:\\\\"');
+
+    expect(() =>
+      renderWindowsRunCommand({
+        executable: "C:\\kiln.exe",
+        kilnHome: "C:\\bad\n& calc.exe",
+      }),
+    ).toThrow(/control characters/i);
+
+    // Rejects non-HKCU (admin/UAC) registry keys
+    await expect(
+      installService({
+        platform: "win32",
+        kilnHome: h.kilnHome,
+        windowsRunKey: "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+        windowsRegistry: fakeRegistry,
+      }),
+    ).rejects.toThrow(/HKCU/i);
+
+    // `kiln up` NEVER installs Windows startup registry entry automatically
+    const upRes = await runCli(["up", "--kiln-home", h.kilnHome, "--port", "4322"], {
+      platform: "win32",
+      windowsRegistry: fakeRegistry,
+      isDaemonRunning: () => false,
+      spawnDaemon: (ctx) => {
+        expect(ctx.kilnHome).toBe(path.resolve(h.kilnHome));
+        return { pid: 61234, port: 4322 };
+      },
+    });
+    expect(upRes.exitCode).toBe(0);
+    expect(regStore.size).toBe(0);
+
+    // `kiln service install/status/uninstall --platform win32`
+    const statusBefore = await runCli(["service", "status", "--platform", "win32"], {
+      kilnHome: h.kilnHome,
+      windowsRegistry: fakeRegistry,
+    });
+    expect(statusBefore.exitCode).toBe(0);
+    expect((statusBefore.data as { installed: boolean }).installed).toBe(false);
+
+    const installRes = await runCli(["service", "install", "--platform", "win32"], {
+      kilnHome: h.kilnHome,
+      windowsRegistry: fakeRegistry,
+    });
+    expect(installRes.exitCode).toBe(0);
+    const expectedRegPath = `${WINDOWS_RUN_REGISTRY_KEY}\\${WINDOWS_RUN_VALUE_NAME}`;
+    expect(regStore.has(expectedRegPath)).toBe(true);
+    expect(regStore.get(expectedRegPath)).toContain("--kiln-home");
+    expect(regStore.get(expectedRegPath)).toContain(path.resolve(h.kilnHome));
+
+    const statusAfter = await runCli(["service", "status", "--platform", "win32"], {
+      kilnHome: h.kilnHome,
+      windowsRegistry: fakeRegistry,
+    });
+    expect(statusAfter.exitCode).toBe(0);
+    expect((statusAfter.data as { installed: boolean }).installed).toBe(true);
+
+    // `kiln doctor` on win32 checks service status cleanly
+    const docWin = await runCli(["doctor", "--json"], {
+      platform: "win32",
+      kilnHome: h.kilnHome,
+      windowsRegistry: fakeRegistry,
+      isDaemonRunning: () => false,
+    });
+    expect(docWin.exitCode).toBe(0);
+    const docReport = JSON.parse(docWin.stdout) as DoctorReport;
+    expect(docReport.checks.find((c) => c.id === "service")?.status).toBe("pass");
+
+    // `kiln uninstall --platform win32` removes HKCU entry cleanly and idempotently
+    const uninstallRes = await runCli(["uninstall", "--platform", "win32"], {
+      kilnHome: h.kilnHome,
+      windowsRegistry: fakeRegistry,
+      stopDaemon: () => true,
+    });
+    expect(uninstallRes.exitCode).toBe(0);
+    expect(regStore.has(expectedRegPath)).toBe(false);
+
+    const uninstallAgain = await uninstallService({
+      platform: "win32",
+      kilnHome: h.kilnHome,
+      windowsRegistry: fakeRegistry,
+    });
+    expect(uninstallAgain.removed).toBe(false);
+
+    // Also verifies reg.exe argument list when executeSystemControl hook is supplied
+    const regCalls: Array<{ command: string; args: readonly string[] }> = [];
+    await installService({
+      platform: "win32",
+      kilnHome: h.kilnHome,
+      executeSystemControl: (command, args) => {
+        regCalls.push({ command, args });
+      },
+    });
+    expect(regCalls[0]?.command).toBe("reg.exe");
+    expect(regCalls[0]?.args.slice(0, 6)).toEqual([
+      "add",
+      WINDOWS_RUN_REGISTRY_KEY,
+      "/v",
+      WINDOWS_RUN_VALUE_NAME,
+      "/t",
+      "REG_SZ",
+    ]);
+  });
+
+  it("stops managed daemon via local IPC /rpc/shutdown first and falls back to taskkill on win32", async () => {
+    const h = makeTestHarness("kiln-cli-graceful-stop-");
+    const pidFile = resolveKilnPidPath(h.kilnHome);
+    const tokenFile = resolveKilnShutdownTokenPath(h.kilnHome);
+
+    // 1. When kilnd.shutdown exists and IPC shutdown succeeds, stops cleanly without SIGTERM or taskkill
+    writeFileAtomic(pidFile, "88111\n");
+    writeFileAtomic(tokenFile, "graceful-control-token-123\n");
+    let alive = true;
+    const signals: Array<NodeJS.Signals | 0 | undefined> = [];
+    const rpcCalls: Array<{ socketPath: string; shutdownToken: string }> = [];
+    let taskkillCalled = false;
+
+    const gracefulRes = await stopManagedDaemon({
+      kilnHome: h.kilnHome,
+      platform: "win32",
+      requestGracefulShutdown: async (ctx) => {
+        rpcCalls.push(ctx);
+        alive = false;
+        return true;
+      },
+      signalProcess: (_pid, sig) => {
+        signals.push(sig);
+        if (!alive) {
+          const err = new Error("ESRCH") as NodeJS.ErrnoException;
+          err.code = "ESRCH";
+          throw err;
+        }
+      },
+      killProcessTree: () => {
+        taskkillCalled = true;
+        return true;
+      },
+      waitTimeoutMs: 500,
+    });
+
+    expect(gracefulRes.stopped).toBe(true);
+    expect(gracefulRes.method).toBe("ipc_shutdown");
+    expect(rpcCalls).toHaveLength(1);
+    expect(rpcCalls[0]?.shutdownToken).toBe("graceful-control-token-123");
+    expect(rpcCalls[0]?.socketPath.startsWith("\\\\.\\pipe\\kiln-rpc-")).toBe(true);
+    expect(signals.every((s) => s === 0)).toBe(true);
+    expect(taskkillCalled).toBe(false);
+    expect(fs.existsSync(pidFile)).toBe(false);
+    expect(fs.existsSync(tokenFile)).toBe(false);
+
+    // 2. On win32, falls back to killProcessTree (taskkill) if IPC shutdown fails or times out
+    writeFileAtomic(pidFile, "88222\n");
+    writeFileAtomic(tokenFile, "stale-token\n");
+    let winAlive = true;
+    const killedPids: number[] = [];
+
+    const fallbackRes = await stopManagedDaemon({
+      kilnHome: h.kilnHome,
+      platform: "win32",
+      requestGracefulShutdown: async () => false,
+      signalProcess: (_pid, sig) => {
+        if (sig === 0 && !winAlive) {
+          const err = new Error("ESRCH") as NodeJS.ErrnoException;
+          err.code = "ESRCH";
+          throw err;
+        }
+      },
+      killProcessTree: (pid) => {
+        killedPids.push(pid);
+        winAlive = false;
+        return true;
+      },
+      waitTimeoutMs: 200,
+    });
+
+    expect(fallbackRes.stopped).toBe(true);
+    expect(fallbackRes.method).toBe("taskkill");
+    expect(killedPids).toEqual([88222]);
+    expect(fs.existsSync(pidFile)).toBe(false);
+    expect(fs.existsSync(tokenFile)).toBe(false);
+
+    // 3. Foreground `kiln up --foreground` cleanly exits when receiving POST /rpc/shutdown
+    const fgHome = path.join(makeTempDir("kiln-cli-fg-rpc-stop-"), "kh");
+    const fgAc = new AbortController();
+    let resolveServer!: (srv: KilndServer) => void;
+    const serverReady = new Promise<KilndServer>((resolve) => {
+      resolveServer = resolve;
+    });
+    const fgPromise = runCli(["up", "--foreground", "--port", "0", "--no-paseo"], {
+      kilnHome: fgHome,
+      isDaemonRunning: () => false,
+      foregroundSignal: fgAc.signal,
+      onForegroundServer: (srv) => resolveServer(srv),
+    });
+
+    const fgServer = await serverReady;
+    const fgTokenFile = resolveKilnShutdownTokenPath(fgHome);
+    const fgToken = fs.readFileSync(fgTokenFile, "utf8").trim();
+    const rpcRes = await fgServer.invokeMcpRpc({
+      method: "POST",
+      url: "/rpc/shutdown",
+      headers: { Authorization: `Bearer ${fgToken}` },
+    });
+    expect(rpcRes.status).toBe(200);
+
+    const fgExit = await fgPromise;
+    expect(fgExit.exitCode).toBe(0);
+    expect(fs.existsSync(resolveKilnPidPath(fgHome))).toBe(false);
+    expect(fs.existsSync(fgTokenFile)).toBe(false);
+
+    // 4. Programmatic `kiln up --foreground` without foregroundSignal falls back to KilndServer default stop()
+    const fgNoSigHome = path.join(makeTempDir("kiln-cli-fg-nosig-"), "kh");
+    let capturedNoSigServer: KilndServer | null = null;
+    const fgNoSigRes = await runCli(["up", "--foreground", "--port", "0", "--no-paseo"], {
+      kilnHome: fgNoSigHome,
+      isDaemonRunning: () => false,
+      onForegroundServer: (srv) => {
+        capturedNoSigServer = srv;
+        servers.push(srv);
+      },
+    });
+    expect(fgNoSigRes.exitCode).toBe(0);
+    expect(capturedNoSigServer).not.toBeNull();
+    const noSigToken = fs.readFileSync(resolveKilnShutdownTokenPath(fgNoSigHome), "utf8").trim();
+    const noSigRpc = await capturedNoSigServer!.invokeMcpRpc({
+      method: "POST",
+      url: "/rpc/shutdown",
+      headers: { Authorization: `Bearer ${noSigToken}` },
+    });
+    expect(noSigRpc.status).toBe(200);
+    const deadline = Date.now() + 2_000;
+    while (capturedNoSigServer!.address !== null && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(capturedNoSigServer!.address).toBeNull();
   });
 });

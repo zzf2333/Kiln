@@ -17,7 +17,7 @@ import {
 import { FakeBackend } from "../backend/index.js";
 import { computeFrozenSnapshot } from "../gate/index.js";
 import { KilndServer } from "../server/index.js";
-import { writeFileAtomic, writeYamlAtomic } from "../store/index.js";
+import { resolveDefaultIpcPath, writeFileAtomic, writeYamlAtomic } from "../store/index.js";
 
 function git(args: readonly string[], cwd?: string): string {
   return execFileSync("git", [...args], {
@@ -2562,7 +2562,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
   it("Round 2 closure A: auto-wake on done/paused/waiting/cancelled unblocks dependencies & slots without manual wake(), and injects KILN_SOCK_PATH", async () => {
     const kilnHome = makeTempDir("kiln-m2-r2a-");
     const fakeBackend = new FakeBackend();
-    const customSocketPath = path.join(kilnHome, "custom-dir", "custom-kilnd.sock");
+    const customSocketPath =
+      process.platform === "win32"
+        ? resolveDefaultIpcPath(path.join(kilnHome, "custom-dir"), "win32")
+        : path.join(kilnHome, "custom-dir", "custom-kilnd.sock");
 
     const server = new KilndServer({
       kilnHome,

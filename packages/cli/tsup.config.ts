@@ -20,6 +20,7 @@ export default defineConfig([
     },
     clean: true,
     noExternal: [/^@kiln\//],
+    external: ["bun:sqlite", "node:sqlite", "bun:ffi"],
   },
   {
     entry: {
@@ -30,5 +31,6 @@ export default defineConfig([
     dts: false,
     clean: true,
     noExternal: [/^@kiln\//],
+    external: ["bun:sqlite", "node:sqlite", "bun:ffi"],
   },
 ]);

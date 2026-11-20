@@ -152,6 +152,13 @@ function sha256Buffer(buf: Buffer): string {
 
 function isInsideCanonicalDir(canonicalTarget: string, canonicalDir: string): boolean {
   const prefix = canonicalDir.endsWith(path.sep) ? canonicalDir : canonicalDir + path.sep;
+  if (process.platform === "win32") {
+    const targetLower = canonicalTarget.toLowerCase();
+    return (
+      targetLower === canonicalDir.toLowerCase() ||
+      targetLower.startsWith(prefix.toLowerCase())
+    );
+  }
   return canonicalTarget === canonicalDir || canonicalTarget.startsWith(prefix);
 }
 
@@ -256,29 +263,37 @@ function hasHostGlobSyntax(pattern: string): boolean {
   return /[*?{}]/.test(pattern);
 }
 
+function normalizeCanonicalForCompare(p: string): string {
+  return process.platform === "win32" ? p.toLowerCase() : p;
+}
+
 function matchesSingleHostScopePattern(
   canonicalTarget: string,
   rawPattern: string,
 ): boolean {
   const trimmedTrailingSlash = rawPattern.replace(/\\/g, "/").endsWith("/");
   const expandedAbs = expandHomeAndValidateHostInput(rawPattern, "host scope pattern");
+  const targetCmp = normalizeCanonicalForCompare(canonicalTarget);
 
   if (!hasHostGlobSyntax(rawPattern)) {
     const canonicalPattern = resolveCanonicalAbsolute(expandedAbs);
-    const prefixWithSep =
-      canonicalPattern === "/" ? "/" : canonicalPattern + path.sep;
+    const prefixWithSep = canonicalPattern.endsWith(path.sep)
+      ? canonicalPattern
+      : canonicalPattern + path.sep;
+    const patternCmp = normalizeCanonicalForCompare(canonicalPattern);
+    const prefixCmp = normalizeCanonicalForCompare(prefixWithSep);
 
     if (trimmedTrailingSlash) {
-      return canonicalTarget.startsWith(prefixWithSep);
+      return targetCmp.startsWith(prefixCmp);
     }
 
-    if (canonicalTarget === canonicalPattern) {
+    if (targetCmp === patternCmp) {
       return true;
     }
 
     try {
       if (fs.statSync(canonicalPattern).isDirectory()) {
-        return canonicalTarget.startsWith(prefixWithSep);
+        return targetCmp.startsWith(prefixCmp);
       }
     } catch {
       // Non-existent literal pattern without trailing slash only matches exact target path.
@@ -286,25 +301,28 @@ function matchesSingleHostScopePattern(
     return false;
   }
 
-  const normalizedPosix = expandedAbs.replace(/\\/g, "/");
-  const rootPrefix = normalizedPosix.startsWith("/") ? "/" : "";
-  const segments = normalizedPosix
-    .slice(rootPrefix.length)
+  const parsedRoot = path.parse(expandedAbs).root;
+  const tailAfterRoot = expandedAbs.slice(parsedRoot.length).replace(/\\/g, "/");
+  const segments = tailAfterRoot
     .split("/")
     .filter((s) => s.length > 0 && s !== ".");
 
   const firstGlobIdx = segments.findIndex((seg) => hasHostGlobSyntax(seg));
   if (firstGlobIdx === -1) {
     const canonicalPattern = resolveCanonicalAbsolute(expandedAbs);
-    return canonicalTarget === canonicalPattern;
+    return targetCmp === normalizeCanonicalForCompare(canonicalPattern);
   }
 
   const literalPrefixPath =
-    firstGlobIdx === 0 ? "/" : "/" + segments.slice(0, firstGlobIdx).join("/");
+    firstGlobIdx === 0
+      ? parsedRoot
+      : path.join(parsedRoot, ...segments.slice(0, firstGlobIdx));
   const canonicalPrefix = resolveCanonicalAbsolute(literalPrefixPath);
-  const prefixWithSep = canonicalPrefix === "/" ? "/" : canonicalPrefix + "/";
+  const prefixWithSep = canonicalPrefix.endsWith(path.sep)
+    ? canonicalPrefix
+    : canonicalPrefix + path.sep;
 
-  if (!canonicalTarget.startsWith(prefixWithSep)) {
+  if (!targetCmp.startsWith(normalizeCanonicalForCompare(prefixWithSep))) {
     return false;
   }
 
@@ -439,7 +457,7 @@ function rollbackFromBackupEntries(
         );
       }
       writeFileAtomic(entry.target_canonical_path, backupBytes);
-      if (entry.file_mode !== undefined) {
+      if (process.platform !== "win32" && entry.file_mode !== undefined) {
         fs.chmodSync(entry.target_canonical_path, entry.file_mode);
       }
     } else {
@@ -846,7 +864,10 @@ export function stageHostScopedChanges(
 
       if (existingBytes !== null) {
         const preSha = sha256Buffer(existingBytes);
-        const fileMode = fs.statSync(item.canonicalTarget).mode & 0o777;
+        const fileMode =
+          process.platform !== "win32"
+            ? fs.statSync(item.canonicalTarget).mode & 0o777
+            : undefined;
         const backupRelPath = `files/${String(i).padStart(4, "0")}.bak`;
         writeFileAtomic(path.join(backupDir, backupRelPath), existingBytes);
         manifestEntries.push({
@@ -856,7 +877,7 @@ export function stageHostScopedChanges(
           existed_before: true,
           pre_sha256: preSha,
           post_sha256: null,
-          file_mode: fileMode,
+          ...(fileMode !== undefined ? { file_mode: fileMode } : {}),
           updated_at: timestamp,
         });
       } else {
@@ -1000,7 +1021,7 @@ export async function applyApprovedHostScopedChanges(
     try {
       for (const item of stagedPayload) {
         writeFileAtomic(item.entry.target_canonical_path, item.bytes);
-        if (item.entry.file_mode !== undefined) {
+        if (process.platform !== "win32" && item.entry.file_mode !== undefined) {
           fs.chmodSync(item.entry.target_canonical_path, item.entry.file_mode);
         }
         appliedEntries.push({

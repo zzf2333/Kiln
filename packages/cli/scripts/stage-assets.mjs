@@ -31,5 +31,7 @@ fs.cpSync(kernelPublicDir, targetPublicDir, { recursive: true });
 fs.copyFileSync(rootReadme, path.join(cliDir, "README.md"));
 fs.copyFileSync(rootLicense, path.join(cliDir, "LICENSE"));
 
-fs.chmodSync(cliBin, 0o755);
-fs.chmodSync(mcpBin, 0o755);
+if (process.platform !== "win32") {
+  fs.chmodSync(cliBin, 0o755);
+  fs.chmodSync(mcpBin, 0o755);
+}

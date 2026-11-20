@@ -1,5 +1,4 @@
 import path from "node:path";
-import Database from "better-sqlite3";
 import type {
   Priority,
   StageId,
@@ -8,6 +7,12 @@ import type {
   WorkspaceMode,
 } from "@kiln/protocol";
 import { ensureDir } from "./fs-atomic.js";
+import {
+  openSqliteDatabase,
+  type SqliteDatabase,
+  type SqliteRuntimeKind,
+  type SqliteStatement,
+} from "./sqlite-driver.js";
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS tasks_index (
@@ -161,29 +166,29 @@ function assertNonNegativeInt(value: number, label: string): void {
  * Always enforces WAL, `synchronous = NORMAL`, and `foreign_keys = ON`.
  */
 export class KilnSqliteIndex {
-  private readonly db: Database.Database;
+  private readonly db: SqliteDatabase;
   private closed = false;
 
-  private readonly upsertTaskStmt: Database.Statement;
-  private readonly getTaskStmt: Database.Statement;
-  private readonly selectLeaseByTaskStmt: Database.Statement;
-  private readonly upsertLeaseStmt: Database.Statement;
-  private readonly completeLeaseStmt: Database.Statement;
-  private readonly releaseOrExpireLeaseStmt: Database.Statement;
-  private readonly expireActiveByTaskStmt: Database.Statement;
-  private readonly listActiveLeasesStmt: Database.Statement;
-  private readonly selectHostLockStmt: Database.Statement;
-  private readonly upsertHostLockStmt: Database.Statement;
-  private readonly deleteHostLocksByTaskStmt: Database.Statement;
-  private readonly upsertUsageTurnStmt: Database.Statement;
-  private readonly sumTaskUsageStmt: Database.Statement;
+  private readonly upsertTaskStmt: SqliteStatement;
+  private readonly getTaskStmt: SqliteStatement;
+  private readonly selectLeaseByTaskStmt: SqliteStatement;
+  private readonly upsertLeaseStmt: SqliteStatement;
+  private readonly completeLeaseStmt: SqliteStatement;
+  private readonly releaseOrExpireLeaseStmt: SqliteStatement;
+  private readonly expireActiveByTaskStmt: SqliteStatement;
+  private readonly listActiveLeasesStmt: SqliteStatement;
+  private readonly selectHostLockStmt: SqliteStatement;
+  private readonly upsertHostLockStmt: SqliteStatement;
+  private readonly deleteHostLocksByTaskStmt: SqliteStatement;
+  private readonly upsertUsageTurnStmt: SqliteStatement;
+  private readonly sumTaskUsageStmt: SqliteStatement;
 
   constructor(dbPath: string) {
     ensureDir(path.dirname(dbPath));
-    this.db = new Database(dbPath);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("synchronous = NORMAL");
-    this.db.pragma("foreign_keys = ON");
+    this.db = openSqliteDatabase(dbPath);
+    this.db.pragmaExec("journal_mode = WAL");
+    this.db.pragmaExec("synchronous = NORMAL");
+    this.db.pragmaExec("foreign_keys = ON");
     this.db.exec(SCHEMA_SQL);
 
     this.upsertTaskStmt = this.db.prepare(`
@@ -305,17 +310,21 @@ export class KilnSqliteIndex {
     `);
   }
 
+  get driver(): SqliteRuntimeKind {
+    return this.db.driver;
+  }
+
   /**
-   * Executes `fn` inside a synchronous SQLite transaction.
+   * Executes `fn` inside a synchronous SQLite transaction (`BEGIN IMMEDIATE` / `SAVEPOINT`).
    */
   transaction<T>(fn: () => T): T {
-    return this.db.transaction(fn)();
+    return this.db.transaction(fn);
   }
 
   getPragmaSettings(): SqlitePragmaSettings {
-    const journalMode = this.db.pragma("journal_mode", { simple: true }) as string;
-    const synchronous = this.db.pragma("synchronous", { simple: true }) as number;
-    const foreignKeys = this.db.pragma("foreign_keys", { simple: true }) as number;
+    const journalMode = String(this.db.pragmaSimple<string>("journal_mode") ?? "");
+    const synchronous = Number(this.db.pragmaSimple<number>("synchronous") ?? 0);
+    const foreignKeys = Number(this.db.pragmaSimple<number>("foreign_keys") ?? 0);
     return { journalMode, synchronous, foreignKeys };
   }
 
@@ -348,7 +357,7 @@ export class KilnSqliteIndex {
     const stmt = this.db.prepare(
       `SELECT * FROM tasks_index ${whereClause} ORDER BY created_at ASC, id ASC`,
     );
-    return stmt.all(params) as TaskIndexRow[];
+    return (clauses.length > 0 ? stmt.all(params) : stmt.all()) as unknown as TaskIndexRow[];
   }
 
   updateTaskStatusAndPriority(id: string, patch: TaskStatusAndPriorityPatch): boolean {
@@ -484,7 +493,7 @@ export class KilnSqliteIndex {
   }
 
   listActiveStageLeases(): StageLeaseRow[] {
-    return this.listActiveLeasesStmt.all() as StageLeaseRow[];
+    return this.listActiveLeasesStmt.all() as unknown as StageLeaseRow[];
   }
 
   /**
@@ -541,12 +550,12 @@ export class KilnSqliteIndex {
       const stmt = this.db.prepare(
         `SELECT * FROM host_path_locks WHERE task_id = ? ORDER BY canonical_path ASC`,
       );
-      return stmt.all(taskId) as HostPathLockRow[];
+      return stmt.all(taskId) as unknown as HostPathLockRow[];
     }
     const stmt = this.db.prepare(
       `SELECT * FROM host_path_locks ORDER BY canonical_path ASC`,
     );
-    return stmt.all() as HostPathLockRow[];
+    return stmt.all() as unknown as HostPathLockRow[];
   }
 
   /**
@@ -584,28 +593,28 @@ export class KilnSqliteIndex {
     const stmt = this.db.prepare(
       `SELECT * FROM usage_turns ${whereClause} ORDER BY recorded_at ASC, run_id ASC, turn_id ASC`,
     );
-    return stmt.all(params) as UsageTurnRow[];
+    return (clauses.length > 0 ? stmt.all(params) : stmt.all()) as unknown as UsageTurnRow[];
   }
 
   getTaskTotalTokens(taskId: string): TaskTokenTotals {
-    const row = this.sumTaskUsageStmt.get(taskId) as {
+    const row = this.sumTaskUsageStmt.get(taskId) as unknown as {
       input_tokens: number;
       cached_input_tokens: number;
       output_tokens: number;
     };
 
     return {
-      input_tokens: row.input_tokens,
-      cached_input_tokens: row.cached_input_tokens,
-      output_tokens: row.output_tokens,
-      total_tokens: row.input_tokens + row.output_tokens,
+      input_tokens: Number(row.input_tokens),
+      cached_input_tokens: Number(row.cached_input_tokens),
+      output_tokens: Number(row.output_tokens),
+      total_tokens: Number(row.input_tokens) + Number(row.output_tokens),
     };
   }
 
   prepareForAtomicMove(): void {
     if (!this.closed) {
-      this.db.pragma("wal_checkpoint(TRUNCATE)");
-      this.db.pragma("journal_mode = DELETE");
+      this.db.pragmaExec("wal_checkpoint(TRUNCATE)");
+      this.db.pragmaExec("journal_mode = DELETE");
       this.close();
     }
   }

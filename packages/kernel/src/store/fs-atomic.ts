@@ -29,7 +29,10 @@ function toBuffer(content: string | Uint8Array): Buffer {
 }
 
 export interface WriteFileAtomicOptions {
-  /** Optional POSIX file mode (e.g., `0o600` for sensitive config files). */
+  /**
+   * Optional POSIX file permission mode (e.g. `0o600` for sensitive config or control files).
+   * Enforced via `fchmodSync` on non-Windows platforms before atomic rename; safely ignored on Windows NTFS.
+   */
   mode?: number;
 }
 
@@ -47,13 +50,16 @@ export function writeFileAtomic(
 
   const tmpPath = path.join(dir, `.tmp.${process.pid}.${randomUUID()}`);
   const buf = toBuffer(content);
-  const mode = options?.mode;
+  const posixMode = process.platform !== "win32" ? options?.mode : undefined;
 
   let fd: number | null = null;
   try {
-    fd = mode !== undefined ? fs.openSync(tmpPath, "wx", mode) : fs.openSync(tmpPath, "wx");
-    if (mode !== undefined && process.platform !== "win32") {
-      fs.fchmodSync(fd, mode);
+    fd =
+      posixMode !== undefined
+        ? fs.openSync(tmpPath, "wx", posixMode)
+        : fs.openSync(tmpPath, "wx");
+    if (posixMode !== undefined) {
+      fs.fchmodSync(fd, posixMode);
     }
     writeAllSync(fd, buf, tmpPath);
     fs.fsyncSync(fd);

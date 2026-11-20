@@ -7,6 +7,17 @@ export {
   type KeepAwakeMode,
 } from "./caffeinate.js";
 export {
+  ES_CONTINUOUS,
+  ES_SYSTEM_REQUIRED,
+  WindowsPowerController,
+  createDefaultWindowsPowerApi,
+  type AcPowerStatus,
+  type WindowsPowerAcquireOptions,
+  type WindowsPowerApi,
+  type WindowsPowerControllerOptions,
+  type WindowsPowerTimerHandle,
+} from "./windows-power.js";
+export {
   ChatMessageRecordSchema,
   KilnChatEngine,
   resolveMcpServerCommand,
@@ -45,9 +56,11 @@ export {
 } from "./errors.js";
 export {
   McpRpcServer,
+  prepareIpcSocketPath,
   type McpRpcHttpRequest,
   type McpRpcHttpResponse,
   type McpRpcServerOptions,
+  type PrepareIpcSocketPathDeps,
 } from "./mcp-rpc.js";
 export {
   KilnOrchestrator,

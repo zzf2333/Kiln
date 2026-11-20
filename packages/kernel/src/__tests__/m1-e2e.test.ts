@@ -26,7 +26,7 @@ import {
 import { KilnScheduler, type DispatchPlan } from "../scheduler/index.js";
 import { KilndServer } from "../server/index.js";
 import { evaluateWorkerStageOutcome } from "../state/index.js";
-import { deriveTaskStatus, writeFileAtomic } from "../store/index.js";
+import { deriveTaskStatus, isWindowsNamedPipe, writeFileAtomic } from "../store/index.js";
 
 function git(args: readonly string[], cwd?: string): string {
   return execFileSync("git", [...args], {
@@ -242,8 +242,10 @@ describe("M1 zero-token full-stack headless kernel E2E", () => {
     server1.store.writeConfig("pricing", pricingConfig);
 
     const addr1 = await server1.start();
-    // Criterion 6a: Unix socket permissions 0600
-    expect(fs.statSync(addr1.socketPath).mode & 0o777).toBe(0o600);
+    // Criterion 6a: Unix socket permissions 0600 on POSIX
+    if (!isWindowsNamedPipe(addr1.socketPath)) {
+      expect(fs.statSync(addr1.socketPath).mode & 0o777).toBe(0o600);
+    }
 
     // ── Criterion 3 + FakeBackend + pre-push hook + L1 -> L2 escalation + heterogeneous fallback ──
     const acceptCmd = "node -e \"process.exit(0)\"";

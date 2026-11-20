@@ -1,8 +1,44 @@
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
 export const CONFIG_NAMES = ["roles", "limits", "pricing", "remote", "devices"] as const;
 export type KilnConfigName = (typeof CONFIG_NAMES)[number];
+
+/**
+ * Returns true when `ipcPath` targets a Windows Named Pipe (`\\.\pipe\...` or `\\?\pipe\...`).
+ */
+export function isWindowsNamedPipe(ipcPath: string): boolean {
+  return /^\\\\[.?]\\pipe\\/i.test(ipcPath);
+}
+
+function normalizeHomeForPipeHash(kilnHome: string): string {
+  if (/^[A-Za-z]:[\\/]/.test(kilnHome) || kilnHome.startsWith("\\\\")) {
+    return path.win32.resolve(kilnHome);
+  }
+  return path.resolve(kilnHome);
+}
+
+/**
+ * Resolves the default local RPC IPC endpoint for `kilnHome`:
+ * - POSIX (`darwin`/`linux`): `<kilnHome>/run/kilnd.sock`
+ * - Windows (`win32`): `\\.\pipe\kiln-rpc-<sha256(resolvedHome.toLowerCase()).slice(0, 16)>`
+ */
+export function resolveDefaultIpcPath(
+  kilnHome: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform === "win32") {
+    const normalizedHome = normalizeHomeForPipeHash(kilnHome);
+    const homeHash = crypto
+      .createHash("sha256")
+      .update(normalizedHome.toLowerCase())
+      .digest("hex")
+      .slice(0, 16);
+    return `\\\\.\\pipe\\kiln-rpc-${homeHash}`;
+  }
+  return path.join(path.resolve(kilnHome), "run", "kilnd.sock");
+}
 
 /**
  * Resolves the root Kiln home directory (`~/.kiln` by default, overridable via `override` or `KILN_HOME`).
@@ -210,7 +246,11 @@ export class KilnPaths {
   }
 
   get kilndSock(): string {
-    return path.join(this.runSockDir, "kilnd.sock");
+    return resolveDefaultIpcPath(this.home);
+  }
+
+  get shutdownTokenFile(): string {
+    return path.join(this.runSockDir, "kilnd.shutdown");
   }
 
   get indexSqlite(): string {

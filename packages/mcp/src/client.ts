@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -99,12 +100,48 @@ export function isRoleForbiddenError(
 }
 
 /**
- * Resolves the kilnd Unix Domain Socket path using explicit path, `KILN_SOCK_PATH`,
- * `KILN_HOME/run/kilnd.sock`, or `~/.kiln/run/kilnd.sock` in precedence order.
+ * Returns true when `ipcPath` targets a Windows Named Pipe (`\\.\pipe\...` or `\\?\pipe\...`).
+ */
+export function isWindowsNamedPipe(ipcPath: string): boolean {
+  return /^\\\\[.?]\\pipe\\/i.test(ipcPath);
+}
+
+function normalizeHomeForPipeHash(kilnHome: string): string {
+  if (/^[A-Za-z]:[\\/]/.test(kilnHome) || kilnHome.startsWith("\\\\")) {
+    return path.win32.resolve(kilnHome);
+  }
+  return path.resolve(kilnHome);
+}
+
+/**
+ * Resolves the default local RPC IPC endpoint for `kilnHome`:
+ * - POSIX (`darwin`/`linux`): `<kilnHome>/run/kilnd.sock`
+ * - Windows (`win32`): `\\.\pipe\kiln-rpc-<sha256(resolvedHome.toLowerCase()).slice(0, 16)>`
+ */
+export function resolveDefaultIpcPath(
+  kilnHome: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform === "win32") {
+    const normalizedHome = normalizeHomeForPipeHash(kilnHome);
+    const homeHash = crypto
+      .createHash("sha256")
+      .update(normalizedHome.toLowerCase())
+      .digest("hex")
+      .slice(0, 16);
+    return `\\\\.\\pipe\\kiln-rpc-${homeHash}`;
+  }
+  return path.join(path.resolve(kilnHome), "run", "kilnd.sock");
+}
+
+/**
+ * Resolves the kilnd local IPC path (Unix Domain Socket on POSIX or Named Pipe on Windows)
+ * using explicit path, `KILN_SOCK_PATH`, `KILN_HOME`, or `~/.kiln` in precedence order.
  */
 export function resolveKilnSocketPath(
   explicitSocketPath?: string,
   env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
 ): string {
   if (explicitSocketPath !== undefined) {
     const trimmed = explicitSocketPath.trim();
@@ -121,10 +158,10 @@ export function resolveKilnSocketPath(
 
   const kilnHome = env.KILN_HOME?.trim();
   if (kilnHome && kilnHome.length > 0) {
-    return path.join(kilnHome, "run", "kilnd.sock");
+    return resolveDefaultIpcPath(kilnHome, platform);
   }
 
-  return path.join(os.homedir(), ".kiln", "run", "kilnd.sock");
+  return resolveDefaultIpcPath(path.join(os.homedir(), ".kiln"), platform);
 }
 
 function createUnixSocketTransport(socketPath: string): KilnRpcTransport {
@@ -146,6 +183,7 @@ function createUnixSocketTransport(socketPath: string): KilnRpcTransport {
           path: req.path,
           method: req.method,
           headers: {
+            Host: "kilnd.local",
             ...req.headers,
             "Content-Length": String(byteLength),
           },
