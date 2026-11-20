@@ -39,3 +39,11 @@ fix = ["4c4945e249ea74d01a03746e8c0200532106ab26"]
 risk = "medium"
 files = ["packages/kernel/src/scheduler/scheduler.ts"]
 defect = "KilnScheduler.executeTick() 顶部以 nowMs 检查速率限流并延后候选任务，尾部调用 syncCooldownTimer(this.now()) 却直接用新时间点同步定时器；当被延后任务的冷却恰好在本次 tick 耗时期间过期时，syncCooldownTimer 清除冷却定时器且未置位 dirty，导致延后任务永久卡死在 queued 失去唤醒。"
+
+[[cases]]
+id = "R6"
+intro = "92de2dd64f266b45dc071b6cd73c2015d995f3b9"
+fix = ["810e3c88a2f99c49519ee8a8644d297209af9586"]
+risk = "high"
+files = ["apps/desktop/src-tauri/src/daemon_client.rs", "apps/desktop/src-tauri/src/tray.rs"]
+defect = "Finder 启动下极简 PATH 未补全导致 spawn_kiln_up/run_kiln_down 执行 #!/usr/bin/env node 失败且 resolve_kiln_binary 缺少版本管理器目录扫描，同时 MENU_START_KILND 仅 eprintln 静默吞错导致菜单无任何失败反馈。"
