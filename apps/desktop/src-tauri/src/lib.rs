@@ -164,7 +164,8 @@ fn spawn_status_worker<R: Runtime>(
                                         }
                                     }
                                 }
-                                SsePollResult::Closed(_) => {
+                                SsePollResult::Closed(reason) => {
+                                    eprintln!("kiln-desktop: {reason}");
                                     break;
                                 }
                             }
