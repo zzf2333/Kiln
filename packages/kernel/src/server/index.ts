@@ -72,6 +72,12 @@ export {
   type RateTickPayload,
 } from "./rate-tracker.js";
 export {
+  InvalidSpacePathError,
+  inspectGitSpacePath,
+  validateCommitWorkspace,
+  type InspectedSpaceInfo,
+} from "./space-inspect.js";
+export {
   SseHub,
   formatSseFrame,
   type DistributeOmit,

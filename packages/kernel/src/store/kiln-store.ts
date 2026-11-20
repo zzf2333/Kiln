@@ -759,6 +759,34 @@ export class KilnStore {
     writeYamlAtomic(this.paths.spaceFile(parsed.id), parsed, SpaceConfigSchema);
   }
 
+  listSpaces(): SpaceConfig[] {
+    if (!fs.existsSync(this.paths.spacesDir)) {
+      return [];
+    }
+    const entries = fs.readdirSync(this.paths.spacesDir, { withFileTypes: true });
+    const spaces: SpaceConfig[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+      const safeId = assertSafeSegment(entry.name, "spaceId");
+      const space = this.readSpace(safeId);
+      if (space) {
+        spaces.push(space);
+      }
+    }
+    spaces.sort((a, b) => a.id.localeCompare(b.id));
+    return spaces;
+  }
+
+  deleteSpace(spaceId: string): boolean {
+    const safeId = assertSafeSegment(spaceId, "spaceId");
+    const dir = this.paths.spaceDir(safeId);
+    if (!fs.existsSync(dir)) {
+      return false;
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+    return true;
+  }
+
   readLedger(spaceId: string): LedgerFile | null {
     return readYamlOptional(this.paths.ledgerFile(spaceId), LedgerFileSchema);
   }
@@ -777,6 +805,21 @@ export class KilnStore {
     const parsed = DraftCardSchema.parse(draft);
     assertSafeSegment(parsed.id, "draftId");
     writeYamlAtomic(this.paths.draftYaml(parsed.id), parsed, DraftCardSchema);
+  }
+
+  deleteDraft(draftId: string): boolean {
+    const safeId = assertSafeSegment(draftId, "draftId");
+    const dir = this.paths.draftDir(safeId);
+    const chatFile = path.join(this.paths.draftsDir, `${safeId}-chat.ndjson`);
+    const dirExists = fs.existsSync(dir);
+    const chatExists = fs.existsSync(chatFile);
+    if (dirExists) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    if (chatExists) {
+      fs.rmSync(chatFile, { force: true });
+    }
+    return dirExists || chatExists;
   }
 
   listDrafts(): DraftCard[] {

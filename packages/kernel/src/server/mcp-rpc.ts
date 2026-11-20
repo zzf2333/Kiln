@@ -49,6 +49,7 @@ import {
   readTaskCardOptional,
   resolveCardLimits,
 } from "./pending-decisions.js";
+import { validateCommitWorkspace } from "./space-inspect.js";
 import type { SseHub } from "./sse.js";
 import { RunTokenAuthError, verifyRunToken } from "./token.js";
 
@@ -514,15 +515,21 @@ export class McpRpcServer {
     });
 
     const spaces: Record<string, SpaceConfig> = {};
+    for (const cfg of this.store.listSpaces()) {
+      spaces[cfg.id] = cfg;
+    }
+
     const spaceIds = new Set<string>(tasks.map((t) => t.space));
     if (input.space !== undefined) {
       spaceIds.add(input.space);
     }
 
     for (const spaceId of spaceIds) {
-      const cfg = this.store.readSpace(spaceId);
-      if (cfg) {
-        spaces[spaceId] = cfg;
+      if (!spaces[spaceId]) {
+        const cfg = this.store.readSpace(spaceId);
+        if (cfg) {
+          spaces[spaceId] = cfg;
+        }
       }
     }
 
@@ -588,12 +595,7 @@ export class McpRpcServer {
         if (input.draft_id !== undefined) {
           assertSafeSegment(input.draft_id, "draft_id");
         }
-        if (input.workspace_mode === "external_only") {
-          throw new ServerHttpError(400, {
-            error: "unsupported_workspace_mode",
-            message: 'Unsupported workspace_mode: "external_only" is Post-MVP',
-          });
-        }
+        validateCommitWorkspace(this.store, input.space, input.workspace_mode);
 
         const taskId = `t-${randomUUID().slice(0, 8)}`;
         const card = TaskCardSchema.parse({
@@ -614,6 +616,9 @@ export class McpRpcServer {
         });
 
         const created = this.stateMachine.createTask(card, input.brief_markdown);
+        if (input.draft_id !== undefined) {
+          this.store.deleteDraft(input.draft_id);
+        }
         if (created.state.status === "waiting") {
           const dec = this.pendingDecisions.ensureUpstreamCancelledDecision(created.card.id);
           if (dec) {

@@ -823,4 +823,118 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     expect(forbiddenRes.status).toBe(403);
     expect((forbiddenRes.body as { error: string }).error).toBe("task_scope_forbidden");
   });
+
+  it("mounts intake chat cwd onto space.repo_path, injects read-only constraints & registered spaces, and resets session with prior summary when space changes", async () => {
+    const kilnHome = makeTempDir("kiln-m2-intake-space-");
+    const repoAlpha = makeTempDir("kiln-repo-alpha-");
+    const repoBeta = makeTempDir("kiln-repo-beta-");
+    const fakeBackend = new FakeBackend();
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      publicDir: null,
+      tokenSecret: "m2-intake-space-secret-0123456789",
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    await server.start();
+
+    server.store.writeConfig("roles", {
+      schema_version: 1,
+      heterogeneous_review: true,
+      roles: {
+        intake: {
+          backend_id: "fake",
+          agent: "codex",
+          model: "gpt-5.4",
+          allow_full_access_fallback: false,
+        },
+      },
+    });
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "alpha",
+      name: "Alpha Project",
+      repo_path: repoAlpha,
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      default_accept_cmd: "pnpm --filter alpha test",
+      freeze_patterns: [],
+    });
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "beta",
+      name: "Beta Service",
+      repo_path: repoBeta,
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      default_accept_cmd: "cargo test",
+      freeze_patterns: [],
+    });
+
+    await server.app.request(
+      new Request("http://127.0.0.1/api/drafts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: "d-space-ctx",
+          title: "Alpha feature",
+          space: "alpha",
+          workspace_mode: "git_worktree",
+        }),
+      }),
+    );
+
+    fakeBackend.enqueueScript(
+      [{ kind: "message", text: "已在 Alpha 仓库检查结构", delta: false }, { kind: "exit", reason: "completed" }],
+      { role: "intake" },
+    );
+    fakeBackend.enqueueScript(
+      [{ kind: "message", text: "已切换到 Beta 仓库继续聊", delta: false }, { kind: "exit", reason: "completed" }],
+      { role: "intake" },
+    );
+
+    const turn1 = await server.app.request(
+      new Request("http://127.0.0.1/api/drafts/d-space-ctx/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "帮我看看测试怎么跑" }),
+      }),
+    );
+    expect(turn1.status).toBe(200);
+
+    // Switch draft space -> beta; next turn must NOT reuse alpha session and must carry prior summary
+    await server.app.request(
+      new Request("http://127.0.0.1/api/drafts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: "d-space-ctx",
+          space: "beta",
+          workspace_mode: "git_worktree",
+        }),
+      }),
+    );
+
+    const turn2 = await server.app.request(
+      new Request("http://127.0.0.1/api/drafts/d-space-ctx/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "改做 Beta 仓库吧" }),
+      }),
+    );
+    expect(turn2.status).toBe(200);
+
+    const specs = fakeBackend.getRecordedSpecs();
+    expect(specs).toHaveLength(2);
+    expect(specs[0]!.cwd).toBe(repoAlpha);
+    expect(specs[0]!.systemPrompt).toContain(repoAlpha);
+    expect(specs[0]!.systemPrompt).toContain("只读探索约束");
+    expect(specs[0]!.systemPrompt).toContain("beta (Beta Service)");
+    expect(specs[1]!.cwd).toBe(repoBeta);
+    expect(specs[1]!.systemPrompt).toContain("帮我看看测试怎么跑");
+    expect(specs[1]!.systemPrompt).toContain("已在 Alpha 仓库检查结构");
+  });
 });

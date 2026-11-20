@@ -10,6 +10,7 @@ import {
   DraftCardSchema,
   GateReportSchema,
   HashMismatchErrorSchema,
+  InspectSpaceRequestSchema,
   LimitsConfigSchema,
   PricingConfigSchema,
   PrioritySchema,
@@ -18,9 +19,11 @@ import {
   RunEventSchema,
   RunMetaSchema,
   SessionRefSchema,
+  SpaceConfigSchema,
   StageIdSchema,
   TaskCardSchema,
   TrackSchema,
+  UpsertSpaceRequestSchema,
   WorkspaceModeSchema,
   type LedgerFile,
   type PendingDecision,
@@ -64,6 +67,7 @@ import {
   resolveCardLimits,
 } from "./pending-decisions.js";
 import type { LiveRateTracker } from "./rate-tracker.js";
+import { inspectGitSpacePath, validateCommitWorkspace } from "./space-inspect.js";
 import type { SseHub } from "./sse.js";
 import {
   createStaticFilesHandler,
@@ -394,6 +398,90 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     });
   });
 
+  app.get("/api/spaces", (c) => {
+    const extraSpaces = store.listTasks().map((row) => row.space);
+    return c.json({
+      ok: true,
+      spaces: loadAllSpaces(store, extraSpaces),
+    });
+  });
+
+  app.post("/api/spaces/inspect", async (c) => {
+    const rawBody = await readJsonBodyStrict(c);
+    const body = InspectSpaceRequestSchema.parse(rawBody);
+    const inspected = await inspectGitSpacePath(body.path);
+    return c.json({
+      ok: true,
+      ...inspected,
+    });
+  });
+
+  app.put("/api/spaces/:id", async (c) => {
+    const spaceId = assertSafeSegment(c.req.param("id"), "spaceId");
+    if (spaceId === "local" || spaceId === "all") {
+      throw new ServerHttpError(400, {
+        error: "reserved_space_id",
+        spaceId,
+        message: `Space ID "${spaceId}" is reserved`,
+      });
+    }
+
+    const rawBody = await readJsonBodyStrict(c);
+    const body = UpsertSpaceRequestSchema.parse(rawBody);
+    const inspected = await inspectGitSpacePath(body.repo_path);
+    const existed = store.readSpace(spaceId) !== null;
+
+    const space = SpaceConfigSchema.parse({
+      schema_version: 1,
+      id: spaceId,
+      name: body.name,
+      repo_path: inspected.repo_path,
+      default_branch: body.default_branch,
+      copy_untracked: body.copy_untracked,
+      clone_deps: body.clone_deps,
+      ...(body.default_accept_cmd !== undefined
+        ? { default_accept_cmd: body.default_accept_cmd }
+        : {}),
+      freeze_patterns: body.freeze_patterns,
+    });
+
+    store.writeSpace(space);
+    return c.json({ ok: true, space }, existed ? 200 : 201);
+  });
+
+  app.delete("/api/spaces/:id", (c) => {
+    const spaceId = assertSafeSegment(c.req.param("id"), "spaceId");
+    if (spaceId === "local" || spaceId === "all") {
+      throw new ServerHttpError(400, {
+        error: "reserved_space_id",
+        spaceId,
+        message: `Space ID "${spaceId}" is reserved`,
+      });
+    }
+    if (!store.readSpace(spaceId)) {
+      throw new ServerHttpError(404, {
+        error: "space_not_found",
+        spaceId,
+        message: `Space "${spaceId}" does not exist`,
+      });
+    }
+    const activeTaskIds = store
+      .listTasks({ space: spaceId })
+      .filter((t) => t.status !== "done" && t.status !== "cancelled")
+      .map((t) => t.id);
+    if (activeTaskIds.length > 0) {
+      throw new ServerHttpError(409, {
+        error: "space_in_use",
+        spaceId,
+        activeTaskIds,
+        message: `空间 "${spaceId}" 仍有 ${activeTaskIds.length} 个未完成任务（${activeTaskIds.join(", ")}），请先完成或取消后再删除`,
+      });
+    }
+
+    store.deleteSpace(spaceId);
+    return c.json({ ok: true, deleted: true, id: spaceId });
+  });
+
   app.get("/api/bootstrap", async (c) => {
     const roles = store.readConfig("roles");
     const limits = store.readConfig("limits");
@@ -610,6 +698,16 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     });
   });
 
+  app.delete("/api/drafts/:id", (c) => {
+    const { draftId } = requireExistingDraft(c.req.param("id"));
+    store.deleteDraft(draftId);
+    return c.json({
+      ok: true,
+      deleted: true,
+      id: draftId,
+    });
+  });
+
   app.get("/api/drafts/:id/chat", (c) => {
     const { draftId } = requireExistingDraft(c.req.param("id"));
     return c.json({
@@ -697,12 +795,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     );
     const space = assertSafeSegment(input.space ?? existingDraft.space, "space");
     const workspaceMode = input.workspace_mode ?? existingDraft.workspace_mode;
-    if (workspaceMode === "external_only") {
-      throw new ServerHttpError(400, {
-        error: "unsupported_workspace_mode",
-        message: 'Unsupported workspace_mode: "external_only" is Post-MVP',
-      });
-    }
+    validateCommitWorkspace(store, space, workspaceMode);
 
     const now = new Date().toISOString();
     const card = TaskCardSchema.parse({
@@ -726,6 +819,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     });
 
     const created = stateMachine.createTask(card, input.brief_markdown);
+    store.deleteDraft(draftId);
     if (created.state.status === "waiting") {
       const dec = pendingDecisions.ensureUpstreamCancelledDecision(created.card.id);
       if (dec) {

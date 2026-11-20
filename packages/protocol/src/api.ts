@@ -33,3 +33,31 @@ export const RoleForbiddenErrorSchema = z.object({
   message: z.string().min(1),
 });
 export type RoleForbiddenError = z.infer<typeof RoleForbiddenErrorSchema>;
+
+export const InspectSpaceRequestSchema = z.object({
+  path: z.string().trim().min(1),
+});
+export type InspectSpaceRequest = z.infer<typeof InspectSpaceRequestSchema>;
+
+export const InspectSpaceResponseSchema = z.object({
+  ok: z.literal(true),
+  repo_path: z.string().min(1),
+  suggested_id: z.string().min(1),
+  suggested_name: z.string().min(1),
+  default_branch: z.string().min(1),
+  default_accept_cmd: z.string().min(1).optional(),
+  copy_untracked: z.array(z.string()).default([]),
+  clone_deps: z.array(z.string()).default([]),
+});
+export type InspectSpaceResponse = z.infer<typeof InspectSpaceResponseSchema>;
+
+export const UpsertSpaceRequestSchema = z.object({
+  name: z.string().trim().min(1),
+  repo_path: z.string().trim().min(1),
+  default_branch: z.string().trim().min(1).default("main"),
+  copy_untracked: z.array(z.string().trim().min(1)).default([]),
+  clone_deps: z.array(z.string().trim().min(1)).default([]),
+  default_accept_cmd: z.string().trim().min(1).optional(),
+  freeze_patterns: z.array(z.string().trim().min(1)).default([]),
+});
+export type UpsertSpaceRequest = z.infer<typeof UpsertSpaceRequestSchema>;

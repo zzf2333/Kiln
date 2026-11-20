@@ -665,6 +665,10 @@ describe("KilnStore concurrency, contract bump, locks, usage, and isolation", ()
     };
     store.writeSpace(space);
     expect(store.readSpace("kiln")?.copy_untracked).toEqual([".env.local"]);
+    expect(store.listSpaces().map((s) => s.id)).toEqual(["kiln"]);
+    expect(store.deleteSpace("kiln")).toBe(true);
+    expect(store.deleteSpace("kiln")).toBe(false);
+    expect(store.listSpaces()).toEqual([]);
 
     const ledger: LedgerFile = {
       schema_version: 1,
@@ -698,6 +702,11 @@ describe("KilnStore concurrency, contract bump, locks, usage, and isolation", ()
     store.writeDraft(draft);
     expect(store.readDraft("draft-1")?.title).toBe("New idea");
     expect(store.listDrafts()).toHaveLength(1);
+    writeFileAtomic(path.join(store.paths.draftsDir, "draft-1-chat.ndjson"), "{}\n");
+    expect(store.deleteDraft("draft-1")).toBe(true);
+    expect(store.deleteDraft("draft-1")).toBe(false);
+    expect(store.listDrafts()).toEqual([]);
+    expect(fs.existsSync(path.join(store.paths.draftsDir, "draft-1-chat.ndjson"))).toBe(false);
   });
 
   it("expires active leases on queued/resumed state events and validates RUN.yaml before appending usage events", () => {

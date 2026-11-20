@@ -11,6 +11,7 @@ import {
   type RoleId,
   type RunEvent,
   type SessionRef,
+  type SpaceConfig,
   type TaskCard,
 } from "@kiln/protocol";
 import {
@@ -25,6 +26,7 @@ import {
 import {
   appendNdjsonLine,
   assertSafeSegment,
+  ensureDir,
   KilnStore,
   readNdjsonValidated,
   writeFileAtomic,
@@ -618,7 +620,49 @@ export class KilnChatEngine {
     };
   }
 
-  private buildIntakeSystemPrompt(draft: DraftCard): string {
+  private resolveIntakeWorkspace(
+    draft: DraftCard,
+    safeDraftId: string,
+  ): { cwd: string; spaceConfig: SpaceConfig | null; isProjectRepo: boolean } {
+    const spaceConfig = this.store.readSpace(draft.space);
+    if (
+      draft.space !== "local" &&
+      spaceConfig?.repo_path &&
+      fs.existsSync(spaceConfig.repo_path) &&
+      fs.statSync(spaceConfig.repo_path).isDirectory()
+    ) {
+      return { cwd: spaceConfig.repo_path, spaceConfig, isProjectRepo: true };
+    }
+    const draftDir = this.store.paths.draftDir(safeDraftId);
+    ensureDir(draftDir);
+    return { cwd: draftDir, spaceConfig, isProjectRepo: false };
+  }
+
+  private formatPriorChatSummary(history: readonly ChatMessageRecord[]): string {
+    const dialogue = history.filter(
+      (m) => m.who === "me" || m.who === "agent" || m.role === "user" || m.role === "assistant",
+    );
+    if (dialogue.length === 0) {
+      return "";
+    }
+    const recent = dialogue.slice(-12).map((m) => {
+      const speaker = m.who === "me" || m.role === "user" ? "用户" : "intake";
+      const trimmed = m.text.trim();
+      const text = trimmed.length > 500 ? `${trimmed.slice(0, 500)}...` : trimmed;
+      return `- [${speaker}]: ${text}`;
+    });
+    return `切换空间/工作目录前的前序对话摘要：\n${recent.join("\n")}`;
+  }
+
+  private buildIntakeSystemPrompt(params: {
+    draft: DraftCard;
+    spaceConfig: SpaceConfig | null;
+    allSpaces: readonly SpaceConfig[];
+    cwd: string;
+    isProjectRepo: boolean;
+    priorHistory: readonly ChatMessageRecord[];
+  }): string {
+    const { draft, spaceConfig, allSpaces, cwd, isProjectRepo, priorHistory } = params;
     const tasks = this.store.listTasks().slice(0, 20);
     const ledger = this.store.readLedger(draft.space);
     const taskLines =
@@ -630,12 +674,61 @@ export class KilnChatEngine {
         ? ledger.entries.map((e) => `- ${e.rule}`).join("\n")
         : "(暂无空间账本约束)";
 
+    const projectSpaces = allSpaces.filter((s) => s.id !== "local" && Boolean(s.repo_path));
+    const registeredSpacesText =
+      projectSpaces.length > 0
+        ? projectSpaces
+            .map(
+              (s) =>
+                `- ${s.id} (${s.name}): repo_path=${s.repo_path}, branch=${s.default_branch}${
+                  s.default_accept_cmd ? `, accept=${s.default_accept_cmd}` : ""
+                }`,
+            )
+            .join("\n")
+        : "(暂无已登记 Git 项目空间)";
+
+    const modeSummary = isProjectRepo
+      ? [
+          `当前任务模式：项目任务（git_worktree）`,
+          `当前项目空间 "${spaceConfig?.name ?? draft.space}" (${draft.space})：repo_path=${cwd}, default_branch=${spaceConfig?.default_branch ?? "main"}${
+            spaceConfig?.default_accept_cmd
+              ? `, default_accept_cmd=${spaceConfig.default_accept_cmd}`
+              : ""
+          }`,
+          `**只读探索约束**：你当前位于项目仓库目录 (${cwd})，可只读检索代码、目录结构与测试脚本以确定准确的可改范围 (scope) 与验收命令 (accept_cmd)；**严禁直接修改项目源码文件或执行 git 写入命令**，只允许通过 wb_plan(mode: "upsert_draft") 更新草稿。`,
+        ].join("\n")
+      : [
+          `当前任务模式：本机 / 临时任务（非 Git 项目空间，cwd=${cwd}）`,
+          `可用 workspace_mode 仅限 scratch_dir（独立临时沙盒）或 host_scoped（本机白名单文件两阶段暂存，严禁在立项阶段直接改动宿主机文件）。`,
+        ].join("\n");
+
+    const draftSummary = [
+      `当前草稿字段摘要：`,
+      `- title: ${draft.title || "(未填)"}`,
+      `- space: ${draft.space}`,
+      `- priority: ${draft.priority}`,
+      `- track: ${draft.track}`,
+      `- workspace_mode: ${draft.workspace_mode}`,
+      `- end: ${draft.contract.end ?? "(未填)"}`,
+      `- accept_cmd: ${draft.contract.accept_cmd ?? "(未填)"}`,
+      `- scope: ${draft.contract.scope?.join(", ") || "(未填)"}`,
+      `- depends_on: ${draft.depends_on.join(", ") || "无"}`,
+    ].join("\n");
+
+    const priorSummary = this.formatPriorChatSummary(priorHistory);
+
     return [
-      `你是 Kiln 的 intake 立项对话角色。当前草稿 ID: ${draft.id}，空间: ${draft.space}。`,
+      `你是 Kiln 的 intake 立项对话角色。当前草稿 ID: ${draft.id}，空间: ${draft.space}，cwd: ${cwd}。`,
+      modeSummary,
       `你拥有 kiln-mcp 工具权限（wb_list_tasks, wb_read_ledger, wb_plan），请协助用户梳理目标、验收标准、可改范围、依赖前置并调用 wb_plan(mode: "upsert_draft") 更新草稿。`,
+      `已登记项目空间列表：\n${registeredSpacesText}`,
+      draftSummary,
       `当前在途任务：\n${taskLines}`,
       `空间 ${draft.space} 长期决策账本：\n${ledgerLines}`,
-    ].join("\n\n");
+      priorSummary,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
   }
 
   private buildResolverSystemPrompt(
@@ -730,6 +823,7 @@ export class KilnChatEngine {
           });
         }
 
+        const resolvedWorkspace = this.resolveIntakeWorkspace(draft, safeDraftId);
         const reusable = await this.canReuseSession(draft.session_ref);
         let activeBackend = executor.backend;
         let sessionRef: SessionRef;
@@ -739,11 +833,14 @@ export class KilnChatEngine {
           reusable &&
           reusable.backend.backendId === executor.backend.backendId &&
           reusableMeta?.kiln_chat_agent === executor.agent &&
-          reusableMeta?.kiln_chat_model === executor.model
+          reusableMeta?.kiln_chat_model === executor.model &&
+          reusableMeta?.kiln_chat_space === draft.space &&
+          reusableMeta?.kiln_chat_cwd === resolvedWorkspace.cwd
         ) {
           sessionRef = reusable.sessionRef;
           await activeBackend.send(sessionRef, trimmed);
         } else {
+          const allSpaces = this.store.listSpaces();
           const spec: BackendRunSpec = {
             runId,
             taskId: safeDraftId,
@@ -753,9 +850,16 @@ export class KilnChatEngine {
             ...(executor.reasoningEffort !== undefined
               ? { reasoningEffort: executor.reasoningEffort }
               : {}),
-            cwd: this.store.paths.draftDir(safeDraftId),
+            cwd: resolvedWorkspace.cwd,
             prompt: trimmed,
-            systemPrompt: this.buildIntakeSystemPrompt(draft),
+            systemPrompt: this.buildIntakeSystemPrompt({
+              draft,
+              spaceConfig: resolvedWorkspace.spaceConfig,
+              allSpaces,
+              cwd: resolvedWorkspace.cwd,
+              isProjectRepo: resolvedWorkspace.isProjectRepo,
+              priorHistory: historyBefore,
+            }),
             freshContext: false,
             allowFullAccessFallback: executor.allowFullAccessFallback,
             mcpServers: [this.buildMcpMount(token)],
@@ -767,6 +871,8 @@ export class KilnChatEngine {
               ...sessionRef.meta,
               kiln_chat_agent: executor.agent,
               kiln_chat_model: executor.model,
+              kiln_chat_space: draft.space,
+              kiln_chat_cwd: resolvedWorkspace.cwd,
             },
           };
           const updatedDraft = DraftCardSchema.parse({

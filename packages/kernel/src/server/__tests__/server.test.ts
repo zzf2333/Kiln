@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import net from "node:net";
@@ -399,6 +400,7 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
       schema_version: 1,
       id: "kiln",
       name: "Kiln Core",
+      repo_path: kilnHome,
       default_branch: "main",
       copy_untracked: [],
       clone_deps: [],
@@ -2099,5 +2101,203 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     expect(goodWorkerRes.status).toBe(200);
     expect(goodWorkerRes.json.accepted).toBe(true);
     expect(server.store.getStageLease("t-p1-6-w")?.state).toBe("completed");
+  });
+
+  it("supports space CRUD + inspect, draft delete, commit validation/cleanup, and wb_list_tasks discovery for empty spaces", async () => {
+    const kilnHome = makeTempDir("kiln-space-home-");
+    const repoRoot = makeTempDir("kiln-space-repo-");
+    const nonGitDir = makeTempDir("kiln-non-git-");
+    tempDirs.push(kilnHome, repoRoot, nonGitDir);
+
+    const runGit = (args: string[], cwd = repoRoot) =>
+      execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf8" });
+
+    runGit(["init", "-b", "main"]);
+    runGit(["config", "user.name", "Kiln Test"]);
+    runGit(["config", "user.email", "kiln@example.com"]);
+    fs.mkdirSync(path.join(repoRoot, "src", "nested"), { recursive: true });
+    fs.mkdirSync(path.join(repoRoot, "node_modules"), { recursive: true });
+    fs.writeFileSync(
+      path.join(repoRoot, "package.json"),
+      JSON.stringify({ name: "My Cool App", scripts: { test: "vitest run" } }),
+    );
+    fs.writeFileSync(path.join(repoRoot, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    runGit(["add", "."]);
+    runGit(["commit", "-m", "init"]);
+
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      tokenSecret: "space-crud-secret-0123456789abcde",
+    });
+    servers.push(server);
+    await server.start();
+
+    // 1. Inspect subdirectory normalizes to canonical Git root and detects branch/test/deps
+    const inspectRes = await requestHttp(server, "/api/spaces/inspect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: path.join(repoRoot, "src", "nested") }),
+    });
+    expect(inspectRes.status).toBe(200);
+    const inspectJson = await readJson(inspectRes);
+    const canonicalRepo = fs.realpathSync(repoRoot);
+    expect(inspectJson.ok).toBe(true);
+    expect(inspectJson.repo_path).toBe(canonicalRepo);
+    expect(inspectJson.default_branch).toBe("main");
+    expect(inspectJson.default_accept_cmd).toBe("pnpm test");
+    expect(inspectJson.clone_deps).toEqual(["node_modules"]);
+    expect(inspectJson.suggested_id).toMatch(/^[a-z0-9_-]+$/);
+
+    // Non-Git dir fails cleanly with 400 invalid_repo_path
+    const badInspectRes = await requestHttp(server, "/api/spaces/inspect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: nonGitDir }),
+    });
+    expect(badInspectRes.status).toBe(400);
+    expect((await readJson(badInspectRes)).error).toBe("invalid_repo_path");
+
+    // 2. Reject reserved space IDs ("local" and "all")
+    for (const reserved of ["local", "all"]) {
+      const reservedRes = await requestHttp(server, `/api/spaces/${reserved}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Reserved", repo_path: repoRoot }),
+      });
+      expect(reservedRes.status).toBe(400);
+      expect((await readJson(reservedRes)).error).toBe("reserved_space_id");
+    }
+
+    // 3. Create + update space via PUT /api/spaces/:id, verify GET /api/spaces & wb_list_tasks visibility with 0 tasks
+    const createSpaceRes = await requestHttp(server, "/api/spaces/my-app", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "My App",
+        repo_path: path.join(repoRoot, "src"),
+        default_branch: "main",
+        default_accept_cmd: "pnpm test",
+        clone_deps: ["node_modules"],
+      }),
+    });
+    expect(createSpaceRes.status).toBe(201);
+    const createSpaceJson = await readJson(createSpaceRes);
+    expect(createSpaceJson.space.repo_path).toBe(canonicalRepo);
+
+    const updateSpaceRes = await requestHttp(server, "/api/spaces/my-app", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "My App Renamed",
+        repo_path: repoRoot,
+        default_branch: "main",
+      }),
+    });
+    expect(updateSpaceRes.status).toBe(200);
+
+    const listSpacesRes = await requestHttp(server, "/api/spaces");
+    expect(listSpacesRes.status).toBe(200);
+    const listSpacesJson = await readJson(listSpacesRes);
+    expect(listSpacesJson.spaces["my-app"]?.name).toBe("My App Renamed");
+
+    const intakeToken = server.issueRunToken({
+      taskId: "d-empty-list",
+      runId: "run-empty-list",
+      role: "intake",
+      contractVersion: 1,
+    });
+    const mcpListEmptyRes = await requestMcpRpc(server, {
+      method: "POST",
+      path: "/rpc/mcp/wb_list_tasks",
+      headers: { Authorization: `Bearer ${intakeToken}` },
+      body: {},
+    });
+    expect(mcpListEmptyRes.status).toBe(200);
+    expect(mcpListEmptyRes.json.spaces["my-app"]?.repo_path).toBe(canonicalRepo);
+
+    // 4. Commit hard validation: local + git_worktree and missing repo_path fail with 400
+    await requestHttp(server, "/api/drafts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "d-bad-local",
+        title: "Invalid local git_worktree",
+        space: "local",
+        workspace_mode: "git_worktree",
+        contract: makeContract(),
+      }),
+    });
+    const badLocalCommit = await requestHttp(server, "/api/drafts/d-bad-local/commit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ brief_markdown: "# Bad commit" }),
+    });
+    expect(badLocalCommit.status).toBe(400);
+    expect((await readJson(badLocalCommit)).error).toBe("invalid_workspace_space");
+
+    const mcpBadSpaceCommit = await requestMcpRpc(server, {
+      method: "POST",
+      path: "/rpc/mcp/wb_plan",
+      headers: { Authorization: `Bearer ${intakeToken}` },
+      body: {
+        mode: "commit_card",
+        title: "Missing repo_path space",
+        space: "unknown-space",
+        workspace_mode: "git_worktree",
+        contract: makeContract(),
+        brief_markdown: "# Missing repo",
+      },
+    });
+    expect(mcpBadSpaceCommit.status).toBe(400);
+    expect(mcpBadSpaceCommit.json.error).toBe("space_repo_required");
+
+    // 5. Delete draft removes both draft directory and chat log; valid commit also deletes source draft
+    writeFileAtomic(path.join(server.store.paths.draftsDir, "d-bad-local-chat.ndjson"), "{}\n");
+    const delDraftRes = await requestHttp(server, "/api/drafts/d-bad-local", {
+      method: "DELETE",
+    });
+    expect(delDraftRes.status).toBe(200);
+    expect(server.store.readDraft("d-bad-local")).toBeNull();
+    expect(fs.existsSync(path.join(server.store.paths.draftsDir, "d-bad-local-chat.ndjson"))).toBe(
+      false,
+    );
+
+    await requestHttp(server, "/api/drafts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "d-good-proj",
+        title: "Valid Project Task",
+        space: "my-app",
+        workspace_mode: "git_worktree",
+        contract: makeContract(),
+      }),
+    });
+    const goodCommitRes = await requestHttp(server, "/api/drafts/d-good-proj/commit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "t-proj-1", brief_markdown: "# Valid project task" }),
+    });
+    expect(goodCommitRes.status).toBe(201);
+    expect(server.store.readDraft("d-good-proj")).toBeNull();
+
+    // 6. Deleting space with active task returns 409 space_in_use; succeeds once cancelled
+    const delBusySpace = await requestHttp(server, "/api/spaces/my-app", {
+      method: "DELETE",
+    });
+    expect(delBusySpace.status).toBe(409);
+    expect((await readJson(delBusySpace)).error).toBe("space_in_use");
+
+    const cancelRes = await requestHttp(server, "/api/tasks/t-proj-1/cancel", {
+      method: "POST",
+    });
+    expect(cancelRes.status).toBe(200);
+
+    const delFreeSpace = await requestHttp(server, "/api/spaces/my-app", {
+      method: "DELETE",
+    });
+    expect(delFreeSpace.status).toBe(200);
+    expect(server.store.readSpace("my-app")).toBeNull();
   });
 });

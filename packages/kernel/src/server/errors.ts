@@ -10,6 +10,7 @@ import {
   MissingDependencyError,
   UnsupportedTrackError,
 } from "../state/index.js";
+import { InvalidSpacePathError } from "./space-inspect.js";
 
 export type ServerErrorStatus = 400 | 401 | 403 | 404 | 409 | 413 | 500;
 
@@ -35,6 +36,15 @@ export function mapDomainError(err: unknown): {
 } {
   if (err instanceof ServerHttpError) {
     return { statusCode: err.statusCode, payload: err.payload };
+  }
+  if (err instanceof InvalidSpacePathError) {
+    return {
+      statusCode: 400,
+      payload: {
+        error: err.code,
+        message: err.message,
+      },
+    };
   }
   if (err instanceof ZodError) {
     return {
