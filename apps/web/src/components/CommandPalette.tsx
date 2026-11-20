@@ -88,6 +88,7 @@ export function CommandPalette() {
     { label: "设置 · 角色与模型", run: nav("settings", "roles") },
     { label: "设置 · 项目空间", run: nav("settings", "spaces") },
     { label: "设置 · 模型单价", run: nav("settings", "pricing") },
+    { label: "设置 · 远程访问", run: nav("settings", "remote") },
   ];
 
   const q = query.trim().toLowerCase();

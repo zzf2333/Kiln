@@ -9,6 +9,7 @@ import { DetailView } from "./views/DetailView";
 import { InboxView } from "./views/InboxView";
 import { IntakeView } from "./views/IntakeView";
 import { LedgerView } from "./views/LedgerView";
+import { RemoteAuthView } from "./views/RemoteAuthView";
 import { ResolveView } from "./views/ResolveView";
 import { SettingsView } from "./views/SettingsView";
 import { UsageView } from "./views/UsageView";
@@ -23,9 +24,11 @@ function AppShell() {
   useEffect(() => {
     document.body.classList.toggle(
       "in-converse",
-      state.view === "intake" || state.view === "resolve",
+      state.authChecked &&
+        state.authAuthenticated &&
+        (state.view === "intake" || state.view === "resolve"),
     );
-  }, [state.view]);
+  }, [state.authChecked, state.authAuthenticated, state.view]);
 
   useEffect(() => {
     let blurTimer: ReturnType<typeof setTimeout> | null = null;
@@ -86,6 +89,37 @@ function AppShell() {
     }
   };
 
+  const renderToast = () => (
+    <div
+      class={`toast ${state.toastMessage ? "show" : ""}`}
+      id="toast"
+      role="status"
+      aria-live="polite"
+    >
+      {state.toastMessage ?? ""}
+    </div>
+  );
+
+  if (!state.authChecked) {
+    return (
+      <>
+        <main class="auth-gate" aria-label="正在连接 Kiln">
+          <div class="auth-loading">正在连接 Kiln…</div>
+        </main>
+        {renderToast()}
+      </>
+    );
+  }
+
+  if (state.authMode === "remote" && !state.authAuthenticated) {
+    return (
+      <>
+        <RemoteAuthView />
+        {renderToast()}
+      </>
+    );
+  }
+
   return (
     <>
       <div class="app">
@@ -99,14 +133,7 @@ function AppShell() {
       <Tabbar />
       <CommandPalette />
       <SpaceModal />
-      <div
-        class={`toast ${state.toastMessage ? "show" : ""}`}
-        id="toast"
-        role="status"
-        aria-live="polite"
-      >
-        {state.toastMessage ?? ""}
-      </div>
+      {renderToast()}
     </>
   );
 }

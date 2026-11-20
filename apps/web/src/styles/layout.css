@@ -909,6 +909,315 @@ table.ut .live { color: #f6b26b; }
 .rank-bar i { display: block; height: 100%; background: var(--t3); border-radius: 2px; }
 .footnote { font-size: 12px; color: var(--t3); line-height: 1.7; }
 
+/* ---------- 远程会话条 & 主机离线横幅 ---------- */
+.remote-bar {
+  flex-shrink: 0;
+  min-height: 34px;
+  padding: 4px 28px;
+  background: var(--rail);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--t2);
+}
+.remote-bar-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.remote-bar-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.remote-dot { background: var(--ok); }
+
+.offline-banner {
+  flex-shrink: 0;
+  padding: 8px 28px;
+  background: rgba(219, 161, 69, 0.12);
+  border-bottom: 1px solid rgba(219, 161, 69, 0.32);
+  color: var(--t1);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+}
+.offline-banner-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 220px;
+  line-height: 1.45;
+}
+.offline-dot { background: var(--ask); }
+
+/* ---------- 远程配对门禁页 ---------- */
+.auth-gate {
+  height: 100vh;
+  height: 100dvh;
+  width: 100%;
+  overflow-y: auto;
+  padding: max(24px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
+.auth-loading {
+  margin: auto;
+  font-size: 13px;
+  color: var(--t3);
+}
+.auth-card {
+  width: min(420px, 100%);
+  margin: auto;
+  background: var(--surface);
+  border: 1px solid var(--line-2);
+  border-radius: 14px;
+  padding: 24px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.auth-brand h1 {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.auth-sub {
+  font-size: 12.5px;
+  color: var(--t3);
+  margin-top: 2px;
+}
+.auth-notice {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(219, 161, 69, 0.38);
+  background: rgba(219, 161, 69, 0.1);
+  color: var(--t1);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.auth-error {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(209, 98, 91, 0.42);
+  background: rgba(209, 98, 91, 0.1);
+  color: #f2a7a1;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.auth-token-banner {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(90, 165, 124, 0.35);
+  background: rgba(90, 165, 124, 0.09);
+}
+.auth-token-banner strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: #7cc29b;
+}
+.auth-token-banner p {
+  font-size: 12px;
+  color: var(--t2);
+  margin-top: 3px;
+  line-height: 1.5;
+}
+.auth-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.auth-code-input {
+  height: 44px;
+  font-size: 20px;
+  letter-spacing: 0.24em;
+  text-align: center;
+}
+.auth-submit {
+  width: 100%;
+  height: 38px;
+  justify-content: center;
+  font-size: 13.5px;
+}
+.auth-switch {
+  width: 100%;
+  justify-content: center;
+}
+.auth-foot {
+  font-size: 12px;
+  color: var(--t3);
+  line-height: 1.6;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+/* ---------- 设置：远程访问面板 ---------- */
+.remote-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.remote-section,
+.remote-readonly-card {
+  background: var(--rail);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px 18px;
+}
+.remote-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.remote-card-head h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--t1);
+}
+.remote-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.remote-card-desc {
+  font-size: 12.5px;
+  color: var(--t3);
+  margin-top: 3px;
+  line-height: 1.55;
+}
+.setting-row-wide {
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 340px);
+}
+.remote-actions-row {
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.remote-inline-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  margin-bottom: 10px;
+}
+.remote-cmd-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #0e0d0c;
+}
+.remote-cmd-box code {
+  font-size: 12px;
+  color: var(--t2);
+  word-break: break-all;
+  min-width: 0;
+  flex: 1 1 200px;
+}
+.remote-empty-hint {
+  font-size: 12.5px;
+  color: var(--t3);
+  padding: 12px 0 4px;
+}
+.pair-box {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+.qr-frame {
+  flex-shrink: 0;
+  padding: 6px;
+  border-radius: 8px;
+  background: #ffffff;
+  line-height: 0;
+}
+.qr-svg {
+  display: block;
+  width: 168px;
+  height: 168px;
+}
+.pair-info {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pair-label {
+  font-size: 12px;
+  color: var(--t3);
+}
+.pair-code {
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: var(--t1);
+  line-height: 1.2;
+}
+.pair-countdown {
+  font-size: 12.5px;
+  color: var(--ask);
+}
+.pair-countdown.is-expired {
+  color: #e08b85;
+}
+.pair-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+.priority-checks {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.pri-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+.pri-check input {
+  accent-color: var(--ask);
+}
+
 /* ---------- 移动端 ---------- */
 .menu-btn, .tabbar, .nav-mask { display: none; }
 .menu-btn { width: 36px; height: 36px; margin-left: -8px; border: none; background: transparent; color: var(--t2); border-radius: 6px; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
@@ -1015,7 +1324,13 @@ table.ut .live { color: #f6b26b; }
   table.ut, table.t { display: block; overflow-x: auto; white-space: nowrap; }
   .rank-row { grid-template-columns: 1fr 64px 64px; }
   .rank-row .rank-bar { display: none; }
-  .setting-row { grid-template-columns: 1fr; gap: 8px; }
+  .setting-row, .setting-row-wide { grid-template-columns: 1fr; gap: 8px; }
+  .priority-checks { justify-content: flex-start; }
+  .remote-bar { padding: 4px 12px; }
+  .offline-banner { padding: 8px 12px; gap: 8px; }
+  .remote-section, .remote-readonly-card { padding: 14px; }
+  .pair-box { flex-direction: column; align-items: flex-start; gap: 14px; }
+  .qr-svg { width: 156px; height: 156px; }
   .tabs { overflow-x: auto; }
   .inbox-task { flex-direction: column; gap: 4px; }
   .ledger-row { grid-template-columns: 1fr; gap: 2px; }

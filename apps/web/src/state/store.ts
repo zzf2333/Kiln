@@ -15,22 +15,27 @@ import type {
   WorkspaceMode,
 } from "@kiln/protocol/web";
 import {
+  ApiError,
   cancelTask as apiCancelTask,
   commitDraft as apiCommitDraft,
   deleteDraft as apiDeleteDraft,
   deleteSpace as apiDeleteSpace,
   fetchAgents as apiFetchAgents,
+  fetchAuthStatus as apiFetchAuthStatus,
   fetchBootstrap as apiFetchBootstrap,
   fetchDraftChat as apiFetchDraftChat,
   fetchLedgers as apiFetchLedgers,
   fetchTaskChat as apiFetchTaskChat,
   fetchTaskDetail as apiFetchTaskDetail,
   inspectSpacePath as apiInspectSpacePath,
+  logoutRemoteDevice as apiLogoutRemoteDevice,
+  pairRemoteDevice as apiPairRemoteDevice,
   pauseTask as apiPauseTask,
   restoreHostBackup as apiRestoreHostBackup,
   resumeTask as apiResumeTask,
   sendIntakeChat as apiSendIntakeChat,
   sendResolveChat as apiSendResolveChat,
+  setUnauthorizedHandler,
   submitDecision as apiSubmitDecision,
   subscribeSseEvents,
   updatePriority as apiUpdatePriority,
@@ -46,6 +51,8 @@ import type {
   ChatMessage,
   CommitDraftPayload,
   InspectSpaceResult,
+  PairCompleteRequest,
+  PublicPairedDevice,
   RawProviderUsageEntry,
   RestoreHostBackupResult,
   SettingsSectionMap,
@@ -65,9 +72,17 @@ export type MvpView =
   | "ledger"
   | "settings";
 
-export type SettingsTab = "roles" | "spaces" | "limits" | "pricing" | "conn";
+export type SettingsTab = "roles" | "spaces" | "limits" | "pricing" | "remote" | "conn";
 export type PeriodFilter = "week" | "month" | "year" | "all";
 export type IntakeMode = "project" | "local";
+export type AuthMode = "local" | "remote";
+
+export interface PairSubmitOutcome {
+  ok: boolean;
+  code?: string;
+  message?: string;
+  attemptsRemaining?: number;
+}
 
 export interface IntakeFormState {
   mode: IntakeMode;
@@ -99,6 +114,14 @@ export interface KilnStoreState {
   bootstrapping: boolean;
   bootstrapLoaded: boolean;
   bootstrapError: string | null;
+
+  authChecked: boolean;
+  authMode: AuthMode;
+  authAuthenticated: boolean;
+  authDevice: PublicPairedDevice | null;
+  authNotice: string | null;
+  pendingPairToken: string | null;
+
   tasks: BootstrapTask[];
   pendingDecisions: PendingDecision[];
   drafts: DraftCard[];
@@ -116,6 +139,9 @@ export interface KilnStoreState {
   ratesByTask: Record<string, number>;
   liveTotals: { costUsd: number; tokPerSec: number } | null;
   sseStatus: "connecting" | "connected" | "reconnecting" | "closed";
+  lastConnectedAt: string | null;
+  networkOffline: boolean;
+  retryingConnection: boolean;
 
   taskDetails: Record<string, TaskDetailResponse>;
   taskDetailLoading: boolean;
@@ -151,6 +177,7 @@ const VALID_SETTINGS_TABS = new Set<SettingsTab>([
   "spaces",
   "limits",
   "pricing",
+  "remote",
   "conn",
 ]);
 
@@ -258,17 +285,55 @@ function parseLocationHash(): {
   taskId: string | null;
   settingsTab: SettingsTab;
   hadInvalidRoute: boolean;
+  pairToken: string | null;
 } {
   if (typeof window === "undefined") {
-    return { view: "board", taskId: null, settingsTab: "roles", hadInvalidRoute: false };
+    return {
+      view: "board",
+      taskId: null,
+      settingsTab: "roles",
+      hadInvalidRoute: false,
+      pairToken: null,
+    };
   }
   const raw = window.location.hash.startsWith("#")
     ? window.location.hash.slice(1)
     : window.location.hash;
   if (!raw) {
-    return { view: "board", taskId: null, settingsTab: "roles", hadInvalidRoute: false };
+    // Support push notification deep links like /tasks/<taskId>
+    const pathMatch = /^\/tasks\/([^/]+)$/.exec(window.location.pathname);
+    if (pathMatch && pathMatch[1]) {
+      try {
+        return {
+          view: "detail",
+          taskId: decodeURIComponent(pathMatch[1]),
+          settingsTab: "roles",
+          hadInvalidRoute: false,
+          pairToken: null,
+        };
+      } catch {
+        // Ignore malformed URI encoding
+      }
+    }
+    return {
+      view: "board",
+      taskId: null,
+      settingsTab: "roles",
+      hadInvalidRoute: false,
+      pairToken: null,
+    };
   }
   const params = new URLSearchParams(raw);
+  const pairParam = params.get("pair")?.trim() ?? "";
+  if (pairParam.length > 0) {
+    return {
+      view: "board",
+      taskId: null,
+      settingsTab: "roles",
+      hadInvalidRoute: false,
+      pairToken: pairParam,
+    };
+  }
   const rawTab = params.get("tab");
   const settingsTab: SettingsTab =
     rawTab && VALID_SETTINGS_TABS.has(rawTab as SettingsTab)
@@ -277,11 +342,23 @@ function parseLocationHash(): {
 
   const taskParam = params.get("task");
   if (taskParam) {
-    return { view: "detail", taskId: taskParam, settingsTab, hadInvalidRoute: false };
+    return {
+      view: "detail",
+      taskId: taskParam,
+      settingsTab,
+      hadInvalidRoute: false,
+      pairToken: null,
+    };
   }
   const resolveParam = params.get("resolve");
   if (resolveParam) {
-    return { view: "resolve", taskId: resolveParam, settingsTab, hadInvalidRoute: false };
+    return {
+      view: "resolve",
+      taskId: resolveParam,
+      settingsTab,
+      hadInvalidRoute: false,
+      pairToken: null,
+    };
   }
   const viewParam = params.get("view");
   if (viewParam) {
@@ -295,11 +372,24 @@ function parseLocationHash(): {
         taskId: null,
         settingsTab,
         hadInvalidRoute: false,
+        pairToken: null,
       };
     }
-    return { view: "board", taskId: null, settingsTab, hadInvalidRoute: true };
+    return {
+      view: "board",
+      taskId: null,
+      settingsTab,
+      hadInvalidRoute: true,
+      pairToken: null,
+    };
   }
-  return { view: "board", taskId: null, settingsTab, hadInvalidRoute: false };
+  return {
+    view: "board",
+    taskId: null,
+    settingsTab,
+    hadInvalidRoute: false,
+    pairToken: null,
+  };
 }
 
 function normalizeLedgers(
@@ -328,6 +418,7 @@ export class KilnWebStore {
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
   private sseCleanup: (() => void) | null = null;
   private refreshInFlight: Promise<void> | null = null;
+  private authProbeInFlight: Promise<void> | null = null;
 
   constructor() {
     const parsed = parseLocationHash();
@@ -348,6 +439,14 @@ export class KilnWebStore {
       bootstrapping: true,
       bootstrapLoaded: false,
       bootstrapError: null,
+
+      authChecked: false,
+      authMode: "local",
+      authAuthenticated: true,
+      authDevice: null,
+      authNotice: null,
+      pendingPairToken: parsed.pairToken,
+
       tasks: [],
       pendingDecisions: [],
       drafts: [],
@@ -365,6 +464,9 @@ export class KilnWebStore {
       ratesByTask: {},
       liveTotals: null,
       sseStatus: "connecting",
+      lastConnectedAt: null,
+      networkOffline: false,
+      retryingConnection: false,
 
       taskDetails: {},
       taskDetailLoading: false,
@@ -384,7 +486,9 @@ export class KilnWebStore {
       resolveBusy: false,
     };
 
-    if (parsed.hadInvalidRoute) {
+    // Immediately strip #pair=<token> (or invalid routes) so one-time pairing tokens
+    // never linger in window.location.hash or browser history.
+    if (parsed.pairToken || parsed.hadInvalidRoute) {
       this.replaceHash("");
     }
   }
@@ -425,7 +529,7 @@ export class KilnWebStore {
   }
 
   private syncHashFromState(): void {
-    if (!this.state.bootstrapLoaded) return;
+    if (!this.state.bootstrapLoaded || !this.state.authAuthenticated) return;
     let next = "";
     if (this.state.view === "detail" && this.state.taskId) {
       next = `#task=${encodeURIComponent(this.state.taskId)}`;
@@ -442,6 +546,205 @@ export class KilnWebStore {
     this.replaceHash(next);
   }
 
+  private disconnectSse(): void {
+    if (this.sseCleanup) {
+      const cleanup = this.sseCleanup;
+      this.sseCleanup = null;
+      cleanup();
+    }
+  }
+
+  private connectSse(): void {
+    this.disconnectSse();
+    this.setState({ sseStatus: "connecting" });
+    this.sseCleanup = subscribeSseEvents({
+      onEvent: (event) => this.handleSseEvent(event),
+      onStatusChange: (sseStatus) => {
+        if (sseStatus === "connected") {
+          this.setState({
+            sseStatus,
+            lastConnectedAt: new Date().toISOString(),
+            networkOffline: false,
+          });
+        } else if (sseStatus === "reconnecting") {
+          this.setState({ sseStatus, networkOffline: true });
+          if (this.state.authMode === "remote" && this.state.authAuthenticated) {
+            void this.probeRemoteAuthAfterDisconnect();
+          }
+        } else {
+          this.setState({ sseStatus });
+        }
+      },
+    });
+  }
+
+  private async probeRemoteAuthAfterDisconnect(): Promise<void> {
+    if (this.authProbeInFlight) return;
+    const run = (async () => {
+      try {
+        const status = await apiFetchAuthStatus();
+        if (status.mode === "remote" && !status.authenticated) {
+          this.handleRemoteUnauthorized(
+            "当前设备会话已失效或已被桌面端吊销，请重新配对登录。",
+          );
+        } else {
+          this.setState({ lastConnectedAt: new Date().toISOString() });
+        }
+      } catch {
+        // Host genuinely offline or unreachable; keep offline banner active.
+      } finally {
+        this.authProbeInFlight = null;
+      }
+    })();
+    this.authProbeInFlight = run;
+    await run;
+  }
+
+  private clearRemoteSession(notice: string): void {
+    this.disconnectSse();
+    this.setState({
+      authChecked: true,
+      authMode: "remote",
+      authAuthenticated: false,
+      authDevice: null,
+      authNotice: notice,
+      bootstrapping: false,
+      bootstrapLoaded: false,
+      bootstrapError: null,
+      networkOffline: false,
+      retryingConnection: false,
+      navOpen: false,
+      draftOpen: false,
+      paletteOpen: false,
+      spaceModalOpen: false,
+      tasks: [],
+      pendingDecisions: [],
+      drafts: [],
+      taskDetails: {},
+      ledgers: {},
+      resolveMessagesByTask: {},
+      ratesByTask: {},
+      liveTotals: null,
+      sseStatus: "closed",
+    });
+  }
+
+  handleRemoteUnauthorized(notice: string): void {
+    if (this.state.authMode === "remote" && !this.state.authAuthenticated) {
+      return;
+    }
+    this.clearRemoteSession(notice);
+  }
+
+  clearPendingPairToken(): void {
+    this.setState({ pendingPairToken: null });
+  }
+
+  async initializeSession(): Promise<void> {
+    try {
+      const status = await apiFetchAuthStatus();
+      const nowIso = new Date().toISOString();
+      if (status.mode === "remote" && !status.authenticated) {
+        this.disconnectSse();
+        this.setState({
+          authChecked: true,
+          authMode: "remote",
+          authAuthenticated: false,
+          authDevice: null,
+          bootstrapping: false,
+          lastConnectedAt: nowIso,
+          networkOffline: false,
+          sseStatus: "closed",
+        });
+        return;
+      }
+
+      this.setState({
+        authChecked: true,
+        authMode: status.mode,
+        authAuthenticated: true,
+        authDevice: status.device,
+        authNotice: null,
+        lastConnectedAt: nowIso,
+        networkOffline: false,
+      });
+      this.connectSse();
+      await this.bootstrap();
+    } catch (err) {
+      this.setState({
+        authChecked: true,
+        bootstrapping: false,
+        networkOffline: true,
+        bootstrapError:
+          err instanceof Error ? err.message : "主机离线或无法连接 Kiln 服务",
+      });
+    }
+  }
+
+  async completeRemotePairing(input: PairCompleteRequest): Promise<PairSubmitOutcome> {
+    try {
+      const res = await apiPairRemoteDevice(input);
+      this.setState({
+        authChecked: true,
+        authMode: "remote",
+        authAuthenticated: true,
+        authDevice: res.device,
+        authNotice: null,
+        pendingPairToken: null,
+        bootstrapError: null,
+        lastConnectedAt: new Date().toISOString(),
+        networkOffline: false,
+      });
+      this.connectSse();
+      await this.bootstrap();
+      this.showToast(`已配对设备：${res.device.label}`);
+      return { ok: true };
+    } catch (err) {
+      if (err instanceof ApiError) {
+        const attemptsRemaining =
+          typeof err.payload?.attemptsRemaining === "number"
+            ? err.payload.attemptsRemaining
+            : undefined;
+        return {
+          ok: false,
+          code: err.code,
+          message: err.message,
+          ...(attemptsRemaining !== undefined ? { attemptsRemaining } : {}),
+        };
+      }
+      return {
+        ok: false,
+        code: "network_error",
+        message: err instanceof Error ? err.message : "配对请求失败，请检查网络连接",
+      };
+    }
+  }
+
+  async logoutRemote(): Promise<void> {
+    try {
+      await apiLogoutRemoteDevice();
+    } catch {
+      // Clear local session state even if host is unreachable during logout.
+    }
+    this.clearRemoteSession("已退出当前设备的远程登录会话。");
+    this.showToast("已退出远程登录");
+  }
+
+  async retryConnection(): Promise<void> {
+    if (this.state.retryingConnection) return;
+    this.setState({ retryingConnection: true });
+    try {
+      if (!this.state.bootstrapLoaded || this.state.authMode === "remote") {
+        await this.initializeSession();
+      } else {
+        this.connectSse();
+        await this.bootstrap();
+      }
+    } finally {
+      this.setState({ retryingConnection: false });
+    }
+  }
+
   showToast(message: string): void {
     if (this.toastTimer) {
       clearTimeout(this.toastTimer);
@@ -454,14 +757,27 @@ export class KilnWebStore {
   }
 
   start(): () => void {
-    void this.bootstrap();
-    this.sseCleanup = subscribeSseEvents({
-      onEvent: (event) => this.handleSseEvent(event),
-      onStatusChange: (sseStatus) => this.setState({ sseStatus }),
-    });
+    const onUnauthorized = (_url: string, err: ApiError): void => {
+      if (this.state.authMode === "remote" || err.code === "unauthorized") {
+        this.handleRemoteUnauthorized(
+          "当前设备会话已失效或已被桌面端吊销，请重新配对登录。",
+        );
+      }
+    };
+    setUnauthorizedHandler(onUnauthorized);
+
+    void this.initializeSession();
 
     const onHashChange = (): void => {
       const parsed = parseLocationHash();
+      if (parsed.pairToken) {
+        this.setState({ pendingPairToken: parsed.pairToken });
+        this.replaceHash("");
+        return;
+      }
+      if (!this.state.authAuthenticated) {
+        return;
+      }
       this.setState({
         view: parsed.view,
         taskId: parsed.taskId,
@@ -485,10 +801,8 @@ export class KilnWebStore {
     }
 
     return () => {
-      if (this.sseCleanup) {
-        this.sseCleanup();
-        this.sseCleanup = null;
-      }
+      setUnauthorizedHandler(null);
+      this.disconnectSse();
       if (this.toastTimer) {
         clearTimeout(this.toastTimer);
         this.toastTimer = null;
@@ -578,6 +892,10 @@ export class KilnWebStore {
           bootstrapping: false,
           bootstrapLoaded: true,
           bootstrapError: null,
+          lastConnectedAt: new Date().toISOString(),
+          ...(this.state.sseStatus !== "reconnecting"
+            ? { networkOffline: false }
+            : {}),
           tasks: data.tasks ?? [],
           pendingDecisions: data.pendingDecisions ?? [],
           drafts: data.drafts ?? [],
@@ -618,9 +936,23 @@ export class KilnWebStore {
           void this.refreshAgents();
         }
       } catch (err) {
+        if (err instanceof ApiError && err.status === 401 && this.state.authMode === "remote") {
+          return;
+        }
+        const isOfflineError =
+          !(err instanceof ApiError) ||
+          err.status === 502 ||
+          err.status === 503 ||
+          err.status === 504;
         this.setState({
           bootstrapping: false,
-          bootstrapError: err instanceof Error ? err.message : "加载工作台失败",
+          ...(isOfflineError ? { networkOffline: true } : {}),
+          ...(!this.state.bootstrapLoaded
+            ? {
+                bootstrapError:
+                  err instanceof Error ? err.message : "加载工作台失败",
+              }
+            : {}),
         });
       } finally {
         this.refreshInFlight = null;
@@ -632,6 +964,12 @@ export class KilnWebStore {
   }
 
   private handleSseEvent(event: SseEvent): void {
+    const nowIso = new Date().toISOString();
+    if (this.state.networkOffline || !this.state.lastConnectedAt) {
+      this.setState({ lastConnectedAt: nowIso, networkOffline: false });
+    } else {
+      this.state = { ...this.state, lastConnectedAt: nowIso };
+    }
     if (event.type === "rate.tick") {
       this.setState({
         ratesByTask: { ...event.rates },
