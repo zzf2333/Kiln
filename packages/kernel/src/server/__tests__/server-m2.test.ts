@@ -1369,4 +1369,160 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     expect(piResolverSpecs).toHaveLength(1);
     expect(piResolverSpecs[0]!.mcpServers).toBeUndefined();
   });
+
+  it("serves embedded static assets with MIME types & SPA fallback when disk publicDir is absent, and detects compiled Bun binary MCP invocation", async () => {
+    const encoder = new TextEncoder();
+    const embeddedPublicAssets = new Map([
+      [
+        "index.html",
+        { readBytes: () => encoder.encode("<!doctype html><html><body>Embedded Kiln</body></html>") },
+      ],
+      [
+        "manifest.webmanifest",
+        { readBytes: () => encoder.encode('{"name":"Kiln","display":"standalone"}') },
+      ],
+      [
+        "assets/app-abc12345.js",
+        { readBytes: () => encoder.encode("console.log('embedded');") },
+      ],
+      [
+        "assets/style-abc12345.css",
+        { readBytes: () => encoder.encode("body { color: #222; }") },
+      ],
+      [
+        "icon.svg",
+        { readBytes: () => encoder.encode("<svg/>") },
+      ],
+    ]);
+
+    const outsideDir = makeTempDir("kiln-embedded-static-");
+    // 1. When publicDir is NOT explicitly provided and embeddedPublicAssets is populated,
+    //    serve embedded assets directly without probing disk (prevents reading host `/public` in compiled binaries).
+    const defaultEmbeddedServer = new KilndServer({
+      kilnHome: makeTempDir("kiln-embedded-default-home-"),
+      embeddedPublicAssets,
+      port: 0,
+      tokenSecret: "embedded-default-secret-01234567",
+    });
+    servers.push(defaultEmbeddedServer);
+    const defaultRootRes = await defaultEmbeddedServer.app.request(new Request("http://127.0.0.1/"));
+    expect(defaultRootRes.status).toBe(200);
+    expect(await defaultRootRes.text()).toContain("Embedded Kiln");
+
+    // 2. When explicit publicDir exists on disk, disk overrides embedded assets.
+    const explicitDiskDir = makeTempDir("kiln-explicit-disk-pub-");
+    fs.writeFileSync(
+      path.join(explicitDiskDir, "index.html"),
+      "<!doctype html><html><body>Disk Override Kiln</body></html>",
+      "utf8",
+    );
+    const diskOverrideServer = new KilndServer({
+      kilnHome: makeTempDir("kiln-disk-override-home-"),
+      publicDir: explicitDiskDir,
+      embeddedPublicAssets,
+      port: 0,
+      tokenSecret: "disk-override-secret-01234567890",
+    });
+    servers.push(diskOverrideServer);
+    const overrideRes = await diskOverrideServer.app.request(new Request("http://127.0.0.1/"));
+    expect(overrideRes.status).toBe(200);
+    expect(await overrideRes.text()).toContain("Disk Override Kiln");
+
+    // 3. When explicit publicDir is absent on disk, fall back to embedded assets.
+    const server = new KilndServer({
+      kilnHome: makeTempDir("kiln-embedded-home-"),
+      publicDir: path.join(outsideDir, "nonexistent-public"),
+      embeddedPublicAssets,
+      port: 0,
+      tokenSecret: "embedded-static-secret-012345678",
+    });
+    servers.push(server);
+
+    const rootRes = await server.app.request(new Request("http://127.0.0.1/"));
+    expect(rootRes.status).toBe(200);
+    expect(rootRes.headers.get("content-type")).toContain("text/html");
+    expect(rootRes.headers.get("cache-control")).toBe("no-cache");
+    expect(await rootRes.text()).toContain("Embedded Kiln");
+
+    const headRes = await server.app.request(new Request("http://127.0.0.1/", { method: "HEAD" }));
+    expect(headRes.status).toBe(200);
+    expect(await headRes.text()).toBe("");
+
+    const manifestRes = await server.app.request(
+      new Request("http://127.0.0.1/manifest.webmanifest"),
+    );
+    expect(manifestRes.status).toBe(200);
+    expect(manifestRes.headers.get("content-type")).toBe("application/manifest+json; charset=utf-8");
+
+    const jsRes = await server.app.request(
+      new Request("http://127.0.0.1/assets/app-abc12345.js"),
+    );
+    expect(jsRes.status).toBe(200);
+    expect(jsRes.headers.get("content-type")).toContain("text/javascript");
+    expect(jsRes.headers.get("cache-control")).toContain("immutable");
+
+    const spaRes = await server.app.request(new Request("http://127.0.0.1/tasks/t-123"));
+    expect(spaRes.status).toBe(200);
+    expect(await spaRes.text()).toContain("Embedded Kiln");
+
+    const missingAssetRes = await server.app.request(
+      new Request("http://127.0.0.1/assets/missing.js"),
+    );
+    expect(missingAssetRes.status).toBe(404);
+
+    const apiMissingRes = await server.app.request(new Request("http://127.0.0.1/api/nope"));
+    expect(apiMissingRes.status).toBe(404);
+
+    const { createStaticFilesHandler, isCompiledKilnBinary, resolveMcpServerCommand } =
+      await import("../index.js");
+
+    const rawHandler = createStaticFilesHandler({
+      publicDir: path.join(outsideDir, "nonexistent-public"),
+      embeddedAssets: embeddedPublicAssets,
+    });
+    const traversalRes = rawHandler({
+      req: { path: "/", method: "GET", raw: { url: "/%2e%2e/etc/passwd" } },
+      json(payload: unknown, status = 200) {
+        return new Response(JSON.stringify(payload), { status });
+      },
+    } as any);
+    expect(traversalRes.status).toBe(403);
+
+    // Compiled binary detection & MCP command resolution
+    expect(isCompiledKilnBinary({ isBun: false, argv1: "/$bunfs/root/kiln" })).toBe(false);
+    expect(
+      isCompiledKilnBinary({
+        isBun: true,
+        argv1: "/repo/packages/cli/src/bin.ts",
+        moduleUrl: "file:///repo/packages/kernel/src/server/chat.ts",
+        bunMain: "/repo/packages/cli/src/bin.ts",
+      }),
+    ).toBe(false);
+    expect(
+      isCompiledKilnBinary({
+        isBun: true,
+        argv1: "/$bunfs/root/kiln",
+        moduleUrl: "file:///$bunfs/root/kiln",
+        bunMain: "/$bunfs/root/kiln",
+      }),
+    ).toBe(true);
+    expect(
+      isCompiledKilnBinary({
+        isBun: true,
+        argv1: "B:/~BUN/root/kiln.exe",
+        moduleUrl: "file:///B:/~BUN/root/kiln.exe",
+        bunMain: "B:/~BUN/root/kiln.exe",
+      }),
+    ).toBe(true);
+
+    expect(
+      resolveMcpServerCommand(undefined, {
+        compiledBinary: true,
+        execPath: "/Applications/Kiln.app/Contents/MacOS/kiln",
+      }),
+    ).toEqual({
+      command: "/Applications/Kiln.app/Contents/MacOS/kiln",
+      args: ["__mcp"],
+    });
+  });
 });

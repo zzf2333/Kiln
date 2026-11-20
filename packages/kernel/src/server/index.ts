@@ -20,6 +20,7 @@ export {
 export {
   ChatMessageRecordSchema,
   KilnChatEngine,
+  isCompiledKilnBinary,
   resolveMcpServerCommand,
   snapshotBackends,
   type AgentSnapshotEntry,
@@ -29,6 +30,7 @@ export {
   type ChatResponder,
   type ChatResponderInput,
   type ChatResponderOutput,
+  type CompiledBinaryDetectInput,
   type KilnChatEngineOptions,
   type McpCommandSpec,
   type NormalizedProviderUsageEntry,
@@ -147,6 +149,8 @@ export {
 export {
   createStaticFilesHandler,
   resolveDefaultPublicDir,
+  type EmbeddedStaticAsset,
+  type EmbeddedStaticAssets,
   type StaticFilesHandlerOptions,
 } from "./static-files.js";
 export {

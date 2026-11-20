@@ -49,6 +49,7 @@ import {
   type TailscaleExecFileFn,
 } from "./remote-tailscale.js";
 import { SseHub } from "./sse.js";
+import type { EmbeddedStaticAssets } from "./static-files.js";
 import { signRunToken, verifyRunToken } from "./token.js";
 
 export const DEFAULT_KILND_HOST = "127.0.0.1";
@@ -75,6 +76,7 @@ export interface KilndServerOptions {
   maxRpcBodyBytes?: number;
   enableOrchestrator?: boolean;
   publicDir?: string | null;
+  embeddedPublicAssets?: EmbeddedStaticAssets | null;
   deliverHandler?: DeliverHandler;
   approvalHandler?: OrchestratorApprovalHandler;
   mcpServerCommand?: McpCommandSpec;
@@ -304,6 +306,9 @@ export class KilndServer {
       onRemoteConfigUpdated: (nextConfig) => this.applyRemoteConfig(nextConfig),
       inspectTailscale,
       ...(options.publicDir !== undefined ? { publicDir: options.publicDir } : {}),
+      ...(options.embeddedPublicAssets !== undefined
+        ? { embeddedPublicAssets: options.embeddedPublicAssets }
+        : {}),
       ...(options.backendQueryTimeoutMs !== undefined
         ? { backendQueryTimeoutMs: options.backendQueryTimeoutMs }
         : {}),
@@ -427,6 +432,7 @@ export class KilndServer {
           fetch: app.fetch,
           hostname: this.host,
           port,
+          overrideGlobalObjects: false,
         },
         () => {
           if (settled) return;
@@ -435,6 +441,9 @@ export class KilndServer {
           resolve(createdServer!);
         },
       );
+      if ("requestTimeout" in createdServer) {
+        (createdServer as http.Server).requestTimeout = 0;
+      }
       createdServer.once("error", onError);
     });
 

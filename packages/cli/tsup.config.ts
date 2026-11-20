@@ -15,6 +15,7 @@ export default defineConfig([
         paths: {
           "@kiln/protocol": ["../protocol/dist/index.d.ts"],
           "@kiln/kernel": ["../kernel/dist/index.d.ts"],
+          "@kiln/mcp": ["../mcp/dist/index.d.ts"],
         },
       },
     },
