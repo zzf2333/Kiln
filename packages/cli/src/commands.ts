@@ -19,11 +19,13 @@ import {
   type WorkspaceMode,
 } from "@kiln/protocol";
 import {
+  BackendRegistry,
   DEFAULT_KILND_HOST,
   DEFAULT_KILND_PORT,
   KilnPaths,
   KilnStore,
   KilndServer,
+  PaseoBackend,
   PendingDecisionStore,
   assertSafeSegment,
   buildSanitizedEnv,
@@ -32,6 +34,7 @@ import {
   deriveTaskStatus,
   ensureDir,
   writeFileAtomic,
+  type ExecutionBackend,
   type UsageSnapshot,
 } from "@kiln/kernel";
 import {
@@ -103,6 +106,11 @@ export interface CliRuntimeOptions {
   nodeVersion?: string;
   now?: () => Date;
   foregroundSignal?: AbortSignal;
+  onForegroundServer?: (server: KilndServer) => void;
+  paseoUrl?: string;
+  disablePaseo?: boolean;
+  backendRegistry?: BackendRegistry;
+  createPaseoBackend?: (opts: { url?: string; password?: string }) => ExecutionBackend;
 }
 
 export interface CliRunResult {
@@ -143,7 +151,7 @@ export interface CliStatusSummary {
 }
 
 export interface DoctorCheckResult {
-  id: "node" | "git" | "apfs_clone" | "kilnd" | "service";
+  id: "node" | "git" | "apfs_clone" | "kilnd" | "paseo" | "service";
   ok: boolean;
   required: boolean;
   status: "pass" | "warn" | "fail" | "skip";
@@ -172,6 +180,7 @@ const GLOBAL_HELP = [
   "",
   "Commands:",
   "  up [--port <port>] [--host <host>] [--foreground]  Start kilnd (idempotent)",
+  "        [--paseo-url <url>] [--no-paseo]",
   "  down                                               Stop managed kilnd",
   "  open [--port <port>] [--host <host>]               Open Kiln web UI",
   "  status [--port <port>] [--host <host>] [--json]    Show tasks, pending decisions, usage",
@@ -179,7 +188,7 @@ const GLOBAL_HELP = [
   "        [--track <L1|L2>] [--mode <mode>] [--id <id>]",
   "  decide [task-id] [--option <id>] [--rationale <t>] List or submit pending decisions",
   "        [--apply-ledger] [--decision <id>]",
-  "  doctor [--port <port>] [--host <host>] [--json]    Verify Node, Git, APFS, kilnd, service",
+  "  doctor [--port <port>] [--host <host>] [--json]    Verify Node, Git, APFS, kilnd, Paseo, service",
   "  service <install|uninstall|status>                 Manage OS startup service",
   "  uninstall [--purge-data]                           Stop daemon, remove service, inspect worktrees",
   "",
@@ -189,7 +198,7 @@ const GLOBAL_HELP = [
 ].join("\n");
 
 const COMMAND_HELP: Record<string, string> = {
-  up: "Usage: kiln up [--port <port>] [--host <host>] [--foreground]",
+  up: "Usage: kiln up [--port <port>] [--host <host>] [--foreground] [--paseo-url <url>] [--no-paseo]",
   down: "Usage: kiln down",
   open: "Usage: kiln open [--port <port>] [--host <host>]",
   status: "Usage: kiln status [--port <port>] [--host <host>] [--json]",
@@ -286,6 +295,71 @@ function parseHostValue(rawHost: string | undefined, fallback?: string): string 
 
 function buildBaseUrl(host: string, port: number): string {
   return `http://${host}:${port}`;
+}
+
+function parsePaseoUrlValue(rawUrl: string | undefined): string | undefined {
+  if (rawUrl === undefined) {
+    return undefined;
+  }
+  const trimmed = rawUrl.trim();
+  if (trimmed.length === 0) {
+    throw new CliUsageError(
+      'Invalid --paseo-url "": expected a non-empty ws:// or wss:// URL',
+      COMMAND_HELP.up,
+    );
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new CliUsageError(
+      `Invalid --paseo-url "${rawUrl}": expected a valid ws:// or wss:// URL`,
+      COMMAND_HELP.up,
+    );
+  }
+  if (
+    (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") ||
+    parsed.hostname.length === 0
+  ) {
+    throw new CliUsageError(
+      `Invalid --paseo-url "${rawUrl}": expected a ws:// or wss:// URL`,
+      COMMAND_HELP.up,
+    );
+  }
+  return trimmed;
+}
+
+export interface BuildDaemonForegroundArgsInput {
+  entrypoint: string;
+  host: string;
+  port: number;
+  paseoUrl?: string;
+  disablePaseo?: boolean;
+}
+
+/**
+ * Builds the child process argument list used by `kiln up` when spawning
+ * `kilnd` in detached foreground mode.
+ */
+export function buildDaemonForegroundArgs(
+  input: BuildDaemonForegroundArgsInput,
+): string[] {
+  const args = [
+    input.entrypoint,
+    "up",
+    "--foreground",
+    "--host",
+    input.host,
+    "--port",
+    String(input.port),
+  ];
+  if (input.paseoUrl !== undefined) {
+    args.push("--paseo-url", input.paseoUrl);
+  }
+  if (input.disablePaseo) {
+    args.push("--no-paseo");
+  }
+  return args;
 }
 
 function parsePlatformFlag(
@@ -633,6 +707,8 @@ async function handleUp(
       port: { type: "string", short: "p" },
       host: { type: "string" },
       foreground: { type: "boolean", short: "f", default: false },
+      "paseo-url": { type: "string" },
+      "no-paseo": { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
     },
     strict: true,
@@ -653,6 +729,18 @@ async function handleUp(
     options.port ?? DEFAULT_KILND_PORT,
     allowZeroPort,
   );
+  const disablePaseo =
+    Boolean(parsed.values["no-paseo"]) ||
+    Boolean(options.disablePaseo) ||
+    process.env.KILN_DISABLE_PASEO === "1" ||
+    process.env.KILN_DISABLE_PASEO === "true";
+  const explicitCliOrOptionPaseoUrl =
+    parsed.values["paseo-url"] ?? options.paseoUrl;
+  const rawPaseoUrl =
+    explicitCliOrOptionPaseoUrl ??
+    (disablePaseo ? undefined : process.env.PASEO_URL);
+  const paseoUrl = parsePaseoUrlValue(rawPaseoUrl);
+
   const baseUrl = buildBaseUrl(host, port);
   const pidFile = resolveKilnPidPath(kilnHome);
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
@@ -697,45 +785,84 @@ async function handleUp(
   }
 
   if (parsed.values.foreground) {
-    const server = new KilndServer({
-      kilnHome,
-      host,
-      port,
-      enableOrchestrator: true,
-    });
-    const addr = await server.start();
-    writeFileAtomic(pidFile, `${process.pid}\n`);
-    io.out(
-      `kilnd listening in foreground at ${addr.baseUrl} (PID ${process.pid}, socket ${addr.socketPath}).`,
-    );
-
-    if (options.foregroundSignal) {
-      await new Promise<void>((resolve) => {
-        if (options.foregroundSignal!.aborted) {
-          resolve();
-          return;
-        }
-        options.foregroundSignal!.addEventListener("abort", () => resolve(), {
-          once: true,
-        });
-      });
-      await server.stop();
-      fs.rmSync(pidFile, { force: true });
-    }
-
-    return {
-      exitCode: 0,
-      stdout: io.getStdout(),
-      stderr: io.getStderr(),
-      data: {
-        alreadyRunning: false,
-        pid: process.pid,
-        port: addr.port,
-        host,
-        baseUrl: addr.baseUrl,
-        socketPath: addr.socketPath,
-      },
+    const ownsRegistry = options.backendRegistry === undefined;
+    const backendRegistry = options.backendRegistry ?? new BackendRegistry();
+    let registryDisposed = false;
+    const disposeOwnedRegistry = async (): Promise<void> => {
+      if (ownsRegistry && !registryDisposed) {
+        registryDisposed = true;
+        await backendRegistry.disposeAll();
+      }
     };
+
+    let server: KilndServer | null = null;
+    try {
+      if (
+        (ownsRegistry || options.createPaseoBackend !== undefined) &&
+        !disablePaseo &&
+        !backendRegistry.has("paseo")
+      ) {
+        const paseoOpts: { url?: string; password?: string } = {
+          ...(paseoUrl ? { url: paseoUrl } : {}),
+          ...(process.env.PASEO_PASSWORD
+            ? { password: process.env.PASEO_PASSWORD }
+            : {}),
+        };
+        const paseoBackend = options.createPaseoBackend
+          ? options.createPaseoBackend(paseoOpts)
+          : new PaseoBackend(paseoOpts);
+        backendRegistry.register(paseoBackend);
+      }
+
+      server = new KilndServer({
+        kilnHome,
+        host,
+        port,
+        enableOrchestrator: true,
+        backendRegistry,
+      });
+      const addr = await server.start();
+      writeFileAtomic(pidFile, `${process.pid}\n`);
+      io.out(
+        `kilnd listening in foreground at ${addr.baseUrl} (PID ${process.pid}, socket ${addr.socketPath}).`,
+      );
+      options.onForegroundServer?.(server);
+
+      if (options.foregroundSignal) {
+        await new Promise<void>((resolve) => {
+          if (options.foregroundSignal!.aborted) {
+            resolve();
+            return;
+          }
+          options.foregroundSignal!.addEventListener("abort", () => resolve(), {
+            once: true,
+          });
+        });
+        await server.stop();
+        fs.rmSync(pidFile, { force: true });
+        await disposeOwnedRegistry();
+      }
+
+      return {
+        exitCode: 0,
+        stdout: io.getStdout(),
+        stderr: io.getStderr(),
+        data: {
+          alreadyRunning: false,
+          pid: process.pid,
+          port: addr.port,
+          host,
+          baseUrl: addr.baseUrl,
+          socketPath: addr.socketPath,
+        },
+      };
+    } catch (err) {
+      if (server) {
+        await server.stop().catch(() => {});
+      }
+      await disposeOwnedRegistry().catch(() => {});
+      throw err;
+    }
   }
 
   const entrypoint = resolveDefaultCliEntrypoint();
@@ -749,9 +876,19 @@ async function handleUp(
   let childExited = false;
 
   try {
+    const spawnArgs = buildDaemonForegroundArgs({
+      entrypoint,
+      host,
+      port,
+      ...(explicitCliOrOptionPaseoUrl !== undefined && paseoUrl !== undefined
+        ? { paseoUrl }
+        : {}),
+      disablePaseo:
+        Boolean(parsed.values["no-paseo"]) || Boolean(options.disablePaseo),
+    });
     const child = spawn(
       process.execPath,
-      [entrypoint, "up", "--foreground", "--host", host, "--port", String(port)],
+      spawnArgs,
       {
         detached: true,
         stdio: ["ignore", outFd, outFd],
@@ -1340,6 +1477,173 @@ function parseNodeMajor(rawVersion: string): { valid: boolean; major: number; ra
   return { valid: true, major: Number(match[1]), raw: cleaned };
 }
 
+interface AgentsEndpointBackend {
+  backendId?: unknown;
+  id?: unknown;
+  connected?: unknown;
+  status?: unknown;
+  detail?: unknown;
+}
+
+interface AgentsEndpointAgent {
+  id?: unknown;
+  label?: unknown;
+  backendId?: unknown;
+}
+
+async function checkDoctorPaseo(
+  fetchImpl: typeof fetch,
+  baseUrl: string,
+  kilndOnline: boolean,
+): Promise<DoctorCheckResult> {
+  if (!kilndOnline) {
+    return {
+      id: "paseo",
+      ok: false,
+      required: false,
+      status: "skip",
+      detail: "Paseo check skipped because kilnd is offline",
+    };
+  }
+
+  try {
+    const res = await fetchWithTimeout(
+      fetchImpl,
+      `${baseUrl}/api/agents`,
+      { method: "GET" },
+      API_TIMEOUT_MS,
+    );
+    if (!res.ok) {
+      return {
+        id: "paseo",
+        ok: false,
+        required: false,
+        status: "warn",
+        detail: `Paseo backend status unavailable (GET /api/agents returned HTTP ${res.status}); check PASEO_URL or paseo daemon`,
+        meta: { connected: false, status: res.status },
+      };
+    }
+
+    const body = (await res.json()) as {
+      ok?: unknown;
+      backends?: unknown;
+      agents?: unknown;
+    };
+    if (body === null || typeof body !== "object" || body.ok === false) {
+      return {
+        id: "paseo",
+        ok: false,
+        required: false,
+        status: "warn",
+        detail:
+          "Paseo backend status unavailable (unexpected /api/agents payload); check PASEO_URL or paseo daemon",
+        meta: { connected: false },
+      };
+    }
+
+    const backends = Array.isArray(body.backends)
+      ? (body.backends as AgentsEndpointBackend[])
+      : [];
+    const agents = Array.isArray(body.agents)
+      ? (body.agents as AgentsEndpointAgent[])
+      : [];
+
+    const connectedBackends = backends.filter(
+      (backend) =>
+        backend !== null &&
+        typeof backend === "object" &&
+        backend.connected === true,
+    );
+
+    if (connectedBackends.length > 0) {
+      const backendLabels = connectedBackends.map((backend) =>
+        typeof backend.backendId === "string" && backend.backendId.length > 0
+          ? backend.backendId
+          : typeof backend.id === "string" && backend.id.length > 0
+            ? backend.id
+            : "unknown",
+      );
+      const agentIds = agents
+        .map((agent) =>
+          agent !== null &&
+          typeof agent === "object" &&
+          typeof agent.id === "string" &&
+          agent.id.length > 0
+            ? agent.id
+            : null,
+        )
+        .filter((id): id is string => id !== null);
+
+      const agentsSummary =
+        agentIds.length > 0
+          ? `agents: ${agentIds.join(", ")}`
+          : "0 agents discovered";
+
+      return {
+        id: "paseo",
+        ok: true,
+        required: false,
+        status: "pass",
+        detail: `Connected (${backendLabels.join(", ")}); ${agentsSummary}`,
+        meta: {
+          connected: true,
+          backends,
+          agents,
+        },
+      };
+    }
+
+    const disconnectedDetails = backends
+      .map((backend) => {
+        if (!backend || typeof backend !== "object") return null;
+        const id =
+          typeof backend.backendId === "string"
+            ? backend.backendId
+            : typeof backend.id === "string"
+              ? backend.id
+              : null;
+        const detail =
+          typeof backend.detail === "string" && backend.detail.trim().length > 0
+            ? backend.detail.trim()
+            : null;
+        if (id && detail) return `${id}: ${detail}`;
+        return id ?? detail;
+      })
+      .filter((entry): entry is string => entry !== null);
+
+    const detailSuffix =
+      disconnectedDetails.length > 0
+        ? ` (${disconnectedDetails.join("; ")})`
+        : " (no connected backends)";
+
+    return {
+      id: "paseo",
+      ok: false,
+      required: false,
+      status: "warn",
+      detail: `Paseo is not connected${detailSuffix}; check PASEO_URL or paseo daemon`,
+      meta: {
+        connected: false,
+        backends,
+        agents,
+      },
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      id: "paseo",
+      ok: false,
+      required: false,
+      status: "warn",
+      detail: `Paseo backend check failed (${msg}); check PASEO_URL or paseo daemon`,
+      meta: {
+        connected: false,
+        error: msg,
+      },
+    };
+  }
+}
+
 async function handleDoctor(
   args: readonly string[],
   options: CliRuntimeOptions,
@@ -1453,6 +1757,7 @@ async function handleDoctor(
     });
   }
 
+  let kilndOnline = false;
   const explicitRunning = options.isDaemonRunning
     ? await options.isDaemonRunning()
     : null;
@@ -1467,6 +1772,7 @@ async function handleDoctor(
     });
   } else {
     const health = await probeHealth(fetchImpl, baseUrl);
+    kilndOnline = health.ok;
     checks.push({
       id: "kilnd",
       ok: health.ok,
@@ -1482,6 +1788,8 @@ async function handleDoctor(
       },
     });
   }
+
+  checks.push(await checkDoctorPaseo(fetchImpl, baseUrl, kilndOnline));
 
   if (platform === "darwin" || platform === "linux") {
     const svc = getServiceStatus(buildServiceOptions(options, platform));

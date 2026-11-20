@@ -1,13 +1,21 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PricingConfig, RunMeta, TaskCard } from "@kiln/protocol";
-import { KilndServer, writeFileAtomic } from "@kiln/kernel";
+import {
+  BackendRegistry,
+  FakeBackend,
+  KilndServer,
+  writeFileAtomic,
+  type ExecutionBackend,
+} from "@kiln/kernel";
 import {
   LINUX_SYSTEMD_SERVICE_NAME,
   MACOS_LAUNCH_AGENT_LABEL,
+  buildDaemonForegroundArgs,
   getServiceStatus,
   installService,
   renderLaunchAgentPlist,
@@ -15,6 +23,7 @@ import {
   resolveKilnPidPath,
   runCli,
   uninstallService,
+  type DoctorReport,
 } from "../index.js";
 
 const tempDirs: string[] = [];
@@ -858,5 +867,469 @@ describe("@kiln/cli", () => {
     const helpRes = await runCli(["--help"]);
     expect(helpRes.exitCode).toBe(0);
     expect(helpRes.stdout).toContain("Kiln CLI");
+  });
+
+  it("registers PaseoBackend on `kiln up --foreground`, forwards url/password, exposes /api/agents, and disposes on abort or start failure", async () => {
+    const createDisposableFakePaseo = (
+      disposeCounter: { count: number },
+    ): ExecutionBackend => {
+      const inner = new FakeBackend({ backendId: "paseo" });
+      return Object.assign(inner, {
+        dispose: async (): Promise<void> => {
+          disposeCounter.count += 1;
+        },
+      });
+    };
+
+    const startForegroundAndWaitReady = (
+      args: readonly string[],
+      extraOpts: Parameters<typeof runCli>[1],
+    ): {
+      runPromise: ReturnType<typeof runCli>;
+      serverReady: Promise<KilndServer>;
+    } => {
+      let resolveServer!: (srv: KilndServer) => void;
+      let rejectServer!: (err: unknown) => void;
+      const serverReady = new Promise<KilndServer>((resolve, reject) => {
+        resolveServer = resolve;
+        rejectServer = reject;
+      });
+      const runPromise = runCli(args, {
+        isDaemonRunning: () => false,
+        ...extraOpts,
+        onForegroundServer: (srv) => {
+          extraOpts?.onForegroundServer?.(srv);
+          resolveServer(srv);
+        },
+      });
+      void runPromise.then(
+        (res) => {
+          if (res.exitCode !== 0) {
+            rejectServer(new Error(`kiln up exited early (${res.exitCode}): ${res.stderr}`));
+          }
+        },
+        (err) => rejectServer(err),
+      );
+      return { runPromise, serverReady };
+    };
+
+    const savedUrl = process.env.PASEO_URL;
+    const savedPassword = process.env.PASEO_PASSWORD;
+    const savedDisable = process.env.KILN_DISABLE_PASEO;
+
+    try {
+      process.env.PASEO_URL = "ws://127.0.0.1:9797/ws";
+      process.env.PASEO_PASSWORD = "paseo-secret-token";
+      delete process.env.KILN_DISABLE_PASEO;
+
+      // 1. Foreground startup registers Paseo backend, forwards url/password, exposes /api/agents, and disposes on abort
+      const kilnHome1 = path.join(makeTempDir("kiln-fg-"), "kh");
+      const receivedOpts: Array<{ url?: string; password?: string }> = [];
+      const disposeCounter1 = { count: 0 };
+      const ac1 = new AbortController();
+
+      const fg1 = startForegroundAndWaitReady(
+        ["up", "--foreground", "--port", "0", "--paseo-url", "wss://paseo.local:7777/ws"],
+        {
+          kilnHome: kilnHome1,
+          foregroundSignal: ac1.signal,
+          createPaseoBackend: (opts) => {
+            receivedOpts.push(opts);
+            return createDisposableFakePaseo(disposeCounter1);
+          },
+        },
+      );
+
+      const server1 = await fg1.serverReady;
+      expect(receivedOpts).toEqual([
+        { url: "wss://paseo.local:7777/ws", password: "paseo-secret-token" },
+      ]);
+
+      const agentsRes = await server1.app.request(new Request("http://127.0.0.1/api/agents"));
+      expect(agentsRes.status).toBe(200);
+      const agentsJson = (await agentsRes.json()) as {
+        ok: boolean;
+        backends: Array<{ backendId: string; connected: boolean }>;
+        agents: Array<{ id: string; backendId: string }>;
+      };
+      expect(agentsJson.ok).toBe(true);
+      expect(agentsJson.backends).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ backendId: "paseo", connected: true }),
+        ]),
+      );
+      expect(agentsJson.agents.some((a) => a.backendId === "paseo")).toBe(true);
+      expect(disposeCounter1.count).toBe(0);
+
+      ac1.abort();
+      const fgResult = await fg1.runPromise;
+      expect(fgResult.exitCode).toBe(0);
+      expect(fgResult.stdout).toContain("kilnd listening in foreground");
+      expect(disposeCounter1.count).toBe(1);
+      expect(fs.existsSync(resolveKilnPidPath(kilnHome1))).toBe(false);
+
+      // 2. Priority check: options.paseoUrl overrides process.env.PASEO_URL when CLI flag is omitted
+      const kilnHome2 = path.join(makeTempDir("kiln-opt-"), "kh");
+      const receivedOpts2: Array<{ url?: string; password?: string }> = [];
+      const disposeCounter2 = { count: 0 };
+      const ac2 = new AbortController();
+      const fg2 = startForegroundAndWaitReady(["up", "--foreground", "--port", "0"], {
+        kilnHome: kilnHome2,
+        paseoUrl: "ws://127.0.0.1:8888/ws",
+        foregroundSignal: ac2.signal,
+        createPaseoBackend: (opts) => {
+          receivedOpts2.push(opts);
+          return createDisposableFakePaseo(disposeCounter2);
+        },
+      });
+      await fg2.serverReady;
+      expect(receivedOpts2).toEqual([
+        { url: "ws://127.0.0.1:8888/ws", password: "paseo-secret-token" },
+      ]);
+      ac2.abort();
+      const fgResult2 = await fg2.runPromise;
+      expect(fgResult2.exitCode).toBe(0);
+      expect(disposeCounter2.count).toBe(1);
+
+      // 2b. Fallback check: process.env.PASEO_URL is forwarded when CLI flag and options.paseoUrl are omitted
+      const kilnHomeEnv = path.join(makeTempDir("kiln-env-"), "kh");
+      const receivedOptsEnv: Array<{ url?: string; password?: string }> = [];
+      const disposeCounterEnv = { count: 0 };
+      const acEnv = new AbortController();
+      const fgEnv = startForegroundAndWaitReady(["up", "--foreground", "--port", "0"], {
+        kilnHome: kilnHomeEnv,
+        foregroundSignal: acEnv.signal,
+        createPaseoBackend: (opts) => {
+          receivedOptsEnv.push(opts);
+          return createDisposableFakePaseo(disposeCounterEnv);
+        },
+      });
+      await fgEnv.serverReady;
+      expect(receivedOptsEnv).toEqual([
+        { url: "ws://127.0.0.1:9797/ws", password: "paseo-secret-token" },
+      ]);
+      acEnv.abort();
+      const fgResultEnv = await fgEnv.runPromise;
+      expect(fgResultEnv.exitCode).toBe(0);
+      expect(disposeCounterEnv.count).toBe(1);
+
+      // 3. Failure path: server.start() throwing EADDRINUSE reliably invokes backendRegistry.disposeAll()
+      const blocker = http.createServer((_req, res) => {
+        res.statusCode = 500;
+        res.end();
+      });
+      await new Promise<void>((resolve) => {
+        blocker.listen(0, "127.0.0.1", () => resolve());
+      });
+      const busyPort = (blocker.address() as { port: number }).port;
+      try {
+        const kilnHomeFail = path.join(makeTempDir("kiln-fail-"), "kh");
+        const disposeFailCounter = { count: 0 };
+        const failRes = await runCli(
+          ["up", "--foreground", "--host", "127.0.0.1", "--port", String(busyPort)],
+          {
+            kilnHome: kilnHomeFail,
+            isDaemonRunning: () => false,
+            createPaseoBackend: () => createDisposableFakePaseo(disposeFailCounter),
+          },
+        );
+        expect(failRes.exitCode).toBe(1);
+        expect(disposeFailCounter.count).toBe(1);
+      } finally {
+        await new Promise<void>((resolve) => blocker.close(() => resolve()));
+      }
+
+      // 4. External backendRegistry reuse (ownsRegistry = false) does NOT dispose caller registry on stop
+      const externalRegistry = new BackendRegistry();
+      const externalDisposeCounter = { count: 0 };
+      externalRegistry.register(createDisposableFakePaseo(externalDisposeCounter));
+      const kilnHomeExt = path.join(makeTempDir("kiln-ext-"), "kh");
+      const acExt = new AbortController();
+      const fgExt = startForegroundAndWaitReady(["up", "--foreground", "--port", "0"], {
+        kilnHome: kilnHomeExt,
+        backendRegistry: externalRegistry,
+        foregroundSignal: acExt.signal,
+      });
+      await fgExt.serverReady;
+      acExt.abort();
+      const fgExtRes = await fgExt.runPromise;
+      expect(fgExtRes.exitCode).toBe(0);
+      expect(externalDisposeCounter.count).toBe(0);
+    } finally {
+      if (savedUrl === undefined) delete process.env.PASEO_URL;
+      else process.env.PASEO_URL = savedUrl;
+      if (savedPassword === undefined) delete process.env.PASEO_PASSWORD;
+      else process.env.PASEO_PASSWORD = savedPassword;
+      if (savedDisable === undefined) delete process.env.KILN_DISABLE_PASEO;
+      else process.env.KILN_DISABLE_PASEO = savedDisable;
+    }
+  });
+
+  it("supports --no-paseo, KILN_DISABLE_PASEO=1, validates --paseo-url, and builds spawn passthrough args", async () => {
+    const savedDisable = process.env.KILN_DISABLE_PASEO;
+    const savedUrl = process.env.PASEO_URL;
+
+    try {
+      delete process.env.KILN_DISABLE_PASEO;
+      delete process.env.PASEO_URL;
+
+      // 1. Invalid --paseo-url returns exitCode 2
+      const badHttp = await runCli(["up", "--paseo-url", "http://bad"]);
+      expect(badHttp.exitCode).toBe(2);
+      expect(badHttp.stderr).toContain("Invalid --paseo-url");
+
+      const emptyFlag = await runCli(["up", "--paseo-url", ""]);
+      expect(emptyFlag.exitCode).toBe(2);
+      expect(emptyFlag.stderr).toContain("Invalid --paseo-url");
+
+      process.env.PASEO_URL = "http://127.0.0.1:6767/ws";
+      const badEnvUrl = await runCli(["up"]);
+      expect(badEnvUrl.exitCode).toBe(2);
+      expect(badEnvUrl.stderr).toContain("Invalid --paseo-url");
+      delete process.env.PASEO_URL;
+
+      // 2. --no-paseo skips createPaseoBackend and leaves /api/agents empty
+      let factoryCalls = 0;
+      const kh1 = path.join(makeTempDir("kiln-nop-"), "kh");
+      const ac1 = new AbortController();
+      let resolveSrv1!: (srv: KilndServer) => void;
+      const ready1 = new Promise<KilndServer>((resolve) => {
+        resolveSrv1 = resolve;
+      });
+      const p1 = runCli(["up", "--foreground", "--port", "0", "--no-paseo"], {
+        kilnHome: kh1,
+        isDaemonRunning: () => false,
+        foregroundSignal: ac1.signal,
+        onForegroundServer: (srv) => resolveSrv1(srv),
+        createPaseoBackend: () => {
+          factoryCalls += 1;
+          return new FakeBackend({ backendId: "paseo" });
+        },
+      });
+      const srv1 = await ready1;
+      const res1 = await srv1.app.request(new Request("http://127.0.0.1/api/agents"));
+      const body1 = (await res1.json()) as { backends: unknown[]; agents: unknown[] };
+      expect(body1.backends).toEqual([]);
+      expect(body1.agents).toEqual([]);
+      expect(factoryCalls).toBe(0);
+      ac1.abort();
+      expect((await p1).exitCode).toBe(0);
+
+      // 3. KILN_DISABLE_PASEO=1 skips createPaseoBackend
+      process.env.KILN_DISABLE_PASEO = "1";
+      const kh2 = path.join(makeTempDir("kiln-envd-"), "kh");
+      const ac2 = new AbortController();
+      let resolveSrv2!: (srv: KilndServer) => void;
+      const ready2 = new Promise<KilndServer>((resolve) => {
+        resolveSrv2 = resolve;
+      });
+      const p2 = runCli(["up", "--foreground", "--port", "0"], {
+        kilnHome: kh2,
+        isDaemonRunning: () => false,
+        foregroundSignal: ac2.signal,
+        onForegroundServer: (srv) => resolveSrv2(srv),
+        createPaseoBackend: () => {
+          factoryCalls += 1;
+          return new FakeBackend({ backendId: "paseo" });
+        },
+      });
+      await ready2;
+      expect(factoryCalls).toBe(0);
+      ac2.abort();
+      expect((await p2).exitCode).toBe(0);
+
+      // 4. Detached spawn argument passthrough construction
+      expect(
+        buildDaemonForegroundArgs({
+          entrypoint: "/opt/kiln/bin.js",
+          host: "127.0.0.1",
+          port: 4310,
+        }),
+      ).toEqual([
+        "/opt/kiln/bin.js",
+        "up",
+        "--foreground",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "4310",
+      ]);
+
+      expect(
+        buildDaemonForegroundArgs({
+          entrypoint: "/opt/kiln/bin.js",
+          host: "127.0.0.1",
+          port: 4310,
+          paseoUrl: "ws://127.0.0.1:7777/ws",
+          disablePaseo: true,
+        }),
+      ).toEqual([
+        "/opt/kiln/bin.js",
+        "up",
+        "--foreground",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "4310",
+        "--paseo-url",
+        "ws://127.0.0.1:7777/ws",
+        "--no-paseo",
+      ]);
+    } finally {
+      if (savedDisable === undefined) delete process.env.KILN_DISABLE_PASEO;
+      else process.env.KILN_DISABLE_PASEO = savedDisable;
+      if (savedUrl === undefined) delete process.env.PASEO_URL;
+      else process.env.PASEO_URL = savedUrl;
+    }
+  });
+
+  it("reports Paseo check in `kiln doctor --json` for connected (pass), disconnected/empty (warn), and offline kilnd (skip)", async () => {
+    // 1. Connected Paseo backend -> pass
+    const root1 = makeTempDir("kiln-doc-pass-");
+    const registry = new BackendRegistry();
+    registry.register(new FakeBackend({ backendId: "paseo" }));
+    const connectedServer = new KilndServer({
+      kilnHome: path.join(root1, "kiln-home"),
+      port: 0,
+      tokenSecret: "cli-doc-secret-0123456789abcdef",
+      backendRegistry: registry,
+    });
+    servers.push(connectedServer);
+
+    const passRes = await runCli(["doctor", "--json"], {
+      kilnHome: path.join(root1, "kiln-home"),
+      homeDir: path.join(root1, "home"),
+      launchAgentsDir: path.join(root1, "home", "Library", "LaunchAgents"),
+      systemdDir: path.join(root1, "home", ".config", "systemd", "user"),
+      fetchImpl: createInProcessFetch(connectedServer),
+    });
+    expect(passRes.exitCode).toBe(0);
+    const passReport = JSON.parse(passRes.stdout) as DoctorReport;
+    const passPaseo = passReport.checks.find((c) => c.id === "paseo");
+    expect(passPaseo).toBeDefined();
+    expect(passPaseo?.ok).toBe(true);
+    expect(passPaseo?.required).toBe(false);
+    expect(passPaseo?.status).toBe("pass");
+    expect(passPaseo?.detail).toContain("paseo");
+    expect(passPaseo?.detail).toContain("codex");
+    expect(passPaseo?.meta).toMatchObject({
+      connected: true,
+      backends: expect.arrayContaining([
+        expect.objectContaining({ backendId: "paseo", connected: true }),
+      ]),
+      agents: expect.arrayContaining([
+        expect.objectContaining({ id: "codex", backendId: "paseo" }),
+      ]),
+    });
+
+    // 2. Empty / disconnected backends -> warn (still exitCode 0 because required: false)
+    const hEmpty = makeTestHarness("kiln-doc-warn-");
+    const emptyRes = await runCli(["doctor", "--json"], {
+      kilnHome: hEmpty.kilnHome,
+      homeDir: hEmpty.homeDir,
+      launchAgentsDir: hEmpty.launchAgentsDir,
+      systemdDir: hEmpty.systemdDir,
+      fetchImpl: createInProcessFetch(hEmpty.server),
+    });
+    expect(emptyRes.exitCode).toBe(0);
+    const emptyReport = JSON.parse(emptyRes.stdout) as DoctorReport;
+    const emptyPaseo = emptyReport.checks.find((c) => c.id === "paseo");
+    expect(emptyPaseo).toMatchObject({
+      id: "paseo",
+      ok: false,
+      required: false,
+      status: "warn",
+    });
+    expect(emptyPaseo?.detail).toContain("PASEO_URL");
+
+    // Disconnected backend response -> warn
+    const disconnectedFetch: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith("/api/health")) {
+        return new Response(JSON.stringify({ ok: true, pid: 1234, version: "0.1.0" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.endsWith("/api/agents")) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            agents: [],
+            backends: [
+              {
+                backendId: "paseo",
+                id: "paseo",
+                connected: false,
+                status: "disconnected",
+                detail: "connect ECONNREFUSED 127.0.0.1:6767",
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    };
+    const discRes = await runCli(["doctor", "--json"], {
+      kilnHome: hEmpty.kilnHome,
+      homeDir: hEmpty.homeDir,
+      launchAgentsDir: hEmpty.launchAgentsDir,
+      systemdDir: hEmpty.systemdDir,
+      fetchImpl: disconnectedFetch,
+    });
+    expect(discRes.exitCode).toBe(0);
+    const discReport = JSON.parse(discRes.stdout) as DoctorReport;
+    expect(discReport.checks.find((c) => c.id === "paseo")).toMatchObject({
+      id: "paseo",
+      ok: false,
+      required: false,
+      status: "warn",
+    });
+
+    // Non-2xx /api/agents response -> warn (still exitCode 0)
+    const agentsErrorFetch: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith("/api/health")) {
+        return new Response(JSON.stringify({ ok: true, pid: 1234, version: "0.1.0" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("backend error", { status: 503 });
+    };
+    const errRes = await runCli(["doctor", "--json"], {
+      kilnHome: hEmpty.kilnHome,
+      homeDir: hEmpty.homeDir,
+      launchAgentsDir: hEmpty.launchAgentsDir,
+      systemdDir: hEmpty.systemdDir,
+      fetchImpl: agentsErrorFetch,
+    });
+    expect(errRes.exitCode).toBe(0);
+    const errReport = JSON.parse(errRes.stdout) as DoctorReport;
+    expect(errReport.checks.find((c) => c.id === "paseo")).toMatchObject({
+      id: "paseo",
+      ok: false,
+      required: false,
+      status: "warn",
+    });
+
+    // 3. Offline kilnd -> skip (still exitCode 0)
+    const offlineRes = await runCli(["doctor", "--json"], {
+      kilnHome: hEmpty.kilnHome,
+      homeDir: hEmpty.homeDir,
+      launchAgentsDir: hEmpty.launchAgentsDir,
+      systemdDir: hEmpty.systemdDir,
+      isDaemonRunning: () => false,
+    });
+    expect(offlineRes.exitCode).toBe(0);
+    const offlineReport = JSON.parse(offlineRes.stdout) as DoctorReport;
+    expect(offlineReport.checks.find((c) => c.id === "paseo")).toEqual({
+      id: "paseo",
+      ok: false,
+      required: false,
+      status: "skip",
+      detail: "Paseo check skipped because kilnd is offline",
+    });
   });
 });
