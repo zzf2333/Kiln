@@ -1781,6 +1781,55 @@ describe("runVerificationGate end-to-end", () => {
       expect(missingReceiptGate.report.schema_ok).toBe(false);
       expect(missingReceiptGate.schemaErrors[0]).toContain("Missing RECEIPT.md");
       expect(fs.existsSync(missingReceiptGate.gatePath)).toBe(true);
+
+      // 5. Existing manifest MUST still reject extra unmanifested files placed in staged/
+      const partialTarget = path.join(hostDir, "mapped.conf");
+      fs.writeFileSync(partialTarget, "a=1\n");
+      const canonicalMapped = fs.realpathSync(partialTarget);
+      const partialCard = makeTaskCard({
+        id: "t-host-stray-staged",
+        workspace_mode: "host_scoped",
+        contract: {
+          goal: "Reject stray staged file even when manifest exists",
+          end: "scope_ok false",
+          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_files_hash: "sha256:neg3",
+          scope: [canonicalMapped],
+          deliver: { mode: "manual", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+      });
+      store.createTask(partialCard, "# Partial");
+      writeFileAtomic(path.join(store.paths.stagedDir(partialCard.id), "mapped.conf"), "a=2\n");
+      const partialStage = stageHostScopedChanges(store, {
+        taskId: partialCard.id,
+        contractScope: partialCard.contract.scope,
+        stagedFiles: [{ stagedRelativePath: "mapped.conf", targetPath: canonicalMapped }],
+      });
+      expect(partialStage.ok).toBe(true);
+      writeFileAtomic(path.join(store.paths.stagedDir(partialCard.id), "stray.txt"), "evil=1\n");
+      store.persistRunBeforeDispatch(
+        makeRunMeta({ task_id: partialCard.id, run_id: "run-stray-1" }),
+        "001-implement",
+      );
+      store.submitReceipt({
+        taskId: partialCard.id,
+        runId: "run-stray-1",
+        contractVersion: 1,
+        runDirName: "001-implement",
+        markdown: makeWorkerReceiptMarkdown({
+          run_id: "run-stray-1",
+          changed_paths: [canonicalMapped],
+        }),
+      });
+      const strayGate = await runVerificationGate(store, {
+        taskId: partialCard.id,
+        runDirName: "001-implement",
+      });
+      expect(strayGate.passed).toBe(false);
+      expect(strayGate.report.scope_ok).toBe(false);
+      expect(strayGate.report.out_of_scope_paths).toContain("stray.txt");
     } finally {
       store.close();
     }

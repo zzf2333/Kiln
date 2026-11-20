@@ -60,6 +60,9 @@ export interface McpRpcServerOptions {
   tokenSecret: string | Buffer;
   socketPath?: string;
   maxBodyBytes?: number;
+  onTaskQueued?: (taskId: string) => void;
+  onContractUpdated?: (taskId: string) => void;
+  onDecisionRequested?: (taskId: string) => void;
 }
 
 export interface McpRpcHttpRequest {
@@ -228,6 +231,9 @@ export class McpRpcServer {
   private readonly caffeinate: CaffeinateController;
   private readonly tokenSecret: string | Buffer;
   private readonly maxBodyBytes: number;
+  private readonly onTaskQueued: ((taskId: string) => void) | undefined;
+  private readonly onContractUpdated: ((taskId: string) => void) | undefined;
+  private readonly onDecisionRequested: ((taskId: string) => void) | undefined;
 
   private server: http.Server | null = null;
   private listening = false;
@@ -241,6 +247,9 @@ export class McpRpcServer {
     this.tokenSecret = options.tokenSecret;
     this.socketPath = options.socketPath ?? options.store.paths.kilndSock;
     this.maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+    this.onTaskQueued = options.onTaskQueued;
+    this.onContractUpdated = options.onContractUpdated;
+    this.onDecisionRequested = options.onDecisionRequested;
   }
 
   async start(): Promise<string> {
@@ -619,6 +628,9 @@ export class McpRpcServer {
             contractVersion: created.card.contract_version,
           },
         });
+        if (created.state.status === "queued") {
+          this.onTaskQueued?.(created.card.id);
+        }
 
         return {
           ok: true,
@@ -633,10 +645,13 @@ export class McpRpcServer {
 
       case "update_contract": {
         assertSafeSegment(input.task_id, "task_id");
-        if (claims.role === "triage" && input.task_id !== claims.taskId) {
+        if (
+          (claims.role === "triage" || claims.role === "resolver") &&
+          input.task_id !== claims.taskId
+        ) {
           throw new ServerHttpError(403, {
             error: "task_scope_forbidden",
-            message: `Role "triage" bound to task "${claims.taskId}" cannot update contract of "${input.task_id}"`,
+            message: `Role "${claims.role}" bound to task "${claims.taskId}" cannot update contract of "${input.task_id}"`,
           });
         }
 
@@ -693,6 +708,7 @@ export class McpRpcServer {
             contractVersion: updated.newVersion,
           },
         });
+        this.onContractUpdated?.(input.task_id);
 
         return {
           ok: true,
@@ -835,6 +851,7 @@ export class McpRpcServer {
         contractVersion: nextState.contractVersion,
       },
     });
+    this.onDecisionRequested?.(claims.taskId);
 
     return {
       ok: true,

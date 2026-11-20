@@ -954,7 +954,6 @@ export class KilnStore {
               derived.activeRunId !== null &&
               run.runMeta !== null &&
               run.runMeta.run_id === derived.activeRunId &&
-              !run.hasReceipt &&
               run.runMeta.contract_version === derived.contractVersion
             ) {
               const lastEvent = run.events.at(-1);
@@ -969,6 +968,14 @@ export class KilnStore {
                 started_at: run.runMeta.started_at,
                 heartbeat_at: heartbeatAt,
               });
+              if (run.hasReceipt) {
+                sqlite.completeStageLease(
+                  taskId,
+                  run.runMeta.run_id,
+                  run.runMeta.contract_version,
+                  heartbeatAt,
+                );
+              }
             }
           }
         }

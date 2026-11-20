@@ -8,13 +8,28 @@ import { BackendRegistry } from "../backend/index.js";
 import { TaskStateMachine } from "../state/index.js";
 import { KilnStore, type AcquireStageLeaseResult } from "../store/index.js";
 import { CaffeinateController } from "./caffeinate.js";
+import {
+  KilnChatEngine,
+  type ChatResponder,
+  type McpCommandSpec,
+} from "./chat.js";
 import { createHttpApiApp } from "./http-api.js";
 import {
   McpRpcServer,
   type McpRpcHttpRequest,
   type McpRpcHttpResponse,
 } from "./mcp-rpc.js";
-import { countRunningLeafTasks, PendingDecisionStore } from "./pending-decisions.js";
+import {
+  KilnOrchestrator,
+  type DeliverHandler,
+  type OrchestratorApprovalHandler,
+} from "./orchestrator.js";
+import {
+  computeUsageSnapshot,
+  countRunningLeafTasks,
+  PendingDecisionStore,
+} from "./pending-decisions.js";
+import { LiveRateTracker } from "./rate-tracker.js";
 import { SseHub } from "./sse.js";
 import { signRunToken, verifyRunToken } from "./token.js";
 
@@ -35,6 +50,16 @@ export interface KilndServerOptions {
   tokenSecret?: string | Buffer;
   version?: string;
   maxRpcBodyBytes?: number;
+  enableOrchestrator?: boolean;
+  publicDir?: string | null;
+  deliverHandler?: DeliverHandler;
+  approvalHandler?: OrchestratorApprovalHandler;
+  mcpServerCommand?: McpCommandSpec;
+  chatResponder?: ChatResponder;
+  rateWindowMs?: number;
+  rateTickIntervalMs?: number;
+  backendQueryTimeoutMs?: number;
+  rateLimitCooldownMs?: number;
 }
 
 export interface KilndServerAddress {
@@ -77,6 +102,10 @@ export class KilndServer {
   readonly sseHub: SseHub;
   readonly caffeinate: CaffeinateController;
   readonly pendingDecisions: PendingDecisionStore;
+  readonly rateTracker: LiveRateTracker;
+  readonly chatEngine: KilnChatEngine;
+  readonly orchestrator: KilnOrchestrator;
+  readonly enableOrchestrator: boolean;
   readonly app: Hono;
   readonly host: string;
   readonly requestedPort: number;
@@ -100,11 +129,70 @@ export class KilndServer {
     this.sseHub = options.sseHub ?? new SseHub();
     this.caffeinate = options.caffeinate ?? new CaffeinateController();
     this.pendingDecisions = new PendingDecisionStore(this.store);
+    this.enableOrchestrator = options.enableOrchestrator ?? false;
 
     this.host = options.host ?? DEFAULT_KILND_HOST;
     this.requestedPort = options.port ?? DEFAULT_KILND_PORT;
     this.socketPath = options.socketPath ?? this.store.paths.kilndSock;
     this.tokenSecret = normalizeTokenSecret(options.tokenSecret);
+
+    this.rateTracker = new LiveRateTracker({
+      ...(options.rateWindowMs !== undefined ? { windowMs: options.rateWindowMs } : {}),
+      ...(options.rateTickIntervalMs !== undefined
+        ? { tickIntervalMs: options.rateTickIntervalMs }
+        : {}),
+      getCostUsd: () => {
+        const pricing = this.store.readConfig("pricing");
+        return computeUsageSnapshot(this.store.listUsageTurns(), pricing).costUsd;
+      },
+      onTick: (payload) => {
+        this.sseHub.publish({
+          type: "rate.tick",
+          rates: payload.rates,
+          totals: payload.totals,
+        });
+      },
+    });
+
+    const issueToken = (input: IssueRunTokenInput) => this.issueRunToken(input);
+
+    this.chatEngine = new KilnChatEngine({
+      store: this.store,
+      backendRegistry: this.backendRegistry,
+      pendingDecisions: this.pendingDecisions,
+      socketPath: this.socketPath,
+      issueRunToken: issueToken,
+      ...(options.mcpServerCommand !== undefined
+        ? { mcpServerCommand: options.mcpServerCommand }
+        : {}),
+      ...(options.chatResponder !== undefined
+        ? { chatResponder: options.chatResponder }
+        : {}),
+    });
+
+    this.orchestrator = new KilnOrchestrator({
+      store: this.store,
+      stateMachine: this.stateMachine,
+      backendRegistry: this.backendRegistry,
+      pendingDecisions: this.pendingDecisions,
+      sseHub: this.sseHub,
+      caffeinate: this.caffeinate,
+      rateTracker: this.rateTracker,
+      socketPath: this.socketPath,
+      issueRunToken: issueToken,
+      ...(options.mcpServerCommand !== undefined
+        ? { mcpServerCommand: options.mcpServerCommand }
+        : {}),
+      ...(options.deliverHandler !== undefined
+        ? { deliverHandler: options.deliverHandler }
+        : {}),
+      ...(options.approvalHandler !== undefined
+        ? { approvalHandler: options.approvalHandler }
+        : {}),
+      ...(options.rateLimitCooldownMs !== undefined
+        ? { rateLimitCooldownMs: options.rateLimitCooldownMs }
+        : {}),
+    });
 
     this.app = createHttpApiApp({
       store: this.store,
@@ -112,6 +200,38 @@ export class KilndServer {
       sseHub: this.sseHub,
       pendingDecisions: this.pendingDecisions,
       caffeinate: this.caffeinate,
+      backendRegistry: this.backendRegistry,
+      rateTracker: this.rateTracker,
+      chatEngine: this.chatEngine,
+      ...(options.publicDir !== undefined ? { publicDir: options.publicDir } : {}),
+      ...(options.backendQueryTimeoutMs !== undefined
+        ? { backendQueryTimeoutMs: options.backendQueryTimeoutMs }
+        : {}),
+      onTaskQueued: () => {
+        void this.orchestrator.wake();
+      },
+      onTaskPaused: async (taskId) => {
+        await this.orchestrator.abortActiveRun(taskId);
+        void this.orchestrator.wake();
+      },
+      onTaskCancelled: async (taskId) => {
+        await this.orchestrator.abortActiveRun(taskId);
+        void this.orchestrator.wake();
+      },
+      onBeforeDecisionApply: async (taskId) => {
+        await this.orchestrator.abortActiveRun(taskId);
+      },
+      onSettingsUpdated: (section) => {
+        if (section === "roles" || section === "limits") {
+          void this.orchestrator.wake();
+        } else if (
+          section === "pricing" &&
+          this.enableOrchestrator &&
+          this.rateTracker.snapshot().tokPerSec > 0
+        ) {
+          this.rateTracker.emitTick();
+        }
+      },
       version: options.version ?? DEFAULT_SERVER_VERSION,
     });
 
@@ -124,6 +244,21 @@ export class KilndServer {
       tokenSecret: this.tokenSecret,
       socketPath: this.socketPath,
       maxBodyBytes: options.maxRpcBodyBytes,
+      onTaskQueued: () => {
+        void this.orchestrator.wake();
+      },
+      onContractUpdated: (taskId) => {
+        void (async () => {
+          await this.orchestrator.abortActiveRun(taskId);
+          await this.orchestrator.wake();
+        })();
+      },
+      onDecisionRequested: (taskId) => {
+        void (async () => {
+          await this.orchestrator.abortActiveRun(taskId);
+          await this.orchestrator.wake();
+        })();
+      },
     });
   }
 
@@ -141,6 +276,9 @@ export class KilndServer {
     }
 
     this.pendingDecisions.hydrateFromDisk();
+    if (this.enableOrchestrator) {
+      await this.orchestrator.reconcileOnStart();
+    }
     this.syncCaffeinate();
 
     await this.mcpRpcServer.start();
@@ -192,14 +330,20 @@ export class KilndServer {
       socketPath: this.socketPath,
     };
 
+    if (this.enableOrchestrator) {
+      await this.orchestrator.start();
+    }
+
     return { ...this.activeAddress };
   }
 
   /**
-   * Stops caffeinate, closes all active SSE streams, tears down HTTP & UDS listeners,
-   * and closes daemon-owned backend/store handles.
+   * Stops orchestrator, rate tracker, caffeinate, closes all active SSE streams,
+   * tears down HTTP & UDS listeners, and closes daemon-owned backend/store handles.
    */
   async stop(): Promise<void> {
+    await this.orchestrator.stop();
+    this.rateTracker.stop();
     this.caffeinate.stop();
     this.sseHub.closeAll();
 

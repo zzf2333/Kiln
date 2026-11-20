@@ -362,12 +362,18 @@ describe("@kiln/cli", () => {
     expect(storedOnline?.priority).toBe("P0");
     expect(storedOnline?.workspace_mode).toBe("host_scoped");
 
-    // Rejects Post-MVP external_only mode and traversal space names
+    // Rejects Post-MVP external_only mode, L3 track, and traversal space names
     const badMode = await runCli(["draft", "bad", "--mode", "external_only"], {
       kilnHome: h.kilnHome,
     });
     expect(badMode.exitCode).toBe(2);
     expect(badMode.stderr).toContain("Post-MVP");
+
+    const badTrack = await runCli(["draft", "bad", "--track", "L3"], {
+      kilnHome: h.kilnHome,
+    });
+    expect(badTrack.exitCode).toBe(2);
+    expect(badTrack.stderr).toContain("Post-MVP");
 
     const badSpace = await runCli(["draft", "bad", "--space", "../escape"], {
       kilnHome: h.kilnHome,
@@ -759,6 +765,10 @@ describe("@kiln/cli", () => {
     const dirtyFile = path.join(wtPath, "uncommitted.txt");
     fs.writeFileSync(dirtyFile, "do not delete me\n", "utf8");
 
+    const cleanWtPath = path.join(h.kilnHome, "workspaces", "t-clean", "worktree");
+    fs.mkdirSync(path.dirname(cleanWtPath), { recursive: true });
+    execFileSync("git", ["-C", repoPath, "worktree", "add", "-b", "kiln/t-clean", cleanWtPath, "HEAD"], { stdio: "pipe" });
+
     h.server.store.writeSpace({
       schema_version: 1,
       id: "demo",
@@ -793,11 +803,13 @@ describe("@kiln/cli", () => {
     expect(stopCalled).toBe(true);
     expect(fs.existsSync(h.plistPath)).toBe(false);
     expect(fs.existsSync(resolveKilnPidPath(h.kilnHome))).toBe(false);
-    // Data and dirty worktree MUST remain intact!
+    // Data and dirty worktree MUST remain intact; clean worktree was cleanly removed!
     expect(fs.existsSync(h.kilnHome)).toBe(true);
     expect(fs.existsSync(dirtyFile)).toBe(true);
+    expect(fs.existsSync(cleanWtPath)).toBe(false);
     expect(preserveRes.stdout).toContain("Data preserved");
     expect(preserveRes.stdout).toContain("dirty (preserved)");
+    expect(preserveRes.stdout).toContain("clean (removed)");
 
     // Close store before --purge-data removes kilnHome
     await h.server.stop();
@@ -834,6 +846,10 @@ describe("@kiln/cli", () => {
     const badPort = await runCli(["up", "--port", "abc"]);
     expect(badPort.exitCode).toBe(2);
     expect(badPort.stderr).toContain("Invalid --port");
+
+    const bgZeroPort = await runCli(["up", "--port", "0"]);
+    expect(bgZeroPort.exitCode).toBe(2);
+    expect(bgZeroPort.stderr).toContain("Invalid --port");
 
     const badService = await runCli(["service"]);
     expect(badService.exitCode).toBe(2);

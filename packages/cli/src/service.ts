@@ -100,6 +100,7 @@ export interface DetectedWorktreeRef {
   branch: string | null;
   dirty: boolean;
   missing: boolean;
+  removed?: boolean;
 }
 
 export interface UninstallOptions extends ServiceOptions {
@@ -761,8 +762,8 @@ async function inspectSpaceWorktrees(
  * Cleanly uninstalls Kiln runtime artifacts:
  * 1. Stops the managed `kilnd` process (if running);
  * 2. Removes the platform startup descriptor (`LaunchAgent` / `systemd`);
- * 3. Performs read-only `git worktree list` inspection across `spaces/<id>/space.yaml`
- *    without force-deleting any worktree containing uncommitted changes;
+ * 3. Inspects Kiln-managed git worktrees: removes clean worktrees while preserving
+ *    any worktree containing uncommitted changes, and prunes stale/missing refs;
  * 4. Preserves `<kilnHome>` ledger & data by default unless `purgeData === true`.
  */
 export async function runUninstall(
@@ -780,10 +781,34 @@ export async function runUninstall(
 
   const serviceRes = await uninstallService(options);
   const worktrees = await inspectSpaceWorktrees(kilnHome, execGit);
+  const reposToPrune = new Set<string>();
+
+  for (const wt of worktrees) {
+    if (!wt.dirty && !wt.missing) {
+      try {
+        await execGit(["-C", wt.repoPath, "worktree", "remove", wt.worktreePath]);
+        wt.removed = true;
+        reposToPrune.add(wt.repoPath);
+      } catch {
+        // Leave intact if git worktree remove fails unexpectedly.
+      }
+    } else if (wt.missing) {
+      reposToPrune.add(wt.repoPath);
+    }
+  }
 
   const purgeData = options.purgeData === true;
   if (purgeData) {
+    for (const wt of worktrees) {
+      reposToPrune.add(wt.repoPath);
+    }
     fs.rmSync(kilnHome, { recursive: true, force: true });
+  }
+
+  for (const repoPath of reposToPrune) {
+    if (fs.existsSync(repoPath)) {
+      await execGit(["-C", repoPath, "worktree", "prune"]).catch(() => {});
+    }
   }
 
   return {

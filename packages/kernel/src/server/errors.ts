@@ -1,5 +1,10 @@
 import { ZodError } from "zod";
 import {
+  FullAccessOnlyProviderError,
+  IneligibleRoleAgentError,
+  UnknownBackendError,
+} from "../backend/types.js";
+import {
   DependencyCycleError,
   InvalidStateTransitionError,
   MissingDependencyError,
@@ -63,6 +68,40 @@ export function mapDomainError(err: unknown): {
       statusCode: 400,
       payload: {
         error: err.name,
+        message: err.message,
+      },
+    };
+  }
+
+  if (err instanceof IneligibleRoleAgentError) {
+    return {
+      statusCode: 409,
+      payload: {
+        error: "role_agent_ineligible",
+        role: err.role,
+        agent: err.agent,
+        missingCapabilities: err.missingCapabilities,
+        message: err.message,
+      },
+    };
+  }
+  if (err instanceof FullAccessOnlyProviderError) {
+    return {
+      statusCode: 409,
+      payload: {
+        error: "full_access_only_provider",
+        agent: err.agent,
+        modes: err.modes,
+        message: err.message,
+      },
+    };
+  }
+  if (err instanceof UnknownBackendError) {
+    return {
+      statusCode: 409,
+      payload: {
+        error: "unknown_backend",
+        backendId: err.backendId,
         message: err.message,
       },
     };

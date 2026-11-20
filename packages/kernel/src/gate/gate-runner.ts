@@ -170,11 +170,13 @@ function checkHostScopedTargets(
   const hasManifest = fs.existsSync(manifestPath);
   const hasExplicitHostPaths =
     hostChangedPaths !== undefined && hostChangedPaths.length > 0;
+  const manifestStagedPaths = new Set<string>();
 
   if (hasManifest) {
     const manifest = readHostBackupManifest(store, taskId);
     for (const fileEntry of manifest.files) {
       candidates.push(fileEntry.target_canonical_path);
+      manifestStagedPaths.add(fileEntry.staged_relative_path);
     }
   }
 
@@ -194,6 +196,14 @@ function checkHostScopedTargets(
       scopeOk: false,
       outOfScopePaths: [...stagedScan.escapedSymlinks].sort(),
     };
+  }
+
+  // Fail closed whenever staged/ contains files absent from the verified backup manifest
+  // (whether no manifest exists yet or an extra unmapped file was placed alongside manifested files).
+  for (const stagedRel of stagedScan.files) {
+    if (!hasManifest || !manifestStagedPaths.has(stagedRel)) {
+      invalidPaths.push(stagedRel);
+    }
   }
 
   if (!hasManifest && !hasExplicitHostPaths) {

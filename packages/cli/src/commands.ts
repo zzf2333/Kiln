@@ -176,7 +176,7 @@ const GLOBAL_HELP = [
   "  open [--port <port>] [--host <host>]               Open Kiln web UI",
   "  status [--port <port>] [--host <host>] [--json]    Show tasks, pending decisions, usage",
   '  draft "<idea>" [--space <id>] [--priority <P0-P3>] Create a draft card',
-  "        [--track <L1-L3>] [--mode <mode>] [--id <id>]",
+  "        [--track <L1|L2>] [--mode <mode>] [--id <id>]",
   "  decide [task-id] [--option <id>] [--rationale <t>] List or submit pending decisions",
   "        [--apply-ledger] [--decision <id>]",
   "  doctor [--port <port>] [--host <host>] [--json]    Verify Node, Git, APFS, kilnd, service",
@@ -194,7 +194,7 @@ const COMMAND_HELP: Record<string, string> = {
   open: "Usage: kiln open [--port <port>] [--host <host>]",
   status: "Usage: kiln status [--port <port>] [--host <host>] [--json]",
   draft:
-    'Usage: kiln draft "<idea>" [--id <id>] [--space <id>] [--priority <P0|P1|P2|P3>] [--track <L1|L2|L3>] [--mode <git_worktree|host_scoped|scratch_dir>] [--port <port>] [--host <host>]',
+    'Usage: kiln draft "<idea>" [--id <id>] [--space <id>] [--priority <P0|P1|P2|P3>] [--track <L1|L2>] [--mode <git_worktree|host_scoped|scratch_dir>] [--port <port>] [--host <host>]',
   decide:
     "Usage: kiln decide [task-id] [--option <id>] [--decision <id>] [--rationale <text>] [--apply-ledger] [--port <port>] [--host <host>]",
   doctor: "Usage: kiln doctor [--port <port>] [--host <host>] [--json]",
@@ -646,10 +646,12 @@ async function handleUp(
 
   const kilnHome = resolveCliKilnHome(options);
   const host = parseHostValue(parsed.values.host, options.host);
+  const allowZeroPort =
+    Boolean(parsed.values.foreground) || Boolean(options.spawnDaemon);
   const port = parsePortValue(
     parsed.values.port,
     options.port ?? DEFAULT_KILND_PORT,
-    true,
+    allowZeroPort,
   );
   const baseUrl = buildBaseUrl(host, port);
   const pidFile = resolveKilnPidPath(kilnHome);
@@ -695,7 +697,12 @@ async function handleUp(
   }
 
   if (parsed.values.foreground) {
-    const server = new KilndServer({ kilnHome, host, port });
+    const server = new KilndServer({
+      kilnHome,
+      host,
+      port,
+      enableOrchestrator: true,
+    });
     const addr = await server.start();
     writeFileAtomic(pidFile, `${process.pid}\n`);
     io.out(
@@ -1007,7 +1014,13 @@ async function handleDraft(
   const trackResult = TrackSchema.safeParse(parsed.values.track ?? "L2");
   if (!trackResult.success) {
     throw new CliUsageError(
-      `Invalid --track "${String(parsed.values.track)}": expected L1, L2, or L3`,
+      `Invalid --track "${String(parsed.values.track)}": expected L1 or L2`,
+      COMMAND_HELP.draft,
+    );
+  }
+  if (trackResult.data === "L3") {
+    throw new CliUsageError(
+      'Track "L3" is Post-MVP and not supported yet',
       COMMAND_HELP.draft,
     );
   }
@@ -1624,9 +1637,15 @@ async function handleUninstall(
     `Service (${result.platform}): ${result.serviceRemoved ? `removed ${result.servicePath}` : `not installed (${result.servicePath})`}`,
   );
   if (result.worktrees.length > 0) {
-    io.out(`Detected Kiln worktree references (${result.worktrees.length}, read-only):`);
+    io.out(`Detected Kiln worktree references (${result.worktrees.length}):`);
     for (const wt of result.worktrees) {
-      const stateTag = wt.missing ? "missing" : wt.dirty ? "dirty (preserved)" : "clean";
+      const stateTag = wt.removed
+        ? "clean (removed)"
+        : wt.missing
+          ? "missing"
+          : wt.dirty
+            ? "dirty (preserved)"
+            : "clean";
       io.out(`- [${wt.spaceId}] ${wt.worktreePath} (${stateTag})`);
     }
   } else {

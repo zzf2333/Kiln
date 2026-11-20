@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
 import { Hono, type Context } from "hono";
 import { z, ZodError } from "zod";
 import {
@@ -21,11 +22,18 @@ import {
   TaskCardSchema,
   TrackSchema,
   WorkspaceModeSchema,
+  type LedgerFile,
   type PendingDecision,
+  type RunMeta,
   type SpaceConfig,
   type StageId,
 } from "@kiln/protocol";
-import { restoreHostScopedBackup } from "../gate/index.js";
+import type { BackendRegistry } from "../backend/index.js";
+import {
+  HostBackupManifestSchema,
+  restoreHostScopedBackup,
+  type HostBackupManifest,
+} from "../gate/index.js";
 import {
   InvalidStateTransitionError,
   TaskStateMachine,
@@ -39,6 +47,11 @@ import {
   readYamlOptional,
 } from "../store/index.js";
 import type { CaffeinateController } from "./caffeinate.js";
+import {
+  ChatMessageRecordSchema,
+  KilnChatEngine,
+  snapshotBackends,
+} from "./chat.js";
 import { ServerHttpError, mapDomainError } from "./errors.js";
 import {
   computeUsageSnapshot,
@@ -49,7 +62,12 @@ import {
   readTaskCardOptional,
   resolveCardLimits,
 } from "./pending-decisions.js";
+import type { LiveRateTracker } from "./rate-tracker.js";
 import type { SseHub } from "./sse.js";
+import {
+  createStaticFilesHandler,
+  resolveDefaultPublicDir,
+} from "./static-files.js";
 
 export interface HttpApiDependencies {
   store: KilnStore;
@@ -57,6 +75,16 @@ export interface HttpApiDependencies {
   sseHub: SseHub;
   pendingDecisions: PendingDecisionStore;
   caffeinate: CaffeinateController;
+  backendRegistry?: BackendRegistry;
+  rateTracker?: LiveRateTracker;
+  chatEngine?: KilnChatEngine;
+  publicDir?: string | null;
+  backendQueryTimeoutMs?: number;
+  onTaskQueued?: (taskId: string) => void;
+  onTaskPaused?: (taskId: string) => Promise<void> | void;
+  onTaskCancelled?: (taskId: string) => Promise<void> | void;
+  onBeforeDecisionApply?: (taskId: string) => Promise<void> | void;
+  onSettingsUpdated?: (section: "roles" | "limits" | "pricing") => void;
   version?: string;
 }
 
@@ -108,6 +136,66 @@ const DecideExtensionsSchema = z.object({
   contractUpdate: ContractUpdatePayloadSchema.optional(),
   contract_update: ContractUpdateSnakePayloadSchema.optional(),
 });
+
+const ChatMessageBodySchema = z.object({
+  message: z.string().trim().min(1),
+});
+
+function loadAllLedgers(
+  store: KilnStore,
+  extraSpaceIds: Iterable<string> = [],
+): Record<string, LedgerFile> {
+  const spaceIds = new Set<string>(extraSpaceIds);
+  if (fs.existsSync(store.paths.ledgerDir)) {
+    for (const entry of fs.readdirSync(store.paths.ledgerDir, { withFileTypes: true })) {
+      if (!entry.isFile() || entry.name.startsWith(".") || !entry.name.endsWith(".yaml")) {
+        continue;
+      }
+      const spaceId = entry.name.slice(0, -".yaml".length);
+      spaceIds.add(assertSafeSegment(spaceId, "spaceId"));
+    }
+  }
+
+  const ledgers: Record<string, LedgerFile> = {};
+  for (const spaceId of Array.from(spaceIds).sort()) {
+    const file = store.readLedger(spaceId);
+    if (file) {
+      ledgers[spaceId] = file;
+    }
+  }
+  return ledgers;
+}
+
+function readLatestRunMeta(store: KilnStore, taskId: string): RunMeta | null {
+  const runsDir = store.paths.runsDir(taskId);
+  if (!fs.existsSync(runsDir)) {
+    return null;
+  }
+  const dirNames = fs
+    .readdirSync(runsDir, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+    .map((e) => assertSafeSegment(e.name, "runDirName"))
+    .sort((a, b) => a.localeCompare(b));
+
+  for (let i = dirNames.length - 1; i >= 0; i--) {
+    const meta = readYamlOptional(store.paths.runYaml(taskId, dirNames[i]!), RunMetaSchema);
+    if (meta) {
+      return meta;
+    }
+  }
+  return null;
+}
+
+function readHostBackupManifestOptional(
+  store: KilnStore,
+  taskId: string,
+): HostBackupManifest | null {
+  const raw = readOptionalText(store.paths.backupManifest(taskId));
+  if (raw === null) {
+    return null;
+  }
+  return HostBackupManifestSchema.parse(JSON.parse(raw) as unknown);
+}
 
 async function readJsonBodyStrict(c: Context): Promise<unknown> {
   const raw = await c.req.text();
@@ -194,9 +282,59 @@ function parseLastEventIdParam(rawValue: string | undefined): number | null {
  * Creates the Hono REST + SSE application serving Web/menubar clients on `127.0.0.1`.
  */
 export function createHttpApiApp(deps: HttpApiDependencies): Hono {
-  const { store, stateMachine, sseHub, pendingDecisions, caffeinate } = deps;
+  const {
+    store,
+    stateMachine,
+    sseHub,
+    pendingDecisions,
+    caffeinate,
+    backendRegistry,
+    rateTracker,
+    chatEngine,
+    backendQueryTimeoutMs,
+    onTaskQueued,
+    onTaskPaused,
+    onTaskCancelled,
+    onBeforeDecisionApply,
+    onSettingsUpdated,
+  } = deps;
   const version = deps.version ?? "0.1.0";
   const app = new Hono();
+
+  const readDraftChatFallback = (draftId: string) => {
+    if (chatEngine) {
+      return chatEngine.getDraftChatMessages(draftId);
+    }
+    const safeDraftId = assertSafeSegment(draftId, "draftId");
+    return readNdjsonValidated(
+      path.join(store.paths.draftsDir, `${safeDraftId}-chat.ndjson`),
+      ChatMessageRecordSchema,
+    );
+  };
+
+  const readTaskChatFallback = (taskId: string) => {
+    if (chatEngine) {
+      return chatEngine.getTaskChatMessages(taskId);
+    }
+    const safeTaskId = assertSafeSegment(taskId, "taskId");
+    return readNdjsonValidated(
+      path.join(store.paths.taskDir(safeTaskId), "resolver_chat.ndjson"),
+      ChatMessageRecordSchema,
+    );
+  };
+
+  const requireExistingDraft = (rawId: string): { draftId: string; draft: NonNullable<ReturnType<KilnStore["readDraft"]>> } => {
+    const draftId = assertSafeSegment(rawId, "draftId");
+    const draft = store.readDraft(draftId);
+    if (!draft) {
+      throw new ServerHttpError(404, {
+        error: "draft_not_found",
+        draftId,
+        message: `Draft "${draftId}" does not exist`,
+      });
+    }
+    return { draftId, draft };
+  };
 
   const requireExistingTask = (rawId: string): string => {
     const taskId = assertSafeSegment(rawId, "taskId");
@@ -224,7 +362,27 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     });
   });
 
-  app.get("/api/bootstrap", (c) => {
+  app.get("/api/agents", async (c) => {
+    const snap = await snapshotBackends(backendRegistry, {
+      timeoutMs: backendQueryTimeoutMs,
+    });
+    return c.json({
+      ok: true,
+      agents: snap.agents,
+      backends: snap.backends,
+    });
+  });
+
+  app.get("/api/ledgers", (c) => {
+    const extraSpaces = new Set<string>(store.listTasks().map((t) => t.space));
+    const ledgers = loadAllLedgers(store, extraSpaces);
+    return c.json({
+      ok: true,
+      ledgers,
+    });
+  });
+
+  app.get("/api/bootstrap", async (c) => {
     const roles = store.readConfig("roles");
     const limits = store.readConfig("limits");
     const pricing = store.readConfig("pricing");
@@ -233,6 +391,13 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       store,
       taskRows.map((row) => row.space),
     );
+    const ledgers = loadAllLedgers(store, [
+      ...Object.keys(spaces),
+      ...taskRows.map((row) => row.space),
+    ]);
+    const backendSnap = await snapshotBackends(backendRegistry, {
+      timeoutMs: backendQueryTimeoutMs,
+    });
 
     const tasks = taskRows.map((row) => {
       const card = store.readTaskCard(row.id);
@@ -240,6 +405,23 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       const derived = deriveTaskStatus(card, stateEvents);
       const taskTurns = store.listUsageTurns({ taskId: row.id });
       const taskUsage = computeUsageSnapshot(taskTurns, pricing);
+      const latestRun = readLatestRunMeta(store, row.id);
+      const pending = row.status === "waiting" ? pendingDecisions.get(row.id) : null;
+      const latestWaiting =
+        row.status === "waiting"
+          ? [...stateEvents]
+              .reverse()
+              .find((ev) => ev.type === "waiting")
+          : undefined;
+      const latestDone =
+        row.status === "done"
+          ? [...stateEvents]
+              .reverse()
+              .find((ev) => ev.type === "done")
+          : undefined;
+      const hasHostBackup =
+        card.workspace_mode === "host_scoped" &&
+        fs.existsSync(store.paths.backupManifest(row.id));
 
       return {
         id: row.id,
@@ -265,17 +447,46 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
           total_tokens: taskUsage.totalTokens,
         },
         cost_usd: taskUsage.costUsd,
+        summary: card.contract.goal,
+        has_host_backup: hasHostBackup,
+        ...(latestRun !== null ? { agent: latestRun.agent, model: latestRun.model } : {}),
+        ...(row.status === "waiting"
+          ? {
+              waiting_reason:
+                pending?.question ??
+                pending?.reason ??
+                (latestWaiting?.type === "waiting" ? latestWaiting.reason : undefined),
+              ...(latestWaiting?.type === "waiting"
+                ? { waiting_since: latestWaiting.at }
+                : {}),
+            }
+          : {}),
+        ...(latestDone?.type === "done" && latestDone.deliver_ref !== undefined
+          ? { delivered_ref: latestDone.deliver_ref }
+          : {}),
       };
     });
 
     const allTurns = store.listUsageTurns();
     const usage = computeUsageSnapshot(allTurns, pricing);
+    const liveSnap = rateTracker ? rateTracker.snapshot() : { tokPerSec: 0, rates: {} };
 
     return c.json({
       tasks,
       pendingDecisions: pendingDecisions.listAll(),
       drafts: store.listDrafts(),
       spaces,
+      ledgers,
+      agents: backendSnap.agents,
+      backends: backendSnap.backends,
+      providerUsage: backendSnap.providerUsage,
+      liveRates: {
+        rates: liveSnap.rates,
+        totals: {
+          costUsd: usage.costUsd,
+          tokPerSec: liveSnap.tokPerSec,
+        },
+      },
       settings: { roles, limits, pricing },
       roles,
       limits,
@@ -285,7 +496,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     });
   });
 
-  app.get("/api/tasks/:id", (c) => {
+  app.get("/api/tasks/:id", async (c) => {
     const taskId = requireExistingTask(c.req.param("id"));
     const card = store.readTaskCard(taskId);
     const stateEvents = store.readStateEvents(taskId);
@@ -299,6 +510,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     const ledgerProposals = readLedgerProposals(store, taskId);
 
     const runs: Array<Record<string, unknown>> = [];
+    let latestMeta: RunMeta | null = null;
     const runsDir = store.paths.runsDir(taskId);
     if (fs.existsSync(runsDir)) {
       const dirNames = fs
@@ -309,6 +521,9 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
 
       for (const runDirName of dirNames) {
         const meta = readYamlOptional(store.paths.runYaml(taskId, runDirName), RunMetaSchema);
+        if (meta) {
+          latestMeta = meta;
+        }
         const handoff = readOptionalText(store.paths.handoffMd(taskId, runDirName));
         const receipt = readOptionalText(store.paths.receiptMd(taskId, runDirName));
         const gate = readYamlOptional(store.paths.gateYaml(taskId, runDirName), GateReportSchema);
@@ -316,6 +531,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
           store.paths.runEventsNdjson(taskId, runDirName),
           RunEventSchema,
         );
+        const exitEv = [...events].reverse().find((e) => e.kind === "exit");
 
         runs.push({
           dirName: runDirName,
@@ -325,10 +541,29 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
           gate,
           events,
           eventsCount: events.length,
+          ...(meta?.started_at ? { startedAt: meta.started_at } : {}),
+          endedAt: exitEv ? exitEv.at : null,
         });
       }
     }
 
+    let liveViewUrl: string | null = null;
+    if (
+      latestMeta &&
+      backendRegistry &&
+      backendRegistry.has(latestMeta.backend_id)
+    ) {
+      try {
+        liveViewUrl = await backendRegistry
+          .get(latestMeta.backend_id)
+          .liveViewUrl(latestMeta.session_ref);
+      } catch {
+        liveViewUrl = null;
+      }
+    }
+
+    const hostBackup = readHostBackupManifestOptional(store, taskId);
+    const chatMessages = readTaskChatFallback(taskId);
     const usageTurns = store.listUsageTurns({ taskId });
     const usage = computeUsageSnapshot(usageTurns, pricing);
 
@@ -345,6 +580,48 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       runs,
       usageTurns,
       usage,
+      liveViewUrl,
+      hostBackup,
+      stateEvents,
+      chatMessages,
+    });
+  });
+
+  app.get("/api/drafts/:id", (c) => {
+    const { draftId, draft } = requireExistingDraft(c.req.param("id"));
+    return c.json({
+      ok: true,
+      draft,
+      messages: readDraftChatFallback(draftId),
+    });
+  });
+
+  app.get("/api/drafts/:id/chat", (c) => {
+    const { draftId } = requireExistingDraft(c.req.param("id"));
+    return c.json({
+      ok: true,
+      draftId,
+      messages: readDraftChatFallback(draftId),
+    });
+  });
+
+  app.post("/api/drafts/:id/chat", async (c) => {
+    const draftId = assertSafeSegment(c.req.param("id"), "draftId");
+    const rawBody = await readJsonBodyStrict(c);
+    const body = ChatMessageBodySchema.parse(rawBody);
+    if (!chatEngine) {
+      throw new ServerHttpError(409, {
+        error: "chat_engine_unavailable",
+        message: "Interactive chat engine is not configured on this server",
+      });
+    }
+    const res = await chatEngine.sendDraftChat(draftId, body.message);
+    return c.json({
+      ok: true,
+      draftId,
+      messages: res.messages,
+      reply: res.reply,
+      draft: res.draft,
     });
   });
 
@@ -457,6 +734,9 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         contractVersion: created.card.contract_version,
       },
     });
+    if (created.state.status === "queued") {
+      onTaskQueued?.(created.card.id);
+    }
 
     return c.json(
       {
@@ -471,10 +751,41 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     );
   });
 
+  app.get("/api/tasks/:id/chat", (c) => {
+    const taskId = requireExistingTask(c.req.param("id"));
+    return c.json({
+      ok: true,
+      taskId,
+      messages: readTaskChatFallback(taskId),
+    });
+  });
+
+  app.post("/api/tasks/:id/chat", async (c) => {
+    const taskId = requireExistingTask(c.req.param("id"));
+    const rawBody = await readJsonBodyStrict(c);
+    const body = ChatMessageBodySchema.parse(rawBody);
+    if (!chatEngine) {
+      throw new ServerHttpError(409, {
+        error: "chat_engine_unavailable",
+        message: "Interactive chat engine is not configured on this server",
+      });
+    }
+    const res = await chatEngine.sendTaskChat(taskId, body.message);
+    return c.json({
+      ok: true,
+      taskId,
+      messages: res.messages,
+      reply: res.reply,
+      pendingDecision: res.pendingDecision,
+      card: res.card,
+    });
+  });
+
   app.post("/api/tasks/:id/pause", async (c) => {
     const taskId = requireExistingTask(c.req.param("id"));
     const body = OptionalReasonBodySchema.parse(await readJsonBodyOptional(c));
     const nextState = stateMachine.pauseTask(taskId, body.reason);
+    await Promise.resolve(onTaskPaused?.(taskId));
     caffeinate.syncRunningCount(countRunningLeafTasks(store));
     sseHub.publish({
       type: "task.updated",
@@ -516,6 +827,9 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         contractVersion: nextState.contractVersion,
       },
     });
+    if (nextState.status === "queued") {
+      onTaskQueued?.(taskId);
+    }
     return c.json({ ok: true, taskId, state: nextState });
   });
 
@@ -543,6 +857,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     const body = OptionalReasonBodySchema.parse(await readJsonBodyOptional(c));
     const result = stateMachine.cancelTask(taskId, body.reason);
     pendingDecisions.remove(taskId);
+    await Promise.resolve(onTaskCancelled?.(taskId));
     caffeinate.syncRunningCount(countRunningLeafTasks(store));
 
     sseHub.publish({
@@ -594,6 +909,8 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         });
       }
     }
+
+    onTaskQueued?.(taskId);
 
     return c.json({
       ok: true,
@@ -683,6 +1000,8 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       selectedOption.action === "resume" &&
       (pending.reason === "upstream_cancelled" || pending.category === "upstream_cancelled");
 
+    await Promise.resolve(onBeforeDecisionApply?.(taskId));
+
     let result;
     try {
       result = stateMachine.applyDecision({
@@ -736,6 +1055,14 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       },
     });
     registerUpstreamCancelledDownstreams(result.waitingDownstreamTaskIds);
+    if (
+      result.state.status === "queued" ||
+      result.state.status === "done" ||
+      result.state.status === "cancelled" ||
+      result.state.status === "external"
+    ) {
+      onTaskQueued?.(taskId);
+    }
 
     return c.json({
       ok: true,
@@ -812,15 +1139,18 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     if (section === "roles") {
       const data = RolesConfigSchema.parse(rawBody);
       store.writeConfig("roles", data);
+      onSettingsUpdated?.("roles");
       return c.json({ ok: true, section, data });
     }
     if (section === "limits") {
       const data = LimitsConfigSchema.parse(rawBody);
       store.writeConfig("limits", data);
+      onSettingsUpdated?.("limits");
       return c.json({ ok: true, section, data });
     }
     const data = PricingConfigSchema.parse(rawBody);
     store.writeConfig("pricing", data);
+    onSettingsUpdated?.("pricing");
     return c.json({ ok: true, section, data });
   });
 
@@ -847,6 +1177,24 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       },
     });
   });
+
+  app.all("/api", (c) => {
+    return c.json({ error: "not_found", message: "API endpoint not found" }, 404);
+  });
+
+  app.all("/api/*", (c) => {
+    return c.json(
+      { error: "not_found", message: `API endpoint "${c.req.path}" not found` },
+      404,
+    );
+  });
+
+  if (deps.publicDir !== null) {
+    const staticHandler = createStaticFilesHandler({
+      publicDir: deps.publicDir ?? resolveDefaultPublicDir(),
+    });
+    app.all("*", staticHandler);
+  }
 
   return app;
 }
