@@ -55,4 +55,4 @@ jobs:
 
       - name: Validate Homebrew formula and cask syntax
         if: runner.os == 'macOS'
-        run: ruby -c packaging/homebrew/kiln.rb && ruby -c packaging/homebrew/kiln-app.rb
+        run: ruby -c packaging/homebrew/Formula/kiln.rb && ruby -c packaging/homebrew/Casks/kiln-app.rb

@@ -15,7 +15,7 @@ cask "kiln-app" do
   desc "Local-first autonomous developer workbench menu bar app"
   homepage "https://github.com/zzf2333/Kiln"
 
-  depends_on macos: ">= :ventura"
+  depends_on macos: :ventura
 
   app "Kiln.app"
 

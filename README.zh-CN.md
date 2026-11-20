@@ -29,7 +29,7 @@
 | [`apps/web`](apps/web/package.json) | **Web 工作台**：桌面与移动端（`<= 820px`）自适应 Preact 前端，编译产出至 `packages/kernel/public/` |
 | [`apps/desktop`](apps/desktop/README.md) | **桌面菜单栏薄壳**：Tauri v2 托盘薄壳、按需销毁 `WKWebView` 窗口及零外部依赖 `model.rs` 核心 |
 | [`scripts/`](scripts/install.sh) | **安装脚本与自测**：纯 POSIX [`install.sh`](scripts/install.sh) 与零依赖测试脚本 [`test-install.sh`](scripts/test-install.sh) |
-| [`packaging/`](packaging/README.md) | **发版打包模板**：Homebrew [Formula](packaging/homebrew/kiln.rb)、[Cask](packaging/homebrew/kiln-app.rb) 与发版前核对清单 |
+| [`packaging/`](packaging/README.md) | **发版打包模板**：Homebrew [Formula](packaging/homebrew/Formula/kiln.rb)、[Cask](packaging/homebrew/Casks/kiln-app.rb) 与发版前核对清单 |
 | [`.github/workflows/`](.github/workflows/ci.yml) | **CI/Release 工作流**：跨平台 [`ci.yml`](.github/workflows/ci.yml)（`ubuntu-latest` / `macos-latest`）与 [`release.yml`](.github/workflows/release.yml) |
 
 ---
@@ -88,7 +88,7 @@ pnpm test:socket   # 运行 Unix Socket / 回环 TCP 连通冒烟测试
 
 ```sh
 sh -n scripts/install.sh && sh scripts/test-install.sh
-ruby -c packaging/homebrew/kiln.rb && ruby -c packaging/homebrew/kiln-app.rb
+ruby -c packaging/homebrew/Formula/kiln.rb && ruby -c packaging/homebrew/Casks/kiln-app.rb
 rustc -D warnings --test apps/desktop/src-tauri/src/model.rs -o /tmp/kiln-desktop-model-test && /tmp/kiln-desktop-model-test && rm -f /tmp/kiln-desktop-model-test
 ```
 

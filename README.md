@@ -29,7 +29,7 @@
 | [`apps/web`](apps/web/package.json) | **Web Workbench**: Preact adaptive UI for desktop and mobile (`<= 820px`), compiled into `packages/kernel/public/` |
 | [`apps/desktop`](apps/desktop/README.md) | **Desktop Menu Bar Shell**: Tauri v2 tray shell with on-demand `WKWebView` destruction and pure-`std` `model.rs` core |
 | [`scripts/`](scripts/install.sh) | **Installer & Tests**: POSIX [`install.sh`](scripts/install.sh) and dependency-free [`test-install.sh`](scripts/test-install.sh) |
-| [`packaging/`](packaging/README.md) | **Release Templates**: Homebrew [Formula](packaging/homebrew/kiln.rb), [Cask](packaging/homebrew/kiln-app.rb), and pre-release checklist |
+| [`packaging/`](packaging/README.md) | **Release Templates**: Homebrew [Formula](packaging/homebrew/Formula/kiln.rb), [Cask](packaging/homebrew/Casks/kiln-app.rb), and pre-release checklist |
 | [`.github/workflows/`](.github/workflows/ci.yml) | **Automation**: Cross-platform [`ci.yml`](.github/workflows/ci.yml) (`ubuntu-latest`, `macos-latest`) and [`release.yml`](.github/workflows/release.yml) |
 
 ---
@@ -88,7 +88,7 @@ Validate installer, Homebrew templates, and desktop core unit tests locally:
 
 ```sh
 sh -n scripts/install.sh && sh scripts/test-install.sh
-ruby -c packaging/homebrew/kiln.rb && ruby -c packaging/homebrew/kiln-app.rb
+ruby -c packaging/homebrew/Formula/kiln.rb && ruby -c packaging/homebrew/Casks/kiln-app.rb
 rustc -D warnings --test apps/desktop/src-tauri/src/model.rs -o /tmp/kiln-desktop-model-test && /tmp/kiln-desktop-model-test && rm -f /tmp/kiln-desktop-model-test
 ```
 

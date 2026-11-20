@@ -152,8 +152,8 @@ jobs:
             echo '```'
             echo ""
             echo "### Homebrew Formula Update Notes"
-            echo "1. Update \`packaging/homebrew/kiln.rb\` \`url\` and \`sha256\` in \`zzf2333/homebrew-tap\` using the published tarball hash above."
-            echo "2. \`packaging/homebrew/kiln-app.rb\` (macOS Cask for \`Kiln.app\`) requires signed & notarized macOS DMG release artifacts."
+            echo "1. Update \`packaging/homebrew/Formula/kiln.rb\` \`url\` and \`sha256\` in \`zzf2333/homebrew-tap\` using the published tarball hash above."
+            echo "2. \`packaging/homebrew/Casks/kiln-app.rb\` (macOS Cask for \`Kiln.app\`) requires signed & notarized macOS DMG release artifacts."
             echo ""
             echo "### Manual / Secrets Prerequisites Before Full Automated Release"
             echo "- Configure \`NPM_TOKEN\` repository secret for automated npm publishing."
