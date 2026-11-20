@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BootstrapResponse, TaskDetailResponse } from "../api/types";
 import { App } from "../app";
+import { fmtTime } from "../state/format";
 
 type MockFetchHandler = (
   url: string,
@@ -1515,5 +1516,529 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       rafSpy.mockRestore();
       cancelSpy.mockRestore();
     }
+  });
+
+  it("DetailView derives verify and deliver station status when no separate verify/deliver runs exist without overriding independent runs", async () => {
+    const createdAt = "2026-11-20T01:05:00.000Z";
+    const doneAt = "2026-11-20T02:15:00.000Z";
+    const updatedAt = "2026-11-20T03:45:00.000Z";
+
+    const makeDetail = (
+      id: string,
+      opts: {
+        status: TaskDetailResponse["state"]["status"];
+        stage: TaskDetailResponse["state"]["stage"];
+        gatePassed?: boolean;
+        withSeparateVerifyRun?: boolean;
+        includeDoneEvent?: boolean;
+      },
+    ): TaskDetailResponse => ({
+      card: {
+        schema_version: 1,
+        id,
+        title: `阶段条任务 ${id}`,
+        space: "kiln",
+        priority: "P1",
+        track: "L2",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        contract_version: 1,
+        contract: {
+          goal: "goal",
+          end: "end",
+          accept_cmd: "pnpm test",
+          accept_files_hash: "sha256:x",
+          scope: ["src/**"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: {
+          retries_per_stage: 2,
+          review_rounds: 2,
+          advisor_calls: 1,
+          max_tokens: 250_000,
+        },
+        created_at: createdAt,
+        updated_at: updatedAt,
+      },
+      state: {
+        status: opts.status,
+        stage: opts.stage,
+        round: 1,
+        activeRunId: null,
+        priority: "P1",
+        effectivePriority: "P1",
+        track: "L2",
+        contractVersion: 1,
+        updatedAt,
+      },
+      brief: "# brief",
+      decisions: "",
+      pendingDecision: null,
+      ledgerProposals: [],
+      runs: [
+        {
+          dirName: "001-implement",
+          meta: {
+            schema_version: 1,
+            run_id: `run-${id}-impl`,
+            task_id: id,
+            stage: "implement",
+            round: 1,
+            role: "worker",
+            contract_version: 1,
+            backend_id: "paseo",
+            agent: "codex",
+            model: "gpt-5.4",
+            session_ref: { backendId: "paseo", sessionId: "s1" },
+            started_at: createdAt,
+          },
+          handoff: null,
+          receipt: "---\nrun_id: r1\n---\n完成",
+          gate:
+            opts.gatePassed === undefined
+              ? null
+              : {
+                  schema_version: 1,
+                  run_id: `run-${id}-impl`,
+                  contract_version: 1,
+                  schema_ok: true,
+                  scope_ok: true,
+                  artifacts_ok: true,
+                  out_of_scope_paths: [],
+                  frozen_files_changed: [],
+                  accept_exit_code: opts.gatePassed ? 0 : 1,
+                  accept_duration_ms: 120,
+                  escalated_to_l2: false,
+                  checked_at: doneAt,
+                },
+          events: [],
+          eventsCount: 0,
+          startedAt: createdAt,
+          endedAt: "2026-11-20T01:25:00.000Z",
+        },
+        ...(opts.withSeparateVerifyRun
+          ? [
+              {
+                dirName: "002-verify",
+                meta: {
+                  schema_version: 1 as const,
+                  run_id: `run-${id}-verify`,
+                  task_id: id,
+                  stage: "verify" as const,
+                  round: 1,
+                  role: "verifier" as const,
+                  contract_version: 1,
+                  backend_id: "paseo",
+                  agent: "pi",
+                  model: "claude-sonnet-4-6",
+                  session_ref: { backendId: "paseo", sessionId: "s2" },
+                  started_at: "2026-11-20T01:30:00.000Z",
+                },
+                handoff: null,
+                receipt: "---\nverdict: fail\n---\n失败",
+                gate: null,
+                events: [],
+                eventsCount: 0,
+                startedAt: "2026-11-20T01:30:00.000Z",
+                endedAt: "2026-11-20T01:40:00.000Z",
+              },
+            ]
+          : []),
+      ],
+      usageTurns: [],
+      usage: {
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        costUsd: 0,
+        byAgent: {},
+        byModel: {},
+      },
+      stateEvents: opts.includeDoneEvent
+        ? [{ type: "done", at: doneAt, deliver_ref: "main" }]
+        : [],
+    });
+
+    const detailsById: Record<string, TaskDetailResponse> = {
+      "t-done-gate": makeDetail("t-done-gate", {
+        status: "done",
+        stage: "deliver",
+        gatePassed: true,
+        includeDoneEvent: true,
+      }),
+      "t-fail-gate": makeDetail("t-fail-gate", {
+        status: "waiting",
+        stage: "deliver",
+        gatePassed: false,
+      }),
+      "t-live-verify": makeDetail("t-live-verify", {
+        status: "running",
+        stage: "verify",
+        gatePassed: false,
+      }),
+      "t-ext-deliver": makeDetail("t-ext-deliver", {
+        status: "external",
+        stage: "deliver",
+        gatePassed: true,
+        withSeparateVerifyRun: true,
+      }),
+      "t-paused-deliver": makeDetail("t-paused-deliver", {
+        status: "paused",
+        stage: "deliver",
+        gatePassed: true,
+      }),
+      "t-done-fallback": makeDetail("t-done-fallback", {
+        status: "done",
+        stage: "deliver",
+        gatePassed: true,
+        includeDoneEvent: false,
+      }),
+    };
+
+    const bootstrap = makeBaseBootstrap({
+      tasks: Object.values(detailsById).map((d) => ({
+        id: d.card.id,
+        space: d.card.space,
+        parent_id: null,
+        title: d.card.title,
+        priority: d.card.priority,
+        effective_priority: d.card.priority,
+        track: d.card.track,
+        workspace_mode: d.card.workspace_mode,
+        status: d.state.status,
+        stage: d.state.stage,
+        round: 1,
+        active_run_id: null,
+        contract_version: 1,
+        depends_on: [],
+        created_at: createdAt,
+        updated_at: updatedAt,
+        tokens: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+        cost_usd: 0,
+      })),
+    });
+
+    fetchMock.mockImplementation(async (url) => {
+      if (url === "/api/bootstrap") return jsonResponse(bootstrap);
+      const match = url.match(/^\/api\/tasks\/([^/]+)$/);
+      if (match && detailsById[match[1]!]) {
+        return jsonResponse(detailsById[match[1]!]);
+      }
+      return jsonResponse({});
+    });
+
+    const readStations = (container: Element) =>
+      Array.from(container.querySelectorAll(".stations .station")).map((li) => ({
+        name: li.querySelector(".st-name")?.textContent ?? "",
+        sub: li.querySelector(".st-sub")?.textContent ?? "",
+        cls: li.className,
+      }));
+
+    // 1. Done without separate verify/deliver run dirs -> 门禁通过 + stateEvents done time
+    window.location.hash = "#task=t-done-gate";
+    const r1 = render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("门禁通过")).toBeTruthy();
+    });
+    const s1 = readStations(r1.container);
+    expect(s1.find((s) => s.name === "验真")).toEqual({
+      name: "验真",
+      sub: "门禁通过",
+      cls: "station done",
+    });
+    expect(s1.find((s) => s.name === "交付")).toEqual({
+      name: "交付",
+      sub: fmtTime(doneAt),
+      cls: "station done",
+    });
+    r1.unmount();
+
+    // 2. Failed implement gate + waiting at deliver -> 门禁未过 + 等你决定
+    window.location.hash = "#task=t-fail-gate";
+    const r2 = render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("门禁未过")).toBeTruthy();
+    });
+    const s2 = readStations(r2.container);
+    expect(s2.find((s) => s.name === "验真")).toEqual({
+      name: "验真",
+      sub: "门禁未过",
+      cls: "station returned",
+    });
+    expect(s2.find((s) => s.name === "交付")).toEqual({
+      name: "交付",
+      sub: "等你决定",
+      cls: "station blocked",
+    });
+    r2.unmount();
+
+    // 3. Running verify takes precedence over prior failed gate -> 进行中
+    window.location.hash = "#task=t-live-verify";
+    const r3 = render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("阶段条任务 t-live-verify")).toBeTruthy();
+    });
+    const s3 = readStations(r3.container);
+    expect(s3.find((s) => s.name === "验真")).toEqual({
+      name: "验真",
+      sub: "进行中",
+      cls: "station live",
+    });
+    r3.unmount();
+
+    // 4. Separate verify run is NOT overridden, and external status maps deliver -> 等待外部
+    window.location.hash = "#task=t-ext-deliver";
+    const r4 = render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("等待外部")).toBeTruthy();
+    });
+    const s4 = readStations(r4.container);
+    expect(s4.find((s) => s.name === "验真")).toEqual({
+      name: "验真",
+      sub: "已退回",
+      cls: "station returned",
+    });
+    expect(s4.find((s) => s.name === "交付")).toEqual({
+      name: "交付",
+      sub: "等待外部",
+      cls: "station live",
+    });
+    r4.unmount();
+
+    // 5. Paused at deliver -> 已暂停
+    window.location.hash = "#task=t-paused-deliver";
+    const r5 = render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("阶段条任务 t-paused-deliver")).toBeTruthy();
+    });
+    const s5 = readStations(r5.container);
+    expect(s5.find((s) => s.name === "交付")).toEqual({
+      name: "交付",
+      sub: "已暂停",
+      cls: "station paused-manual",
+    });
+    r5.unmount();
+
+    // 6. Done without stateEvents done event falls back to card.updated_at
+    window.location.hash = "#task=t-done-fallback";
+    const r6 = render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("阶段条任务 t-done-fallback")).toBeTruthy();
+    });
+    const s6 = readStations(r6.container);
+    expect(s6.find((s) => s.name === "交付")).toEqual({
+      name: "交付",
+      sub: fmtTime(updatedAt),
+      cls: "station done",
+    });
+    r6.unmount();
+  });
+
+  it("ResolveView and DetailView render hostStagedDiffs with plain-text XSS escaping when staged_awaiting_approval", async () => {
+    const now = new Date().toISOString();
+    const xssDiff =
+      "--- a/.zshrc\n+++ b/.zshrc\n@@ -1,1 +1,2 @@\n-<script>window.__xss_diff=1</script>\n+<img src=x onerror=\"window.__xss_diff=2\">";
+    const newFileDiff = "+++ b/new.conf\n@@ -0,0 +1,2 @@\n+line1\n+line2";
+
+    const detail: TaskDetailResponse = {
+      card: {
+        schema_version: 1,
+        id: "t-host-diff",
+        title: "修改本机配置等待审批",
+        space: "local",
+        priority: "P1",
+        track: "L1",
+        workspace_mode: "host_scoped",
+        parent: null,
+        depends_on: [],
+        contract_version: 1,
+        contract: {
+          goal: "安全更新 ~/.zshrc",
+          end: "审批后写入",
+          accept_cmd: "echo ok",
+          accept_files_hash: "sha256:hostdiff",
+          scope: ["~/.zshrc", "~/.config/kiln/new.conf"],
+          deliver: { mode: "manual", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: {
+          retries_per_stage: 2,
+          review_rounds: 2,
+          advisor_calls: 1,
+          max_tokens: 250_000,
+        },
+        created_at: now,
+        updated_at: now,
+      },
+      state: {
+        status: "waiting",
+        stage: "deliver",
+        round: 1,
+        activeRunId: null,
+        priority: "P1",
+        effectivePriority: "P1",
+        track: "L1",
+        contractVersion: 1,
+        updatedAt: now,
+      },
+      brief: "# Host diff",
+      decisions: "",
+      pendingDecision: {
+        id: "dec-host-1",
+        task_id: "t-host-diff",
+        contract_version: 1,
+        reason: "host_scoped_apply",
+        category: "external_action",
+        question: "是否批准将暂存修改写入本机文件？",
+        options: [
+          {
+            id: "opt-apply",
+            label: "批准写入",
+            action: "resume",
+            recommended: true,
+          },
+          {
+            id: "opt-cancel",
+            label: "取消写入",
+            action: "cancel",
+            recommended: false,
+          },
+        ],
+        created_at: now,
+      },
+      ledgerProposals: [],
+      runs: [],
+      usageTurns: [],
+      usage: {
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        costUsd: 0,
+        byAgent: {},
+        byModel: {},
+      },
+      hostBackup: {
+        schema_version: 1,
+        task_id: "t-host-diff",
+        status: "staged_awaiting_approval",
+        files: [
+          {
+            target_canonical_path: "/Users/me/.zshrc",
+            staged_relative_path: ".zshrc",
+            backup_relative_path: "files/0000.bak",
+            existed_before: true,
+            pre_sha256: "aaa",
+            post_sha256: null,
+            updated_at: now,
+          },
+        ],
+        created_at: now,
+        updated_at: now,
+      },
+      hostStagedDiffs: [
+        {
+          targetPath: "/Users/me/.zshrc",
+          existedBefore: true,
+          preSha256: "aaa",
+          diff: xssDiff,
+          truncated: false,
+        },
+        {
+          targetPath: "/Users/me/.config/kiln/new.conf",
+          existedBefore: false,
+          preSha256: null,
+          diff: newFileDiff,
+          truncated: true,
+        },
+      ],
+    };
+
+    const bootstrap = makeBaseBootstrap({
+      tasks: [
+        {
+          id: "t-host-diff",
+          space: "local",
+          parent_id: null,
+          title: "修改本机配置等待审批",
+          priority: "P1",
+          effective_priority: "P1",
+          track: "L1",
+          workspace_mode: "host_scoped",
+          status: "waiting",
+          stage: "deliver",
+          round: 1,
+          active_run_id: null,
+          contract_version: 1,
+          depends_on: [],
+          created_at: now,
+          updated_at: now,
+          tokens: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+          cost_usd: 0,
+          has_host_backup: true,
+        },
+      ],
+      pendingDecisions: [detail.pendingDecision!],
+    });
+
+    fetchMock.mockImplementation(async (url) => {
+      if (url === "/api/bootstrap") return jsonResponse(bootstrap);
+      if (url === "/api/tasks/t-host-diff") return jsonResponse(detail);
+      if (url === "/api/tasks/t-host-diff/chat") return jsonResponse({ messages: [] });
+      return jsonResponse({});
+    });
+
+    // 1. ResolveView displays staged diff panel with verbatim escaped text
+    window.location.hash = "#resolve=t-host-diff";
+    const rResolve = render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("待落盘暂存 Diff")).toBeTruthy();
+    });
+    expect(screen.getByText("/Users/me/.zshrc")).toBeTruthy();
+    expect(screen.getByText("/Users/me/.config/kiln/new.conf")).toBeTruthy();
+    expect(screen.getByText("修改")).toBeTruthy();
+    expect(screen.getByText("新增")).toBeTruthy();
+    expect(screen.getByText("内容已截断")).toBeTruthy();
+
+    const preElsResolve = Array.from(
+      rResolve.container.querySelectorAll("pre.staged-diff-pre"),
+    );
+    expect(preElsResolve).toHaveLength(2);
+    expect(preElsResolve[0]?.textContent).toBe(xssDiff);
+    expect(preElsResolve[1]?.textContent).toBe(newFileDiff);
+    expect(rResolve.container.querySelectorAll("script")).toHaveLength(0);
+    expect(rResolve.container.querySelectorAll("img")).toHaveLength(0);
+    expect((window as unknown as { __xss_diff?: unknown }).__xss_diff).toBeUndefined();
+    rResolve.unmount();
+
+    // 2. DetailView displays staged diff when staged_awaiting_approval
+    window.location.hash = "#task=t-host-diff";
+    const rDetail = render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("待落盘暂存 Diff")).toBeTruthy();
+    });
+    const preElsDetail = Array.from(
+      rDetail.container.querySelectorAll("pre.staged-diff-pre"),
+    );
+    expect(preElsDetail).toHaveLength(2);
+    expect(preElsDetail[0]?.textContent).toBe(xssDiff);
+    expect(rDetail.container.querySelectorAll("script")).toHaveLength(0);
+    expect(rDetail.container.querySelectorAll("img")).toHaveLength(0);
+    rDetail.unmount();
+
+    // 3. DetailView hides staged diff once hostBackup is applied
+    detail.hostBackup = { ...detail.hostBackup!, status: "applied" };
+    window.location.hash = "#task=t-host-diff";
+    const rApplied = render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("修改本机配置等待审批")).toBeTruthy();
+    });
+    expect(screen.queryByText("待落盘暂存 Diff")).toBeNull();
+    rApplied.unmount();
   });
 });

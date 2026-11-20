@@ -1,7 +1,50 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import type { TaskDetailResponse } from "../api/types";
 import { DecisionBox } from "../components/DecisionBox";
 import { ViewFrame } from "../components/ViewFrame";
 import { useKilnStore } from "../state/store";
+
+export function HostStagedDiffSection({
+  detail,
+}: {
+  detail: TaskDetailResponse | undefined;
+}) {
+  const diffs = detail?.hostStagedDiffs;
+  if (
+    detail?.hostBackup?.status !== "staged_awaiting_approval" ||
+    !diffs ||
+    diffs.length === 0
+  ) {
+    return null;
+  }
+
+  return (
+    <section class="staged-diffs" aria-label="待落盘暂存 Diff">
+      <div class="staged-diffs-head">
+        <h4>待落盘暂存 Diff</h4>
+        <span class="muted mono">{diffs.length} 个文件待写入</span>
+      </div>
+      <div class="staged-diffs-list">
+        {diffs.map((entry, idx) => (
+          <div key={`${entry.targetPath}-${idx}`} class="staged-diff-file">
+            <div class="staged-diff-file-head">
+              <span class={`staged-tag ${entry.existedBefore ? "is-mod" : "is-add"}`}>
+                {entry.existedBefore ? "修改" : "新增"}
+              </span>
+              <span class="staged-diff-path mono" title={entry.targetPath}>
+                {entry.targetPath}
+              </span>
+              {entry.truncated ? (
+                <span class="staged-tag is-trunc">内容已截断</span>
+              ) : null}
+            </div>
+            <pre class="mono staged-diff-pre">{entry.diff}</pre>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
 
 export function ResolveView() {
   const { store, state } = useKilnStore();
@@ -161,6 +204,7 @@ export function ResolveView() {
               decision={pendingDecision}
               onSubmit={(payload) => store.submitDecision(taskId, payload)}
             />
+            <HostStagedDiffSection detail={detail} />
             {detail?.card && detail?.state ? (
               <div class="ctx" style={{ border: "none", padding: "0 0 20px" }}>
                 <section>

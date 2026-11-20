@@ -209,6 +209,14 @@ export interface HostBackupManifestInfo {
   updated_at: string;
 }
 
+export interface HostStagedDiffEntry {
+  targetPath: string;
+  existedBefore: boolean;
+  preSha256: string | null;
+  diff: string;
+  truncated: boolean;
+}
+
 export interface TaskRunDetail {
   dirName: string;
   meta: RunMeta | null;
@@ -254,6 +262,7 @@ export interface TaskDetailResponse {
   usage: UsageSnapshot;
   liveViewUrl?: string | null;
   hostBackup?: HostBackupManifestInfo | null;
+  hostStagedDiffs?: HostStagedDiffEntry[];
   stateEvents?: StateEvent[];
   chatMessages?: ChatMessage[];
 }

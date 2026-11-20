@@ -1,11 +1,12 @@
 import { useState } from "preact/hooks";
-import type { StageId } from "@kiln/protocol/web";
+import type { GateReport, StageId } from "@kiln/protocol/web";
 import type { TaskRunDetail } from "../api/types";
 import { DecisionBox } from "../components/DecisionBox";
 import { FlameCanvas } from "../components/FlameCanvas";
 import { CheckIcon } from "../components/Icons";
 import { PrioritySelect } from "../components/PrioritySelect";
 import { ViewFrame } from "../components/ViewFrame";
+import { HostStagedDiffSection } from "./ResolveView";
 import {
   STATUS_CHIP,
   TRACK_LABEL,
@@ -54,6 +55,15 @@ function parseStageFromDir(dirName: string): StageId {
   return known.includes(candidate as StageId)
     ? (candidate as StageId)
     : "implement";
+}
+
+function isGatePassed(gate: GateReport): boolean {
+  return (
+    gate.schema_ok &&
+    gate.scope_ok &&
+    gate.artifacts_ok !== false &&
+    gate.accept_exit_code === 0
+  );
 }
 
 function verdictMeta(vs: RunVisualState, stage: StageId): [string, string] {
@@ -207,12 +217,7 @@ export function DetailView() {
     }
 
     const isLastRun = idx === detail.runs.length - 1;
-    const gateFailed =
-      r.gate !== null &&
-      (!r.gate.schema_ok ||
-        !r.gate.scope_ok ||
-        !r.gate.artifacts_ok ||
-        r.gate.accept_exit_code !== 0);
+    const gateFailed = r.gate !== null && !isGatePassed(r.gate);
     const receiptReturned =
       r.receipt !== null &&
       /\bverdict:\s*(changes_requested|fail)\b/i.test(r.receipt);
@@ -296,6 +301,42 @@ export function DetailView() {
     if (matching.length === 0) {
       if (st === "intake") {
         return { cls: "done", sub: fmtTime(card.created_at) };
+      }
+      if (st === "verify") {
+        if (taskState.status === "running" && taskState.stage === "verify") {
+          return { cls: "live", sub: "进行中" };
+        }
+        for (let i = normalizedRuns.length - 1; i >= 0; i--) {
+          const implRun = normalizedRuns[i]!;
+          if (implRun.stage === "implement" && implRun.raw.gate != null) {
+            return isGatePassed(implRun.raw.gate)
+              ? { cls: "done", sub: "门禁通过" }
+              : { cls: "returned", sub: "门禁未过" };
+          }
+        }
+      }
+      if (st === "deliver") {
+        if (taskState.status === "done") {
+          const doneEvent = detail.stateEvents
+            ? [...detail.stateEvents].reverse().find((ev) => ev.type === "done")
+            : undefined;
+          return {
+            cls: "done",
+            sub: fmtTime(doneEvent?.at ?? card.updated_at),
+          };
+        }
+        if (taskState.status === "running" && taskState.stage === "deliver") {
+          return { cls: "live", sub: "进行中" };
+        }
+        if (taskState.status === "waiting" && taskState.stage === "deliver") {
+          return { cls: "blocked", sub: "等你决定" };
+        }
+        if (taskState.status === "paused" && taskState.stage === "deliver") {
+          return { cls: "paused-manual", sub: "已暂停" };
+        }
+        if (taskState.status === "external") {
+          return { cls: "live", sub: "等待外部" };
+        }
       }
       return { cls: "todo", sub: "—" };
     }
@@ -696,6 +737,8 @@ export function DetailView() {
                   onOpenResolve={() => store.openResolve(card.id)}
                 />
               ) : null}
+
+              <HostStagedDiffSection detail={detail} />
 
               {selectedRun ? (
                 <>
