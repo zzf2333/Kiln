@@ -1332,4 +1332,111 @@ describe("@kiln/cli", () => {
       detail: "Paseo check skipped because kilnd is offline",
     });
   });
+
+  it("manages project spaces via `kiln space add/list/rm` in both online and offline modes and rejects non-git, reserved IDs, and busy spaces", async () => {
+    const h = makeTestHarness("kiln-cli-space-");
+    const repoPath = path.join(h.root, "My-Repo");
+    const nonGitDir = path.join(h.root, "not-git");
+    fs.mkdirSync(path.join(repoPath, "src"), { recursive: true });
+    fs.mkdirSync(nonGitDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(repoPath, "package.json"),
+      JSON.stringify({ name: "my-repo", scripts: { test: "vitest run" } }),
+    );
+    fs.writeFileSync(path.join(repoPath, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    execFileSync("git", ["init", "-b", "main", repoPath], { stdio: "pipe" });
+    execFileSync("git", ["-C", repoPath, "config", "user.name", "Kiln Test"], { stdio: "pipe" });
+    execFileSync("git", ["-C", repoPath, "config", "user.email", "kiln@example.com"], { stdio: "pipe" });
+    execFileSync("git", ["-C", repoPath, "add", "."], { stdio: "pipe" });
+    execFileSync("git", ["-C", repoPath, "commit", "-m", "init"], { stdio: "pipe" });
+
+    const canonicalRepo = fs.realpathSync(repoPath);
+
+    // 1. Offline add (passing subdirectory auto-normalizes to repo root), list --json, and rm
+    const offlineAdd = await runCli(["space", "add", path.join(repoPath, "src"), "--json"], {
+      kilnHome: h.kilnHome,
+      isDaemonRunning: () => false,
+    });
+    expect(offlineAdd.exitCode).toBe(0);
+    const offlineAdded = JSON.parse(offlineAdd.stdout) as {
+      mode: string;
+      space: { id: string; repo_path: string; default_branch: string; default_accept_cmd: string };
+    };
+    expect(offlineAdded.mode).toBe("offline");
+    expect(offlineAdded.space.id).toBe("my-repo");
+    expect(offlineAdded.space.repo_path).toBe(canonicalRepo);
+    expect(offlineAdded.space.default_branch).toBe("main");
+    expect(offlineAdded.space.default_accept_cmd).toBe("pnpm test");
+
+    const offlineList = await runCli(["space", "list", "--json"], {
+      kilnHome: h.kilnHome,
+      isDaemonRunning: () => false,
+    });
+    expect(offlineList.exitCode).toBe(0);
+    expect(JSON.parse(offlineList.stdout).spaces).toHaveLength(1);
+
+    // Non-git path & reserved IDs fail cleanly
+    const badGitAdd = await runCli(["space", "add", nonGitDir], {
+      kilnHome: h.kilnHome,
+      isDaemonRunning: () => false,
+    });
+    expect(badGitAdd.exitCode).toBe(1);
+    expect(badGitAdd.stderr).toContain("not inside a Git repository");
+
+    const reservedAdd = await runCli(["space", "add", repoPath, "--id", "local"], {
+      kilnHome: h.kilnHome,
+      isDaemonRunning: () => false,
+    });
+    expect(reservedAdd.exitCode).toBe(2);
+    expect(reservedAdd.stderr).toContain("reserved");
+
+    // 2. Online add/list/rm via KilndServer HTTP API, plus refusal when active task remains
+    await h.server.start();
+    const fetchImpl = createInProcessFetch(h.server);
+
+    const onlineAdd = await runCli(
+      ["space", "add", repoPath, "--id", "online-proj", "--name", "Online Proj", "--json"],
+      { kilnHome: h.kilnHome, fetchImpl },
+    );
+    expect(onlineAdd.exitCode).toBe(0);
+    expect(JSON.parse(onlineAdd.stdout).mode).toBe("online");
+
+    const onlineList = await runCli(["space", "list"], {
+      kilnHome: h.kilnHome,
+      fetchImpl,
+    });
+    expect(onlineList.exitCode).toBe(0);
+    expect(onlineList.stdout).toContain("online-proj (Online Proj)");
+
+    h.server.stateMachine.createTask(
+      makeTaskCard({ id: "t-busy-space", space: "online-proj" }),
+      "# Busy space task",
+    );
+    const busyRm = await runCli(["space", "rm", "online-proj"], {
+      kilnHome: h.kilnHome,
+      fetchImpl,
+    });
+    expect(busyRm.exitCode).toBe(1);
+    expect(busyRm.stderr).toContain("未完成任务");
+
+    h.server.stateMachine.cancelTask("t-busy-space");
+    const onlineRm = await runCli(["space", "rm", "online-proj"], {
+      kilnHome: h.kilnHome,
+      fetchImpl,
+    });
+    expect(onlineRm.exitCode).toBe(0);
+    expect(h.server.store.readSpace("online-proj")).toBeNull();
+
+    // Offline rm on previously added space with active task also blocked until cancelled
+    h.server.stateMachine.createTask(
+      makeTaskCard({ id: "t-busy-offline", space: "my-repo" }),
+      "# Offline busy",
+    );
+    const offlineBusyRm = await runCli(["space", "rm", "my-repo"], {
+      kilnHome: h.kilnHome,
+      isDaemonRunning: () => false,
+    });
+    expect(offlineBusyRm.exitCode).toBe(1);
+    expect(offlineBusyRm.stderr).toContain("active task");
+  });
 });

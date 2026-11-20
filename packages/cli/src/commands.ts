@@ -8,11 +8,13 @@ import {
   DecideRequestSchema,
   DraftCardSchema,
   PrioritySchema,
+  SpaceConfigSchema,
   TrackSchema,
   WorkspaceModeSchema,
   type DraftCard,
   type PendingDecision,
   type Priority,
+  type SpaceConfig,
   type StageId,
   type TaskStatus,
   type Track,
@@ -22,6 +24,7 @@ import {
   BackendRegistry,
   DEFAULT_KILND_HOST,
   DEFAULT_KILND_PORT,
+  InvalidSpacePathError,
   KilnPaths,
   KilnStore,
   KilndServer,
@@ -33,6 +36,7 @@ import {
   countRunningLeafTasks,
   deriveTaskStatus,
   ensureDir,
+  inspectGitSpacePath,
   writeFileAtomic,
   type ExecutionBackend,
   type UsageSnapshot,
@@ -188,6 +192,7 @@ const GLOBAL_HELP = [
   "        [--track <L1|L2>] [--mode <mode>] [--id <id>]",
   "  decide [task-id] [--option <id>] [--rationale <t>] List or submit pending decisions",
   "        [--apply-ledger] [--decision <id>]",
+  "  space <list|add|rm> [args]                         Manage project spaces",
   "  doctor [--port <port>] [--host <host>] [--json]    Verify Node, Git, APFS, kilnd, Paseo, service",
   "  service <install|uninstall|status>                 Manage OS startup service",
   "  uninstall [--purge-data]                           Stop daemon, remove service, inspect worktrees",
@@ -206,6 +211,12 @@ const COMMAND_HELP: Record<string, string> = {
     'Usage: kiln draft "<idea>" [--id <id>] [--space <id>] [--priority <P0|P1|P2|P3>] [--track <L1|L2>] [--mode <git_worktree|host_scoped|scratch_dir>] [--port <port>] [--host <host>]',
   decide:
     "Usage: kiln decide [task-id] [--option <id>] [--decision <id>] [--rationale <text>] [--apply-ledger] [--port <port>] [--host <host>]",
+  space: [
+    "Usage:",
+    "  kiln space list [--port <port>] [--host <host>] [--json]",
+    "  kiln space add [path] [--id <id>] [--name <name>] [--branch <branch>] [--accept-cmd <cmd>] [--copy-untracked <csv>] [--clone-deps <csv>] [--port <port>] [--host <host>] [--json]",
+    "  kiln space rm <id> [--port <port>] [--host <host>]",
+  ].join("\n"),
   doctor: "Usage: kiln doctor [--port <port>] [--host <host>] [--json]",
   service:
     "Usage: kiln service <install|uninstall|status> [--platform <darwin|linux>] [--label <label>] [--service-name <name>]",
@@ -1468,6 +1479,334 @@ async function handleDecide(
   };
 }
 
+function parseCsvFlag(raw: string | undefined): string[] | undefined {
+  if (raw === undefined) {
+    return undefined;
+  }
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+async function handleSpace(
+  args: readonly string[],
+  options: CliRuntimeOptions,
+  io: ReturnType<typeof createOutputCollector>,
+): Promise<CliRunResult> {
+  const parsed = parseArgs({
+    args: [...args],
+    options: {
+      id: { type: "string" },
+      name: { type: "string" },
+      branch: { type: "string" },
+      "accept-cmd": { type: "string" },
+      "copy-untracked": { type: "string" },
+      "clone-deps": { type: "string" },
+      port: { type: "string", short: "p" },
+      host: { type: "string" },
+      json: { type: "boolean", default: false },
+      help: { type: "boolean", short: "h", default: false },
+    },
+    strict: true,
+    allowPositionals: true,
+  });
+
+  if (parsed.values.help) {
+    io.out(COMMAND_HELP.space!);
+    return { exitCode: 0, stdout: io.getStdout(), stderr: io.getStderr() };
+  }
+
+  const subcommand = parsed.positionals[0];
+  if (!subcommand) {
+    throw new CliUsageError(
+      "space requires a subcommand: list, add, or rm",
+      COMMAND_HELP.space,
+    );
+  }
+
+  const kilnHome = resolveCliKilnHome(options);
+  const host = parseHostValue(parsed.values.host, options.host);
+  const port = parsePortValue(
+    parsed.values.port,
+    options.port ?? DEFAULT_KILND_PORT,
+    false,
+  );
+  const baseUrl = buildBaseUrl(host, port);
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  const explicitRunning = options.isDaemonRunning
+    ? await options.isDaemonRunning()
+    : null;
+
+  if (subcommand === "list") {
+    if (parsed.positionals.length > 1) {
+      throw new CliUsageError(
+        "space list accepts no extra positional arguments",
+        COMMAND_HELP.space,
+      );
+    }
+
+    let spaces: SpaceConfig[] | null = null;
+    if (explicitRunning !== false) {
+      let res: Response | null = null;
+      try {
+        res = await fetchWithTimeout(
+          fetchImpl,
+          `${baseUrl}/api/spaces`,
+          { method: "GET" },
+          API_TIMEOUT_MS,
+        );
+      } catch {
+        res = null;
+      }
+
+      if (res !== null) {
+        if (!res.ok) {
+          io.err(`Failed to list spaces: ${await readErrorMessage(res)}`);
+          return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+        }
+        const body = (await res.json()) as { spaces?: Record<string, SpaceConfig> };
+        spaces = Object.values(body.spaces ?? {}).sort((a, b) => a.id.localeCompare(b.id));
+      }
+    }
+
+    if (spaces === null) {
+      const paths = new KilnPaths(kilnHome);
+      if (!fs.existsSync(paths.spacesDir) && !hasLocalStoreData(kilnHome)) {
+        spaces = [];
+      } else {
+        const store = new KilnStore({ kilnHome });
+        try {
+          spaces = store.listSpaces();
+        } finally {
+          store.close();
+        }
+      }
+    }
+
+    if (parsed.values.json) {
+      io.out(JSON.stringify({ spaces }, null, 2));
+    } else if (spaces.length === 0) {
+      io.out("No project spaces registered. Run `kiln space add <path>` to add one.");
+    } else {
+      for (const sp of spaces) {
+        const acceptPart = sp.default_accept_cmd ? `, accept: ${sp.default_accept_cmd}` : "";
+        io.out(
+          `- ${sp.id} (${sp.name}): ${sp.repo_path ?? "(no repo_path)"} [branch: ${sp.default_branch}${acceptPart}]`,
+        );
+      }
+    }
+
+    return {
+      exitCode: 0,
+      stdout: io.getStdout(),
+      stderr: io.getStderr(),
+      data: { spaces },
+    };
+  }
+
+  if (subcommand === "add") {
+    if (parsed.positionals.length > 2) {
+      throw new CliUsageError(
+        "space add accepts at most one [path] argument",
+        COMMAND_HELP.space,
+      );
+    }
+
+    const targetPath = parsed.positionals[1] ?? process.cwd();
+    let inspected;
+    try {
+      inspected = await inspectGitSpacePath(targetPath);
+    } catch (err) {
+      if (err instanceof InvalidSpacePathError) {
+        io.err(err.message);
+        return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+      }
+      throw err;
+    }
+
+    const rawId = parsed.values.id ?? inspected.suggested_id;
+    const spaceId = parseSafeCliSegment(rawId, "spaceId", COMMAND_HELP.space);
+    if (spaceId === "local" || spaceId === "all") {
+      throw new CliUsageError(
+        `Space ID "${spaceId}" is reserved`,
+        COMMAND_HELP.space,
+      );
+    }
+
+    const name = (parsed.values.name ?? inspected.suggested_name).trim();
+    if (name.length === 0) {
+      throw new CliUsageError("Space --name cannot be empty", COMMAND_HELP.space);
+    }
+    const defaultBranch = (parsed.values.branch ?? inspected.default_branch).trim();
+    if (defaultBranch.length === 0) {
+      throw new CliUsageError("Space --branch cannot be empty", COMMAND_HELP.space);
+    }
+    const rawAcceptCmd = parsed.values["accept-cmd"] ?? inspected.default_accept_cmd;
+    const acceptCmd = rawAcceptCmd && rawAcceptCmd.trim().length > 0 ? rawAcceptCmd.trim() : undefined;
+    const copyUntracked = parseCsvFlag(parsed.values["copy-untracked"]) ?? inspected.copy_untracked;
+    const cloneDeps = parseCsvFlag(parsed.values["clone-deps"]) ?? inspected.clone_deps;
+
+    if (explicitRunning !== false) {
+      let res: Response | null = null;
+      try {
+        res = await fetchWithTimeout(
+          fetchImpl,
+          `${baseUrl}/api/spaces/${encodeURIComponent(spaceId)}`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name,
+              repo_path: inspected.repo_path,
+              default_branch: defaultBranch,
+              copy_untracked: copyUntracked,
+              clone_deps: cloneDeps,
+              ...(acceptCmd !== undefined ? { default_accept_cmd: acceptCmd } : {}),
+              freeze_patterns: [],
+            }),
+          },
+          API_TIMEOUT_MS,
+        );
+      } catch {
+        res = null;
+      }
+
+      if (res !== null) {
+        if (!res.ok) {
+          io.err(`Failed to save space "${spaceId}": ${await readErrorMessage(res)}`);
+          return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+        }
+        const body = (await res.json()) as { space: SpaceConfig };
+        if (parsed.values.json) {
+          io.out(JSON.stringify({ space: body.space, mode: "online" }, null, 2));
+        } else {
+          io.out(`Saved space ${body.space.id} (${body.space.name}) -> ${body.space.repo_path} (online)`);
+        }
+        return {
+          exitCode: 0,
+          stdout: io.getStdout(),
+          stderr: io.getStderr(),
+          data: { space: body.space, mode: "online" },
+        };
+      }
+    }
+
+    const space = SpaceConfigSchema.parse({
+      schema_version: 1,
+      id: spaceId,
+      name,
+      repo_path: inspected.repo_path,
+      default_branch: defaultBranch,
+      copy_untracked: copyUntracked,
+      clone_deps: cloneDeps,
+      ...(acceptCmd !== undefined ? { default_accept_cmd: acceptCmd } : {}),
+      freeze_patterns: [],
+    });
+
+    const store = new KilnStore({ kilnHome });
+    try {
+      store.writeSpace(space);
+    } finally {
+      store.close();
+    }
+
+    if (parsed.values.json) {
+      io.out(JSON.stringify({ space, mode: "offline" }, null, 2));
+    } else {
+      io.out(`Saved space ${space.id} (${space.name}) -> ${space.repo_path} (offline)`);
+    }
+    return {
+      exitCode: 0,
+      stdout: io.getStdout(),
+      stderr: io.getStderr(),
+      data: { space, mode: "offline" },
+    };
+  }
+
+  if (subcommand === "rm") {
+    if (parsed.positionals.length !== 2) {
+      throw new CliUsageError("space rm requires <id>", COMMAND_HELP.space);
+    }
+    const spaceId = parseSafeCliSegment(parsed.positionals[1]!, "spaceId", COMMAND_HELP.space);
+    if (spaceId === "local" || spaceId === "all") {
+      throw new CliUsageError(
+        `Space ID "${spaceId}" is reserved`,
+        COMMAND_HELP.space,
+      );
+    }
+
+    if (explicitRunning !== false) {
+      let res: Response | null = null;
+      try {
+        res = await fetchWithTimeout(
+          fetchImpl,
+          `${baseUrl}/api/spaces/${encodeURIComponent(spaceId)}`,
+          { method: "DELETE" },
+          API_TIMEOUT_MS,
+        );
+      } catch {
+        res = null;
+      }
+
+      if (res !== null) {
+        if (!res.ok) {
+          io.err(`Failed to remove space "${spaceId}": ${await readErrorMessage(res)}`);
+          return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+        }
+        if (parsed.values.json) {
+          io.out(JSON.stringify({ deleted: true, id: spaceId, mode: "online" }, null, 2));
+        } else {
+          io.out(`Removed space "${spaceId}" (online).`);
+        }
+        return {
+          exitCode: 0,
+          stdout: io.getStdout(),
+          stderr: io.getStderr(),
+          data: { deleted: true, id: spaceId, mode: "online" },
+        };
+      }
+    }
+
+    const store = new KilnStore({ kilnHome });
+    try {
+      if (!store.readSpace(spaceId)) {
+        io.err(`Space "${spaceId}" does not exist`);
+        return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+      }
+      const activeTasks = store
+        .listTasks({ space: spaceId })
+        .filter((t) => t.status !== "done" && t.status !== "cancelled");
+      if (activeTasks.length > 0) {
+        io.err(
+          `Cannot remove space "${spaceId}": ${activeTasks.length} active task(s) remain (${activeTasks.map((t) => t.id).join(", ")})`,
+        );
+        return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+      }
+      store.deleteSpace(spaceId);
+    } finally {
+      store.close();
+    }
+
+    if (parsed.values.json) {
+      io.out(JSON.stringify({ deleted: true, id: spaceId, mode: "offline" }, null, 2));
+    } else {
+      io.out(`Removed space "${spaceId}" (offline).`);
+    }
+    return {
+      exitCode: 0,
+      stdout: io.getStdout(),
+      stderr: io.getStderr(),
+      data: { deleted: true, id: spaceId, mode: "offline" },
+    };
+  }
+
+  throw new CliUsageError(
+    `Unknown space subcommand "${subcommand}": expected list, add, or rm`,
+    COMMAND_HELP.space,
+  );
+}
+
 function parseNodeMajor(rawVersion: string): { valid: boolean; major: number; raw: string } {
   const cleaned = rawVersion.startsWith("v") ? rawVersion.slice(1) : rawVersion;
   const match = /^(\d+)/.exec(cleaned);
@@ -2030,6 +2369,8 @@ export async function runCli(
         return await handleDraft(rest, options, io);
       case "decide":
         return await handleDecide(rest, options, io);
+      case "space":
+        return await handleSpace(rest, options, io);
       case "doctor":
         return await handleDoctor(rest, options, io);
       case "service":
