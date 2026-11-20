@@ -698,7 +698,17 @@ export class KilnScheduler {
       }),
     );
 
-    result.nextCooldownWakeAtMs = this.syncCooldownTimer(this.now());
+    const endNowMs = this.now();
+    if (
+      result.deferredByRateLimit.some(
+        (ev) => ev.cooldownUntilMs <= endNowMs,
+      )
+    ) {
+      // Re-run immediately if a deferred task's cooldown already expired during executeTick,
+      // otherwise syncCooldownTimer(endNowMs) would clear the timer without re-waking.
+      this.dirty = true;
+    }
+    result.nextCooldownWakeAtMs = this.syncCooldownTimer(endNowMs);
     return result;
   }
 }

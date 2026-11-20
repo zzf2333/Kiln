@@ -1462,4 +1462,47 @@ describe("KilnScheduler", () => {
     await vi.advanceTimersByTimeAsync(2_000);
     expect(dispatched).toEqual(["t-triage"]);
   });
+
+  it("re-wakes immediately when a rate-limit cooldown expires during executeTick before syncCooldownTimer", async () => {
+    let clockMs = 1_000;
+    let tickCalls = 0;
+
+    sm.createTask(
+      makeTaskCard({ id: "t-fast-expiry", space: "s1", priority: "P2" }),
+      "# Fast expiry",
+    );
+
+    const dispatched: string[] = [];
+    const scheduler = new KilnScheduler({
+      store,
+      stateMachine: sm,
+      rolesConfig: {
+        schema_version: 1,
+        heterogeneous_review: true,
+        roles: {
+          worker: { agent: "codex", model: "gpt-5.4", allow_full_access_fallback: false },
+        },
+      },
+      now: () => {
+        tickCalls += 1;
+        // Call 1 (markRateLimited): 1000 -> cooldownUntil = 1010
+        // Call 2 (executeTick start): 1009 -> task deferred
+        // Call 3 (executeTick end syncCooldownTimer): 1011 -> cooldown already expired!
+        if (tickCalls === 1) return clockMs;
+        if (tickCalls === 2) return 1_009;
+        clockMs = 1_011;
+        return clockMs;
+      },
+      onDispatch: (plan) => {
+        dispatched.push(plan.taskId);
+      },
+    });
+    activeScheduler = scheduler;
+
+    scheduler.markRateLimited({ agent: "codex", model: "gpt-5.4" }, 10);
+    const result = await scheduler.wake();
+
+    expect(dispatched).toEqual(["t-fast-expiry"]);
+    expect(result.nextCooldownWakeAtMs).toBeNull();
+  });
 });
