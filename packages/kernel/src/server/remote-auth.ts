@@ -40,6 +40,33 @@ export const FORBIDDEN_LOCAL_PROXY_HEADERS = [
   "x-real-ip",
 ] as const;
 
+export const FORBIDDEN_LOCAL_PROXY_HEADER_PREFIXES = [
+  "x-forwarded-",
+  "cf-",
+  "tailscale-",
+] as const;
+
+const FORBIDDEN_LOCAL_PROXY_EXACT_HEADERS = new Set(["forwarded", "x-real-ip"]);
+
+/**
+ * Inspects request headers for any reverse-proxy header (`X-Forwarded-*`, `CF-*`,
+ * `Tailscale-*`, `Forwarded`, `X-Real-IP`) that must be blocked on the local `:4310` port.
+ */
+export function findForbiddenLocalProxyHeader(headers: Headers): string | null {
+  for (const [rawName] of headers.entries()) {
+    const name = rawName.toLowerCase();
+    if (FORBIDDEN_LOCAL_PROXY_EXACT_HEADERS.has(name)) {
+      return name;
+    }
+    for (const prefix of FORBIDDEN_LOCAL_PROXY_HEADER_PREFIXES) {
+      if (name.startsWith(prefix)) {
+        return name;
+      }
+    }
+  }
+  return null;
+}
+
 export interface PairingChallengePublic {
   challengeId: string;
   code: string;

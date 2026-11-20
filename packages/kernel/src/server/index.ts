@@ -80,12 +80,14 @@ export {
 } from "./rate-tracker.js";
 export {
   FORBIDDEN_LOCAL_PROXY_HEADERS,
+  FORBIDDEN_LOCAL_PROXY_HEADER_PREFIXES,
   KILN_SESSION_COOKIE_NAME,
   PAIRING_MAX_FAILED_ATTEMPTS,
   PAIRING_TTL_MS,
   RemoteAuthManager,
   SESSION_MAX_AGE_SECONDS,
   buildPairUrl,
+  findForbiddenLocalProxyHeader,
   formatClearSessionCookieHeader,
   formatSessionCookieHeader,
   hashSessionToken,

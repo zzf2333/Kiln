@@ -159,6 +159,7 @@ export class KilndServer {
   private remoteHttpServer: ServerType | null = null;
   private activeRemoteAddress: KilndRemoteAddress | null = null;
   private remoteConfigQueue: Promise<void> = Promise.resolve();
+  private stopping = false;
 
   constructor(options: KilndServerOptions = {}) {
     this.ownsStore = options.store === undefined;
@@ -499,6 +500,10 @@ export class KilndServer {
   }
 
   private async ensureRemoteHttpServer(targetPort: number): Promise<void> {
+    if (this.stopping || this.httpServer === null) {
+      return;
+    }
+
     const localPort = this.activeAddress?.port ?? this.requestedPort;
     if (targetPort > 0 && localPort > 0 && targetPort === localPort) {
       throw new ServerHttpError(400, {
@@ -525,6 +530,12 @@ export class KilndServer {
         remotePort: targetPort,
         message: `Failed to bind remote listener on ${this.host}:${targetPort}: ${msg}`,
       });
+    }
+
+    // Re-check lifecycle after async bind to prevent leaking a late-bound listener if stop() ran concurrently.
+    if (this.stopping || this.httpServer === null) {
+      await this.closeHttpServer(bound.server);
+      return;
     }
 
     const previousServer = this.remoteHttpServer;
@@ -566,13 +577,17 @@ export class KilndServer {
         });
       }
 
-      if (this.httpServer !== null) {
+      if (this.httpServer !== null && !this.stopping) {
         if (nextConfig.enabled) {
           const targetPort = this.requestedRemotePort ?? nextConfig.remote_port;
           await this.ensureRemoteHttpServer(targetPort);
         } else {
           await this.stopRemoteHttpServer();
         }
+      }
+
+      if (this.stopping) {
+        return;
       }
 
       this.store.writeConfig("remote", nextConfig);
@@ -595,6 +610,7 @@ export class KilndServer {
     if (this.activeAddress) {
       return this.address!;
     }
+    this.stopping = false;
 
     this.pendingDecisions.hydrateFromDisk();
     if (this.enableOrchestrator) {
@@ -653,6 +669,8 @@ export class KilndServer {
    * tears down local + remote HTTP & UDS listeners, and closes daemon-owned handles.
    */
   async stop(): Promise<void> {
+    this.stopping = true;
+    await this.remoteConfigQueue;
     this.unsubscribeNotify();
     await this.orchestrator.stop();
     this.rateTracker.stop();

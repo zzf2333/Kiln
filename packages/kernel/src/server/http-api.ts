@@ -74,8 +74,8 @@ import {
 } from "./pending-decisions.js";
 import type { LiveRateTracker } from "./rate-tracker.js";
 import {
-  FORBIDDEN_LOCAL_PROXY_HEADERS,
   RemoteAuthManager,
+  findForbiddenLocalProxyHeader,
   formatClearSessionCookieHeader,
   formatSessionCookieHeader,
   isLocalAllowedOrigin,
@@ -433,19 +433,18 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
 
   if (listenerMode === "local") {
     app.use("*", async (c, next) => {
-      for (const headerName of FORBIDDEN_LOCAL_PROXY_HEADERS) {
-        if (c.req.header(headerName) !== undefined) {
-          const remotePort = remoteAuth.getEffectiveRemotePort();
-          return c.json(
-            {
-              error: "remote_port_required",
-              header: headerName,
-              remotePort,
-              message: `Reverse-proxy traffic is blocked on the local Kiln port. Enable remote access and point your tunnel to http://127.0.0.1:${remotePort} instead.`,
-            },
-            403,
-          );
-        }
+      const matchedProxyHeader = findForbiddenLocalProxyHeader(c.req.raw.headers);
+      if (matchedProxyHeader !== null) {
+        const remotePort = remoteAuth.getEffectiveRemotePort();
+        return c.json(
+          {
+            error: "remote_port_required",
+            header: matchedProxyHeader,
+            remotePort,
+            message: `Reverse-proxy traffic is blocked on the local Kiln port. Enable remote access and point your tunnel to http://127.0.0.1:${remotePort} instead.`,
+          },
+          403,
+        );
       }
 
       const hostHeader = c.req.header("host");
@@ -524,6 +523,14 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       }
 
       if (method === "POST" && reqPath === "/api/auth/pair") {
+        // Non-browser callers without Origin are allowed, but an explicit cross-origin
+        // browser Origin header must match to prevent cross-site pairing quota exhaustion / Login CSRF.
+        if (c.req.header("origin") !== undefined) {
+          const csrf = verifyRemoteCsrf(c, store.readConfig("remote"));
+          if (!csrf.ok) {
+            return c.json({ error: csrf.error, message: csrf.message }, 403);
+          }
+        }
         await next();
         return;
       }

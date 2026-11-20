@@ -425,5 +425,22 @@ describe("KilndServer OS socket smoke suite (requires unsandboxed connect)", () 
     });
     expect(disableRes.status).toBe(200);
     expect(server.remoteAddress).toBeNull();
+
+    // Concurrent enable + stop() must never leak a late-bound remote listener
+    const inflightEnable = server.applyRemoteConfig({
+      schema_version: 1,
+      enabled: true,
+      remote_port: 4311,
+      keep_awake_on_ac: false,
+      notifications: {
+        enabled: false,
+        channel: "webhook",
+        url: "",
+        priorities: ["P0", "P1"],
+      },
+    });
+    const stopPromise = server.stop();
+    await Promise.all([inflightEnable, stopPromise]);
+    expect(server.remoteAddress).toBeNull();
   });
 });

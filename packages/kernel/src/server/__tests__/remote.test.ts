@@ -199,8 +199,18 @@ describe("Tunnel-Agnostic Remote Access: Fail-Closed Dual-Port Security & Auth",
     );
     expect(putCfg.status).toBe(200);
 
-    // Every reverse-proxy header must be rejected on :4310 across API and root paths
-    for (const headerName of FORBIDDEN_LOCAL_PROXY_HEADERS) {
+    // Every reverse-proxy header (both explicit list and wildcard X-Forwarded-* / CF-* / Tailscale-*)
+    // must be rejected on :4310 across API and root paths
+    const allProxyHeadersToReject = [
+      ...FORBIDDEN_LOCAL_PROXY_HEADERS,
+      "x-forwarded-port",
+      "x-forwarded-prefix",
+      "cf-ipcountry",
+      "cf-connecting-ipv6",
+      "tailscale-user-id",
+      "tailscale-caps",
+    ];
+    for (const headerName of allProxyHeadersToReject) {
       const res = await server.app.request(
         new Request("http://127.0.0.1:4310/api/health", {
           headers: { [headerName]: "203.0.113.42" },
@@ -209,10 +219,12 @@ describe("Tunnel-Agnostic Remote Access: Fail-Closed Dual-Port Security & Auth",
       expect(res.status, `header ${headerName} should return 403`).toBe(403);
       const body = (await res.json()) as {
         error: string;
+        header: string;
         remotePort: number;
         message: string;
       };
       expect(body.error).toBe("remote_port_required");
+      expect(body.header).toBe(headerName);
       expect(body.remotePort).toBe(4411);
       expect(body.message).toContain("4411");
     }
@@ -418,6 +430,23 @@ describe("Tunnel-Agnostic Remote Access: Fail-Closed Dual-Port Security & Auth",
     );
     const ch2 = (await ch2Res.json()) as { code: string; token: string };
     const wrongCode = ch2.code === "000000" ? "111111" : "000000";
+
+    // Cross-origin POST /api/auth/pair with mismatched Origin is blocked with 403
+    // and MUST NOT consume pairing failure quota
+    const crossOriginPairRes = await server.remoteApp.request(
+      new Request("http://127.0.0.1:4311/api/auth/pair", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Origin: "https://evil.example.com",
+        },
+        body: JSON.stringify({ code: wrongCode }),
+      }),
+    );
+    expect(crossOriginPairRes.status).toBe(403);
+    expect(((await crossOriginPairRes.json()) as { error: string }).error).toBe(
+      "csrf_origin_mismatch",
+    );
 
     for (let attempt = 1; attempt <= 4; attempt++) {
       const badRes = await server.remoteApp.request(
@@ -842,7 +871,7 @@ describe("Tunnel-Agnostic Remote Access: Fail-Closed Dual-Port Security & Auth",
     ).toBe(401);
   });
 
-  it("transitions CaffeinateController cleanly between off, active_tasks (-i), and remote_ac_standby (-s -i)", async () => {
+  it("transitions CaffeinateController cleanly between off, active_tasks (-i), and remote_ac_standby (-s AC-only)", async () => {
     const spawns: Array<{ command: string; args: readonly string[] }> = [];
     const children: ReturnType<typeof makeFakeChild>[] = [];
 
@@ -861,19 +890,19 @@ describe("Tunnel-Agnostic Remote Access: Fail-Closed Dual-Port Security & Auth",
     expect(controller.mode).toBe("off");
     expect(controller.isActive).toBe(false);
 
-    // Enable remote AC standby while idle -> spawns -s -i -w <pid>
+    // Enable remote AC standby while idle -> spawns -s -w <pid> (AC-only, preserves battery sleep)
     controller.setRemoteKeepAwakeOnAc(true);
     expect(controller.mode).toBe("remote_ac_standby");
     expect(controller.isActive).toBe(true);
     expect(spawns).toEqual([
-      { command: "/usr/bin/caffeinate", args: ["-s", "-i", "-w", "7777"] },
+      { command: "/usr/bin/caffeinate", args: ["-s", "-w", "7777"] },
     ]);
 
     // Idempotent repeat call does not respawn
     controller.setRemoteKeepAwakeOnAc(true);
     expect(spawns).toHaveLength(1);
 
-    // Task starts (0 -> 1) -> switches from -s -i to -i -w <pid>
+    // Task starts (0 -> 1) -> switches from -s to -i -w <pid>
     controller.syncRunningCount(1);
     expect(controller.mode).toBe("active_tasks");
     expect(children[0]!.killCalls).toEqual(["SIGTERM"]);
@@ -886,16 +915,16 @@ describe("Tunnel-Agnostic Remote Access: Fail-Closed Dual-Port Security & Auth",
     controller.syncRunningCount(2);
     expect(spawns).toHaveLength(2);
 
-    // Running count drops to 0 while AC keep-awake is still enabled -> returns to -s -i
+    // Running count drops to 0 while AC keep-awake is still enabled -> returns to -s -w <pid>
     controller.syncRunningCount(0);
     expect(controller.mode).toBe("remote_ac_standby");
     expect(children[1]!.killCalls).toEqual(["SIGTERM"]);
     expect(spawns[2]).toEqual({
       command: "/usr/bin/caffeinate",
-      args: ["-s", "-i", "-w", "7777"],
+      args: ["-s", "-w", "7777"],
     });
 
-    // Disable AC keep-awake -> terminates -s -i child
+    // Disable AC keep-awake -> terminates -s child
     controller.setRemoteKeepAwakeOnAc(false);
     expect(controller.mode).toBe("off");
     expect(controller.isActive).toBe(false);

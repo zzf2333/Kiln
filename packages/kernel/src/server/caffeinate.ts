@@ -30,7 +30,7 @@ export interface CaffeinateControllerOptions {
  * Dynamic sleep prevention controller (`AGENTS.md §4.6`):
  * - When `runningCount > 0`, holds active-task assertion (`/usr/bin/caffeinate -i -w <pid>` on macOS).
  * - When `runningCount === 0` and `remoteKeepAwakeOnAc === true`, holds AC-only standby assertion
- *   (`/usr/bin/caffeinate -s -i -w <pid>` on macOS).
+ *   (`/usr/bin/caffeinate -s -w <pid>` on macOS; `-s` applies only on AC power so battery sleep is preserved).
  * - When `runningCount === 0` and `remoteKeepAwakeOnAc === false`, terminates the child immediately.
  * - Idempotent across repeated updates; cleanly structured for cross-platform extension.
  */
@@ -115,7 +115,8 @@ export class CaffeinateController {
 
   private argsForDarwinMode(mode: Exclude<KeepAwakeMode, "off">): readonly string[] {
     if (mode === "remote_ac_standby") {
-      return ["-s", "-i", "-w", String(this.pid)];
+      // `-s` prevents system sleep ONLY on AC power; omitting `-i` ensures battery idle sleep still works.
+      return ["-s", "-w", String(this.pid)];
     }
     return ["-i", "-w", String(this.pid)];
   }
