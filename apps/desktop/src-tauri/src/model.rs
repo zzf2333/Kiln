@@ -1,0 +1,1241 @@
+use std::error::Error;
+use std::fmt;
+
+pub const DEFAULT_KILND_URL: &str = "http://127.0.0.1:4310";
+pub const MAIN_WINDOW_LABEL: &str = "main";
+const MAX_JSON_DEPTH: usize = 128;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KilnHealth {
+    pub ok: bool,
+    #[allow(dead_code)]
+    pub pid: Option<u64>,
+    #[allow(dead_code)]
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KilnLiveRatesTotals {
+    pub cost_usd: f64,
+    pub tok_per_sec: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct KilnBootstrapSummary {
+    pub running_count: u64,
+    pub pending_decision_count: usize,
+    pub task_count: usize,
+    pub totals: KilnLiveRatesTotals,
+}
+
+/// Mutually exclusive desktop tray states projected from `kilnd` health & bootstrap data.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TrayDisplayState {
+    Offline {
+        reason: Option<String>,
+    },
+    Idle {
+        cost_usd: f64,
+        task_count: usize,
+    },
+    Running {
+        running_count: u64,
+        tok_per_sec: f64,
+        cost_usd: f64,
+    },
+    WaitingDecision {
+        pending_decisions: usize,
+        running_count: u64,
+        tok_per_sec: f64,
+        cost_usd: f64,
+    },
+}
+
+impl TrayDisplayState {
+    pub fn from_bootstrap(summary: &KilnBootstrapSummary) -> Self {
+        if summary.pending_decision_count > 0 {
+            Self::WaitingDecision {
+                pending_decisions: summary.pending_decision_count,
+                running_count: summary.running_count,
+                tok_per_sec: sanitize_non_negative(summary.totals.tok_per_sec),
+                cost_usd: sanitize_non_negative(summary.totals.cost_usd),
+            }
+        } else if summary.running_count > 0 {
+            Self::Running {
+                running_count: summary.running_count,
+                tok_per_sec: sanitize_non_negative(summary.totals.tok_per_sec),
+                cost_usd: sanitize_non_negative(summary.totals.cost_usd),
+            }
+        } else {
+            Self::Idle {
+                cost_usd: sanitize_non_negative(summary.totals.cost_usd),
+                task_count: summary.task_count,
+            }
+        }
+    }
+
+    pub fn from_probe(
+        health: Result<&KilnHealth, &str>,
+        bootstrap: Option<&KilnBootstrapSummary>,
+    ) -> Self {
+        match health {
+            Err(reason) => Self::Offline {
+                reason: non_empty_trimmed(reason),
+            },
+            Ok(h) if !h.ok => Self::Offline {
+                reason: Some("kilnd ok=false".to_string()),
+            },
+            Ok(_) => match bootstrap {
+                Some(summary) => Self::from_bootstrap(summary),
+                None => Self::Idle {
+                    cost_usd: 0.0,
+                    task_count: 0,
+                },
+            },
+        }
+    }
+
+    pub fn is_online(&self) -> bool {
+        !matches!(self, Self::Offline { .. })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SseEventFrame {
+    pub id: Option<String>,
+    #[allow(dead_code)]
+    pub event: Option<String>,
+    #[allow(dead_code)]
+    pub data: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowClosePolicy {
+    Destroy,
+    #[allow(dead_code)]
+    Hide,
+}
+
+/// Main workbench WebView must be destroyed on close so WKWebView memory is reclaimed.
+pub fn close_policy_for_window(label: &str) -> WindowClosePolicy {
+    match label {
+        MAIN_WINDOW_LABEL => WindowClosePolicy::Destroy,
+        _ => WindowClosePolicy::Destroy,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NormalizedKilndUrl {
+    pub host: String,
+    pub port: u16,
+    pub base_url: String,
+}
+
+impl NormalizedKilndUrl {
+    #[allow(dead_code)]
+    pub fn endpoint_url(&self, path: &str) -> String {
+        if path.starts_with('/') {
+            format!("{}{}", self.base_url, path)
+        } else {
+            format!("{}/{}", self.base_url, path)
+        }
+    }
+
+    pub fn tcp_host_port(&self) -> (&str, u16) {
+        (self.host.as_str(), self.port)
+    }
+
+    pub fn host_header(&self) -> String {
+        format!("{}:{}", self.host, self.port)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UrlValidationError {
+    Empty,
+    ControlOrWhitespace,
+    UnsupportedScheme,
+    UserinfoNotAllowed,
+    InvalidAuthority,
+    NonLoopbackHost,
+    InvalidPort,
+    UnexpectedPathOrSuffix,
+}
+
+impl fmt::Display for UrlValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => f.write_str("kilnd URL must not be empty"),
+            Self::ControlOrWhitespace => {
+                f.write_str("kilnd URL must not contain whitespace or control characters")
+            }
+            Self::UnsupportedScheme => f.write_str("kilnd URL must use http:// scheme"),
+            Self::UserinfoNotAllowed => f.write_str("kilnd URL must not contain userinfo (@)"),
+            Self::InvalidAuthority => f.write_str("kilnd URL contains an invalid authority"),
+            Self::NonLoopbackHost => {
+                f.write_str("kilnd URL host must be strictly 127.0.0.1 or localhost")
+            }
+            Self::InvalidPort => f.write_str("kilnd URL port must be an integer between 1 and 65535"),
+            Self::UnexpectedPathOrSuffix => {
+                f.write_str("kilnd base URL must not include path segments, query, or fragment")
+            }
+        }
+    }
+}
+
+impl Error for UrlValidationError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedAuthority {
+    host: String,
+    port: u16,
+    has_explicit_port: bool,
+}
+
+fn check_raw_url_common(raw: &str) -> Result<&str, UrlValidationError> {
+    if raw.is_empty() {
+        return Err(UrlValidationError::Empty);
+    }
+    if raw.bytes().any(|b| b <= 0x20 || b == 0x7f) {
+        return Err(UrlValidationError::ControlOrWhitespace);
+    }
+    if raw.contains('\\') {
+        return Err(UrlValidationError::InvalidAuthority);
+    }
+    let Some(prefix) = raw.get(..7) else {
+        return Err(UrlValidationError::UnsupportedScheme);
+    };
+    if !prefix.eq_ignore_ascii_case("http://") {
+        return Err(UrlValidationError::UnsupportedScheme);
+    }
+    Ok(&raw[7..])
+}
+
+fn split_authority_and_suffix(rest: &str) -> (&str, &str) {
+    match rest.find(['/', '?', '#']) {
+        Some(idx) => (&rest[..idx], &rest[idx..]),
+        None => (rest, ""),
+    }
+}
+
+fn parse_loopback_authority(authority: &str) -> Result<ParsedAuthority, UrlValidationError> {
+    if authority.is_empty() {
+        return Err(UrlValidationError::InvalidAuthority);
+    }
+    if authority.contains('@') {
+        return Err(UrlValidationError::UserinfoNotAllowed);
+    }
+    if authority.starts_with('[') || authority.ends_with(']') {
+        return Err(UrlValidationError::NonLoopbackHost);
+    }
+
+    let mut parts = authority.split(':');
+    let host_raw = parts.next().unwrap_or("");
+    let port_raw = parts.next();
+    if parts.next().is_some() {
+        return Err(UrlValidationError::InvalidAuthority);
+    }
+    if host_raw.is_empty() {
+        return Err(UrlValidationError::InvalidAuthority);
+    }
+
+    let host_lower = host_raw.to_ascii_lowercase();
+    if host_lower != "127.0.0.1" && host_lower != "localhost" {
+        return Err(UrlValidationError::NonLoopbackHost);
+    }
+
+    let (port, has_explicit_port) = match port_raw {
+        None => (80_u16, false),
+        Some(port_str) => {
+            if port_str.is_empty() || !port_str.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(UrlValidationError::InvalidPort);
+            }
+            let parsed = port_str
+                .parse::<u16>()
+                .map_err(|_| UrlValidationError::InvalidPort)?;
+            if parsed == 0 {
+                return Err(UrlValidationError::InvalidPort);
+            }
+            (parsed, true)
+        }
+    };
+
+    Ok(ParsedAuthority {
+        host: host_lower,
+        port,
+        has_explicit_port,
+    })
+}
+
+/// Validates a `kilnd` base URL: strictly `http://127.0.0.1[:port][/]` or `http://localhost[:port][/]`.
+pub fn validate_kilnd_url(raw: &str) -> Result<NormalizedKilndUrl, UrlValidationError> {
+    let rest = check_raw_url_common(raw)?;
+    let (authority, suffix) = split_authority_and_suffix(rest);
+    if !suffix.is_empty() && suffix != "/" {
+        return Err(UrlValidationError::UnexpectedPathOrSuffix);
+    }
+
+    let parsed = parse_loopback_authority(authority)?;
+    let base_url = if parsed.has_explicit_port {
+        format!("http://{}:{}", parsed.host, parsed.port)
+    } else {
+        format!("http://{}", parsed.host)
+    };
+
+    Ok(NormalizedKilndUrl {
+        host: parsed.host,
+        port: parsed.port,
+        base_url,
+    })
+}
+
+#[allow(dead_code)]
+pub fn is_allowed_kilnd_url(raw: &str) -> bool {
+    validate_kilnd_url(raw).is_ok()
+}
+
+/// Validates in-WebView navigation targets against the allowed loopback `kilnd` origin.
+pub fn is_allowed_navigation_url(raw: &str, allowed_origin: &NormalizedKilndUrl) -> bool {
+    let Ok(rest) = check_raw_url_common(raw) else {
+        return false;
+    };
+    let (authority, _suffix) = split_authority_and_suffix(rest);
+    let Ok(parsed) = parse_loopback_authority(authority) else {
+        return false;
+    };
+    parsed.host == allowed_origin.host && parsed.port == allowed_origin.port
+}
+
+pub fn format_tray_title(state: &TrayDisplayState) -> String {
+    match state {
+        TrayDisplayState::Offline { .. } => "离线".to_string(),
+        TrayDisplayState::Idle { cost_usd, .. } => {
+            format!("待机 ${:.2}", sanitize_non_negative(*cost_usd))
+        }
+        TrayDisplayState::Running {
+            running_count,
+            tok_per_sec,
+            ..
+        } => {
+            format!(
+                "{running_count} 运行 · {:.0} tok/s",
+                sanitize_non_negative(*tok_per_sec)
+            )
+        }
+        TrayDisplayState::WaitingDecision {
+            pending_decisions,
+            running_count,
+            ..
+        } => {
+            if *running_count > 0 {
+                format!("{pending_decisions} 待决 · {running_count} 运行")
+            } else {
+                format!("{pending_decisions} 待决")
+            }
+        }
+    }
+}
+
+pub fn format_tray_tooltip(state: &TrayDisplayState, kilnd_url: &str) -> String {
+    match state {
+        TrayDisplayState::Offline { reason } => match reason {
+            Some(detail) if !detail.trim().is_empty() => {
+                format!("Kiln · kilnd 未运行（{}）— {kilnd_url}", detail.trim())
+            }
+            _ => format!("Kiln · kilnd 离线 — {kilnd_url}"),
+        },
+        TrayDisplayState::Idle {
+            cost_usd,
+            task_count,
+        } => format!(
+            "Kiln · 待机（任务 {task_count} 个 · 累计 ${:.2}）— {kilnd_url}",
+            sanitize_non_negative(*cost_usd)
+        ),
+        TrayDisplayState::Running {
+            running_count,
+            tok_per_sec,
+            cost_usd,
+        } => format!(
+            "Kiln · 运行中：{running_count} 个任务 · {:.1} tok/s · 累计 ${:.2}",
+            sanitize_non_negative(*tok_per_sec),
+            sanitize_non_negative(*cost_usd)
+        ),
+        TrayDisplayState::WaitingDecision {
+            pending_decisions,
+            running_count,
+            tok_per_sec,
+            cost_usd,
+        } => format!(
+            "Kiln · 待决拍板：{pending_decisions} 项 · 运行中 {running_count} 个 · {:.1} tok/s · 累计 ${:.2}",
+            sanitize_non_negative(*tok_per_sec),
+            sanitize_non_negative(*cost_usd)
+        ),
+    }
+}
+
+pub fn format_tray_menu_status(state: &TrayDisplayState) -> String {
+    match state {
+        TrayDisplayState::Offline { .. } => "状态：kilnd 未运行".to_string(),
+        TrayDisplayState::Idle {
+            cost_usd,
+            task_count,
+        } => format!(
+            "状态：待机（{task_count} 个任务 · 累计 ${:.2}）",
+            sanitize_non_negative(*cost_usd)
+        ),
+        TrayDisplayState::Running {
+            running_count,
+            tok_per_sec,
+            ..
+        } => format!(
+            "状态：运行中（{running_count} 个任务 · {:.0} tok/s）",
+            sanitize_non_negative(*tok_per_sec)
+        ),
+        TrayDisplayState::WaitingDecision {
+            pending_decisions,
+            running_count,
+            ..
+        } => format!("状态：{pending_decisions} 项待决 · {running_count} 个运行中"),
+    }
+}
+
+/// Parses a single SSE event block separated by an empty line (`\n\n` or `\r\n\r\n`).
+pub fn parse_sse_event_block(block: &str) -> Option<SseEventFrame> {
+    let mut id: Option<String> = None;
+    let mut event: Option<String> = None;
+    let mut data_lines: Vec<&str> = Vec::new();
+
+    for raw_line in block.split('\n') {
+        let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+        if line.is_empty() || line.starts_with(':') {
+            continue;
+        }
+        let (field, value) = match line.split_once(':') {
+            Some((k, v)) => (k, v.strip_prefix(' ').unwrap_or(v)),
+            None => (line, ""),
+        };
+        match field {
+            "id" => {
+                if !value.contains('\0') {
+                    id = Some(value.to_string());
+                }
+            }
+            "event" => {
+                event = if value.is_empty() {
+                    None
+                } else {
+                    Some(value.to_string())
+                };
+            }
+            "data" => {
+                data_lines.push(value);
+            }
+            _ => {}
+        }
+    }
+
+    if data_lines.is_empty() {
+        return None;
+    }
+
+    Some(SseEventFrame {
+        id,
+        event,
+        data: data_lines.join("\n"),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JsonParseError {
+    Syntax(String),
+    InvalidStructure(&'static str),
+    DepthExceeded,
+}
+
+impl fmt::Display for JsonParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Syntax(msg) => write!(f, "JSON syntax error: {msg}"),
+            Self::InvalidStructure(msg) => write!(f, "JSON schema mismatch: {msg}"),
+            Self::DepthExceeded => f.write_str("JSON nesting depth exceeded limit"),
+        }
+    }
+}
+
+impl Error for JsonParseError {}
+
+#[derive(Debug, Clone, PartialEq)]
+enum JsonValue {
+    Null,
+    Bool(bool),
+    Number(f64),
+    String(String),
+    Array(Vec<JsonValue>),
+    Object(Vec<(String, JsonValue)>),
+}
+
+impl JsonValue {
+    fn as_object(&self) -> Option<&[(String, JsonValue)]> {
+        match self {
+            Self::Object(entries) => Some(entries),
+            _ => None,
+        }
+    }
+
+    fn as_array(&self) -> Option<&[JsonValue]> {
+        match self {
+            Self::Array(items) => Some(items),
+            _ => None,
+        }
+    }
+
+    fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    fn as_f64(&self) -> Option<f64> {
+        match self {
+            Self::Number(n) if n.is_finite() => Some(*n),
+            _ => None,
+        }
+    }
+
+    fn as_u64(&self) -> Option<u64> {
+        let n = self.as_f64()?;
+        if n >= 0.0 && n.fract() == 0.0 && n < 18_446_744_073_709_551_616.0 {
+            Some(n as u64)
+        } else {
+            None
+        }
+    }
+
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::String(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<&JsonValue> {
+        let entries = self.as_object()?;
+        entries
+            .iter()
+            .rfind(|(k, _)| k == key)
+            .map(|(_, val)| val)
+    }
+}
+
+struct JsonParser<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> JsonParser<'a> {
+    fn new(input: &'a str) -> Self {
+        Self {
+            bytes: input.as_bytes(),
+            pos: 0,
+        }
+    }
+
+    fn skip_ws(&mut self) {
+        while let Some(&b) = self.bytes.get(self.pos) {
+            if matches!(b, b' ' | b'\t' | b'\n' | b'\r') {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.bytes.get(self.pos).copied()
+    }
+
+    fn next_byte(&mut self) -> Option<u8> {
+        let b = self.bytes.get(self.pos).copied()?;
+        self.pos += 1;
+        Some(b)
+    }
+
+    fn parse_root(&mut self) -> Result<JsonValue, JsonParseError> {
+        self.skip_ws();
+        let value = self.parse_value(0)?;
+        self.skip_ws();
+        if self.pos != self.bytes.len() {
+            return Err(JsonParseError::Syntax(format!(
+                "trailing bytes at offset {}",
+                self.pos
+            )));
+        }
+        Ok(value)
+    }
+
+    fn parse_value(&mut self, depth: usize) -> Result<JsonValue, JsonParseError> {
+        if depth > MAX_JSON_DEPTH {
+            return Err(JsonParseError::DepthExceeded);
+        }
+        self.skip_ws();
+        let Some(b) = self.peek() else {
+            return Err(JsonParseError::Syntax("unexpected end of input".to_string()));
+        };
+        match b {
+            b'{' => self.parse_object(depth + 1),
+            b'[' => self.parse_array(depth + 1),
+            b'"' => self.parse_string().map(JsonValue::String),
+            b't' => {
+                self.expect_bytes(b"true")?;
+                Ok(JsonValue::Bool(true))
+            }
+            b'f' => {
+                self.expect_bytes(b"false")?;
+                Ok(JsonValue::Bool(false))
+            }
+            b'n' => {
+                self.expect_bytes(b"null")?;
+                Ok(JsonValue::Null)
+            }
+            b'-' | b'0'..=b'9' => self.parse_number().map(JsonValue::Number),
+            other => Err(JsonParseError::Syntax(format!(
+                "unexpected byte 0x{other:02x} at offset {}",
+                self.pos
+            ))),
+        }
+    }
+
+    fn expect_bytes(&mut self, expected: &[u8]) -> Result<(), JsonParseError> {
+        let end = self.pos + expected.len();
+        if self.bytes.get(self.pos..end) == Some(expected) {
+            self.pos = end;
+            Ok(())
+        } else {
+            Err(JsonParseError::Syntax(format!(
+                "invalid literal at offset {}",
+                self.pos
+            )))
+        }
+    }
+
+    fn parse_object(&mut self, depth: usize) -> Result<JsonValue, JsonParseError> {
+        self.next_byte(); // '{'
+        self.skip_ws();
+        let mut entries = Vec::new();
+        if self.peek() == Some(b'}') {
+            self.next_byte();
+            return Ok(JsonValue::Object(entries));
+        }
+
+        loop {
+            self.skip_ws();
+            if self.peek() != Some(b'"') {
+                return Err(JsonParseError::Syntax(format!(
+                    "expected object string key at offset {}",
+                    self.pos
+                )));
+            }
+            let key = self.parse_string()?;
+            self.skip_ws();
+            if self.next_byte() != Some(b':') {
+                return Err(JsonParseError::Syntax(format!(
+                    "expected ':' after key at offset {}",
+                    self.pos
+                )));
+            }
+            let val = self.parse_value(depth)?;
+            entries.push((key, val));
+            self.skip_ws();
+            match self.next_byte() {
+                Some(b',') => continue,
+                Some(b'}') => return Ok(JsonValue::Object(entries)),
+                _ => {
+                    return Err(JsonParseError::Syntax(format!(
+                        "expected ',' or '}}' at offset {}",
+                        self.pos
+                    )));
+                }
+            }
+        }
+    }
+
+    fn parse_array(&mut self, depth: usize) -> Result<JsonValue, JsonParseError> {
+        self.next_byte(); // '['
+        self.skip_ws();
+        let mut items = Vec::new();
+        if self.peek() == Some(b']') {
+            self.next_byte();
+            return Ok(JsonValue::Array(items));
+        }
+
+        loop {
+            let val = self.parse_value(depth)?;
+            items.push(val);
+            self.skip_ws();
+            match self.next_byte() {
+                Some(b',') => continue,
+                Some(b']') => return Ok(JsonValue::Array(items)),
+                _ => {
+                    return Err(JsonParseError::Syntax(format!(
+                        "expected ',' or ']' at offset {}",
+                        self.pos
+                    )));
+                }
+            }
+        }
+    }
+
+    fn parse_string(&mut self) -> Result<String, JsonParseError> {
+        self.next_byte(); // opening '"'
+        let mut out = String::new();
+        loop {
+            let start = self.pos;
+            while let Some(&b) = self.bytes.get(self.pos) {
+                if b == b'"' || b == b'\\' || b < 0x20 {
+                    break;
+                }
+                self.pos += 1;
+            }
+            if self.pos > start {
+                let slice = std::str::from_utf8(&self.bytes[start..self.pos])
+                    .map_err(|_| JsonParseError::Syntax("invalid UTF-8 in string".to_string()))?;
+                out.push_str(slice);
+            }
+            let Some(b) = self.next_byte() else {
+                return Err(JsonParseError::Syntax("unterminated string".to_string()));
+            };
+            match b {
+                b'"' => return Ok(out),
+                b'\\' => {
+                    let esc = self.next_byte().ok_or_else(|| {
+                        JsonParseError::Syntax("unterminated string escape".to_string())
+                    })?;
+                    match esc {
+                        b'"' => out.push('"'),
+                        b'\\' => out.push('\\'),
+                        b'/' => out.push('/'),
+                        b'b' => out.push('\u{0008}'),
+                        b'f' => out.push('\u{000c}'),
+                        b'n' => out.push('\n'),
+                        b'r' => out.push('\r'),
+                        b't' => out.push('\t'),
+                        b'u' => {
+                            let code = self.parse_hex4()?;
+                            if (0xD800..=0xDBFF).contains(&code) {
+                                if self.bytes.get(self.pos..self.pos + 2) == Some(b"\\u") {
+                                    self.pos += 2;
+                                    let low = self.parse_hex4()?;
+                                    if (0xDC00..=0xDFFF).contains(&low) {
+                                        let combined = 0x10000
+                                            + (((code as u32 - 0xD800) << 10)
+                                                | (low as u32 - 0xDC00));
+                                        let ch = char::from_u32(combined).ok_or_else(|| {
+                                            JsonParseError::Syntax(
+                                                "invalid unicode scalar".to_string(),
+                                            )
+                                        })?;
+                                        out.push(ch);
+                                        continue;
+                                    }
+                                }
+                                return Err(JsonParseError::Syntax(
+                                    "unpaired UTF-16 surrogate".to_string(),
+                                ));
+                            }
+                            let ch = char::from_u32(code as u32).ok_or_else(|| {
+                                JsonParseError::Syntax("invalid unicode escape".to_string())
+                            })?;
+                            out.push(ch);
+                        }
+                        _ => {
+                            return Err(JsonParseError::Syntax(format!(
+                                "invalid string escape \\{}",
+                                esc as char
+                            )));
+                        }
+                    }
+                }
+                _ => {
+                    return Err(JsonParseError::Syntax(
+                        "unescaped control character in string".to_string(),
+                    ));
+                }
+            }
+        }
+    }
+
+    fn parse_hex4(&mut self) -> Result<u16, JsonParseError> {
+        let slice = self
+            .bytes
+            .get(self.pos..self.pos + 4)
+            .ok_or_else(|| JsonParseError::Syntax("incomplete \\u escape".to_string()))?;
+        self.pos += 4;
+        let hex = std::str::from_utf8(slice)
+            .map_err(|_| JsonParseError::Syntax("invalid \\u escape bytes".to_string()))?;
+        u16::from_str_radix(hex, 16)
+            .map_err(|_| JsonParseError::Syntax("invalid hex digits in \\u escape".to_string()))
+    }
+
+    fn parse_number(&mut self) -> Result<f64, JsonParseError> {
+        let start = self.pos;
+        if self.peek() == Some(b'-') {
+            self.pos += 1;
+        }
+        match self.peek() {
+            Some(b'0') => {
+                self.pos += 1;
+                if matches!(self.peek(), Some(b'0'..=b'9')) {
+                    return Err(JsonParseError::Syntax(
+                        "leading zero in JSON number".to_string(),
+                    ));
+                }
+            }
+            Some(b'1'..=b'9') => {
+                while matches!(self.peek(), Some(b'0'..=b'9')) {
+                    self.pos += 1;
+                }
+            }
+            _ => {
+                return Err(JsonParseError::Syntax("invalid JSON number".to_string()));
+            }
+        }
+        if self.peek() == Some(b'.') {
+            self.pos += 1;
+            if !matches!(self.peek(), Some(b'0'..=b'9')) {
+                return Err(JsonParseError::Syntax(
+                    "expected digit after decimal point".to_string(),
+                ));
+            }
+            while matches!(self.peek(), Some(b'0'..=b'9')) {
+                self.pos += 1;
+            }
+        }
+        if matches!(self.peek(), Some(b'e' | b'E')) {
+            self.pos += 1;
+            if matches!(self.peek(), Some(b'+' | b'-')) {
+                self.pos += 1;
+            }
+            if !matches!(self.peek(), Some(b'0'..=b'9')) {
+                return Err(JsonParseError::Syntax(
+                    "expected exponent digits in number".to_string(),
+                ));
+            }
+            while matches!(self.peek(), Some(b'0'..=b'9')) {
+                self.pos += 1;
+            }
+        }
+        let num_str = std::str::from_utf8(&self.bytes[start..self.pos])
+            .map_err(|_| JsonParseError::Syntax("invalid UTF-8 in number".to_string()))?;
+        let val = num_str
+            .parse::<f64>()
+            .map_err(|_| JsonParseError::Syntax("number overflow".to_string()))?;
+        if !val.is_finite() {
+            return Err(JsonParseError::Syntax("non-finite JSON number".to_string()));
+        }
+        Ok(val)
+    }
+}
+
+pub fn parse_health_json(body: &str) -> Result<KilnHealth, JsonParseError> {
+    let root = JsonParser::new(body).parse_root()?;
+    if root.as_object().is_none() {
+        return Err(JsonParseError::InvalidStructure("health root must be object"));
+    }
+
+    let ok = root
+        .get("ok")
+        .and_then(JsonValue::as_bool)
+        .ok_or(JsonParseError::InvalidStructure("health.ok must be boolean"))?;
+
+    let pid = match root.get("pid") {
+        None | Some(JsonValue::Null) => None,
+        Some(v) => Some(
+            v.as_u64()
+                .ok_or(JsonParseError::InvalidStructure("health.pid must be u64"))?,
+        ),
+    };
+
+    let version = match root.get("version") {
+        None | Some(JsonValue::Null) => None,
+        Some(v) => Some(
+            v.as_str()
+                .ok_or(JsonParseError::InvalidStructure(
+                    "health.version must be string",
+                ))?
+                .to_string(),
+        ),
+    };
+
+    Ok(KilnHealth { ok, pid, version })
+}
+
+pub fn parse_bootstrap_summary_json(body: &str) -> Result<KilnBootstrapSummary, JsonParseError> {
+    let root = JsonParser::new(body).parse_root()?;
+    if root.as_object().is_none() {
+        return Err(JsonParseError::InvalidStructure(
+            "bootstrap root must be object",
+        ));
+    }
+
+    let running_count = root
+        .get("runningCount")
+        .and_then(JsonValue::as_u64)
+        .ok_or(JsonParseError::InvalidStructure(
+            "bootstrap.runningCount must be non-negative integer",
+        ))?;
+
+    let pending_decision_count = root
+        .get("pendingDecisions")
+        .and_then(JsonValue::as_array)
+        .map(<[JsonValue]>::len)
+        .ok_or(JsonParseError::InvalidStructure(
+            "bootstrap.pendingDecisions must be array",
+        ))?;
+
+    let task_count = match root.get("tasks") {
+        None | Some(JsonValue::Null) => 0,
+        Some(v) => v
+            .as_array()
+            .map(<[JsonValue]>::len)
+            .ok_or(JsonParseError::InvalidStructure(
+                "bootstrap.tasks must be array",
+            ))?,
+    };
+
+    let totals = match root.get("liveRates") {
+        None | Some(JsonValue::Null) => KilnLiveRatesTotals {
+            cost_usd: 0.0,
+            tok_per_sec: 0.0,
+        },
+        Some(live_rates) => {
+            if live_rates.as_object().is_none() {
+                return Err(JsonParseError::InvalidStructure(
+                    "bootstrap.liveRates must be object",
+                ));
+            }
+            match live_rates.get("totals") {
+                None | Some(JsonValue::Null) => KilnLiveRatesTotals {
+                    cost_usd: 0.0,
+                    tok_per_sec: 0.0,
+                },
+                Some(totals_val) => {
+                    if totals_val.as_object().is_none() {
+                        return Err(JsonParseError::InvalidStructure(
+                            "bootstrap.liveRates.totals must be object",
+                        ));
+                    }
+                    let cost_usd = parse_optional_non_negative_f64(
+                        totals_val.get("costUsd"),
+                        "bootstrap.liveRates.totals.costUsd must be number",
+                    )?;
+                    let tok_per_sec = parse_optional_non_negative_f64(
+                        totals_val.get("tokPerSec"),
+                        "bootstrap.liveRates.totals.tokPerSec must be number",
+                    )?;
+                    KilnLiveRatesTotals {
+                        cost_usd,
+                        tok_per_sec,
+                    }
+                }
+            }
+        }
+    };
+
+    Ok(KilnBootstrapSummary {
+        running_count,
+        pending_decision_count,
+        task_count,
+        totals,
+    })
+}
+
+fn parse_optional_non_negative_f64(
+    val: Option<&JsonValue>,
+    err_msg: &'static str,
+) -> Result<f64, JsonParseError> {
+    match val {
+        None | Some(JsonValue::Null) => Ok(0.0),
+        Some(v) => v
+            .as_f64()
+            .map(sanitize_non_negative)
+            .ok_or(JsonParseError::InvalidStructure(err_msg)),
+    }
+}
+
+fn sanitize_non_negative(v: f64) -> f64 {
+    if v.is_finite() && v >= 0.0 {
+        v
+    } else {
+        0.0
+    }
+}
+
+fn non_empty_trimmed(s: &str) -> Option<String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validates_allowed_loopback_urls_and_normalizes() {
+        let u1 = validate_kilnd_url(DEFAULT_KILND_URL).expect("default url");
+        assert_eq!(u1.host, "127.0.0.1");
+        assert_eq!(u1.port, 4310);
+        assert_eq!(u1.base_url, "http://127.0.0.1:4310");
+        assert_eq!(u1.endpoint_url("/api/health"), "http://127.0.0.1:4310/api/health");
+        assert_eq!(u1.endpoint_url("api/bootstrap"), "http://127.0.0.1:4310/api/bootstrap");
+        assert_eq!(u1.tcp_host_port(), ("127.0.0.1", 4310));
+        assert_eq!(u1.host_header(), "127.0.0.1:4310");
+
+        let u2 = validate_kilnd_url("HTTP://LocalHost:4310/").expect("localhost with trailing slash");
+        assert_eq!(u2.host, "localhost");
+        assert_eq!(u2.port, 4310);
+        assert_eq!(u2.base_url, "http://localhost:4310");
+
+        let u3 = validate_kilnd_url("http://127.0.0.1").expect("default port 80");
+        assert_eq!(u3.port, 80);
+        assert_eq!(u3.base_url, "http://127.0.0.1");
+
+        let u4 = validate_kilnd_url("http://localhost:65535").expect("max port");
+        assert_eq!(u4.port, 65535);
+        assert!(is_allowed_kilnd_url("http://localhost:1"));
+    }
+
+    #[test]
+    fn rejects_non_loopback_schemes_userinfo_and_bad_ports() {
+        let rejected = [
+            ("", UrlValidationError::Empty),
+            ("   ", UrlValidationError::ControlOrWhitespace),
+            ("http://127.0.0.1:4310\n", UrlValidationError::ControlOrWhitespace),
+            ("https://127.0.0.1:4310", UrlValidationError::UnsupportedScheme),
+            ("file:///etc/passwd", UrlValidationError::UnsupportedScheme),
+            ("javascript:alert(1)", UrlValidationError::UnsupportedScheme),
+            ("127.0.0.1:4310", UrlValidationError::UnsupportedScheme),
+            ("http://user@127.0.0.1:4310", UrlValidationError::UserinfoNotAllowed),
+            ("http://127.0.0.1:4310@evil.com", UrlValidationError::UserinfoNotAllowed),
+            ("http://localhost.evil.com:4310", UrlValidationError::NonLoopbackHost),
+            ("http://127.0.0.2:4310", UrlValidationError::NonLoopbackHost),
+            ("http://0.0.0.0:4310", UrlValidationError::NonLoopbackHost),
+            ("http://[::1]:4310", UrlValidationError::NonLoopbackHost),
+            ("http://127.0.0.1:0", UrlValidationError::InvalidPort),
+            ("http://127.0.0.1:65536", UrlValidationError::InvalidPort),
+            ("http://127.0.0.1:abc", UrlValidationError::InvalidPort),
+            ("http://127.0.0.1:", UrlValidationError::InvalidPort),
+            ("http://127.0.0.1:4310/tasks", UrlValidationError::UnexpectedPathOrSuffix),
+            ("http://127.0.0.1:4310?next=evil", UrlValidationError::UnexpectedPathOrSuffix),
+            ("http://127.0.0.1:4310\\@evil.com", UrlValidationError::InvalidAuthority),
+        ];
+
+        for (raw, expected_err) in rejected {
+            let err = validate_kilnd_url(raw).expect_err(raw);
+            assert_eq!(err, expected_err, "unexpected error for {raw}: {err}");
+            assert!(!err.to_string().is_empty());
+            assert!(!is_allowed_kilnd_url(raw));
+        }
+    }
+
+    #[test]
+    fn navigation_guard_enforces_exact_loopback_origin() {
+        let origin = validate_kilnd_url("http://127.0.0.1:4310").unwrap();
+        assert!(is_allowed_navigation_url("http://127.0.0.1:4310", &origin));
+        assert!(is_allowed_navigation_url("http://127.0.0.1:4310/tasks/t-1?view=board#top", &origin));
+        assert!(!is_allowed_navigation_url("http://127.0.0.1:9999/", &origin));
+        assert!(!is_allowed_navigation_url("http://localhost:4310/", &origin));
+        assert!(!is_allowed_navigation_url("https://127.0.0.1:4310/", &origin));
+        assert!(!is_allowed_navigation_url("http://127.0.0.1:4310\\@evil.com", &origin));
+        assert!(!is_allowed_navigation_url("http://localhost.evil.com:4310/", &origin));
+        assert!(!is_allowed_navigation_url("javascript:alert(1)", &origin));
+    }
+
+    #[test]
+    fn parses_health_json_and_rejects_invalid_shapes() {
+        let ok = parse_health_json(r#"{"ok":true,"pid":4242,"version":"0.1.0"}"#).unwrap();
+        assert_eq!(
+            ok,
+            KilnHealth {
+                ok: true,
+                pid: Some(4242),
+                version: Some("0.1.0".to_string()),
+            }
+        );
+
+        let minimal = parse_health_json(r#"{"ok":false,"pid":null,"version":null}"#).unwrap();
+        assert!(!minimal.ok);
+        assert_eq!(minimal.pid, None);
+        assert_eq!(minimal.version, None);
+
+        assert!(parse_health_json(r#"{}"#).is_err());
+        assert!(parse_health_json(r#"{"ok":"yes"}"#).is_err());
+        assert!(parse_health_json(r#"{"ok":true,"pid":-1}"#).is_err());
+        assert!(parse_health_json(r#"[]"#).is_err());
+        assert!(parse_health_json(r#"{"ok":true} trailing"#).is_err());
+    }
+
+    #[test]
+    fn parses_bootstrap_summary_with_nested_strings_and_arrays() {
+        let payload = r#"{
+            "tasks": [
+                {
+                    "id": "t-1",
+                    "title": "Fix \"runningCount\" & \\escaped\\ quotes \u0041 \uD83D\uDE80",
+                    "cost_usd": 99.9
+                },
+                { "id": "t-2" }
+            ],
+            "pendingDecisions": [
+                {
+                    "id": "dec-1",
+                    "options": ["approve", "reject"],
+                    "meta": { "nested": [1, 2, 3] }
+                }
+            ],
+            "liveRates": {
+                "rates": { "t-1": 42.5 },
+                "totals": {
+                    "costUsd": 1.25e0,
+                    "tokPerSec": 48.75
+                }
+            },
+            "usage": { "costUsd": 88.88 },
+            "runningCount": 2
+        }"#;
+
+        let summary = parse_bootstrap_summary_json(payload).unwrap();
+        assert_eq!(summary.running_count, 2);
+        assert_eq!(summary.pending_decision_count, 1);
+        assert_eq!(summary.task_count, 2);
+        assert!((summary.totals.cost_usd - 1.25).abs() < 1e-9);
+        assert!((summary.totals.tok_per_sec - 48.75).abs() < 1e-9);
+
+        let no_rates = parse_bootstrap_summary_json(r#"{"runningCount":0,"pendingDecisions":[]}"#).unwrap();
+        assert_eq!(no_rates.task_count, 0);
+        assert_eq!(no_rates.totals.cost_usd, 0.0);
+
+        assert!(parse_bootstrap_summary_json(r#"{}"#).is_err());
+        assert!(parse_bootstrap_summary_json(r#"{"runningCount":"2","pendingDecisions":[]}"#).is_err());
+        assert!(parse_bootstrap_summary_json(r#"{"runningCount":1,"pendingDecisions":{}}"#).is_err());
+        assert!(parse_bootstrap_summary_json(r#"{"runningCount":1,"pendingDecisions":[],"liveRates":{"totals":{"costUsd":"bad"}}}"#).is_err());
+    }
+
+    #[test]
+    fn rejects_deeply_nested_or_malformed_json() {
+        let deep = "[".repeat(MAX_JSON_DEPTH + 2) + &"]".repeat(MAX_JSON_DEPTH + 2);
+        let err = parse_bootstrap_summary_json(&deep).unwrap_err();
+        assert_eq!(err, JsonParseError::DepthExceeded);
+        assert!(!err.to_string().is_empty());
+
+        assert!(parse_health_json(r#"{"ok":01}"#).is_err());
+        assert!(parse_health_json("{\"ok\":\"\n\"}").is_err());
+    }
+
+    #[test]
+    fn parses_sse_blocks_with_comments_ids_and_multiline_data() {
+        assert_eq!(parse_sse_event_block(": heartbeat\n\n"), None);
+        assert_eq!(parse_sse_event_block("id: 7\nevent: ping\n"), None);
+
+        let block = ": keepalive\r\nid: 42\r\nevent: task.updated\r\ndata: {\"id\":\"t-1\",\r\ndata:  \"status\":\"running\"}\r\nretry: 3000\r\n";
+        let frame = parse_sse_event_block(block).expect("valid sse frame");
+        assert_eq!(
+            frame,
+            SseEventFrame {
+                id: Some("42".to_string()),
+                event: Some("task.updated".to_string()),
+                data: "{\"id\":\"t-1\",\n \"status\":\"running\"}".to_string(),
+            }
+        );
+
+        let no_space = parse_sse_event_block("event:\ndata:plain").unwrap();
+        assert_eq!(no_space.event, None);
+        assert_eq!(no_space.data, "plain");
+    }
+
+    #[test]
+    fn formats_tray_states_and_enforces_destroy_close_policy() {
+        assert_eq!(close_policy_for_window(MAIN_WINDOW_LABEL), WindowClosePolicy::Destroy);
+        assert_eq!(close_policy_for_window("other"), WindowClosePolicy::Destroy);
+        assert_ne!(WindowClosePolicy::Destroy, WindowClosePolicy::Hide);
+
+        let offline = TrayDisplayState::from_probe(Err("connection refused"), None);
+        assert!(!offline.is_online());
+        assert_eq!(format_tray_title(&offline), "离线");
+        assert!(format_tray_tooltip(&offline, DEFAULT_KILND_URL).contains("connection refused"));
+        assert_eq!(format_tray_menu_status(&offline), "状态：kilnd 未运行");
+
+        let unhealthy = TrayDisplayState::from_probe(
+            Ok(&KilnHealth {
+                ok: false,
+                pid: None,
+                version: None,
+            }),
+            None,
+        );
+        assert!(!unhealthy.is_online());
+
+        let healthy_no_bootstrap = TrayDisplayState::from_probe(
+            Ok(&KilnHealth {
+                ok: true,
+                pid: Some(1),
+                version: Some("0.1.0".to_string()),
+            }),
+            None,
+        );
+        assert!(healthy_no_bootstrap.is_online());
+        assert_eq!(format_tray_title(&healthy_no_bootstrap), "待机 $0.00");
+
+        let idle = TrayDisplayState::from_bootstrap(&KilnBootstrapSummary {
+            running_count: 0,
+            pending_decision_count: 0,
+            task_count: 3,
+            totals: KilnLiveRatesTotals {
+                cost_usd: 0.42,
+                tok_per_sec: 0.0,
+            },
+        });
+        assert!(idle.is_online());
+        assert_eq!(format_tray_title(&idle), "待机 $0.42");
+        assert!(format_tray_tooltip(&idle, DEFAULT_KILND_URL).contains("任务 3 个"));
+        assert!(format_tray_menu_status(&idle).contains("3 个任务"));
+
+        let running = TrayDisplayState::from_bootstrap(&KilnBootstrapSummary {
+            running_count: 2,
+            pending_decision_count: 0,
+            task_count: 5,
+            totals: KilnLiveRatesTotals {
+                cost_usd: 1.5,
+                tok_per_sec: 48.4,
+            },
+        });
+        assert_eq!(format_tray_title(&running), "2 运行 · 48 tok/s");
+        assert!(format_tray_tooltip(&running, DEFAULT_KILND_URL).contains("48.4 tok/s"));
+        assert!(format_tray_menu_status(&running).contains("2 个任务"));
+
+        let waiting = TrayDisplayState::from_bootstrap(&KilnBootstrapSummary {
+            running_count: 1,
+            pending_decision_count: 2,
+            task_count: 5,
+            totals: KilnLiveRatesTotals {
+                cost_usd: 2.1,
+                tok_per_sec: 15.0,
+            },
+        });
+        assert_eq!(format_tray_title(&waiting), "2 待决 · 1 运行");
+        assert!(format_tray_tooltip(&waiting, DEFAULT_KILND_URL).contains("待决拍板：2 项"));
+        assert!(format_tray_menu_status(&waiting).contains("2 项待决"));
+
+        let waiting_only = TrayDisplayState::WaitingDecision {
+            pending_decisions: 1,
+            running_count: 0,
+            tok_per_sec: 0.0,
+            cost_usd: 0.0,
+        };
+        assert_eq!(format_tray_title(&waiting_only), "1 待决");
+    }
+}
