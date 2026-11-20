@@ -1,0 +1,33 @@
+review_md = "REVIEW.md"
+
+[[cases]]
+id = "R1"
+intro = "76aae25aea31307b4fd98bc700c3cba3ba0cbc50"
+fix = ["e2ef5c770590acb111a5d7be231ae9bacaa8746e"]
+risk = "high"
+files = ["packages/cli/src/commands.ts"]
+defect = "kiln up --foreground 启用 enableOrchestrator: true 构造 KilndServer 时未创建或注册 PaseoBackend，导致真实启动 kilnd 后 BackendRegistry 为空、无法发现或调度任何 Paseo Agent。"
+
+[[cases]]
+id = "R2"
+intro = "76aae25aea31307b4fd98bc700c3cba3ba0cbc50"
+fix = ["585aeff1bc4891c2cb50009bfb42205804ed0ed4"]
+risk = "high"
+files = ["packages/kernel/src/server/orchestrator.ts"]
+defect = "dispatchPlan 在 backend.start() 返回后仅要求租约 state 为 active，并在 handleBackendStartError 也只认 active 租约；当执行者在 start() 挂起期间已通过 wb_submit_receipt 原子提交回执使租约变为 completed 时，返回后反而取消会话、跳过后续门禁收口，导致任务永久卡死在 running。"
+
+[[cases]]
+id = "R3"
+intro = "739bfcaf41d1d2aa92182f675bcfc32b09d1c178"
+fix = ["585aeff1bc4891c2cb50009bfb42205804ed0ed4"]
+risk = "high"
+files = ["packages/kernel/src/server/mcp-rpc.ts"]
+defect = "handleSubmitReceipt 在调用 store.submitReceipt 原子消费活跃租约并写盘 RECEIPT.md 之前，未按 token 角色校验 markdown 的回执 Schema（parseAndValidateReceipt）及 run_id/contract_version 一致性，导致格式错误的回执直接烧毁单次租约、无法同回合修正重提。"
+
+[[cases]]
+id = "R4"
+intro = "739bfcaf41d1d2aa92182f675bcfc32b09d1c178"
+fix = ["efb11e7d7497a483ee53d29d210d294a8fc00863"]
+risk = "high"
+files = ["packages/kernel/src/server/daemon.ts"]
+defect = "KilndServer.stop() 在调用 sseHub.closeAll() 后紧接着同步调用 server.closeAllConnections() 强掐连接，未待 HTTP server.close() 先优雅排空响应流，导致活跃 SSE 客户端在服务端刷出 chunked 终止块前被断连并报 ERR_INCOMPLETE_CHUNKED_ENCODING。"
