@@ -21,9 +21,9 @@ cask "kiln-app" do
 
   # Preserves ~/.kiln tasks, ledgers, and worktrees; use `kiln uninstall --purge-data` to remove user data.
   zap trash: [
-    "~/Library/Application Support/work.kiln.desktop",
-    "~/Library/Caches/work.kiln.desktop",
-    "~/Library/Preferences/work.kiln.desktop.plist",
-    "~/Library/Saved Application State/work.kiln.desktop.savedState",
+    "~/Library/Application Support/io.kiln.desktop",
+    "~/Library/Caches/io.kiln.desktop",
+    "~/Library/Preferences/io.kiln.desktop.plist",
+    "~/Library/Saved Application State/io.kiln.desktop.savedState",
   ]
 end
