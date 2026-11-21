@@ -2411,4 +2411,127 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     });
     expect((screen.getByLabelText("验收命令") as HTMLInputElement).value).toBe("cargo test");
   });
+
+  it("computes heterogeneous multi-model task cost per model bucket in UsageView and BoardView without latest-model distortion", async () => {
+    const now = new Date().toISOString();
+    const bootstrap = makeBaseBootstrap({
+      pricing: {
+        schema_version: 1,
+        models: {
+          "gpt-6-luna": { in: 0.1, cached: 0.01, out: 0.4 },
+          "gpt-6.2-sol": { in: 0.3, cached: 0.03, out: 1.2 },
+        },
+      },
+      tasks: [
+        {
+          id: "t-multi",
+          space: "local",
+          parent_id: null,
+          title: "异构双模型交付任务",
+          priority: "P1",
+          effective_priority: "P1",
+          track: "L2",
+          workspace_mode: "git_worktree",
+          status: "done",
+          stage: "deliver",
+          round: 1,
+          active_run_id: null,
+          contract_version: 1,
+          depends_on: [],
+          created_at: now,
+          updated_at: now,
+          agent: "codex",
+          model: "gpt-6.2-sol",
+          tokens: {
+            input_tokens: 70_000,
+            cached_input_tokens: 0,
+            output_tokens: 4_000,
+            total_tokens: 74_000,
+          },
+          cost_usd: 0.013,
+          tokens_by_model: {
+            "gpt-6-luna": {
+              inputTokens: 60_000,
+              cachedInputTokens: 0,
+              outputTokens: 1_000,
+              totalTokens: 61_000,
+              costUsd: 0.0064,
+            },
+            "gpt-6.2-sol": {
+              inputTokens: 10_000,
+              cachedInputTokens: 0,
+              outputTokens: 3_000,
+              totalTokens: 13_000,
+              costUsd: 0.0066,
+            },
+          },
+        },
+      ],
+      usage: {
+        inputTokens: 70_000,
+        cachedInputTokens: 0,
+        outputTokens: 4_000,
+        totalTokens: 74_000,
+        costUsd: 0.013,
+        byAgent: {
+          codex: {
+            inputTokens: 70_000,
+            cachedInputTokens: 0,
+            outputTokens: 4_000,
+            totalTokens: 74_000,
+            costUsd: 0.013,
+          },
+        },
+        byModel: {
+          "gpt-6-luna": {
+            inputTokens: 60_000,
+            cachedInputTokens: 0,
+            outputTokens: 1_000,
+            totalTokens: 61_000,
+            costUsd: 0.0064,
+          },
+          "gpt-6.2-sol": {
+            inputTokens: 10_000,
+            cachedInputTokens: 0,
+            outputTokens: 3_000,
+            totalTokens: 13_000,
+            costUsd: 0.0066,
+          },
+        },
+      },
+    });
+
+    fetchMock.mockImplementation(async () => jsonResponse(bootstrap));
+
+    const { container } = render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("异构双模型交付任务")).toBeTruthy();
+    });
+
+    // Board done card must show $0.01 (true per-model sum $0.013), not $0.03 (all tokens * gpt-6.2-sol)
+    expect(screen.getByText("74.0k · $0.01")).toBeTruthy();
+    expect(screen.queryByText("74.0k · $0.03")).toBeNull();
+
+    // UsageView ranked task row and grand total must both show $0.01
+    fireEvent.click(container.querySelector('.tabbar button[data-tab="usage"]')!);
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "用量与费用" })).toBeTruthy();
+    });
+    const rankRow = container.querySelector(".rank-row") as HTMLElement;
+    expect(rankRow.textContent).toContain("$0.01");
+    expect(rankRow.textContent).not.toContain("$0.03");
+
+    // Live-editing gpt-6-luna input price (0.1 -> 1.0) recalculates the gpt-6-luna bucket accurately:
+    // (60k*1.0 + 1k*0.4)/1e6 + $0.0066 = $0.067 -> $0.07
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "模型单价" }));
+    const lunaInput = screen.getByLabelText("gpt-6-luna 输入单价") as HTMLInputElement;
+    fireEvent.input(lunaInput, { target: { value: "1" } });
+
+    fireEvent.click(container.querySelector('.tabbar button[data-tab="usage"]')!);
+    await waitFor(() => {
+      expect((container.querySelector(".rank-row") as HTMLElement).textContent).toContain("$0.07");
+    });
+    expect(container.querySelector(".stats dd")?.textContent).toBe("$0.07");
+  });
 });

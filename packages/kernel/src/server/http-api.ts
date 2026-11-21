@@ -962,6 +962,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
           total_tokens: taskUsage.totalTokens,
         },
         cost_usd: taskUsage.costUsd,
+        tokens_by_model: taskUsage.byModel,
         summary: card.contract.goal,
         has_host_backup: hasHostBackup,
         ...(latestRun !== null ? { agent: latestRun.agent, model: latestRun.model } : {}),

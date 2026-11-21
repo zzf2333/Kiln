@@ -60,6 +60,7 @@ export interface BootstrapTask {
     total_tokens: number;
   };
   cost_usd: number;
+  tokens_by_model?: Record<string, UsageBucketSummary>;
   summary?: string;
   agent?: string;
   model?: string;

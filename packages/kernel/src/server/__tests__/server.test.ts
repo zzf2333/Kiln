@@ -2596,4 +2596,116 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     expect(delFreeSpace.status).toBe(200);
     expect(server.store.readSpace("my-app")).toBeNull();
   });
+
+  it("exposes per-model tokens_by_model on /api/bootstrap for heterogeneous multi-model tasks", async () => {
+    const kilnHome = makeTempDir("kiln-hetero-boot-");
+    tempDirs.push(kilnHome);
+
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      tokenSecret: "hetero-boot-secret-0123456789abcdef",
+    });
+    servers.push(server);
+    await server.start();
+
+    server.store.writeConfig("pricing", {
+      schema_version: 1,
+      models: {
+        "gpt-6-luna": { in: 0.15, cached: 0.015, out: 0.6 },
+        "gpt-6.2-sol": { in: 2.5, cached: 0.25, out: 10 },
+      },
+    });
+
+    server.store.createTask(
+      makeTaskCard({
+        id: "t-hetero",
+        space: "local",
+        workspace_mode: "scratch_dir",
+      }),
+      "# Multi-model task",
+    );
+
+    server.store.persistRunBeforeDispatch(
+      makeRunMeta({
+        task_id: "t-hetero",
+        run_id: "run-hetero-impl",
+        stage: "implement",
+        role: "worker",
+        model: "gpt-6-luna",
+      }),
+      "001-implement",
+    );
+    server.store.recordRunEvent("t-hetero", "001-implement", {
+      kind: "usage",
+      at: "2026-11-21T04:50:00.000Z",
+      turnId: "turn-impl-1",
+      agent: "codex",
+      model: "gpt-6-luna",
+      inputTokens: 60_000,
+      cachedInputTokens: 50_000,
+      outputTokens: 1_000,
+    });
+
+    server.store.persistRunBeforeDispatch(
+      makeRunMeta({
+        task_id: "t-hetero",
+        run_id: "run-hetero-rev",
+        stage: "review",
+        role: "reviewer",
+        model: "gpt-6.2-sol",
+        started_at: "2026-11-21T04:51:00.000Z",
+      }),
+      "002-review",
+    );
+    server.store.recordRunEvent("t-hetero", "002-review", {
+      kind: "usage",
+      at: "2026-11-21T04:51:10.000Z",
+      turnId: "turn-rev-1",
+      agent: "codex",
+      model: "gpt-6.2-sol",
+      inputTokens: 10_000,
+      cachedInputTokens: 6_000,
+      outputTokens: 1_037,
+    });
+
+    const res = await requestHttp(server, "/api/bootstrap");
+    expect(res.status).toBe(200);
+    const boot = await readJson<{
+      tasks: Array<{
+        id: string;
+        model?: string;
+        cost_usd: number;
+        tokens_by_model?: Record<
+          string,
+          {
+            inputTokens: number;
+            cachedInputTokens: number;
+            outputTokens: number;
+            totalTokens: number;
+            costUsd: number;
+          }
+        >;
+      }>;
+    }>(res);
+
+    const task = boot.tasks.find((t) => t.id === "t-hetero");
+    expect(task).toBeDefined();
+    expect(task?.model).toBe("gpt-6.2-sol");
+    expect(task?.tokens_by_model?.["gpt-6-luna"]).toMatchObject({
+      inputTokens: 60_000,
+      cachedInputTokens: 50_000,
+      outputTokens: 1_000,
+      totalTokens: 61_000,
+    });
+    expect(task?.tokens_by_model?.["gpt-6-luna"]?.costUsd).toBeCloseTo(0.00285, 8);
+    expect(task?.tokens_by_model?.["gpt-6.2-sol"]).toMatchObject({
+      inputTokens: 10_000,
+      cachedInputTokens: 6_000,
+      outputTokens: 1_037,
+      totalTokens: 11_037,
+    });
+    expect(task?.tokens_by_model?.["gpt-6.2-sol"]?.costUsd).toBeCloseTo(0.02187, 8);
+    expect(task?.cost_usd).toBeCloseTo(0.02472, 8);
+  });
 });

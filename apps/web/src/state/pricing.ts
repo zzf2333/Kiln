@@ -141,18 +141,12 @@ export function computeTaskCostUsd(
   task: BootstrapTask,
   pricing: PricingConfig | null,
 ): number {
-  if (task.model) {
-    const modelPrice = pricing?.models[task.model];
-    if (isValidModelPricing(modelPrice)) {
-      return calculateTurnCostUsd(
-        sanitizeCounters(
-          task.tokens.input_tokens,
-          task.tokens.cached_input_tokens,
-          task.tokens.output_tokens,
-        ),
-        modelPrice,
-      );
-    }
+  const byModel = task.tokens_by_model ? Object.entries(task.tokens_by_model) : [];
+  if (byModel.length > 0) {
+    return byModel.reduce(
+      (sum, [modelName, bucket]) => sum + computeBucketCostUsd(modelName, bucket, pricing),
+      0,
+    );
   }
   return task.cost_usd;
 }
