@@ -33,6 +33,7 @@ import {
   formatSseFrame,
   pickLocalDirectory,
   prepareIpcSocketPath,
+  revealLocalPath,
   signRunToken,
   verifyRunToken,
   type AcPowerStatus,
@@ -2997,5 +2998,93 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     expect(taskBrief).toContain("## 3. 选定落地方案与关键取舍");
     expect(server.store.readDraft("d-brief-mcp")).toBeNull();
     expect(server.store.readDraftBrief("d-brief-mcp")).toBeNull();
+  });
+
+  it("exposes version in /api/bootstrap and restricts POST /api/system/reveal-path to local listener", async () => {
+    const kilnHome = makeTempDir("kiln-ver-reveal-");
+    const sampleDir = makeTempDir("kiln-reveal-target-");
+    const sampleFile = path.join(sampleDir, "notes.txt");
+    fs.writeFileSync(sampleFile, "hello", "utf8");
+    tempDirs.push(kilnHome, sampleDir);
+
+    // 1. revealLocalPath unit checks across darwin / win32 / linux + file:// + tilde + guards
+    const recorded: Array<{ file: string; args: readonly string[] }> = [];
+    const fakeExec: PickLocalDirectoryExecFn = async (file, args) => {
+      recorded.push({ file, args });
+      return { stdout: "", stderr: "" };
+    };
+
+    const resDarwin = await revealLocalPath(`file://${sampleFile}#L12`, {
+      platform: "darwin",
+      execFileFn: fakeExec,
+    });
+    expect(resDarwin).toEqual({ ok: true, path: path.resolve(sampleFile) });
+    expect(recorded[0]).toEqual({ file: "/usr/bin/open", args: ["-R", path.resolve(sampleFile)] });
+
+    const resWin = await revealLocalPath("~/notes.txt", {
+      platform: "win32",
+      homedir: sampleDir,
+      execFileFn: fakeExec,
+    });
+    expect(resWin).toEqual({ ok: true, path: path.resolve(sampleFile) });
+    expect(recorded[1]).toEqual({
+      file: "explorer.exe",
+      args: [`/select,${path.resolve(sampleFile)}`],
+    });
+
+    await revealLocalPath(sampleFile, {
+      platform: "linux",
+      execFileFn: fakeExec,
+    });
+    expect(recorded[2]).toEqual({
+      file: "xdg-open",
+      args: [path.resolve(sampleDir)],
+    });
+
+    await expect(revealLocalPath("relative/path.txt")).rejects.toMatchObject({ statusCode: 400 });
+    await expect(revealLocalPath("file://evil.example.com/etc/passwd")).rejects.toMatchObject({
+      statusCode: 400,
+    });
+    await expect(
+      revealLocalPath(path.join(sampleDir, "missing.txt")),
+    ).rejects.toMatchObject({ statusCode: 404 });
+
+    // 2. Local & remote HTTP listener parity
+    const revealedCalls: string[] = [];
+    const localServer = new KilndServer({
+      kilnHome,
+      port: 0,
+      version: "0.0.3-test",
+      tokenSecret: "ver-reveal-secret-0123456789abcde",
+      revealPath: async (target) => {
+        revealedCalls.push(target);
+        return { ok: true, path: target };
+      },
+    });
+    servers.push(localServer);
+    await localServer.start();
+
+    const bootJson = await readJson(await requestHttp(localServer, "/api/bootstrap"));
+    expect(bootJson.version).toBe("0.0.3-test");
+
+    const revealOk = await requestHttp(localServer, "/api/system/reveal-path", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: sampleFile }),
+    });
+    expect(revealOk.status).toBe(200);
+    expect(await readJson(revealOk)).toEqual({ ok: true, path: sampleFile });
+    expect(revealedCalls).toEqual([sampleFile]);
+
+    // Remote listener blocks /api/system/reveal-path fail-closed
+    const remoteRes = await localServer.remoteApp.request(
+      new Request("http://127.0.0.1/api/system/reveal-path", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: sampleFile }),
+      }),
+    );
+    expect(remoteRes.status).toBe(403);
+    expect((await readJson(remoteRes)).error).toBe("local_only_endpoint");
   });
 });

@@ -47,6 +47,16 @@ button { font-family: inherit; color: inherit; }
   color: var(--t1);
 }
 .brand-name { font-size: 14px; font-weight: 600; }
+.brand-ver {
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 2.5px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--t3);
+  letter-spacing: 0.01em;
+}
 
 .new-btn {
   height: 34px;

@@ -127,20 +127,22 @@ fn spawn_status_worker<R: Runtime>(
         .spawn(move || {
             let client = KilndClient::new(kilnd_url);
             let mut last_state: Option<TrayDisplayState> = None;
+            let mut last_version: Option<String> = None;
             let mut last_event_id: Option<String> = None;
             let (mut seen_epoch, mut shutdown) = coordinator.snapshot();
 
             while !shutdown {
-                let raw_state = client.probe_tray_state();
+                let (raw_state, daemon_version) = client.probe_tray_snapshot();
                 let current_state = if raw_state.is_online() {
                     coordinator.clear_start_action();
                     raw_state
                 } else {
                     raw_state.apply_start_action(&coordinator.start_action())
                 };
-                if last_state.as_ref() != Some(&current_state) {
-                    update_tray_display(&app, &current_state);
+                if last_state.as_ref() != Some(&current_state) || last_version != daemon_version {
+                    update_tray_display(&app, &current_state, daemon_version.as_deref());
                     last_state = Some(current_state.clone());
+                    last_version = daemon_version.clone();
                 }
 
                 if current_state.is_online() {
@@ -169,11 +171,18 @@ fn spawn_status_worker<R: Runtime>(
                                     }
                                     if last_refresh.elapsed() >= Duration::from_millis(250) {
                                         pending_sse_refresh = false;
-                                        let refreshed = client.probe_tray_state();
+                                        let (refreshed, refreshed_version) = client.probe_tray_snapshot();
                                         last_refresh = Instant::now();
-                                        if last_state.as_ref() != Some(&refreshed) {
-                                            update_tray_display(&app, &refreshed);
+                                        if last_state.as_ref() != Some(&refreshed)
+                                            || last_version != refreshed_version
+                                        {
+                                            update_tray_display(
+                                                &app,
+                                                &refreshed,
+                                                refreshed_version.as_deref(),
+                                            );
                                             last_state = Some(refreshed);
+                                            last_version = refreshed_version;
                                         }
                                         if !last_state
                                             .as_ref()
@@ -187,11 +196,18 @@ fn spawn_status_worker<R: Runtime>(
                                 SsePollResult::Timeout => {
                                     if pending_sse_refresh {
                                         pending_sse_refresh = false;
-                                        let refreshed = client.probe_tray_state();
+                                        let (refreshed, refreshed_version) = client.probe_tray_snapshot();
                                         last_refresh = Instant::now();
-                                        if last_state.as_ref() != Some(&refreshed) {
-                                            update_tray_display(&app, &refreshed);
+                                        if last_state.as_ref() != Some(&refreshed)
+                                            || last_version != refreshed_version
+                                        {
+                                            update_tray_display(
+                                                &app,
+                                                &refreshed,
+                                                refreshed_version.as_deref(),
+                                            );
                                             last_state = Some(refreshed);
+                                            last_version = refreshed_version;
                                         }
                                         if !last_state
                                             .as_ref()

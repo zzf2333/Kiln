@@ -189,13 +189,14 @@ impl KilndClient {
             .map_err(|err| format!("failed to parse /api/bootstrap: {err}"))
     }
 
-    pub fn probe_tray_state(&self) -> TrayDisplayState {
+    pub fn probe_tray_snapshot(&self) -> (TrayDisplayState, Option<String>) {
         match self.fetch_health() {
-            Err(err) => TrayDisplayState::from_probe(Err(&err), None),
+            Err(err) => (TrayDisplayState::from_probe(Err(&err), None), None),
             Ok(health) => {
                 if !health.ok {
-                    return TrayDisplayState::from_probe(Ok(&health), None);
+                    return (TrayDisplayState::from_probe(Ok(&health), None), None);
                 }
+                let daemon_version = health.version.clone();
                 let summary = match self.fetch_bootstrap() {
                     Ok(summary) => Some(summary),
                     Err(err) => {
@@ -203,9 +204,17 @@ impl KilndClient {
                         None
                     }
                 };
-                TrayDisplayState::from_probe(Ok(&health), summary.as_ref())
+                (
+                    TrayDisplayState::from_probe(Ok(&health), summary.as_ref()),
+                    daemon_version,
+                )
             }
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn probe_tray_state(&self) -> TrayDisplayState {
+        self.probe_tray_snapshot().0
     }
 
     pub fn open_sse_stream(&self, last_event_id: Option<&str>) -> Result<SseConnection, String> {

@@ -8,6 +8,7 @@ pub const DEFAULT_KILND_URL: &str = "http://127.0.0.1:4310";
 pub const MAIN_WINDOW_LABEL: &str = "main";
 pub const KILN_BIN_NAME_POSIX: &str = "kiln";
 pub const KILN_BIN_NAME_WINDOWS: &str = "kiln.exe";
+pub const DESKTOP_APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAX_JSON_DEPTH: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,7 +16,6 @@ pub struct KilnHealth {
     pub ok: bool,
     #[allow(dead_code)]
     pub pid: Option<u64>,
-    #[allow(dead_code)]
     pub version: Option<String>,
 }
 
@@ -488,6 +488,49 @@ pub fn format_tray_menu_status(state: &TrayDisplayState) -> String {
             running_count,
             ..
         } => format!("状态：{pending_decisions} 项待决 · {running_count} 个运行中"),
+    }
+}
+
+pub fn format_tray_version_tag(app_version: &str, daemon_version: Option<&str>) -> String {
+    let clean_app = app_version.trim().trim_start_matches('v');
+    let app_label = if clean_app.is_empty() {
+        "unknown"
+    } else {
+        clean_app
+    };
+    match daemon_version
+        .map(|v| v.trim().trim_start_matches('v'))
+        .filter(|v| !v.is_empty())
+    {
+        Some(daemon) if daemon != app_label => format!("App v{app_label} / kilnd v{daemon}"),
+        _ => format!("v{app_label}"),
+    }
+}
+
+pub fn format_tray_menu_status_with_version(
+    state: &TrayDisplayState,
+    app_version: &str,
+    daemon_version: Option<&str>,
+) -> String {
+    format!(
+        "{} · {}",
+        format_tray_menu_status(state),
+        format_tray_version_tag(app_version, daemon_version)
+    )
+}
+
+pub fn format_tray_tooltip_with_version(
+    state: &TrayDisplayState,
+    kilnd_url: &str,
+    app_version: &str,
+    daemon_version: Option<&str>,
+) -> String {
+    let base = format_tray_tooltip(state, kilnd_url);
+    let tag = format_tray_version_tag(app_version, daemon_version);
+    if let Some(rest) = base.strip_prefix("Kiln · ") {
+        format!("Kiln {tag} · {rest}")
+    } else {
+        format!("{base} · {tag}")
     }
 }
 
@@ -1914,6 +1957,28 @@ mod tests {
                 "permission denied".to_string()
             ))
             .contains("permission denied")
+        );
+    }
+
+    #[test]
+    fn formats_tray_version_tags_and_mismatch_warnings() {
+        let idle = TrayDisplayState::Idle {
+            cost_usd: 0.42,
+            task_count: 3,
+        };
+        assert_eq!(format_tray_version_tag("0.0.3", None), "v0.0.3");
+        assert_eq!(format_tray_version_tag("0.0.3", Some("v0.0.3")), "v0.0.3");
+        assert_eq!(
+            format_tray_version_tag("0.0.3", Some("0.0.2")),
+            "App v0.0.3 / kilnd v0.0.2"
+        );
+        assert_eq!(
+            format_tray_menu_status_with_version(&idle, "0.0.3", Some("0.0.3")),
+            "状态：待机（3 个任务 · 累计 $0.42） · v0.0.3"
+        );
+        assert_eq!(
+            format_tray_tooltip_with_version(&idle, DEFAULT_KILND_URL, "0.0.3", Some("0.0.2")),
+            "Kiln App v0.0.3 / kilnd v0.0.2 · 待机（任务 3 个 · 累计 $0.42）— http://127.0.0.1:4310"
         );
     }
 }

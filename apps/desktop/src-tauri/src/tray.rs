@@ -12,9 +12,9 @@ use crate::daemon_client::{
 #[cfg(target_os = "macos")]
 use crate::model::format_tray_title;
 use crate::model::{
-    format_install_cli_menu_label, format_start_menu_label, format_tray_menu_status,
-    format_tray_tooltip, is_start_menu_enabled, CliInstallActionState, NormalizedKilndUrl,
-    TrayDisplayState,
+    format_install_cli_menu_label, format_start_menu_label, format_tray_menu_status_with_version,
+    format_tray_tooltip_with_version, is_start_menu_enabled, CliInstallActionState,
+    NormalizedKilndUrl, TrayDisplayState, DESKTOP_APP_VERSION,
 };
 use crate::window_manager::{destroy_main_window, open_or_focus_main_window};
 use crate::RefreshCoordinator;
@@ -46,9 +46,12 @@ pub fn setup_tray<R: Runtime>(
 ) -> tauri::Result<()> {
     let initial_state = TrayDisplayState::Offline { reason: None };
 
-    let status_item = MenuItemBuilder::with_id(MENU_STATUS, format_tray_menu_status(&initial_state))
-        .enabled(false)
-        .build(app)?;
+    let status_item = MenuItemBuilder::with_id(
+        MENU_STATUS,
+        format_tray_menu_status_with_version(&initial_state, DESKTOP_APP_VERSION, None),
+    )
+    .enabled(false)
+    .build(app)?;
     let open_workbench_item = MenuItemBuilder::with_id(MENU_OPEN_WORKBENCH, "打开工作台")
         .accelerator("CmdOrCtrl+Shift+K")
         .build(app)?;
@@ -105,9 +108,11 @@ pub fn setup_tray<R: Runtime>(
         .icon(tray_icon)
         .menu(&menu)
         .show_menu_on_left_click(true)
-        .tooltip(format_tray_tooltip(
+        .tooltip(format_tray_tooltip_with_version(
             &initial_state,
             &url_for_events.base_url,
+            DESKTOP_APP_VERSION,
+            None,
         ))
         .on_menu_event(move |app_handle, event| {
             handle_menu_event(
@@ -128,7 +133,11 @@ pub fn setup_tray<R: Runtime>(
     Ok(())
 }
 
-pub fn update_tray_display<R: Runtime>(app: &AppHandle<R>, state: &TrayDisplayState) {
+pub fn update_tray_display<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &TrayDisplayState,
+    daemon_version: Option<&str>,
+) {
     let Some(handles) = app.try_state::<TrayMenuHandles<R>>() else {
         return;
     };
@@ -136,14 +145,22 @@ pub fn update_tray_display<R: Runtime>(app: &AppHandle<R>, state: &TrayDisplaySt
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         #[cfg(target_os = "macos")]
         let _ = tray.set_title(Some(format_tray_title(state)));
-        let _ = tray.set_tooltip(Some(format_tray_tooltip(
+        let _ = tray.set_tooltip(Some(format_tray_tooltip_with_version(
             state,
             &handles.kilnd_url.base_url,
+            DESKTOP_APP_VERSION,
+            daemon_version,
         )));
     }
 
     let online = state.is_online();
-    let _ = handles.status_item.set_text(format_tray_menu_status(state));
+    let _ = handles
+        .status_item
+        .set_text(format_tray_menu_status_with_version(
+            state,
+            DESKTOP_APP_VERSION,
+            daemon_version,
+        ));
     let _ = handles.start_item.set_text(format_start_menu_label(state));
     let _ = handles.start_item.set_enabled(is_start_menu_enabled(state));
     let _ = handles.stop_and_quit_item.set_enabled(online);

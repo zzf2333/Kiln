@@ -163,6 +163,7 @@ export type DraftCardWithBrief = DraftCard & {
 };
 
 export interface BootstrapResponse {
+  version?: string;
   tasks: BootstrapTask[];
   pendingDecisions: PendingDecision[];
   drafts: DraftCardWithBrief[];

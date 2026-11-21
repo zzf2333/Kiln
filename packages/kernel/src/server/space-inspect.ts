@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type {
   DiscoveredGitRepo,
@@ -570,6 +571,17 @@ export interface PickLocalDirectoryOptions {
   execFileFn?: PickLocalDirectoryExecFn;
 }
 
+export interface RevealPathResult {
+  ok: true;
+  path: string;
+}
+
+export interface RevealLocalPathOptions {
+  platform?: NodeJS.Platform;
+  homedir?: string;
+  execFileFn?: PickLocalDirectoryExecFn;
+}
+
 function extractExecErrorInfo(err: unknown): {
   code: string | number | undefined;
   message: string;
@@ -726,6 +738,115 @@ export async function pickLocalDirectory(
   throw new ServerHttpError(501, {
     error: "directory_picker_unavailable",
     message: `当前平台 (${platform}) 暂不支持系统文件夹选择器，请从扫描列表选择或手动输入路径`,
+  });
+}
+
+function resolveRevealTargetPath(rawPath: string, homedir: string): string {
+  const trimmed = rawPath.trim();
+  if (!trimmed || trimmed.includes("\0")) {
+    throw new ServerHttpError(400, {
+      error: "invalid_path",
+      message: "Path must be a non-empty local path",
+    });
+  }
+
+  let candidate = trimmed;
+  if (/^file:\/\//i.test(candidate)) {
+    const hashIdx = candidate.indexOf("#");
+    const noFrag = hashIdx >= 0 ? candidate.slice(0, hashIdx) : candidate;
+    const normalizedFileUrl = noFrag.replace(/^file:\/\/localhost\//i, "file:///");
+    try {
+      candidate = fileURLToPath(normalizedFileUrl);
+    } catch {
+      throw new ServerHttpError(400, {
+        error: "invalid_path",
+        message: "Invalid or non-local file:// URL",
+      });
+    }
+  } else if (candidate === "~") {
+    candidate = homedir;
+  } else if (candidate.startsWith("~/") || candidate.startsWith("~\\")) {
+    candidate = path.join(homedir, candidate.slice(2));
+  }
+
+  if (!path.isAbsolute(candidate)) {
+    throw new ServerHttpError(400, {
+      error: "invalid_path",
+      message: "Path must be an absolute local path",
+    });
+  }
+
+  const resolved = path.resolve(candidate);
+  if (!fs.existsSync(resolved)) {
+    throw new ServerHttpError(404, {
+      error: "path_not_found",
+      path: resolved,
+      message: `Local path does not exist: ${resolved}`,
+    });
+  }
+  return resolved;
+}
+
+/**
+ * Reveals an existing local file or directory in the host file manager (Finder/Explorer/xdg-open)
+ * without executing its contents. Strictly restricted to the local listener.
+ */
+export async function revealLocalPath(
+  rawPath: string,
+  options: RevealLocalPathOptions = {},
+): Promise<RevealPathResult> {
+  const homedir = options.homedir ?? os.homedir();
+  const resolved = resolveRevealTargetPath(rawPath, homedir);
+  const platform = options.platform ?? process.platform;
+  const execFn: PickLocalDirectoryExecFn =
+    options.execFileFn ??
+    (async (file, args, opts) => {
+      const res = await execFileAsync(file, [...args], {
+        encoding: "utf8",
+        ...opts,
+      });
+      return {
+        stdout: String(res.stdout ?? ""),
+        stderr: String(res.stderr ?? ""),
+      };
+    });
+
+  try {
+    if (platform === "darwin") {
+      await execFn("/usr/bin/open", ["-R", resolved], {
+        timeout: 10_000,
+        encoding: "utf8",
+      });
+      return { ok: true, path: resolved };
+    }
+    if (platform === "win32") {
+      await execFn("explorer.exe", [`/select,${resolved}`], {
+        timeout: 10_000,
+        windowsHide: true,
+        encoding: "utf8",
+      });
+      return { ok: true, path: resolved };
+    }
+    if (platform === "linux") {
+      const stat = fs.statSync(resolved);
+      const target = stat.isDirectory() ? resolved : path.dirname(resolved);
+      await execFn("xdg-open", [target], {
+        timeout: 10_000,
+        encoding: "utf8",
+      });
+      return { ok: true, path: resolved };
+    }
+  } catch (err) {
+    const info = extractExecErrorInfo(err);
+    throw new ServerHttpError(500, {
+      error: "reveal_path_failed",
+      message: `无法在文件管理器中定位路径：${info.message}`,
+    });
+  }
+
+  throw new ServerHttpError(501, {
+    error: "reveal_path_unavailable",
+    message: `当前平台 (${platform}) 暂不支持在文件管理器中定位路径`,
   });
 }
 

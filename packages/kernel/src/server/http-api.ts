@@ -95,6 +95,7 @@ import {
   discoverLocalGitRepos,
   inspectGitSpacePath,
   pickLocalDirectory,
+  revealLocalPath,
   validateCommitWorkspace,
 } from "./space-inspect.js";
 import type { SseHub } from "./sse.js";
@@ -122,7 +123,8 @@ function isLocalOnlyRemoteAdminPath(rawPath: string): boolean {
     lower.startsWith("/api/settings/remote/") ||
     lower === "/api/remote" ||
     lower.startsWith("/api/remote/") ||
-    lower === "/api/spaces/pick-directory"
+    lower === "/api/spaces/pick-directory" ||
+    lower === "/api/system/reveal-path"
   );
 }
 
@@ -147,6 +149,7 @@ export interface HttpApiDependencies {
   inspectTailscale?: (remotePort: number) => Promise<TailscaleStatusResponse>;
   discoverSpaces?: () => Promise<DiscoverSpacesResponse>;
   pickDirectory?: () => Promise<PickDirectoryResponse>;
+  revealPath?: (targetPath: string) => Promise<{ ok: true; path: string }>;
   syncPricing?: (input: SyncPricingRequest) => Promise<SyncPricingResponse>;
   onTaskQueued?: (taskId: string) => void;
   onTaskPaused?: (taskId: string) => Promise<void> | void;
@@ -875,6 +878,22 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     return c.json(result);
   });
 
+  app.post("/api/system/reveal-path", async (c) => {
+    if (listenerMode !== "local") {
+      throw new ServerHttpError(403, {
+        error: "local_only_endpoint",
+        path: c.req.path,
+        message: "Revealing local paths is restricted to the local Kiln port",
+      });
+    }
+    const rawBody = await readJsonBodyStrict(c);
+    const body = z.object({ path: z.string().min(1) }).parse(rawBody);
+    const result = deps.revealPath
+      ? await deps.revealPath(body.path)
+      : await revealLocalPath(body.path);
+    return c.json(result);
+  });
+
   app.post("/api/spaces/inspect", async (c) => {
     const rawBody = await readJsonBodyStrict(c);
     const body = InspectSpaceRequestSchema.parse(rawBody);
@@ -1042,6 +1061,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     const liveSnap = rateTracker ? rateTracker.snapshot() : { tokPerSec: 0, rates: {} };
 
     return c.json({
+      version,
       tasks,
       pendingDecisions: pendingDecisions.listAll(),
       drafts: store.listDrafts().map(serializeDraftWithBrief),

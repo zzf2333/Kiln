@@ -100,6 +100,7 @@ export interface KilndServerOptions {
   onShutdownRequested?: () => Promise<void> | void;
   discoverSpaces?: () => Promise<DiscoverSpacesResponse>;
   pickDirectory?: () => Promise<PickDirectoryResponse>;
+  revealPath?: (targetPath: string) => Promise<{ ok: true; path: string }>;
   pricingFetchImpl?: typeof fetch;
   pricingCacheTtlMs?: number;
   pricingFetchTimeoutMs?: number;
@@ -333,6 +334,9 @@ export class KilndServer {
         : {}),
       ...(options.pickDirectory !== undefined
         ? { pickDirectory: options.pickDirectory }
+        : {}),
+      ...(options.revealPath !== undefined
+        ? { revealPath: options.revealPath }
         : {}),
       syncPricing: (input) => this.syncModelPricing(input),
       ...(options.publicDir !== undefined ? { publicDir: options.publicDir } : {}),

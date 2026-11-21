@@ -949,6 +949,19 @@ export function SettingsView() {
 
   const renderConnTab = () => (
     <>
+      <div class="setting-row">
+        <div>
+          <span>Kiln 版本与运行模式</span>
+          <p>
+            当前接入：
+            {state.authMode === "remote" ? "远程认证访问" : "本机回环 / 桌面端"} · 与运行中 kilnd 实时同步
+          </p>
+        </div>
+        <span class="chip mono" style={{ justifySelf: "end" }}>
+          {state.daemonVersion ? `v${state.daemonVersion}` : "未获取"}
+        </span>
+      </div>
+
       {backends.length > 0 ? (
         backends.map((b, idx) => (
           <div key={b.backendId ?? b.id ?? idx} class="setting-row">

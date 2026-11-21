@@ -160,11 +160,14 @@ export {
   discoverLocalGitRepos,
   inspectGitSpacePath,
   pickLocalDirectory,
+  revealLocalPath,
   validateCommitWorkspace,
   type DiscoverLocalGitReposOptions,
   type InspectedSpaceInfo,
   type PickLocalDirectoryExecFn,
   type PickLocalDirectoryOptions,
+  type RevealLocalPathOptions,
+  type RevealPathResult,
 } from "./space-inspect.js";
 export {
   SseHub,

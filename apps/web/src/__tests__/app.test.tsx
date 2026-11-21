@@ -3368,4 +3368,27 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     expect(String(sentCommit?.brief_markdown)).toContain("## 3. 选定落地方案与关键取舍");
     expect(String(sentCommit?.brief_markdown)).toContain("人工追加：单次上限 10000 条。");
   });
+
+  it("renders daemon version pill in sidebar brand and Settings connection tab", async () => {
+    fetchMock.mockImplementation(async (url) => {
+      if (url === "/api/bootstrap") {
+        return jsonResponse(makeBaseBootstrap({ version: "0.0.3" }));
+      }
+      return jsonResponse({});
+    });
+    render(<App />);
+
+    const brandVer = await waitFor(() => {
+      const el = document.querySelector(".brand-ver");
+      expect(el?.textContent?.trim()).toBe("v0.0.3");
+      return el!;
+    });
+    expect(brandVer.getAttribute("title")).toBe("Kiln v0.0.3");
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "连接与底座" }));
+
+    expect(screen.getByText("Kiln 版本与运行模式")).toBeTruthy();
+    expect(screen.getAllByText("v0.0.3").length).toBeGreaterThanOrEqual(2);
+  });
 });

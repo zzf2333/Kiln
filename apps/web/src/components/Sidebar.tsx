@@ -47,6 +47,11 @@ export function Sidebar() {
             <BrandIcon />
           </span>
           <span class="brand-name">Kiln</span>
+          {state.daemonVersion ? (
+            <span class="brand-ver mono" title={`Kiln v${state.daemonVersion}`}>
+              v{state.daemonVersion}
+            </span>
+          ) : null}
         </div>
 
         <button

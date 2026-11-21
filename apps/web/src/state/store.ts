@@ -35,6 +35,7 @@ import {
   pickSpaceDirectory as apiPickSpaceDirectory,
   restoreHostBackup as apiRestoreHostBackup,
   resumeTask as apiResumeTask,
+  revealLocalPath as apiRevealLocalPath,
   sendIntakeChat as apiSendIntakeChat,
   sendResolveChat as apiSendResolveChat,
   setUnauthorizedHandler,
@@ -130,6 +131,7 @@ export interface KilnStoreState {
   bootstrapping: boolean;
   bootstrapLoaded: boolean;
   bootstrapError: string | null;
+  daemonVersion: string | null;
 
   authChecked: boolean;
   authMode: AuthMode;
@@ -578,6 +580,7 @@ export class KilnWebStore {
       bootstrapping: true,
       bootstrapLoaded: false,
       bootstrapError: null,
+      daemonVersion: null,
 
       authChecked: false,
       authMode: "local",
@@ -762,6 +765,7 @@ export class KilnWebStore {
       bootstrapping: false,
       bootstrapLoaded: false,
       bootstrapError: null,
+      daemonVersion: null,
       networkOffline: false,
       retryingConnection: false,
       navOpen: false,
@@ -1084,6 +1088,7 @@ export class KilnWebStore {
           bootstrapping: false,
           bootstrapLoaded: true,
           bootstrapError: null,
+          daemonVersion: data.version ?? null,
           lastConnectedAt: new Date().toISOString(),
           ...(this.state.sseStatus !== "reconnecting"
             ? { networkOffline: false }
@@ -2271,6 +2276,17 @@ export class KilnWebStore {
       return null;
     } finally {
       this.setState({ pickDirBusy: false });
+    }
+  }
+
+  async revealLocalPath(targetPath: string): Promise<void> {
+    try {
+      await apiRevealLocalPath(targetPath);
+      this.showToast("已在文件管理器中定位");
+    } catch (err) {
+      this.showToast(
+        err instanceof Error ? err.message : "在文件管理器中定位路径失败",
+      );
     }
   }
 

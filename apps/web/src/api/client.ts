@@ -454,6 +454,15 @@ export async function pickSpaceDirectory(): Promise<PickDirectoryResponse> {
   });
 }
 
+export async function revealLocalPath(
+  targetPath: string,
+): Promise<{ ok: true; path: string }> {
+  return await requestJson<{ ok: true; path: string }>("/api/system/reveal-path", {
+    method: "POST",
+    body: JSON.stringify({ path: targetPath }),
+  });
+}
+
 export async function upsertSpace(
   spaceId: string,
   payload: UpsertSpacePayload,
