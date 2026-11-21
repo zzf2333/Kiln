@@ -13,6 +13,7 @@ export function SpaceModal() {
     authMode,
     discoveredRepos,
     discoverBusy,
+    discoverLoaded,
     discoverError,
     pickDirBusy,
   } = state;
@@ -260,7 +261,7 @@ export function SpaceModal() {
                 <p class="warn-line" style={{ marginTop: "6px" }}>
                   {discoverError}
                 </p>
-              ) : discoverBusy && discoveredRepos.length === 0 ? (
+              ) : (discoverBusy || !discoverLoaded) && discoveredRepos.length === 0 ? (
                 <div class="discover-empty">
                   正在扫描常见代码目录中的 Git 项目…
                 </div>

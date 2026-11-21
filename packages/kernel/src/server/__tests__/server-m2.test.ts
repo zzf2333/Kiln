@@ -1274,6 +1274,60 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     expect(piIntakeSpecs[0]!.mcpServers).toBeUndefined();
     expect(piIntakeSpecs[0]!.systemPrompt).toContain("无 MCP 模式");
 
+    // 4b. Non-MCP intake normalizes string scope, blank strings, and preserves embedded code fences inside brief_markdown
+    fakeBackend.enqueueScript(
+      [
+        {
+          kind: "message",
+          text: [
+            "这是实机产物样式的产品方案。",
+            "```kiln-draft-patch",
+            JSON.stringify({
+              title: "轻量命令行清理工具",
+              open_questions: ["默认移入废纸篓还是永久删除？"],
+              contract: {
+                goal: "",
+                end: "完成只读扫描与受控清理",
+                accept_cmd: "python3 -m unittest discover -s tests -v",
+                scope: "独立沙盒内的轻量 CLI 工具（scan/clean）及端到端测试",
+              },
+              brief_markdown: "## 1. 目标\n```sh\npython3 -m unittest\n```\n- 只读扫描\n",
+            }),
+            "```",
+          ].join("\n"),
+          delta: false,
+        },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "intake" },
+    );
+
+    const piTurn3 = await server.app.request(
+      new Request("http://127.0.0.1/api/drafts/d-nonmcp-1/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "输出结构化方案与字符串范围" }),
+      }),
+    );
+    expect(piTurn3.status).toBe(200);
+    const piTurn3Json = (await piTurn3.json()) as {
+      reply: { text: string };
+      draft: {
+        title: string;
+        open_questions?: string[];
+        contract: { goal?: string; end?: string; accept_cmd?: string; scope?: string[] };
+      };
+    };
+    expect(piTurn3Json.reply.text).toBe("这是实机产物样式的产品方案。");
+    expect(piTurn3Json.reply.text).not.toContain("kiln-draft-patch");
+    expect(piTurn3Json.draft.title).toBe("轻量命令行清理工具");
+    expect(piTurn3Json.draft.open_questions).toEqual(["默认移入废纸篓还是永久删除？"]);
+    expect(piTurn3Json.draft.contract.goal).toBeUndefined();
+    expect(piTurn3Json.draft.contract.scope).toEqual([
+      "独立沙盒内的轻量 CLI 工具（scan/clean）及端到端测试",
+    ]);
+    expect(server.store.readDraftBrief("d-nonmcp-1")).toContain("```sh\npython3 -m unittest\n```");
+
     // 5. Pi non-MCP resolver applies kiln-contract-patch, bumps contract_version & rebinds PendingDecision
     server.stateMachine.createTask(
       {

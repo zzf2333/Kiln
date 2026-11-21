@@ -53,20 +53,45 @@ const LAST_BACKEND_AGENTS_CACHE = new WeakMap<
   { agents: AgentSnapshotEntry[]; updatedAt: number }
 >();
 
+const optionalTrimmedString = z.preprocess((val) => {
+  if (val === undefined || val === null) return undefined;
+  if (typeof val === "string") {
+    const trimmed = val.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  return val;
+}, z.string().min(1).optional());
+
+const optionalStringList = z.preprocess((val) => {
+  if (val === undefined || val === null) return undefined;
+  if (typeof val === "string") {
+    return val
+      .split(/\r?\n/)
+      .map((line) => line.trim().replace(/^[-*•]\s+/, "").trim())
+      .filter((line) => line.length > 0);
+  }
+  if (Array.isArray(val)) {
+    return val
+      .map((item) => (typeof item === "string" ? item.trim() : item))
+      .filter((item) => typeof item !== "string" || item.length > 0);
+  }
+  return val;
+}, z.array(z.string().min(1)).optional());
+
 const NonMcpDraftPatchSchema = z.object({
-  title: z.string().min(1).optional(),
+  title: optionalTrimmedString,
   priority: PrioritySchema.optional(),
   track: z.enum(["L1", "L2"]).optional(),
   workspace_mode: z.enum(["git_worktree", "host_scoped", "scratch_dir"]).optional(),
-  depends_on: z.array(z.string().min(1)).optional(),
-  open_questions: z.array(z.string().min(1)).optional(),
+  depends_on: optionalStringList,
+  open_questions: optionalStringList,
   brief_markdown: z.string().optional(),
   contract: z
     .object({
-      goal: z.string().min(1).optional(),
-      end: z.string().min(1).optional(),
-      accept_cmd: z.string().min(1).optional(),
-      scope: z.array(z.string().min(1)).optional(),
+      goal: optionalTrimmedString,
+      end: optionalTrimmedString,
+      accept_cmd: optionalTrimmedString,
+      scope: optionalStringList,
     })
     .optional(),
 });
@@ -74,11 +99,11 @@ const NonMcpDraftPatchSchema = z.object({
 const NonMcpContractPatchSchema = z.object({
   contract: z
     .object({
-      goal: z.string().min(1).optional(),
-      end: z.string().min(1).optional(),
-      accept_cmd: z.string().min(1).optional(),
-      accept_files_hash: z.string().min(1).optional(),
-      scope: z.array(z.string().min(1)).optional(),
+      goal: optionalTrimmedString,
+      end: optionalTrimmedString,
+      accept_cmd: optionalTrimmedString,
+      accept_files_hash: optionalTrimmedString,
+      scope: optionalStringList,
     })
     .optional(),
   affected_stages: z.array(StageIdSchema).min(1),
@@ -89,14 +114,28 @@ function extractLabeledJsonPatchBlock(
   rawText: string,
   label: string,
 ): { displayText: string; rawJson: string | null } {
-  const pattern = new RegExp("```" + label + "[ \\t]*\\r?\\n?([\\s\\S]*?)```", "gi");
-  const matches = Array.from(rawText.matchAll(pattern));
-  if (matches.length === 0) {
+  const anchoredPattern = new RegExp(
+    "(^|\\r?\\n)[ \\t]*```" + label + "[ \\t]*\\r?\\n([\\s\\S]*?)\\r?\\n[ \\t]*```[ \\t]*(?=\\r?\\n|$)",
+    "gi",
+  );
+  const anchoredMatches = Array.from(rawText.matchAll(anchoredPattern));
+  if (anchoredMatches.length > 0) {
+    const rawJson = (anchoredMatches[anchoredMatches.length - 1]?.[2] ?? "").trim();
+    const displayText = rawText
+      .replace(anchoredPattern, "$1")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    return { displayText, rawJson };
+  }
+
+  const fallbackPattern = new RegExp("```" + label + "[ \\t]*\\r?\\n?([\\s\\S]*?)```", "gi");
+  const fallbackMatches = Array.from(rawText.matchAll(fallbackPattern));
+  if (fallbackMatches.length === 0) {
     return { displayText: rawText, rawJson: null };
   }
-  const rawJson = (matches[matches.length - 1]?.[1] ?? "").trim();
+  const rawJson = (fallbackMatches[fallbackMatches.length - 1]?.[1] ?? "").trim();
   const displayText = rawText
-    .replace(pattern, "")
+    .replace(fallbackPattern, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   return { displayText, rawJson };
@@ -1145,7 +1184,7 @@ export class KilnChatEngine {
       ? `你拥有 kiln-mcp 工具权限（wb_list_tasks, wb_read_ledger, wb_plan），请每轮及时调用 wb_plan(mode: "upsert_draft") 将已确定的 title、contract（goal/end/accept_cmd/scope）、depends_on、open_questions 与完整 brief_markdown 同步写入草稿与 BRIEF.md。`
       : [
           `当前对话运行在无 MCP 模式：已将项目空间、在途任务、长期账本、当前方案与草稿字段注入上下文，无需调用 kiln-mcp 工具。`,
-          `如本次对话确认或变更了任何立项字段或产品方案，请在正常回复末尾附一个 \`\`\`kiln-draft-patch\\n{...}\\n\`\`\` JSON 代码块（可选字段：title、priority、track ("L1"|"L2")、workspace_mode、depends_on、open_questions (string[])、brief_markdown (完整 Markdown 设计方案)、contract: { goal, end, accept_cmd, scope }；严禁更改 space 或直接建卡）。系统会自动剥离该代码块并同步到右侧「产品方案」与立项单。`,
+          `如本次对话确认或变更了任何立项字段或产品方案，请在正常回复末尾附一个 \`\`\`kiln-draft-patch\\n{...}\\n\`\`\` JSON 代码块（可选字段：title (string)、priority ("P0"|"P1"|"P2"|"P3")、track ("L1"|"L2")、workspace_mode ("git_worktree"|"host_scoped"|"scratch_dir")、depends_on (string[])、open_questions (string[])、brief_markdown (string，完整 Markdown 设计方案)、contract: { goal (string), end (string), accept_cmd (string), scope (string[]) }；严禁更改 space 或直接建卡）。系统会自动剥离该代码块并同步到右侧「产品方案」与立项单。`,
         ].join("\n");
 
     return [
@@ -1381,6 +1420,9 @@ export class KilnChatEngine {
               fallbackDraft: this.store.readDraft(safeDraftId) ?? draft,
               rawJson: extracted.rawJson,
             });
+            const detailSuffix = patchRes.errorDetail
+              ? `（${patchRes.errorDetail.replace(/\s+/g, " ").trim().slice(0, 160)}）`
+              : "";
             toolMessages.push({
               id: `msg-${randomUUID().slice(0, 8)}`,
               role: "tool",
@@ -1391,7 +1433,7 @@ export class KilnChatEngine {
                 ? patchRes.updatedFields.length > 0
                   ? `draft_patch · 已更新草稿字段：${patchRes.updatedFields.join(", ")}`
                   : "draft_patch · 已同步立项单草稿"
-                : "draft_patch · 自动回填格式校验失败，请直接在右侧核对填写",
+                : `draft_patch · 自动回填格式校验失败${detailSuffix}，请直接在右侧核对填写`,
               at: new Date().toISOString(),
             });
             if (!replyText) {
