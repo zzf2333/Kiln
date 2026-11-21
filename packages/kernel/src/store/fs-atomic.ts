@@ -11,6 +11,16 @@ export function ensureDir(dirPath: string): void {
   fs.mkdirSync(dirPath, { recursive: true });
 }
 
+/**
+ * Resolves the canonical filesystem path, expanding Windows 8.3 short names (e.g. `RUNNER~1`)
+ * via `fs.realpathSync.native` so Node paths match `git rev-parse --show-toplevel` on NTFS.
+ */
+export function realpathCanonical(targetPath: string): string {
+  return typeof fs.realpathSync.native === "function"
+    ? fs.realpathSync.native(targetPath)
+    : fs.realpathSync(targetPath);
+}
+
 function writeAllSync(fd: number, buf: Buffer, targetDesc: string): void {
   let offset = 0;
   while (offset < buf.length) {

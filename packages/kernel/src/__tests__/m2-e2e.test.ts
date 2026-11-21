@@ -17,7 +17,7 @@ import {
 import { FakeBackend } from "../backend/index.js";
 import { computeFrozenSnapshot } from "../gate/index.js";
 import { KilndServer } from "../server/index.js";
-import { resolveDefaultIpcPath, writeFileAtomic, writeYamlAtomic } from "../store/index.js";
+import { realpathCanonical, resolveDefaultIpcPath, writeFileAtomic, writeYamlAtomic } from "../store/index.js";
 
 function git(args: readonly string[], cwd?: string): string {
   return execFileSync("git", [...args], {
@@ -1029,7 +1029,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     const hostDir = makeTempDir("kiln-m2-s5-host-");
     const targetFile = path.join(hostDir, "app.conf");
     fs.writeFileSync(targetFile, "PORT=3000\n");
-    const canonicalTarget = fs.realpathSync(targetFile);
+    const canonicalTarget = realpathCanonical(targetFile);
 
     const fakeBackend = new FakeBackend();
     const server = new KilndServer({
@@ -1738,9 +1738,9 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     fs.writeFileSync(appConf, "PORT=1000\n");
     fs.writeFileSync(otherConf, "MODE=old\n");
     fs.writeFileSync(okConf, "OK=0\n");
-    const canonicalApp = fs.realpathSync(appConf);
-    const canonicalOther = fs.realpathSync(otherConf);
-    const canonicalOk = fs.realpathSync(okConf);
+    const canonicalApp = realpathCanonical(appConf);
+    const canonicalOther = realpathCanonical(otherConf);
+    const canonicalOk = realpathCanonical(okConf);
 
     const fakeBackend = new FakeBackend();
     let reworkStep = 0;

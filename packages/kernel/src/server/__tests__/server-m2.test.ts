@@ -591,7 +591,7 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     expect(detailJson.hostStagedDiffs).toHaveLength(4);
 
     const modifiedDiff = detailJson.hostStagedDiffs.find((d) =>
-      d.targetPath.endsWith("/service.conf"),
+      d.targetPath.replace(/\\/g, "/").endsWith("/service.conf"),
     )!;
     expect(modifiedDiff.existedBefore).toBe(true);
     expect(modifiedDiff.preSha256).toMatch(/^sha256:/);
@@ -600,19 +600,19 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     expect(modifiedDiff.truncated).toBe(false);
 
     const addedDiff = detailJson.hostStagedDiffs.find((d) =>
-      d.targetPath.endsWith("/added.conf"),
+      d.targetPath.replace(/\\/g, "/").endsWith("/added.conf"),
     )!;
     expect(addedDiff.existedBefore).toBe(false);
     expect(addedDiff.preSha256).toBeNull();
     expect(addedDiff.diff).toContain("+enabled=true");
 
     const binDiff = detailJson.hostStagedDiffs.find((d) =>
-      d.targetPath.endsWith("/blob.bin"),
+      d.targetPath.replace(/\\/g, "/").endsWith("/blob.bin"),
     )!;
     expect(binDiff.diff).toBe("[binary file diff omitted]");
 
     const largeDiff = detailJson.hostStagedDiffs.find((d) =>
-      d.targetPath.endsWith("/large.log"),
+      d.targetPath.replace(/\\/g, "/").endsWith("/large.log"),
     )!;
     expect(largeDiff.truncated).toBe(true);
   });

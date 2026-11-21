@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Context } from "hono";
+import { realpathCanonical } from "../store/fs-atomic.js";
 
 const MIME_TYPES: Readonly<Record<string, string>> = {
   ".html": "text/html; charset=utf-8",
@@ -161,7 +162,7 @@ function serveVerifiedFile(
 
   let canonicalTarget: string;
   try {
-    canonicalTarget = fs.realpathSync(candidateFilePath);
+    canonicalTarget = realpathCanonical(candidateFilePath);
   } catch (err) {
     if (lstat.isSymbolicLink()) {
       return new Response("Forbidden", { status: 403 });
@@ -316,7 +317,7 @@ export function createStaticFilesHandler(
 
     let canonicalPublicDir: string;
     try {
-      canonicalPublicDir = fs.realpathSync(publicDir);
+      canonicalPublicDir = realpathCanonical(publicDir);
       if (!fs.statSync(canonicalPublicDir).isDirectory()) {
         if (embeddedAssets && embeddedAssets.size > 0) {
           return serveFromEmbeddedAssets(c, method, parsed.segments, embeddedAssets);
@@ -348,7 +349,7 @@ export function createStaticFilesHandler(
       try {
         const lstat = fs.lstatSync(targetPath);
         isSymlink = lstat.isSymbolicLink();
-        const canonicalCandidate = fs.realpathSync(targetPath);
+        const canonicalCandidate = realpathCanonical(targetPath);
         if (!isInsideCanonicalDir(canonicalCandidate, canonicalPublicDir)) {
           return new Response("Forbidden", { status: 403 });
         }

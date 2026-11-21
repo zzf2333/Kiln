@@ -10,7 +10,7 @@ import {
   type SpaceConfig,
   type TaskCard,
 } from "@kiln/protocol";
-import { KilnStore, readYamlValidated, writeFileAtomic } from "../../store/index.js";
+import { KilnStore, readYamlValidated, realpathCanonical, writeFileAtomic } from "../../store/index.js";
 import { evaluateWorkerStageOutcome } from "../../state/index.js";
 import {
   HostBackupManifestSchema,
@@ -550,17 +550,44 @@ describe("command-runner isolation & process group kill", () => {
     // runIsolatedCommand under platform="win32" invokes injectable taskkill on timeout
     const cwd = makeTempDir("kiln-cmd-win-taskkill-");
     const sleeper = path.join(cwd, "sleep.cjs");
-    fs.writeFileSync(sleeper, "setInterval(() => {}, 1000);\n");
+    const sleeperPidFile = path.join(cwd, "sleeper.pid");
+    fs.writeFileSync(
+      sleeper,
+      `require("node:fs").writeFileSync(${JSON.stringify(sleeperPidFile)}, String(process.pid)); setInterval(() => {}, 1000);\n`,
+    );
     const winKills: Array<{ command: string; args: readonly string[]; windowsHide: boolean }> = [];
     const winRes = await runIsolatedCommand(
       `${JSON.stringify(process.execPath)} ${JSON.stringify(sleeper)}`,
       {
         cwd,
-        timeoutMs: 150,
+        timeoutMs: 400,
         platform: "win32",
         execTaskkill: async (command, args, opts) => {
           winKills.push({ command, args, windowsHide: opts.windowsHide });
           const targetPid = Number(args[1]);
+          if (process.platform === "win32") {
+            if (Number.isInteger(targetPid) && targetPid > 0) {
+              try {
+                execFileSync(command, [...args], {
+                  windowsHide: opts.windowsHide,
+                  stdio: "ignore",
+                });
+              } catch {
+                // Ignore if already exited.
+              }
+            }
+            return;
+          }
+          if (fs.existsSync(sleeperPidFile)) {
+            const sleeperPid = Number(fs.readFileSync(sleeperPidFile, "utf8").trim());
+            if (Number.isInteger(sleeperPid) && sleeperPid > 0) {
+              try {
+                process.kill(sleeperPid, "SIGKILL");
+              } catch {
+                // Ignore if already exited.
+              }
+            }
+          }
           if (Number.isInteger(targetPid) && targetPid > 0) {
             try {
               process.kill(targetPid, "SIGKILL");
@@ -742,7 +769,7 @@ describe("host_scoped two-stage staging, locking, rollback, and 409 hash conflic
     const scope = [path.join(allowedDir, "**")];
 
     const canonicalNew = resolveCanonicalHostTarget(path.join(allowedDir, "sub", "new.conf"));
-    expect(canonicalNew).toBe(path.join(fs.realpathSync(allowedDir), "sub", "new.conf"));
+    expect(canonicalNew).toBe(path.join(realpathCanonical(allowedDir), "sub", "new.conf"));
     expect(isHostTargetWithinScope(canonicalNew, scope)).toBe(true);
 
     const canonicalEscape = resolveCanonicalHostTarget(symlinkToOutside);
@@ -1009,29 +1036,31 @@ describe("host_scoped two-stage staging, locking, rollback, and 409 hash conflic
       const diffs = buildHostStagedDiffs(store, card.id);
       expect(diffs).toHaveLength(5);
 
-      const modEntry = diffs.find((d) => d.targetPath === fs.realpathSync(modTarget))!;
+      const modEntry = diffs.find((d) => d.targetPath === realpathCanonical(modTarget))!;
       expect(modEntry.existedBefore).toBe(true);
       expect(modEntry.preSha256).toMatch(/^sha256:/);
       expect(modEntry.truncated).toBe(false);
       expect(modEntry.diff).toContain("-mode=before");
       expect(modEntry.diff).toContain("+mode=after");
 
-      const newEntry = diffs.find((d) => d.targetPath.endsWith("/new.conf"))!;
+      const newEntry = diffs.find((d) =>
+        d.targetPath.replace(/\\/g, "/").endsWith("/new.conf"),
+      )!;
       expect(newEntry.existedBefore).toBe(false);
       expect(newEntry.preSha256).toBeNull();
       expect(newEntry.truncated).toBe(false);
       expect(newEntry.diff).toContain("+created=yes");
       expect(newEntry.diff).toContain("+line2=ok");
 
-      const binEntry = diffs.find((d) => d.targetPath === fs.realpathSync(binTarget))!;
+      const binEntry = diffs.find((d) => d.targetPath === realpathCanonical(binTarget))!;
       expect(binEntry.diff).toBe("[binary file diff omitted]");
       expect(binEntry.truncated).toBe(false);
 
-      const manyLinesEntry = diffs.find((d) => d.targetPath === fs.realpathSync(largeLinesTarget))!;
+      const manyLinesEntry = diffs.find((d) => d.targetPath === realpathCanonical(largeLinesTarget))!;
       expect(manyLinesEntry.truncated).toBe(true);
       expect(manyLinesEntry.diff.split("\n").length).toBeLessThanOrEqual(200);
 
-      const hugeBytesEntry = diffs.find((d) => d.targetPath === fs.realpathSync(largeBytesTarget))!;
+      const hugeBytesEntry = diffs.find((d) => d.targetPath === realpathCanonical(largeBytesTarget))!;
       expect(hugeBytesEntry.truncated).toBe(true);
       expect(hugeBytesEntry.diff.split("\n").length).toBeLessThanOrEqual(200);
 
@@ -1796,7 +1825,7 @@ describe("runVerificationGate end-to-end", () => {
       if (process.platform !== "win32") {
         fs.chmodSync(secretConf, 0o600);
       }
-      const canonicalSecret = fs.realpathSync(secretConf);
+      const canonicalSecret = realpathCanonical(secretConf);
 
       const hostModeCard = makeTaskCard({
         id: "t-host-mode",
@@ -1919,7 +1948,7 @@ describe("runVerificationGate end-to-end", () => {
     const hostDir = makeTempDir("kiln-host-neg-");
     const targetFile = path.join(hostDir, "good.conf");
     fs.writeFileSync(targetFile, "ok=1\n");
-    const canonicalTarget = fs.realpathSync(targetFile);
+    const canonicalTarget = realpathCanonical(targetFile);
 
     const store = new KilnStore({ kilnHome });
     try {
@@ -2027,7 +2056,7 @@ describe("runVerificationGate end-to-end", () => {
       // 5. Existing manifest MUST still reject extra unmanifested files placed in staged/
       const partialTarget = path.join(hostDir, "mapped.conf");
       fs.writeFileSync(partialTarget, "a=1\n");
-      const canonicalMapped = fs.realpathSync(partialTarget);
+      const canonicalMapped = realpathCanonical(partialTarget);
       const partialCard = makeTaskCard({
         id: "t-host-stray-staged",
         workspace_mode: "host_scoped",

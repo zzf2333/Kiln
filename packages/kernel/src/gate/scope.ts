@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { realpathCanonical } from "../store/fs-atomic.js";
 
 export interface ScopeCheckResult {
   ok: boolean;
@@ -402,7 +403,7 @@ export function computeFrozenSnapshot(
   if (!fs.existsSync(rootDir)) {
     throw new Error(`Frozen snapshot root directory does not exist: ${rootDir}`);
   }
-  const canonicalRoot = fs.realpathSync(rootDir);
+  const canonicalRoot = realpathCanonical(rootDir);
   if (!fs.statSync(canonicalRoot).isDirectory()) {
     throw new Error(`Frozen snapshot root is not a directory: ${rootDir}`);
   }
@@ -430,7 +431,7 @@ export function computeFrozenSnapshot(
       if (lstat.isSymbolicLink()) {
         let resolved: string;
         try {
-          resolved = fs.realpathSync(absPath);
+          resolved = realpathCanonical(absPath);
         } catch {
           throw new Error(`Frozen file "${relPath}" is a dangling symlink`);
         }

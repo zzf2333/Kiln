@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { RunMeta, TaskCard } from "@kiln/protocol";
 import { stageHostScopedChanges } from "../../gate/index.js";
-import { KilnStore, writeFileAtomic } from "../index.js";
+import { KilnStore, realpathCanonical, writeFileAtomic } from "../index.js";
 
 function makeTempHome(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "kiln-rebuild-test-"));
@@ -386,7 +386,7 @@ describe("KilnStore disk rebuild after deleting index.sqlite", () => {
     try {
       const hostTarget = path.join(hostRoot, "settings.conf");
       fs.writeFileSync(hostTarget, "original=1\n", "utf8");
-      const canonicalHostTarget = fs.realpathSync(hostTarget);
+      const canonicalHostTarget = realpathCanonical(hostTarget);
 
       const store1 = new KilnStore({ kilnHome });
       store1.createTask(

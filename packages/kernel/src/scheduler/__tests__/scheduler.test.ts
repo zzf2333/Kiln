@@ -1507,4 +1507,87 @@ describe("KilnScheduler", () => {
     expect(dispatched).toEqual(["t-fast-expiry"]);
     expect(result.nextCooldownWakeAtMs).toBeNull();
   });
+
+  it("normalizes Windows drive-letter host_scoped scopes without triggering relative-path errors", async () => {
+    sm.createTask(
+      makeTaskCard({
+        id: "t-win-a",
+        space: "local",
+        priority: "P1",
+        workspace_mode: "host_scoped",
+        contract: {
+          goal: "Write C drive config",
+          end: "Done",
+          accept_cmd: "true",
+          accept_files_hash: "sha256:wc1",
+          scope: ["C:\\Users\\demo\\a.conf"],
+          deliver: { mode: "manual", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+      }),
+      "# Win A",
+    );
+    sm.createTask(
+      makeTaskCard({
+        id: "t-win-b-overlap",
+        space: "local",
+        priority: "P2",
+        workspace_mode: "host_scoped",
+        contract: {
+          goal: "Glob overlap on C drive",
+          end: "Done",
+          accept_cmd: "true",
+          accept_files_hash: "sha256:wc2",
+          scope: ["c:/users/demo/**"],
+          deliver: { mode: "manual", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+      }),
+      "# Win B",
+    );
+    sm.createTask(
+      makeTaskCard({
+        id: "t-win-c-disjoint",
+        space: "local",
+        priority: "P2",
+        workspace_mode: "host_scoped",
+        contract: {
+          goal: "Disjoint D drive config",
+          end: "Done",
+          accept_cmd: "true",
+          accept_files_hash: "sha256:wc3",
+          scope: ["D:\\other\\b.conf"],
+          deliver: { mode: "manual", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+      }),
+      "# Win C",
+    );
+
+    const dispatched: string[] = [];
+    const dispatchErrors: unknown[] = [];
+    const scheduler = new KilnScheduler({
+      store,
+      stateMachine: sm,
+      rolesConfig: makeRolesConfig(),
+      onDispatch: (plan) => {
+        dispatched.push(plan.taskId);
+        store.persistRunBeforeDispatch(
+          makeRunMeta(plan, `run-${plan.taskId}`),
+          "001-implement",
+        );
+      },
+      onDispatchError: (_taskId, err) => {
+        dispatchErrors.push(err);
+      },
+    });
+    activeScheduler = scheduler;
+
+    await scheduler.wake();
+    expect(dispatchErrors).toEqual([]);
+    expect(dispatched).toEqual(["t-win-a", "t-win-c-disjoint"]);
+  });
 });

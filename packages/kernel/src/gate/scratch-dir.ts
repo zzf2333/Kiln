@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { ensureDir } from "../store/fs-atomic.js";
+import { ensureDir, realpathCanonical } from "../store/fs-atomic.js";
 import type { KilnStore } from "../store/kiln-store.js";
 import { assertSafeSegment } from "../store/paths.js";
 import { runIsolatedCommand, type IsolatedCommandResult } from "./command-runner.js";
@@ -40,7 +40,7 @@ export function prepareScratchWorkspace(store: KilnStore, taskId: string): strin
   const safeTaskId = assertSafeSegment(taskId, "taskId");
   const dir = store.paths.workspaceDir(safeTaskId);
   ensureDir(dir);
-  const canonical = fs.realpathSync(dir);
+  const canonical = realpathCanonical(dir);
   if (!fs.statSync(canonical).isDirectory()) {
     throw new Error(`Scratch workspace path is not a directory: ${canonical}`);
   }
@@ -58,7 +58,7 @@ export async function verifyScratchWorkspace(
   if (!fs.existsSync(input.workspaceDir)) {
     throw new Error(`Scratch workspace directory does not exist: ${input.workspaceDir}`);
   }
-  const canonicalWorkspace = fs.realpathSync(input.workspaceDir);
+  const canonicalWorkspace = realpathCanonical(input.workspaceDir);
   if (!fs.statSync(canonicalWorkspace).isDirectory()) {
     throw new Error(`Scratch workspace is not a directory: ${input.workspaceDir}`);
   }
@@ -89,7 +89,7 @@ export async function verifyScratchWorkspace(
     if (lstat.isSymbolicLink()) {
       let realArtifact: string;
       try {
-        realArtifact = fs.realpathSync(candidatePath);
+        realArtifact = realpathCanonical(candidatePath);
       } catch {
         invalidArtifacts.push(relPath);
         continue;

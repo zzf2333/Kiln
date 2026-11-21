@@ -11,7 +11,7 @@ import {
   type HostBackupManifest,
   type HostBackupStatus,
 } from "../store/backup-manifest.js";
-import { writeFileAtomic } from "../store/fs-atomic.js";
+import { realpathCanonical, writeFileAtomic } from "../store/fs-atomic.js";
 import type { KilnStore } from "../store/kiln-store.js";
 import { assertSafeSegment } from "../store/paths.js";
 import type { HostPathLockConflict } from "../store/sqlite.js";
@@ -207,7 +207,7 @@ function resolveCanonicalAbsolute(absPath: string, depth = 0): string {
       let canonicalCurrent: string;
       if (lstat.isSymbolicLink()) {
         try {
-          canonicalCurrent = fs.realpathSync(current);
+          canonicalCurrent = realpathCanonical(current);
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code === "ENOENT") {
             const linkTarget = fs.readlinkSync(current);
@@ -218,7 +218,7 @@ function resolveCanonicalAbsolute(absPath: string, depth = 0): string {
           }
         }
       } else {
-        canonicalCurrent = fs.realpathSync(current);
+        canonicalCurrent = realpathCanonical(current);
       }
 
       if (trailing.length > 0) {
@@ -397,7 +397,7 @@ function resolveValidatedStagedFile(
   }
 
   if (lstat.isSymbolicLink()) {
-    const resolved = fs.realpathSync(candidate);
+    const resolved = realpathCanonical(candidate);
     if (!isInsideCanonicalDir(resolved, canonicalStagedDir)) {
       throw new Error(
         `Staged file "${stagedRelativePath}" symlink escapes staged directory "${canonicalStagedDir}"`,
@@ -405,7 +405,7 @@ function resolveValidatedStagedFile(
     }
   }
 
-  const canonicalFile = fs.realpathSync(candidate);
+  const canonicalFile = realpathCanonical(candidate);
   if (!isInsideCanonicalDir(canonicalFile, canonicalStagedDir)) {
     throw new Error(
       `Staged file "${stagedRelativePath}" escapes staged directory "${canonicalStagedDir}"`,
@@ -609,7 +609,7 @@ type PreviewFileReadResult =
 
 function resolveCanonicalDirOptional(dirPath: string): string | null {
   try {
-    const resolved = fs.realpathSync(dirPath);
+    const resolved = realpathCanonical(dirPath);
     return fs.statSync(resolved).isDirectory() ? resolved : null;
   } catch {
     return null;
@@ -645,7 +645,7 @@ function readPreviewFileBounded(
 
   let canonicalFile: string;
   try {
-    canonicalFile = fs.realpathSync(candidate);
+    canonicalFile = realpathCanonical(candidate);
   } catch (err) {
     if (!lstat.isSymbolicLink() && (err as NodeJS.ErrnoException).code === "ENOENT") {
       return { ok: false, reason: "missing" };
@@ -813,7 +813,7 @@ export function stageHostScopedChanges(
   if (!fs.existsSync(stagedDir) || !fs.statSync(stagedDir).isDirectory()) {
     throw new Error(`Staged directory does not exist for task "${taskId}": ${stagedDir}`);
   }
-  const canonicalStagedDir = fs.realpathSync(stagedDir);
+  const canonicalStagedDir = realpathCanonical(stagedDir);
 
   const resolvedItems: Array<{
     stagedRel: string;
@@ -965,7 +965,7 @@ export async function applyApprovedHostScopedChanges(
   }
 
   const stagedDir = store.paths.stagedDir(taskId);
-  const canonicalStagedDir = fs.realpathSync(stagedDir);
+  const canonicalStagedDir = realpathCanonical(stagedDir);
   const backupDir = store.paths.backupDir(taskId);
   let shouldReleaseLocks = false;
 

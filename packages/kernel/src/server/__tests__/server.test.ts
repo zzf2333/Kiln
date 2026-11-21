@@ -20,7 +20,7 @@ import {
   applyApprovedHostScopedChanges,
   stageHostScopedChanges,
 } from "../../gate/index.js";
-import { ensureDir, isWindowsNamedPipe, writeFileAtomic } from "../../store/index.js";
+import { ensureDir, isWindowsNamedPipe, realpathCanonical, writeFileAtomic } from "../../store/index.js";
 import {
   CaffeinateController,
   ES_CONTINUOUS,
@@ -2423,7 +2423,7 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     });
     expect(inspectRes.status).toBe(200);
     const inspectJson = await readJson(inspectRes);
-    const canonicalRepo = fs.realpathSync(repoRoot);
+    const canonicalRepo = realpathCanonical(repoRoot);
     expect(inspectJson.ok).toBe(true);
     expect(inspectJson.repo_path).toBe(canonicalRepo);
     expect(inspectJson.default_branch).toBe("main");

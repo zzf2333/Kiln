@@ -294,13 +294,48 @@ function safeResolveCanonicalHostTarget(targetPath: string): string {
   }
 }
 
+function isWindowsDriveOrUncPattern(rawPattern: string): boolean {
+  return (
+    rawPattern.startsWith("\\\\") ||
+    rawPattern.startsWith("//") ||
+    /^[a-zA-Z]:(?:[\\/]|$)/.test(rawPattern)
+  );
+}
+
 function isAbsoluteOrHomePattern(rawPattern: string): boolean {
   return (
     rawPattern.startsWith("/") ||
     rawPattern === "~" ||
     rawPattern.startsWith("~/") ||
-    rawPattern.startsWith("~\\")
+    rawPattern.startsWith("~\\") ||
+    isWindowsDriveOrUncPattern(rawPattern)
   );
+}
+
+function hostPathToScopeComparable(absPathPosix: string): string {
+  const driveMatch = /^([a-zA-Z]):(?:\/(.*))?$/.exec(absPathPosix);
+  if (driveMatch) {
+    const drive = driveMatch[1]!.toLowerCase();
+    const rest = (driveMatch[2] ?? "").replace(/^\/+/, "").replace(/\/+$/, "").toLowerCase();
+    return rest.length > 0 ? `__win_drive_${drive}/${rest}` : `__win_drive_${drive}`;
+  }
+  if (absPathPosix.startsWith("//")) {
+    const rest = absPathPosix.replace(/^\/+/, "").replace(/\/+$/, "").toLowerCase();
+    return rest.length > 0 ? `__win_unc/${rest}` : "__win_unc";
+  }
+  return absPathPosix.replace(/^\/+/, "").replace(/\/+$/, "");
+}
+
+function resolveHostPrefixToComparable(rawPrefix: string): string {
+  if (process.platform !== "win32" && isWindowsDriveOrUncPattern(rawPrefix)) {
+    const posix = rawPrefix.replace(/\\/g, "/");
+    const unc = posix.startsWith("//");
+    const normalized = unc
+      ? `//${path.posix.normalize(posix.slice(2)).replace(/^\/+/, "")}`
+      : path.posix.normalize(posix);
+    return hostPathToScopeComparable(normalized);
+  }
+  return hostPathToScopeComparable(resolveCanonicalHostTarget(rawPrefix).replace(/\\/g, "/"));
 }
 
 function normalizeHostPatternToScopeComparable(rawPattern: string): string | null {
@@ -312,12 +347,48 @@ function normalizeHostPatternToScopeComparable(rawPattern: string): string | nul
 
   try {
     if (!hasGlobSyntax(rawPattern)) {
-      const canonical = resolveCanonicalHostTarget(rawPattern).replace(/\\/g, "/");
-      const trimmed = canonical.replace(/^\/+/, "");
+      const trimmed = resolveHostPrefixToComparable(rawPattern);
       if (trimmed.length === 0) {
         return "**";
       }
       return trailingSlash ? `${trimmed}/` : trimmed;
+    }
+
+    const winDrive = isWindowsDriveOrUncPattern(rawPattern) && /^[a-zA-Z]:(?:\/|$)/.test(posix);
+    const uncPath = posix.startsWith("//");
+
+    if (winDrive) {
+      const match = /^([a-zA-Z]:)(?:\/(.*))?$/.exec(posix)!;
+      const drivePrefix = match[1]!;
+      const restSegs = (match[2] ?? "").split("/").filter((s) => s.length > 0 && s !== ".");
+      const firstGlobIdx = restSegs.findIndex((seg) => hasGlobSyntax(seg));
+      if (firstGlobIdx === -1) {
+        const trimmed = resolveHostPrefixToComparable(rawPattern);
+        return trimmed.length === 0 ? "**" : trailingSlash ? `${trimmed}/` : trimmed;
+      }
+      const prefixComparable =
+        firstGlobIdx === 0
+          ? `__win_drive_${drivePrefix[0]!.toLowerCase()}`
+          : resolveHostPrefixToComparable(`${drivePrefix}/${restSegs.slice(0, firstGlobIdx).join("/")}`);
+      const tail = restSegs.slice(firstGlobIdx).join("/").toLowerCase();
+      const combined = tail ? `${prefixComparable}/${tail}` : prefixComparable;
+      return trailingSlash ? `${combined}/` : combined;
+    }
+
+    if (uncPath) {
+      const restSegs = posix.slice(2).split("/").filter((s) => s.length > 0 && s !== ".");
+      const firstGlobIdx = restSegs.findIndex((seg) => hasGlobSyntax(seg));
+      if (firstGlobIdx === -1) {
+        const trimmed = resolveHostPrefixToComparable(rawPattern);
+        return trimmed.length === 0 ? "**" : trailingSlash ? `${trimmed}/` : trimmed;
+      }
+      const prefixComparable =
+        firstGlobIdx === 0
+          ? "__win_unc"
+          : resolveHostPrefixToComparable(`//${restSegs.slice(0, firstGlobIdx).join("/")}`);
+      const tail = restSegs.slice(firstGlobIdx).join("/").toLowerCase();
+      const combined = tail ? `${prefixComparable}/${tail}` : prefixComparable;
+      return trailingSlash ? `${combined}/` : combined;
     }
 
     const segments = posix.split("/").filter((s) => s.length > 0 && s !== ".");
@@ -330,9 +401,7 @@ function normalizeHostPatternToScopeComparable(rawPattern: string): string | nul
     const prefixRaw = posix.startsWith("~")
       ? segments.slice(0, firstGlobIdx).join("/")
       : `/${segments.slice(0, firstGlobIdx).join("/")}`;
-    const canonicalPrefix = resolveCanonicalHostTarget(prefixRaw)
-      .replace(/\\/g, "/")
-      .replace(/^\/+/, "");
+    const canonicalPrefix = resolveHostPrefixToComparable(prefixRaw);
     const tail = segments.slice(firstGlobIdx).join("/");
     const combined = canonicalPrefix ? `${canonicalPrefix}/${tail}` : tail;
     return trailingSlash ? `${combined}/` : combined;
@@ -351,8 +420,19 @@ function canonicalHostTargetMatchesScope(
   const candidates = [canonicalTarget, safeResolveCanonicalHostTarget(canonicalTarget)];
   for (const pattern of scope) {
     if (!isAbsoluteOrHomePattern(pattern)) {
-      const normTarget = canonicalTarget.replace(/^\/+/, "");
+      const normTarget = hostPathToScopeComparable(canonicalTarget.replace(/\\/g, "/"));
       if (scopesOverlap([normTarget], [pattern])) {
+        return true;
+      }
+      continue;
+    }
+    if (
+      process.platform !== "win32" &&
+      (isWindowsDriveOrUncPattern(pattern) || isWindowsDriveOrUncPattern(canonicalTarget))
+    ) {
+      const normTarget = resolveHostPrefixToComparable(canonicalTarget);
+      const normPattern = normalizeHostPatternToScopeComparable(pattern);
+      if (normPattern === null || scopesOverlap([normTarget], [normPattern])) {
         return true;
       }
       continue;

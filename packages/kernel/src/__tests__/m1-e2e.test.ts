@@ -26,7 +26,7 @@ import {
 import { KilnScheduler, type DispatchPlan } from "../scheduler/index.js";
 import { KilndServer } from "../server/index.js";
 import { evaluateWorkerStageOutcome } from "../state/index.js";
-import { deriveTaskStatus, isWindowsNamedPipe, writeFileAtomic } from "../store/index.js";
+import { deriveTaskStatus, isWindowsNamedPipe, realpathCanonical, writeFileAtomic } from "../store/index.js";
 
 function git(args: readonly string[], cwd?: string): string {
   return execFileSync("git", [...args], {
@@ -148,7 +148,7 @@ describe("M1 zero-token full-stack headless kernel E2E", () => {
     const hostRoot = makeTempDir("kiln-m1-host-");
     const hostTargetLocked = path.join(hostRoot, "locked.conf");
     fs.writeFileSync(hostTargetLocked, "LOCK_BASE=1\n");
-    const canonicalLocked = fs.realpathSync(hostTargetLocked);
+    const canonicalLocked = realpathCanonical(hostTargetLocked);
 
     // Initialize real Git repository + bare remote
     const bareRemote = path.join(repoRoot, "remote.git");
@@ -620,7 +620,7 @@ describe("M1 zero-token full-stack headless kernel E2E", () => {
       // ── Criterion 5: host_scoped verify rollback + HTTP 409 hash_mismatch + rebuild lock recovery ──
       const hostTargetApplied = path.join(hostRoot, "applied.conf");
       fs.writeFileSync(hostTargetApplied, "BASE=1\n");
-      const canonicalApplied = fs.realpathSync(hostTargetApplied);
+      const canonicalApplied = realpathCanonical(hostTargetApplied);
 
       server1.stateMachine.createTask(
         makeCard("t-host-applied", {

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { TaskStatus } from "@kiln/protocol";
-import { ensureDir, writeFileAtomic } from "../store/fs-atomic.js";
+import { ensureDir, realpathCanonical, writeFileAtomic } from "../store/fs-atomic.js";
 import { buildSanitizedEnv } from "./command-runner.js";
 import { normalizeRepoRelativePath } from "./scope.js";
 
@@ -135,7 +135,7 @@ function resolveExistingSourceInsideRepo(
     throw err;
   }
 
-  const realSource = fs.realpathSync(fullPath);
+  const realSource = realpathCanonical(fullPath);
   if (!isInsideCanonicalDir(realSource, canonicalRepo)) {
     throw new Error(
       `Refusing to copy "${relPath}": real path "${realSource}" escapes repository root "${canonicalRepo}"`,
@@ -157,7 +157,7 @@ function ensureDestinationInsideWorktree(
   const parentDir = path.dirname(destPath);
   ensureDir(parentDir);
 
-  const realParent = fs.realpathSync(parentDir);
+  const realParent = realpathCanonical(parentDir);
   if (!isInsideCanonicalDir(realParent, canonicalWorktree)) {
     throw new Error(
       `Destination parent "${realParent}" escapes worktree root "${canonicalWorktree}"`,
@@ -268,9 +268,9 @@ export async function prepareGitWorktree(
   if (!fs.existsSync(input.repoPath)) {
     throw new Error(`Repository path does not exist: ${input.repoPath}`);
   }
-  const canonicalRepo = fs.realpathSync(input.repoPath);
+  const canonicalRepo = realpathCanonical(input.repoPath);
   const topLevel = (await runGit(["-C", canonicalRepo, "rev-parse", "--show-toplevel"])).trim();
-  const canonicalTopLevel = fs.realpathSync(topLevel);
+  const canonicalTopLevel = realpathCanonical(topLevel);
   if (!sameCanonicalPath(canonicalTopLevel, canonicalRepo)) {
     throw new Error(
       `repoPath "${input.repoPath}" must be the repository root "${canonicalTopLevel}"`,
@@ -303,7 +303,7 @@ export async function prepareGitWorktree(
     ]);
   }
 
-  const canonicalWorktree = fs.realpathSync(input.worktreePath);
+  const canonicalWorktree = realpathCanonical(input.worktreePath);
 
   try {
     for (const rawRel of input.copyUntracked ?? []) {
@@ -387,7 +387,7 @@ export async function inspectGitWorktreeChanges(
   if (!fs.existsSync(worktreePath)) {
     throw new Error(`Worktree path does not exist: ${worktreePath}`);
   }
-  const canonicalWorktree = fs.realpathSync(worktreePath);
+  const canonicalWorktree = realpathCanonical(worktreePath);
   const safeRef = assertSafeRef(inputRef, "inputRef");
   await runGit(["-C", canonicalWorktree, "rev-parse", "--verify", `${safeRef}^{commit}`]);
 
@@ -438,7 +438,7 @@ export async function cleanupGitWorktree(
     };
   }
 
-  const canonicalWorktree = fs.realpathSync(input.worktreePath);
+  const canonicalWorktree = realpathCanonical(input.worktreePath);
   const status = await inspectWorktreeStatus(canonicalWorktree);
 
   if (input.awaitingHumanReview) {
@@ -477,7 +477,7 @@ export async function cleanupGitWorktree(
     };
   }
 
-  const canonicalRepo = fs.realpathSync(input.repoPath);
+  const canonicalRepo = realpathCanonical(input.repoPath);
   await runGit(["-C", canonicalRepo, "worktree", "remove", canonicalWorktree]);
 
   return {

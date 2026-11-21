@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { WorkspaceMode } from "@kiln/protocol";
 import { buildSanitizedEnv } from "../gate/command-runner.js";
+import { realpathCanonical } from "../store/fs-atomic.js";
 import { KilnStore, assertSafeSegment } from "../store/index.js";
 import { ServerHttpError } from "./errors.js";
 
@@ -182,7 +183,7 @@ export async function inspectGitSpacePath(rawPath: string): Promise<InspectedSpa
     throw new InvalidSpacePathError(`Path is not a directory: ${resolved}`);
   }
 
-  const canonicalInput = fs.realpathSync(resolved);
+  const canonicalInput = realpathCanonical(resolved);
   let topLevel: string;
   try {
     const { stdout } = await execFileAsync(
@@ -207,7 +208,7 @@ export async function inspectGitSpacePath(rawPath: string): Promise<InspectedSpa
     );
   }
 
-  const repoPath = fs.realpathSync(topLevel);
+  const repoPath = realpathCanonical(topLevel);
   const suggestedName = path.basename(repoPath) || "project";
   const suggestedId = deriveSuggestedSpaceId(suggestedName);
   const defaultBranch = await detectDefaultBranch(repoPath);

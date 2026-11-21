@@ -13,6 +13,7 @@ import {
   ensureDir,
   isCompiledKilnBinary,
   readYamlOptional,
+  realpathCanonical,
   resolveDefaultIpcPath,
   resolveKilnHome,
   terminateProcessTree,
@@ -1132,7 +1133,7 @@ function parseGitWorktreePorcelain(output: string): ParsedWorktreeBlock[] {
 
 function safeRealpath(targetPath: string): string {
   try {
-    return fs.realpathSync(targetPath);
+    return realpathCanonical(targetPath);
   } catch {
     return path.resolve(targetPath);
   }

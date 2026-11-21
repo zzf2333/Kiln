@@ -7,7 +7,7 @@ import {
   type GateReport,
   type WorkerReceiptFrontmatter,
 } from "@kiln/protocol";
-import { readYamlValidated, writeYamlAtomic } from "../store/fs-atomic.js";
+import { readYamlValidated, realpathCanonical, writeYamlAtomic } from "../store/fs-atomic.js";
 import type { KilnStore } from "../store/kiln-store.js";
 import { assertSafeSegment } from "../store/paths.js";
 import { runIsolatedCommand, type IsolatedCommandResult } from "./command-runner.js";
@@ -68,7 +68,7 @@ function collectWorkspaceEntries(rootDir: string): {
     return { files: [], escapedSymlinks: [] };
   }
 
-  const canonicalRoot = fs.realpathSync(rootDir);
+  const canonicalRoot = realpathCanonical(rootDir);
   if (!fs.statSync(canonicalRoot).isDirectory()) {
     return { files: [], escapedSymlinks: [] };
   }
@@ -87,7 +87,7 @@ function collectWorkspaceEntries(rootDir: string): {
       if (lstat.isSymbolicLink()) {
         let resolved: string;
         try {
-          resolved = fs.realpathSync(fullPath);
+          resolved = realpathCanonical(fullPath);
         } catch {
           escapedSymlinks.push(relPath);
           continue;
@@ -106,7 +106,7 @@ function collectWorkspaceEntries(rootDir: string): {
           files.push(relPath);
         }
       } else if (lstat.isDirectory()) {
-        const resolved = fs.realpathSync(fullPath);
+        const resolved = realpathCanonical(fullPath);
         if (!visitedDirs.has(resolved)) {
           visitedDirs.add(resolved);
           walk(resolved, relPath);

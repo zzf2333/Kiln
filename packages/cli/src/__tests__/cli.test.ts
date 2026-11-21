@@ -11,6 +11,7 @@ import {
   BackendRegistry,
   FakeBackend,
   KilndServer,
+  realpathCanonical,
   writeFileAtomic,
   type ExecutionBackend,
 } from "@kiln/kernel";
@@ -709,7 +710,7 @@ describe("@kiln/cli", () => {
     expect(linuxInstall.exitCode).toBe(0);
     expect(fs.existsSync(h.systemdPath)).toBe(true);
     const linuxContent = fs.readFileSync(h.systemdPath, "utf8");
-    expect(linuxContent).toContain(`Environment="KILN_HOME=${h.kilnHome}"`);
+    expect(linuxContent).toContain(`Environment="KILN_HOME=${h.kilnHome.replace(/\\/g, "\\\\")}"`);
     expect(linuxContent).toContain('"up" "--foreground"');
 
     const linuxStatus = await runCli(["service", "status", "--platform", "linux"], {
@@ -1358,7 +1359,7 @@ describe("@kiln/cli", () => {
     execFileSync("git", ["-C", repoPath, "add", "."], { stdio: "pipe" });
     execFileSync("git", ["-C", repoPath, "commit", "-m", "init"], { stdio: "pipe" });
 
-    const canonicalRepo = fs.realpathSync(repoPath);
+    const canonicalRepo = realpathCanonical(repoPath);
 
     // 1. Offline add (passing subdirectory auto-normalizes to repo root), list --json, and rm
     const offlineAdd = await runCli(["space", "add", path.join(repoPath, "src"), "--json"], {
