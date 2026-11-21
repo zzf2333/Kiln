@@ -1711,9 +1711,11 @@ mod tests {
         let versioned = vec![PathBuf::from(
             "/Users/tester/.local/share/mise/installs/node/24.20.0/bin",
         )];
+        let bare_finder_path =
+            env::join_paths(["/usr/bin", "/bin", "/usr/sbin", "/sbin"]).expect("join bare PATH");
         let dirs = build_child_command_path_dirs(
             Some(bin_dir),
-            Some(OsStr::new("/usr/bin:/bin:/usr/sbin:/sbin")),
+            Some(bare_finder_path.as_os_str()),
             Some(home),
             &versioned,
         );
@@ -1742,9 +1744,11 @@ mod tests {
         assert_eq!(dirs.iter().filter(|d| *d == bin_dir).count(), 1);
 
         // Custom terminal entries preserve priority ahead of mise/homebrew fallbacks
+        let custom_path = env::join_paths(["/custom/node/bin", "/usr/bin", "/bin"])
+            .expect("join custom PATH");
         let custom_dirs = build_child_command_path_dirs(
             Some(bin_dir),
-            Some(OsStr::new("/custom/node/bin:/usr/bin:/bin")),
+            Some(custom_path.as_os_str()),
             Some(home),
             &versioned,
         );
@@ -1859,13 +1863,30 @@ mod tests {
         assert!(render_windows_cli_shim(Path::new("C:\\bad\npath\\kiln.exe")).is_err());
         assert!(render_windows_cli_shim(Path::new("C:\\bad\"quote\\kiln.exe")).is_err());
 
+        let contains_path = env::join_paths([
+            "/usr/bin",
+            "/Users/tester/.local/bin/",
+            "/bin",
+        ])
+        .expect("join PATH with target");
         assert!(path_contains_dir(
-            Some(OsStr::new("/usr/bin:/Users/tester/.local/bin/:/bin")),
+            Some(contains_path.as_os_str()),
             Path::new("/Users/tester/.local/bin"),
             false
         ));
+        assert!(path_contains_dir(
+            Some(contains_path.as_os_str()),
+            Path::new("/USERS/tester/.local/BIN"),
+            true
+        ));
         assert!(!path_contains_dir(
-            Some(OsStr::new("/usr/bin:/bin")),
+            Some(contains_path.as_os_str()),
+            Path::new("/USERS/tester/.local/BIN"),
+            false
+        ));
+        let missing_path = env::join_paths(["/usr/bin", "/bin"]).expect("join bare PATH");
+        assert!(!path_contains_dir(
+            Some(missing_path.as_os_str()),
             Path::new("/Users/tester/.local/bin"),
             false
         ));

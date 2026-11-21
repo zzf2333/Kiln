@@ -23,6 +23,7 @@ import {
   buildDaemonForegroundArgs,
   getServiceStatus,
   installService,
+  readNewLogTail,
   renderLaunchAgentPlist,
   renderSystemdUnit,
   renderWindowsRunCommand,
@@ -2008,5 +2009,15 @@ describe("@kiln/cli", () => {
     const nodeCheck = report.checks.find((c) => c.id === "node");
     expect(nodeCheck?.ok).toBe(true);
     expect(nodeCheck?.detail).toContain("Node.js not required");
+
+    // 6. readNewLogTail extracts only bytes appended after startOffset and caps at maxBytes
+    const logFile = path.join(docRoot, "kilnd.log");
+    fs.writeFileSync(logFile, "old-header\n", "utf8");
+    const offset = fs.statSync(logFile).size;
+    expect(readNewLogTail(logFile, offset)).toBe("");
+    fs.appendFileSync(logFile, "line1\nError: named pipe failure\n", "utf8");
+    expect(readNewLogTail(logFile, offset)).toBe("line1\nError: named pipe failure");
+    expect(readNewLogTail(logFile, offset, 19)).toBe("named pipe failure");
+    expect(readNewLogTail(path.join(docRoot, "missing.log"), 0)).toBe("");
   });
 });

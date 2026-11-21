@@ -57,6 +57,17 @@ export {
   type ServerErrorStatus,
 } from "./errors.js";
 export {
+  createNetHttpServer,
+  sendNetHttpRequest,
+  type CreateNetHttpServerOptions,
+  type IpcTransportMode,
+  type NetHttpClientResponse,
+  type NetHttpRequest,
+  type NetHttpResponse,
+  type NetHttpServerHandle,
+  type SendNetHttpRequestOptions,
+} from "./ipc-http.js";
+export {
   McpRpcServer,
   prepareIpcSocketPath,
   type McpRpcHttpRequest,

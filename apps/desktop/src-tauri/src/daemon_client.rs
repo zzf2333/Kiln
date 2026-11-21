@@ -1007,9 +1007,15 @@ mod tests {
         let fake_kiln = mise_v24_bin.join("kiln");
         fs::write(&fake_kiln, "#!/usr/bin/env node\n").expect("write fake kiln");
 
-        let resolved =
-            resolve_kiln_binary_with(None, Some(OsStr::new("/nonexistent-empty")), Some(home))
-                .expect("should resolve kiln inside mise node dir");
+        let resolved = resolve_kiln_binary_for_platform(
+            None,
+            None,
+            Some(OsStr::new("/nonexistent-empty")),
+            Some(home),
+            None,
+            false,
+        )
+        .expect("should resolve kiln inside mise node dir");
         assert_eq!(resolved, fake_kiln);
 
         let missing = home.join("missing-kiln");

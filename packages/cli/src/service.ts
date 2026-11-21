@@ -12,10 +12,12 @@ import {
   buildSanitizedEnv,
   ensureDir,
   isCompiledKilnBinary,
+  isWindowsNamedPipe,
   readYamlOptional,
   realpathCanonical,
   resolveDefaultIpcPath,
   resolveKilnHome,
+  sendNetHttpRequest,
   terminateProcessTree,
   writeFileAtomic,
 } from "@kiln/kernel";
@@ -918,6 +920,23 @@ export async function requestDaemonGracefulShutdown(ctx: {
   timeoutMs?: number;
 }): Promise<boolean> {
   const timeoutMs = ctx.timeoutMs ?? SHUTDOWN_RPC_TIMEOUT_MS;
+  if (isWindowsNamedPipe(ctx.socketPath)) {
+    try {
+      const res = await sendNetHttpRequest({
+        socketPath: ctx.socketPath,
+        method: "POST",
+        path: "/rpc/shutdown",
+        headers: {
+          Authorization: `Bearer ${ctx.shutdownToken}`,
+        },
+        timeoutMs,
+      });
+      return res.status >= 200 && res.status < 300;
+    } catch {
+      return false;
+    }
+  }
+
   return await new Promise<boolean>((resolve) => {
     let settled = false;
     const finish = (ok: boolean): void => {

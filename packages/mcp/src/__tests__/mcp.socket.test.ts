@@ -13,6 +13,7 @@ import {
   isRoleForbiddenError,
   isWindowsNamedPipe,
   resolveDefaultIpcPath,
+  sendNamedPipeHttpRequest,
 } from "../index.js";
 
 function readRequestBody(req: http.IncomingMessage): Promise<string> {
@@ -173,5 +174,74 @@ describe("@kiln/mcp OS Unix Domain Socket smoke suite (requires unsandboxed conn
     } finally {
       await Promise.all([mcpClient.close(), mcpServer.close()]);
     }
+  });
+
+  it("executes sendNamedPipeHttpRequest over node:net handling Content-Length, chunked framing, Host header, and 403", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kiln-mcp-net-"));
+    tempDirs.push(dir);
+    const socketPath =
+      process.platform === "win32"
+        ? resolveDefaultIpcPath(dir, "win32")
+        : path.join(dir, "kilnd-net.sock");
+    const seenHosts: Array<string | undefined> = [];
+
+    const server = http.createServer(async (req, res) => {
+      seenHosts.push(req.headers.host);
+      await readRequestBody(req);
+      if (req.headers.authorization !== "Bearer tok-net-client") {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
+      if (req.url === "/rpc/mcp/wb_plan") {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify(
+            RoleForbiddenErrorSchema.parse({
+              code: "role_forbidden",
+              role: "worker",
+              tool: "wb_plan",
+              message: 'Role "worker" is not allowed to invoke "wb_plan"',
+            }),
+          ),
+        );
+        return;
+      }
+      // Deliberately omit Content-Length so Node uses Transfer-Encoding: chunked
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.write('{"ok":true,');
+      res.end('"chunked":true}');
+    });
+    servers.push(server);
+
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+
+    const okRes = await sendNamedPipeHttpRequest(socketPath, {
+      method: "POST",
+      path: "/rpc/mcp/wb_get_context",
+      headers: {
+        Authorization: "Bearer tok-net-client",
+        "Content-Type": "application/json",
+      },
+      rawBody: "{}",
+    });
+    expect(okRes.status).toBe(200);
+    expect(okRes.body).toEqual({ ok: true, chunked: true });
+    expect(seenHosts[0]).toBe("kilnd.local");
+
+    const forbiddenRes = await sendNamedPipeHttpRequest(socketPath, {
+      method: "POST",
+      path: "/rpc/mcp/wb_plan",
+      headers: {
+        Authorization: "Bearer tok-net-client",
+        "Content-Type": "application/json",
+      },
+      rawBody: "{}",
+    });
+    expect(forbiddenRes.status).toBe(403);
+    expect(RoleForbiddenErrorSchema.parse(forbiddenRes.body).code).toBe("role_forbidden");
   });
 });

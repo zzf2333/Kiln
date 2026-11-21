@@ -193,18 +193,31 @@ jobs:
           $ErrorActionPreference = "Stop"
           $bin = Join-Path $env:GITHUB_WORKSPACE "release-artifacts\bin\kiln-v${{ needs.verify.outputs.version }}-windows-x64.exe"
           $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("kiln-smoke-" + [Guid]::NewGuid().ToString("N"))
+          $kilnHome = Join-Path $tmpRoot "kiln-home"
+          $kilnLog = Join-Path $kilnHome "logs\kilnd.log"
           New-Item -ItemType Directory -Path $tmpRoot -Force | Out-Null
           try {
             $copied = Join-Path $tmpRoot "kiln.exe"
             Copy-Item -Path $bin -Destination $copied -Force
-            $env:KILN_HOME = Join-Path $tmpRoot "kiln-home"
+            $env:KILN_HOME = $kilnHome
             & $copied --version
+            if ($LASTEXITCODE -ne 0) { throw "kiln.exe --version failed with exit code $LASTEXITCODE" }
             & $copied up --port 14319 --no-paseo
+            if ($LASTEXITCODE -ne 0) { throw "kiln.exe up failed with exit code $LASTEXITCODE" }
             $health = Invoke-WebRequest -Uri "http://127.0.0.1:14319/api/health" -UseBasicParsing
             if ($health.StatusCode -ne 200) { throw "Unexpected health status: $($health.StatusCode)" }
             $root = Invoke-WebRequest -Uri "http://127.0.0.1:14319/" -UseBasicParsing
             if ($root.Content -notmatch "<!doctype html") { throw "Embedded index.html missing" }
-            & $copied down
+            $downOutput = (& $copied down 2>&1 | Out-String)
+            Write-Host $downOutput
+            if ($LASTEXITCODE -ne 0) { throw "kiln.exe down failed with exit code $LASTEXITCODE" }
+            if ($downOutput -notmatch "stopped") { throw "Expected graceful 'kilnd stopped' output from kiln.exe down" }
+          } catch {
+            if (Test-Path $kilnLog) {
+              Write-Host "=== kilnd.log ==="
+              Get-Content -LiteralPath $kilnLog -Raw | Write-Host
+            }
+            throw
           } finally {
             Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
           }

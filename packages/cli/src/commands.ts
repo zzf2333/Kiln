@@ -753,6 +753,46 @@ async function defaultExecFile(
   return { stdout: result.stdout, stderr: result.stderr };
 }
 
+/**
+ * Reads trailing log bytes appended after `startOffset` for startup failure diagnostics.
+ */
+export function readNewLogTail(
+  logPath: string,
+  startOffset: number,
+  maxBytes = 2048,
+): string {
+  try {
+    const stat = fs.statSync(logPath);
+    if (stat.size <= startOffset) {
+      return "";
+    }
+    const totalNew = stat.size - startOffset;
+    const readBytes = Math.min(totalNew, maxBytes);
+    const readOffset = stat.size - readBytes;
+    const buf = Buffer.alloc(readBytes);
+    const fd = fs.openSync(logPath, "r");
+    try {
+      let bytesReadTotal = 0;
+      while (bytesReadTotal < readBytes) {
+        const n = fs.readSync(
+          fd,
+          buf,
+          bytesReadTotal,
+          readBytes - bytesReadTotal,
+          readOffset + bytesReadTotal,
+        );
+        if (n === 0) break;
+        bytesReadTotal += n;
+      }
+      return buf.subarray(0, bytesReadTotal).toString("utf8").trim();
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return "";
+  }
+}
+
 async function handleUp(
   args: readonly string[],
   options: CliRuntimeOptions,
@@ -952,6 +992,7 @@ async function handleUp(
   ensureDir(logDir);
   const logPath = path.join(logDir, "kilnd.log");
   const outFd = fs.openSync(logPath, "a");
+  const logStartOffset = fs.fstatSync(outFd).size;
 
   let childPid: number | undefined;
   let earlyExitError: string | null = null;
@@ -997,7 +1038,9 @@ async function handleUp(
   const deadline = Date.now() + DAEMON_START_TIMEOUT_MS;
   while (Date.now() < deadline) {
     if (childExited) {
-      io.err(earlyExitError ?? "kilnd exited before becoming healthy.");
+      const logTail = readNewLogTail(logPath, logStartOffset);
+      const baseErr = earlyExitError ?? "kilnd exited before becoming healthy.";
+      io.err(logTail.length > 0 ? `${baseErr}\n--- kilnd.log ---\n${logTail}` : baseErr);
       return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
     }
     const health = await probeHealth(fetchImpl, baseUrl);

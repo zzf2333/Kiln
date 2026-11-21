@@ -26,6 +26,7 @@ import {
   type HttpApiDependencies,
   type RemoteRuntimeStatus,
 } from "./http-api.js";
+import type { IpcTransportMode } from "./ipc-http.js";
 import {
   McpRpcServer,
   type McpRpcHttpRequest,
@@ -71,6 +72,7 @@ export interface KilndServerOptions {
   /** Optional override for the remote HTTP listener port (e.g., `0` for ephemeral port in tests). */
   remotePort?: number;
   socketPath?: string;
+  ipcTransportMode?: IpcTransportMode;
   tokenSecret?: string | Buffer;
   version?: string;
   maxRpcBodyBytes?: number;
@@ -358,6 +360,9 @@ export class KilndServer {
       caffeinate: this.caffeinate,
       tokenSecret: this.tokenSecret,
       socketPath: this.socketPath,
+      ...(options.ipcTransportMode !== undefined
+        ? { transportMode: options.ipcTransportMode }
+        : {}),
       maxBodyBytes: options.maxRpcBodyBytes,
       shutdownToken: this.pinnedShutdownToken,
       onShutdownRequested: options.onShutdownRequested ?? (() => this.stop()),

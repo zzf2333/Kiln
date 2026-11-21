@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { RoleForbiddenErrorSchema, type SseEvent, SseEventSchema } from "@kiln/protocol";
 import { isWindowsNamedPipe } from "../../store/index.js";
-import { KilndServer } from "../index.js";
+import { KilndServer, sendNetHttpRequest } from "../index.js";
 
 function makeTempDir(prefix = "kiln-srv-socket-"): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -490,5 +490,151 @@ describe("KilndServer OS socket smoke suite (requires unsandboxed connect)", () 
     }
     expect(server.address).toBeNull();
     expect(fs.existsSync(tokenPath)).toBe(false);
+  });
+
+  it("serves strict HTTP/1.1 RPC and /rpc/shutdown over node:net (Windows Named Pipe transport parity)", async () => {
+    const kilnHome = makeTempDir("kiln-srv-net-ipc-");
+    tempDirs.push(kilnHome);
+
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      ipcTransportMode: "net",
+      maxRpcBodyBytes: 512,
+      tokenSecret: "socket-net-ipc-secret-1234567890",
+    });
+    servers.push(server);
+    const addr = await server.start();
+
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-net-1",
+        title: "Net IPC parity task",
+        space: "kiln",
+        priority: "P1",
+        track: "L2",
+        workspace_mode: "scratch_dir",
+        parent: null,
+        depends_on: [],
+        contract_version: 1,
+        contract: {
+          goal: "Verify node:net HTTP/1.1 transport",
+          end: "All RPC routes behave identically to node:http",
+          accept_cmd: "echo ok",
+          accept_files_hash: "sha256:net",
+          scope: ["out/**"],
+          deliver: { mode: "manual", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: {
+          retries_per_stage: 2,
+          review_rounds: 2,
+          advisor_calls: 1,
+          max_tokens: 100_000,
+        },
+        created_at: "2026-11-19T12:00:00.000Z",
+        updated_at: "2026-11-19T12:00:00.000Z",
+      },
+      "# Net IPC brief",
+    );
+
+    const workerToken = server.issueRunToken({
+      taskId: "t-net-1",
+      runId: "run-net-1",
+      role: "worker",
+      contractVersion: 1,
+    });
+
+    // 1. sendNetHttpRequest client -> createNetHttpServer (200 OK)
+    const ctxNet = await sendNetHttpRequest({
+      socketPath: addr.socketPath,
+      method: "POST",
+      path: "/rpc/mcp/wb_get_context",
+      headers: {
+        Authorization: `Bearer ${workerToken}`,
+        "Content-Type": "application/json",
+      },
+      rawBody: "{}",
+      timeoutMs: 2_000,
+    });
+    expect(ctxNet.status).toBe(200);
+    expect((JSON.parse(ctxNet.rawBody) as { card: { id: string } }).card.id).toBe("t-net-1");
+
+    // 2. Role allowlist (403 role_forbidden) & bad auth (401)
+    const forbiddenNet = await sendNetHttpRequest({
+      socketPath: addr.socketPath,
+      method: "POST",
+      path: "/rpc/mcp/wb_plan",
+      headers: {
+        Authorization: `Bearer ${workerToken}`,
+        "Content-Type": "application/json",
+      },
+      rawBody: JSON.stringify({ mode: "upsert_draft", draft_id: "d-net-bad" }),
+    });
+    expect(forbiddenNet.status).toBe(403);
+    expect(RoleForbiddenErrorSchema.parse(JSON.parse(forbiddenNet.rawBody)).code).toBe(
+      "role_forbidden",
+    );
+
+    const unauthNet = await sendNetHttpRequest({
+      socketPath: addr.socketPath,
+      method: "POST",
+      path: "/rpc/mcp/wb_get_context",
+      headers: { Authorization: "Bearer invalid-token" },
+      rawBody: "{}",
+    });
+    expect(unauthNet.status).toBe(401);
+
+    // 3. Bounded body size check (413 payload_too_large)
+    const oversizeRes = await sendNetHttpRequest({
+      socketPath: addr.socketPath,
+      method: "POST",
+      path: "/rpc/mcp/wb_get_context",
+      headers: {
+        Authorization: `Bearer ${workerToken}`,
+        "Content-Type": "application/json",
+      },
+      rawBody: JSON.stringify({ pad: "x".repeat(700) }),
+    });
+    expect(oversizeRes.status).toBe(413);
+
+    // 4. Cross-interop: Node http.request({ socketPath }) against node:net HTTP server
+    const stdHttpRes = await requestUnixSocket(addr.socketPath, {
+      method: "POST",
+      path: "/rpc/mcp/wb_get_context",
+      headers: { Authorization: `Bearer ${workerToken}` },
+      body: {},
+    });
+    expect(stdHttpRes.status).toBe(200);
+    expect((stdHttpRes.json.card as { id: string }).id).toBe("t-net-1");
+
+    // 5. Graceful POST /rpc/shutdown via sendNetHttpRequest
+    const shutdownToken = fs.readFileSync(server.store.paths.shutdownTokenFile, "utf8").trim();
+    const badShutdown = await sendNetHttpRequest({
+      socketPath: addr.socketPath,
+      method: "POST",
+      path: "/rpc/shutdown",
+      headers: { Authorization: "Bearer wrong-token" },
+    });
+    expect(badShutdown.status).toBe(401);
+    expect(server.address).not.toBeNull();
+
+    const okShutdown = await sendNetHttpRequest({
+      socketPath: addr.socketPath,
+      method: "POST",
+      path: "/rpc/shutdown",
+      headers: { Authorization: `Bearer ${shutdownToken}` },
+    });
+    expect(okShutdown.status).toBe(200);
+    expect(JSON.parse(okShutdown.rawBody)).toEqual({ ok: true, shuttingDown: true });
+
+    const deadline = Date.now() + 3_000;
+    while (server.address !== null && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(server.address).toBeNull();
+    expect(fs.existsSync(server.store.paths.shutdownTokenFile)).toBe(false);
   });
 });

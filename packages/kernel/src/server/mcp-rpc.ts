@@ -43,6 +43,11 @@ import {
 import type { CaffeinateController } from "./caffeinate.js";
 import { ServerHttpError, mapDomainError } from "./errors.js";
 import {
+  createNetHttpServer,
+  type IpcTransportMode,
+  type NetHttpServerHandle,
+} from "./ipc-http.js";
+import {
   appendLedgerProposal,
   countRunningLeafTasks,
   PendingDecisionStore,
@@ -68,6 +73,7 @@ export interface McpRpcServerOptions {
   caffeinate: CaffeinateController;
   tokenSecret: string | Buffer;
   socketPath?: string;
+  transportMode?: IpcTransportMode;
   maxBodyBytes?: number;
   shutdownToken?: string;
   onShutdownRequested?: () => Promise<void> | void;
@@ -279,6 +285,7 @@ function findRunByRunId(
  */
 export class McpRpcServer {
   readonly socketPath: string;
+  private readonly transportMode: IpcTransportMode;
   private readonly store: KilnStore;
   private readonly stateMachine: TaskStateMachine;
   private readonly sseHub: SseHub;
@@ -294,6 +301,7 @@ export class McpRpcServer {
   private shutdownToken: string | undefined;
   private shutdownTriggered = false;
   private server: http.Server | null = null;
+  private netHandle: NetHttpServerHandle | null = null;
   private listening = false;
 
   constructor(options: McpRpcServerOptions) {
@@ -304,6 +312,7 @@ export class McpRpcServer {
     this.caffeinate = options.caffeinate;
     this.tokenSecret = options.tokenSecret;
     this.socketPath = options.socketPath ?? options.store.paths.kilndSock;
+    this.transportMode = options.transportMode ?? "auto";
     this.maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
     this.shutdownToken = options.shutdownToken;
     this.onShutdownRequested = options.onShutdownRequested;
@@ -318,12 +327,72 @@ export class McpRpcServer {
   }
 
   async start(): Promise<string> {
-    if (this.server && this.listening) {
+    if ((this.server || this.netHandle) && this.listening) {
       return this.socketPath;
     }
 
     this.shutdownTriggered = false;
     await prepareIpcSocketPath(this.socketPath);
+
+    const useNetTransport =
+      this.transportMode === "net" ||
+      (this.transportMode === "auto" && isWindowsNamedPipe(this.socketPath));
+
+    if (useNetTransport) {
+      const netHandle = createNetHttpServer({
+        maxBodyBytes: this.maxBodyBytes,
+        onRequest: (req) => {
+          const { response, shouldTriggerShutdown } = this.dispatchHttpRequestInternal(
+            {
+              method: req.method,
+              url: req.url,
+              headers: req.headers,
+              rawBody: req.rawBody,
+            },
+            true,
+          );
+          return {
+            status: response.status,
+            body: response.body,
+            ...(shouldTriggerShutdown
+              ? {
+                  afterFlush: () => {
+                    setImmediate(() => {
+                      this.triggerShutdownOnce();
+                    });
+                  },
+                }
+              : {}),
+          };
+        },
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        const onError = (err: Error): void => {
+          netHandle.server.removeListener("listening", onListening);
+          reject(err);
+        };
+        const onListening = (): void => {
+          netHandle.server.removeListener("error", onError);
+          try {
+            if (!isWindowsNamedPipe(this.socketPath) && process.platform !== "win32") {
+              fs.chmodSync(this.socketPath, 0o600);
+            }
+            this.listening = true;
+            resolve();
+          } catch (err) {
+            reject(err);
+          }
+        };
+
+        netHandle.server.once("error", onError);
+        netHandle.server.once("listening", onListening);
+        netHandle.server.listen(this.socketPath);
+      });
+
+      this.netHandle = netHandle;
+      return this.socketPath;
+    }
 
     const server = http.createServer((req, res) => {
       void this.handleRequest(req, res);
@@ -358,7 +427,9 @@ export class McpRpcServer {
 
   async stop(): Promise<void> {
     const server = this.server;
+    const netHandle = this.netHandle;
     this.server = null;
+    this.netHandle = null;
     const wasListening = this.listening;
     this.listening = false;
 
@@ -366,6 +437,19 @@ export class McpRpcServer {
       server.closeAllConnections?.();
       await new Promise<void>((resolve, reject) => {
         server.close((err) => {
+          if (err && (err as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") {
+            reject(err);
+          } else {
+            resolve();
+          }
+        });
+      });
+    }
+
+    if (netHandle) {
+      netHandle.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        netHandle.server.close((err) => {
           if (err && (err as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") {
             reject(err);
           } else {
