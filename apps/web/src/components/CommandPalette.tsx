@@ -35,6 +35,9 @@ export function CommandPalette() {
       }
 
       if (e.key === "Escape") {
+        if (e.defaultPrevented) {
+          return;
+        }
         const cur = store.getState();
         if (cur.spaceModalOpen) {
           store.closeSpaceModal();

@@ -175,3 +175,51 @@ export const SyncPricingResponseSchema = z.object({
   warning: z.string().optional(),
 });
 export type SyncPricingResponse = z.infer<typeof SyncPricingResponseSchema>;
+
+export const ChatCommandSourceSchema = z.enum(["kiln", "agent"]);
+export type ChatCommandSource = z.infer<typeof ChatCommandSourceSchema>;
+
+export const ChatCommandKindSchema = z.enum(["command", "skill"]);
+export type ChatCommandKind = z.infer<typeof ChatCommandKindSchema>;
+
+export const ChatCommandActionSchema = z.enum([
+  "new_draft",
+  "fill_draft",
+  "generate_brief",
+  "split_slices",
+]);
+export type ChatCommandAction = z.infer<typeof ChatCommandActionSchema>;
+
+export const ChatCommandItemSchema = z.object({
+  name: z.string().min(1),
+  description: z.string(),
+  argumentHint: z.string().default(""),
+  kind: ChatCommandKindSchema.default("command"),
+  source: ChatCommandSourceSchema,
+  action: ChatCommandActionSchema.optional(),
+});
+export type ChatCommandItem = z.infer<typeof ChatCommandItemSchema>;
+
+export const ChatCommandsResponseSchema = z.object({
+  ok: z.literal(true),
+  role: z.enum(["intake", "resolver"]),
+  agent: z.string().nullable(),
+  model: z.string().nullable(),
+  commands: z.array(ChatCommandItemSchema),
+});
+export type ChatCommandsResponse = z.infer<typeof ChatCommandsResponseSchema>;
+
+export const SpaceFileEntrySchema = z.object({
+  path: z.string().min(1),
+  kind: z.enum(["file", "dir"]),
+});
+export type SpaceFileEntry = z.infer<typeof SpaceFileEntrySchema>;
+
+export const SpaceFilesResponseSchema = z.object({
+  ok: z.literal(true),
+  spaceId: z.string().min(1),
+  query: z.string(),
+  files: z.array(SpaceFileEntrySchema),
+  truncated: z.boolean(),
+});
+export type SpaceFilesResponse = z.infer<typeof SpaceFilesResponseSchema>;

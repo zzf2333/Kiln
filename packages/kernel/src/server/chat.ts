@@ -7,6 +7,8 @@ import {
   PrioritySchema,
   SessionRefSchema,
   StageIdSchema,
+  type ChatCommandItem,
+  type ChatCommandsResponse,
   type DraftCard,
   type PendingDecision,
   type ReasoningEffort,
@@ -20,6 +22,7 @@ import {
   assertRoleAgentEligible,
   isFullAccessMode,
   type BackendAgentDescriptor,
+  type BackendCommandDescriptor,
   type BackendModelDescriptor,
   type BackendRegistry,
   type BackendRunSpec,
@@ -140,6 +143,65 @@ function extractLabeledJsonPatchBlock(
     .trim();
   return { displayText, rawJson };
 }
+
+const KILN_BUILTIN_CHAT_COMMANDS: Readonly<Record<"intake" | "resolver", ChatCommandItem[]>> = {
+  intake: [
+    {
+      name: "brief",
+      description: "生成或更新右侧《产品方案 (BRIEF.md)》并同步立项契约",
+      argumentHint: "[补充说明]",
+      kind: "command",
+      source: "kiln",
+      action: "generate_brief",
+    },
+    {
+      name: "fill",
+      description: "让立项助手自动补全剩余缺失的立项字段",
+      argumentHint: "[补充要求]",
+      kind: "command",
+      source: "kiln",
+      action: "fill_draft",
+    },
+    {
+      name: "split",
+      description: "评估需求体量并建议垂直 MVP 切片拆分方案",
+      argumentHint: "[拆分偏好]",
+      kind: "command",
+      source: "kiln",
+      action: "split_slices",
+    },
+    {
+      name: "new",
+      description: "清空当前立项对话并开始新草稿（本地操作，不消耗 Token）",
+      argumentHint: "",
+      kind: "command",
+      source: "kiln",
+      action: "new_draft",
+    },
+  ],
+  resolver: [
+    {
+      name: "summary",
+      description: "梳理当前待决分歧、备选方案利弊与推荐决策",
+      argumentHint: "",
+      kind: "command",
+      source: "kiln",
+    },
+    {
+      name: "contract",
+      description: "基于当前讨论生成需要修订的契约字段方案",
+      argumentHint: "[修订说明]",
+      kind: "command",
+      source: "kiln",
+    },
+  ],
+};
+
+export function getBuiltinChatCommands(role: "intake" | "resolver"): ChatCommandItem[] {
+  return KILN_BUILTIN_CHAT_COMMANDS[role].map((cmd) => ({ ...cmd }));
+}
+
+const PURE_CONTROL_SLASH_PATTERN = /^\/(?:compact|clear|autocompact|reset)(?:\s|$)/i;
 
 export const ChatMessageRecordSchema = z.object({
   id: z.string().min(1).optional(),
@@ -645,6 +707,210 @@ export class KilnChatEngine {
 
   getTaskChatMessages(taskId: string): ChatMessageRecord[] {
     return readNdjsonValidated(this.taskChatPath(taskId), ChatMessageRecordSchema);
+  }
+
+  private expandKilnBuiltinSlashPrompt(role: "intake" | "resolver", trimmed: string): string {
+    if (!trimmed.startsWith("/")) {
+      return trimmed;
+    }
+    const match = /^\/([a-zA-Z0-9_:-]+)(?:\s+([\s\S]+))?$/.exec(trimmed);
+    if (!match) {
+      return trimmed;
+    }
+    const name = match[1]!.toLowerCase();
+    const args = (match[2] ?? "").trim();
+    const extra = args ? `\n用户补充要求：${args}` : "";
+
+    if (role === "intake") {
+      if (name === "brief") {
+        return `请基于当前对话与仓库只读事实，立即生成或更新完整的《产品方案 (BRIEF.md)》并同步补全右侧立项契约字段。${extra}`;
+      }
+      if (name === "fill") {
+        return `请检查并自动推导补全当前立项单中缺失的标题、交付终点、验收命令、可改范围及前置依赖等字段。${extra}`;
+      }
+      if (name === "split") {
+        return `请评估当前需求的复杂度与工作量，并给出建议的垂直 MVP 切片拆分方案（每片可独立交付与验收），说明推荐先落哪一片。${extra}`;
+      }
+    } else {
+      if (name === "summary") {
+        return `请梳理当前待决问题的核心分歧、各备选方案的利弊与改动代价，并给出你的推荐决策。${extra}`;
+      }
+      if (name === "contract") {
+        return `请根据我们目前的讨论，整理并提出需要修订的任务契约字段（goal、end、accept_cmd、scope）方案供我拍板。${extra}`;
+      }
+    }
+    return trimmed;
+  }
+
+  private buildMentionContextNote(trimmed: string): string | null {
+    const blocks: string[] = [];
+
+    const taskIds = new Set<string>();
+    for (const m of trimmed.matchAll(/@task:([a-zA-Z0-9_-]+)/g)) {
+      if (m[1]) taskIds.add(m[1]);
+      if (taskIds.size >= 4) break;
+    }
+    for (const rawId of taskIds) {
+      try {
+        const safeId = assertSafeSegment(rawId, "taskId");
+        const card = this.store.readTaskCard(safeId);
+        const derived = deriveTaskStatus(card, this.store.readStateEvents(safeId));
+        blocks.push(
+          `- 任务 ${card.id} [${derived.status}/${derived.priority}] 《${card.title}》：goal=${card.contract.goal} | end=${card.contract.end} | scope=${card.contract.scope.join(", ")}`,
+        );
+      } catch {
+        // Ignore non-existent or unsafe task references
+      }
+    }
+
+    const ledgerSpaces = new Set<string>();
+    for (const m of trimmed.matchAll(/@ledger:([a-zA-Z0-9_-]+)/g)) {
+      if (m[1]) ledgerSpaces.add(m[1]);
+      if (ledgerSpaces.size >= 4) break;
+    }
+    for (const rawSpace of ledgerSpaces) {
+      try {
+        const safeSpace = assertSafeSegment(rawSpace, "space");
+        const ledger = this.store.readLedger(safeSpace);
+        if (ledger && ledger.entries.length > 0) {
+          const rules = ledger.entries
+            .slice(0, 8)
+            .map((e) => e.rule)
+            .join("；");
+          blocks.push(`- 空间 ${safeSpace} 决策账本（${ledger.entries.length} 条）：${rules}`);
+        }
+      } catch {
+        // Ignore invalid ledger space references
+      }
+    }
+
+    if (blocks.length === 0) {
+      return null;
+    }
+    return `[用户引用上下文:\n${blocks.join("\n")}\n]`;
+  }
+
+  private composePromptForAgent(
+    effectiveMessage: string,
+    contextLines: readonly string[],
+  ): string {
+    const filtered = contextLines.filter((line) => line.trim().length > 0);
+    if (effectiveMessage.startsWith("/")) {
+      if (PURE_CONTROL_SLASH_PATTERN.test(effectiveMessage) || filtered.length === 0) {
+        return effectiveMessage;
+      }
+      // Keep native slash command at index 0 so underlying agents parse "/cmd args" properly.
+      return `${effectiveMessage}\n\n${filtered.join("\n")}`;
+    }
+    if (filtered.length === 0) {
+      return effectiveMessage;
+    }
+    return `${filtered.join("\n")}\n\n${effectiveMessage}`;
+  }
+
+  async listChatCommands(params: {
+    role: "intake" | "resolver";
+    draftId?: string;
+    spaceId?: string;
+    taskId?: string;
+  }): Promise<ChatCommandsResponse> {
+    const builtins = getBuiltinChatCommands(params.role);
+    const builtinNames = new Set(builtins.map((c) => c.name.toLowerCase()));
+
+    const rolesConfig = this.store.readConfig("roles");
+    const configured = rolesConfig?.roles[params.role];
+
+    let executor: ResolvedInteractiveExecutor | null = null;
+    try {
+      executor = await this.resolveInteractiveExecutor(params.role);
+    } catch {
+      executor = null;
+    }
+
+    let cwd = process.cwd();
+    let sessionRef: SessionRef | null = null;
+
+    if (params.draftId) {
+      try {
+        const safeDraftId = assertSafeSegment(params.draftId, "draftId");
+        const draft = this.store.readDraft(safeDraftId);
+        if (draft) {
+          cwd = this.resolveIntakeWorkspace(draft, safeDraftId).cwd;
+          const reusable = await this.canReuseSession(draft.session_ref);
+          if (reusable) {
+            sessionRef = reusable.sessionRef;
+          }
+        }
+      } catch {
+        // Fallback to spaceId or cwd
+      }
+    } else if (params.taskId) {
+      try {
+        const safeTaskId = assertSafeSegment(params.taskId, "taskId");
+        const card = this.store.readTaskCard(safeTaskId);
+        const spaceCfg = this.store.readSpace(card.space);
+        cwd = spaceCfg?.repo_path && fs.existsSync(spaceCfg.repo_path)
+          ? spaceCfg.repo_path
+          : this.store.paths.taskDir(safeTaskId);
+      } catch {
+        // Fallback to cwd
+      }
+    } else if (params.spaceId) {
+      try {
+        const safeSpace = assertSafeSegment(params.spaceId, "space");
+        const spaceCfg = this.store.readSpace(safeSpace);
+        if (spaceCfg?.repo_path && fs.existsSync(spaceCfg.repo_path)) {
+          cwd = spaceCfg.repo_path;
+        }
+      } catch {
+        // Fallback to cwd
+      }
+    }
+
+    let backendCommands: BackendCommandDescriptor[] = [];
+    if (executor?.backend.listCommands) {
+      try {
+        backendCommands = await withTimeout(
+          executor.backend.listCommands({
+            agent: executor.agent,
+            cwd,
+            model: executor.model,
+            ...(executor.reasoningEffort !== undefined
+              ? { reasoningEffort: executor.reasoningEffort }
+              : {}),
+            allowFullAccessFallback: executor.allowFullAccessFallback,
+            sessionRef,
+          }),
+          4_000,
+          "listCommands",
+        );
+      } catch {
+        backendCommands = [];
+      }
+    }
+
+    const agentItems: ChatCommandItem[] = [];
+    for (const cmd of backendCommands) {
+      const normalized = cmd.name.replace(/^\/+/, "").trim();
+      if (!normalized || builtinNames.has(normalized.toLowerCase())) {
+        continue;
+      }
+      agentItems.push({
+        name: normalized,
+        description: cmd.description,
+        argumentHint: cmd.argumentHint,
+        kind: cmd.kind,
+        source: "agent",
+      });
+    }
+
+    return {
+      ok: true,
+      role: params.role,
+      agent: executor?.agent ?? configured?.agent ?? null,
+      model: executor?.model ?? configured?.model ?? null,
+      commands: [...builtins, ...agentItems],
+    };
   }
 
   private async runSerialized<T>(lockKey: string, fn: () => Promise<T>): Promise<T> {
@@ -1287,11 +1553,18 @@ export class KilnChatEngine {
       let replyText: string;
       let toolMessages: ChatMessageRecord[] = [];
 
+      const effectiveMessage = this.expandKilnBuiltinSlashPrompt("intake", trimmed);
+      const mentionNote = this.buildMentionContextNote(trimmed);
+
       if (executor === null && this.chatResponder) {
+        const promptForResponder = this.composePromptForAgent(
+          effectiveMessage,
+          mentionNote ? [mentionNote] : [],
+        );
         const res = await this.chatResponder({
           role: "intake",
           targetId: safeDraftId,
-          message: trimmed,
+          message: promptForResponder,
           history: historyBefore,
           draft,
           token,
@@ -1323,12 +1596,21 @@ export class KilnChatEngine {
           reusableMeta?.kiln_chat_cwd === resolvedWorkspace.cwd
         ) {
           sessionRef = reusable.sessionRef;
-          const promptForAgent = !executor.mcpEnabled
-            ? `${this.formatDraftSnapshotLine(draft)}\n\n${trimmed}`
-            : trimmed;
+          const contextLines: string[] = [];
+          if (!executor.mcpEnabled) {
+            contextLines.push(this.formatDraftSnapshotLine(draft));
+          }
+          if (mentionNote) {
+            contextLines.push(mentionNote);
+          }
+          const promptForAgent = this.composePromptForAgent(effectiveMessage, contextLines);
           await activeBackend.send(sessionRef, promptForAgent);
         } else {
           const allSpaces = this.store.listSpaces();
+          const firstTurnPrompt = this.composePromptForAgent(
+            effectiveMessage,
+            mentionNote ? [mentionNote] : [],
+          );
           const spec: BackendRunSpec = {
             runId,
             taskId: safeDraftId,
@@ -1339,7 +1621,7 @@ export class KilnChatEngine {
               ? { reasoningEffort: executor.reasoningEffort }
               : {}),
             cwd: resolvedWorkspace.cwd,
-            prompt: trimmed,
+            prompt: firstTurnPrompt,
             systemPrompt: this.buildIntakeSystemPrompt({
               draft,
               spaceConfig: resolvedWorkspace.spaceConfig,
@@ -1536,11 +1818,18 @@ export class KilnChatEngine {
       let replyText: string;
       let toolMessages: ChatMessageRecord[] = [];
 
+      const effectiveMessage = this.expandKilnBuiltinSlashPrompt("resolver", trimmed);
+      const mentionNote = this.buildMentionContextNote(trimmed);
+
       if (executor === null && this.chatResponder) {
+        const promptForResponder = this.composePromptForAgent(
+          effectiveMessage,
+          mentionNote ? [mentionNote] : [],
+        );
         const res = await this.chatResponder({
           role: "resolver",
           targetId: safeTaskId,
-          message: trimmed,
+          message: promptForResponder,
           history: historyBefore,
           card,
           pendingDecision,
@@ -1582,11 +1871,22 @@ export class KilnChatEngine {
           reusableMeta?.kiln_chat_model === executor.model
         ) {
           sessionRef = reusable.sessionRef;
-          const promptForAgent = !executor.mcpEnabled
-            ? `[当前任务契约 v${card.contract_version}: goal=${card.contract.goal}, end=${card.contract.end}, accept_cmd=${card.contract.accept_cmd}, scope=${card.contract.scope.join(", ")}]\n\n${trimmed}`
-            : trimmed;
+          const contextLines: string[] = [];
+          if (!executor.mcpEnabled) {
+            contextLines.push(
+              `[当前任务契约 v${card.contract_version}: goal=${card.contract.goal}, end=${card.contract.end}, accept_cmd=${card.contract.accept_cmd}, scope=${card.contract.scope.join(", ")}]`,
+            );
+          }
+          if (mentionNote) {
+            contextLines.push(mentionNote);
+          }
+          const promptForAgent = this.composePromptForAgent(effectiveMessage, contextLines);
           await executor.backend.send(sessionRef, promptForAgent);
         } else {
+          const firstTurnPrompt = this.composePromptForAgent(
+            effectiveMessage,
+            mentionNote ? [mentionNote] : [],
+          );
           const spec: BackendRunSpec = {
             runId,
             taskId: safeTaskId,
@@ -1597,7 +1897,7 @@ export class KilnChatEngine {
               ? { reasoningEffort: executor.reasoningEffort }
               : {}),
             cwd: this.store.paths.taskDir(safeTaskId),
-            prompt: trimmed,
+            prompt: firstTurnPrompt,
             systemPrompt: this.buildResolverSystemPrompt(
               card,
               pendingDecision,

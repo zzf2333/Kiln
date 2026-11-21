@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BootstrapResponse, TaskDetailResponse } from "../api/types";
 import { App } from "../app";
+import { detectComposerTrigger } from "../components/ChatComposer";
 import { ChatTimeline } from "../components/ChatTimeline";
 import { MarkdownContent } from "../components/MarkdownContent";
 import { fmtTime } from "../state/format";
@@ -3690,5 +3691,215 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     expect(layoutCss).not.toMatch(/\.worklog-detail\s*\{[^}]*flex:\s*1\s+1\s+200px/);
     expect(layoutCss).toContain(".worklog-row > .worklog-detail");
     expect(layoutCss).toContain("::-webkit-scrollbar-thumb");
+  });
+
+  it("detects / and @ composer triggers strictly without false positives on paths or emails", () => {
+    expect(detectComposerTrigger("/", 1)).toEqual({
+      kind: "/",
+      start: 0,
+      end: 1,
+      query: "",
+    });
+    expect(detectComposerTrigger("  /br", 5)).toEqual({
+      kind: "/",
+      start: 2,
+      end: 5,
+      query: "br",
+    });
+    // Path separators mid-message must NOT trigger / commands
+    expect(detectComposerTrigger("请修改 apps/web/src", 19)).toBeNull();
+
+    expect(detectComposerTrigger("@", 1)).toEqual({
+      kind: "@",
+      start: 0,
+      end: 1,
+      query: "",
+    });
+    expect(detectComposerTrigger("结合 @apps/web", 12)).toEqual({
+      kind: "@",
+      start: 3,
+      end: 12,
+      query: "apps/web",
+    });
+    // Emails must NOT trigger @ mentions
+    expect(detectComposerTrigger("联系 foo@bar.com", 14)).toBeNull();
+  });
+
+  it("supports / command/skill completion, Esc dismissal without leaving intake, /new reset, and @ file/task/ledger mentions", async () => {
+    const now = new Date().toISOString();
+    const bootstrap = makeBaseBootstrap({
+      tasks: [
+        {
+          id: "t-ref-9",
+          space: "kiln",
+          parent_id: null,
+          title: "支持命令提示",
+          priority: "P1",
+          effective_priority: "P1",
+          track: "L2",
+          workspace_mode: "git_worktree",
+          status: "running",
+          stage: "implement",
+          round: 1,
+          active_run_id: "r-1",
+          contract_version: 1,
+          depends_on: [],
+          created_at: now,
+          updated_at: now,
+          tokens: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+          cost_usd: 0,
+        },
+      ],
+      ledgers: {
+        kiln: {
+          schema_version: 1,
+          space: "kiln",
+          entries: [
+            {
+              id: "l-1",
+              space: "kiln",
+              rule: "禁用额外 UI 组件库",
+              source_task_id: "t-1",
+              created_at: now,
+            },
+          ],
+        },
+      },
+    });
+
+    const sentChats: string[] = [];
+    fetchMock.mockImplementation(async (url, init) => {
+      if (url.startsWith("/api/chat/commands")) {
+        return jsonResponse({
+          ok: true,
+          role: "intake",
+          agent: "codex",
+          model: "gpt-5.4",
+          commands: [
+            {
+              name: "brief",
+              description: "生成或更新产品方案",
+              argumentHint: "[说明]",
+              kind: "command",
+              source: "kiln",
+              action: "generate_brief",
+            },
+            {
+              name: "new",
+              description: "开启新草稿",
+              argumentHint: "",
+              kind: "command",
+              source: "kiln",
+              action: "new_draft",
+            },
+            {
+              name: "forge-dialogue",
+              description: "梳理复杂产品模型",
+              argumentHint: "",
+              kind: "skill",
+              source: "agent",
+            },
+          ],
+        });
+      }
+      if (url.startsWith("/api/spaces/kiln/files")) {
+        return jsonResponse({
+          ok: true,
+          spaceId: "kiln",
+          query: "comp",
+          files: [
+            { path: "apps/web/src/components/ChatComposer.tsx", kind: "file" },
+          ],
+          truncated: false,
+        });
+      }
+      if (url.includes("/chat") && init?.method === "POST") {
+        const body = JSON.parse(String(init.body ?? "{}")) as { message?: string };
+        sentChats.push(body.message ?? "");
+        return jsonResponse({
+          ok: true,
+          messages: [{ who: "me", text: body.message ?? "" }],
+          reply: { who: "agent", name: "intake", text: "ok" },
+          draft: {
+            schema_version: 1,
+            id: "d-comp-1",
+            title: "新草稿",
+            space: "kiln",
+            priority: "P2",
+            track: "L2",
+            workspace_mode: "git_worktree",
+            depends_on: [],
+            contract: {},
+            created_at: now,
+            updated_at: now,
+          },
+        });
+      }
+      return jsonResponse(bootstrap);
+    });
+
+    window.location.hash = "#view=intake";
+    render(<App />);
+    await waitFor(() => {
+      expect(document.getElementById("chatIn")).toBeTruthy();
+    });
+
+    const inputEl = document.getElementById("chatIn") as HTMLTextAreaElement;
+    const setTyped = (text: string) => {
+      inputEl.value = text;
+      inputEl.setSelectionRange(text.length, text.length);
+      fireEvent.input(inputEl, { target: { value: text } });
+    };
+
+    // Wait for remote command list to hydrate so agent skills appear alongside Kiln commands
+    setTyped("/");
+    const listbox = await screen.findByRole("listbox", { name: "命令与技能补全" });
+    await waitFor(() => {
+      expect(within(listbox).getByText("/forge-dialogue")).toBeTruthy();
+    });
+
+    // Escape dismisses popup WITHOUT navigating back to board view
+    fireEvent.keyDown(inputEl, { key: "Escape" });
+    expect(screen.queryByRole("listbox", { name: "命令与技能补全" })).toBeNull();
+    expect(document.getElementById("chatIn")).toBeTruthy();
+
+    // Filter "/fo" -> Enter completes "/forge-dialogue " without firing POST chat request
+    setTyped("/fo");
+    const filteredList = await screen.findByRole("listbox", { name: "命令与技能补全" });
+    expect(within(filteredList).getByText("/forge-dialogue")).toBeTruthy();
+    fireEvent.keyDown(inputEl, { key: "Enter" });
+    expect(inputEl.value).toBe("/forge-dialogue ");
+    expect(sentChats).toHaveLength(0);
+
+    // Selecting /new executes local draft reset
+    setTyped("/ne");
+    await screen.findByRole("listbox", { name: "命令与技能补全" });
+    fireEvent.keyDown(inputEl, { key: "Enter" });
+    await waitFor(() => {
+      expect(inputEl.value).toBe("");
+    });
+    expect(sentChats).toHaveLength(0);
+
+    // Typing @ shows repository files (debounced) + tasks + ledgers
+    setTyped("看下 @comp");
+    const mentionBox = await screen.findByRole("listbox", {
+      name: "引用文件、任务或账本",
+    });
+    await waitFor(() => {
+      expect(
+        within(mentionBox).getByText("apps/web/src/components/ChatComposer.tsx"),
+      ).toBeTruthy();
+    });
+    fireEvent.keyDown(inputEl, { key: "Enter" });
+    expect(inputEl.value).toBe(
+      "看下 @apps/web/src/components/ChatComposer.tsx ",
+    );
+
+    // Also verify in-memory @task and @ledger mentions without debounce wait
+    setTyped("参考 @t-");
+    const taskBox = await screen.findByRole("listbox", {
+      name: "引用文件、任务或账本",
+    });
+    expect(within(taskBox).getByText("@task:t-ref-9")).toBeTruthy();
   });
 });

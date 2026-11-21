@@ -521,6 +521,27 @@ export interface PaseoDaemonLike {
   observeAgents?(options?: { includeBackground?: boolean }): PaseoObservationHandle;
   subscribeConnectionStatus?(listener: (status: PaseoConnectionState) => void): () => void;
   listProviderUsage?(options?: { requestId?: string }): Promise<PaseoProviderUsageResponse>;
+  listCommands?(options: {
+    agentId: string;
+    requestId?: string;
+    draftConfig?: {
+      provider: string;
+      cwd: string;
+      modeId?: string;
+      model?: string;
+      thinkingOptionId?: string;
+    };
+  }): Promise<{
+    agentId: string;
+    commands: Array<{
+      name: string;
+      description: string;
+      argumentHint: string;
+      kind?: "command" | "skill";
+    }>;
+    error: string | null;
+    requestId: string;
+  }>;
 }
 
 /**

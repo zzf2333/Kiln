@@ -64,6 +64,7 @@ import {
 import type { CaffeinateController } from "./caffeinate.js";
 import {
   ChatMessageRecordSchema,
+  getBuiltinChatCommands,
   KilnChatEngine,
   snapshotBackends,
 } from "./chat.js";
@@ -94,6 +95,7 @@ import { syncModelPricing } from "./pricing-sync.js";
 import {
   discoverLocalGitRepos,
   inspectGitSpacePath,
+  listSpaceFiles,
   pickLocalDirectory,
   revealLocalPath,
   validateCommitWorkspace,
@@ -849,6 +851,65 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     return c.json({
       ok: true,
       spaces: loadAllSpaces(store, extraSpaces),
+    });
+  });
+
+  app.get("/api/chat/commands", async (c) => {
+    const rawRole = c.req.query("role");
+    const role: "intake" | "resolver" = rawRole === "resolver" ? "resolver" : "intake";
+    const spaceParam = c.req.query("space")?.trim();
+    const draftParam = c.req.query("draftId")?.trim();
+    const taskParam = c.req.query("taskId")?.trim();
+
+    const spaceId = spaceParam ? assertSafeSegment(spaceParam, "space") : undefined;
+    const draftId = draftParam ? assertSafeSegment(draftParam, "draftId") : undefined;
+    const taskId = taskParam ? assertSafeSegment(taskParam, "taskId") : undefined;
+
+    if (!chatEngine) {
+      return c.json({
+        ok: true,
+        role,
+        agent: null,
+        model: null,
+        commands: getBuiltinChatCommands(role),
+      });
+    }
+
+    const res = await chatEngine.listChatCommands({
+      role,
+      ...(spaceId ? { spaceId } : {}),
+      ...(draftId ? { draftId } : {}),
+      ...(taskId ? { taskId } : {}),
+    });
+    return c.json(res);
+  });
+
+  app.get("/api/spaces/:id/files", async (c) => {
+    const spaceId = assertSafeSegment(c.req.param("id"), "spaceId");
+    const query = c.req.query("q") ?? "";
+    const rawLimit = c.req.query("limit");
+    const parsedLimit = rawLimit !== undefined ? Number(rawLimit) : 24;
+    const spaceConfig = store.readSpace(spaceId);
+    if (!spaceConfig?.repo_path || spaceId === "local") {
+      return c.json({
+        ok: true,
+        spaceId,
+        query,
+        files: [],
+        truncated: false,
+      });
+    }
+    const result = await listSpaceFiles(
+      spaceConfig.repo_path,
+      query,
+      Number.isFinite(parsedLimit) ? parsedLimit : 24,
+    );
+    return c.json({
+      ok: true,
+      spaceId,
+      query,
+      files: result.files,
+      truncated: result.truncated,
     });
   });
 

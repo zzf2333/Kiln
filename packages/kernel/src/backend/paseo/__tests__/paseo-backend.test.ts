@@ -162,6 +162,13 @@ class MockPaseoDaemon implements PaseoDaemonLike {
   emitCancelOnCancelAgent = true;
   refreshSnapshotCalls = 0;
   onRefreshSnapshot?: () => void;
+  listCommandsCalls: Array<{ agentId: string; draftConfig?: Record<string, unknown> }> = [];
+  listCommandsResult: Array<{
+    name: string;
+    description: string;
+    argumentHint: string;
+    kind?: "command" | "skill";
+  }> = [];
 
   private agentSeq = 0;
   private readonly agents = new Map<string, MockAgentRuntime>();
@@ -325,6 +332,19 @@ class MockPaseoDaemon implements PaseoDaemonLike {
       return null;
     }
     return { agent: structuredClone(runtime.snapshot), project: null };
+  }
+
+  async listCommands(options: {
+    agentId: string;
+    draftConfig?: Record<string, unknown>;
+  }) {
+    this.listCommandsCalls.push(options);
+    return {
+      agentId: options.agentId,
+      commands: this.listCommandsResult,
+      error: null,
+      requestId: "cmd-req-1",
+    };
   }
 
   async deleteAgent(agentId: string): Promise<void> {
@@ -2219,6 +2239,41 @@ describe("PaseoBackend Round 1 review fixes: isolation, observations, reconnect 
     expect((await backend.listModels("pi")).map((m) => m.id)).toEqual([
       "magpie/group/fast",
       "magpie/group/strong",
+    ]);
+
+    await backend.dispose();
+  });
+
+  it("listCommands() filters internal Paseo bridge commands, normalizes names, and passes safe modeId", async () => {
+    const daemon = new MockPaseoDaemon();
+    daemon.listCommandsResult = [
+      { name: "/compact", description: "Compact context", argumentHint: "[hint]", kind: "command" },
+      { name: "forge-dialogue", description: "PM dialogue", argumentHint: "", kind: "skill" },
+      { name: "paseo_capture_entries", description: "Internal Paseo entry capture bridge", argumentHint: "", kind: "command" },
+      { name: "subagents-inspect-rpc", description: "Host integration bridge: answer async child", argumentHint: "", kind: "command" },
+      { name: "compact", description: "Duplicate", argumentHint: "", kind: "command" },
+    ];
+    const backend = createPaseoBackendForTest({ daemonClient: daemon });
+
+    const cmds = await backend.listCommands({
+      agent: "codex",
+      cwd: "/repos/kiln",
+      model: "gpt-6-luna",
+    });
+
+    expect(daemon.listCommandsCalls).toHaveLength(1);
+    expect(daemon.listCommandsCalls[0]).toMatchObject({
+      agentId: "",
+      draftConfig: {
+        provider: "codex",
+        cwd: "/repos/kiln",
+        modeId: "auto",
+        model: "gpt-6-luna",
+      },
+    });
+    expect(cmds).toEqual([
+      { name: "compact", description: "Compact context", argumentHint: "[hint]", kind: "command" },
+      { name: "forge-dialogue", description: "PM dialogue", argumentHint: "", kind: "skill" },
     ]);
 
     await backend.dispose();

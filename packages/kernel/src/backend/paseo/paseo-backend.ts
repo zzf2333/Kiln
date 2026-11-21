@@ -17,10 +17,13 @@ import {
   type ApprovalRequestEvent,
   assertRoleAgentEligible,
   type BackendAgentDescriptor,
+  type BackendCommandDescriptor,
+  type BackendListCommandsQuery,
   type BackendModeDescriptor,
   type BackendModelDescriptor,
   type BackendRunSpec,
   type ExecutionBackend,
+  FullAccessOnlyProviderError,
   isFullAccessMode,
   selectSafeModeId,
   type SessionProbeResult,
@@ -441,6 +444,75 @@ export class PaseoBackend implements ExecutionBackend {
     this.assertNotDisposed();
     await this.requireProviderEntry(agent);
     return this.resolveCapabilities(agent);
+  }
+
+  async listCommands(query: BackendListCommandsQuery): Promise<BackendCommandDescriptor[]> {
+    this.assertNotDisposed();
+    if (!this.daemonClient.listCommands) {
+      return [];
+    }
+
+    try {
+      await this.ensureConnected();
+      const entry = await this.requireProviderEntry(query.agent);
+      const canonicalProvider = entry.provider;
+      const modes = (entry.modes ?? []).map(toBackendModeDescriptor);
+      let selectedModeId: string | undefined;
+      try {
+        selectedModeId = selectSafeModeId(canonicalProvider, modes, {
+          allowFullAccessFallback: query.allowFullAccessFallback,
+        });
+      } catch (err) {
+        if (err instanceof FullAccessOnlyProviderError) {
+          selectedModeId = entry.defaultModeId ?? modes[0]?.id;
+        } else {
+          throw err;
+        }
+      }
+
+      const response = await this.daemonClient.listCommands({
+        agentId: query.sessionRef?.sessionId ?? "",
+        draftConfig: {
+          provider: canonicalProvider,
+          cwd: query.cwd,
+          ...(selectedModeId !== undefined ? { modeId: selectedModeId } : {}),
+          ...(query.model ? { model: query.model } : {}),
+          ...(query.reasoningEffort !== undefined ? { thinkingOptionId: query.reasoningEffort } : {}),
+        },
+      });
+      if (response.error || !Array.isArray(response.commands)) {
+        return [];
+      }
+
+      const seen = new Set<string>();
+      const out: BackendCommandDescriptor[] = [];
+      for (const item of response.commands) {
+        const name = item.name.replace(/^\/+/, "").trim();
+        const description = (item.description ?? "").trim();
+        if (
+          !name ||
+          /^paseo_/i.test(name) ||
+          /[-_]inspect[-_]rpc$/i.test(name) ||
+          /^(Internal Paseo |Host integration bridge:)/i.test(description)
+        ) {
+          continue;
+        }
+        const key = name.toLowerCase();
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        out.push({
+          name,
+          description,
+          argumentHint: (item.argumentHint ?? "").trim(),
+          kind: item.kind === "skill" ? "skill" : "command",
+        });
+      }
+      return out;
+    } catch {
+      return [];
+    }
   }
 
   async start(runSpec: BackendRunSpec): Promise<SessionRef> {

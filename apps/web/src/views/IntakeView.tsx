@@ -1,5 +1,6 @@
 import { useState } from "preact/hooks";
 import type { Priority, Track } from "@kiln/protocol/web";
+import { ChatComposer } from "../components/ChatComposer";
 import { ChatTimeline } from "../components/ChatTimeline";
 import { CheckIcon } from "../components/Icons";
 import { MarkdownContent } from "../components/MarkdownContent";
@@ -101,7 +102,13 @@ export function IntakeView() {
 
   const handleSend = async (): Promise<void> => {
     const val = chatInput.trim();
-    if (!val || intakeBusy || projectBlocked) return;
+    if (!val || intakeBusy) return;
+    if (val.toLowerCase() === "/new") {
+      setChatInput("");
+      store.startNewIntake();
+      return;
+    }
+    if (projectBlocked) return;
     setChatInput("");
     await store.sendIntakeChat(val);
   };
@@ -348,41 +355,30 @@ export function IntakeView() {
             }
           />
 
-          <div class="composer">
-            <div class="composer-inner">
-              <textarea
-                id="chatIn"
-                class="input"
-                rows={2}
-                placeholder={
-                  projectBlocked
-                    ? "请先添加或选择项目空间"
-                    : isProjectMode && selectedProject
-                      ? `描述「${selectedProject.name}」需求（Enter 发送，Shift+Enter 换行）`
-                      : "描述本机或临时任务需求（Enter 发送，Shift+Enter 换行）"
-                }
-                value={chatInput}
-                disabled={intakeBusy || projectBlocked}
-                onInput={(e) =>
-                  setChatInput((e.currentTarget as HTMLTextAreaElement).value)
-                }
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-                    e.preventDefault();
-                    void handleSend();
-                  }
-                }}
-              />
-              <button
-                type="button"
-                class="btn btn-light"
-                disabled={intakeBusy || projectBlocked || !chatInput.trim()}
-                onClick={() => void handleSend()}
-              >
-                发送
-              </button>
-            </div>
-          </div>
+          <ChatComposer
+            role="intake"
+            spaceId={intakeForm.space}
+            isProjectSpace={isProjectMode && Boolean(selectedProject)}
+            draftId={intakeDraftId}
+            value={chatInput}
+            disabled={intakeBusy || projectBlocked}
+            placeholder={
+              projectBlocked
+                ? "请先添加或选择项目空间"
+                : isProjectMode && selectedProject
+                  ? `描述「${selectedProject.name}」需求（/ 调用命令或技能，@ 引用文件或任务）`
+                  : "描述本机或临时任务需求（/ 调用命令或技能，@ 引用任务或账本）"
+            }
+            onChange={setChatInput}
+            onSend={() => void handleSend()}
+            onClientCommand={(action) => {
+              if (action === "new_draft") {
+                store.startNewIntake();
+                return true;
+              }
+              return false;
+            }}
+          />
         </div>
 
         <aside class={`draft ${draftOpen ? "open" : ""}`}>

@@ -12,6 +12,7 @@ import type {
   AgentDescriptorInfo,
   BackendConnectionInfo,
   BootstrapResponse,
+  ChatCommandsResponse,
   ChatMessage,
   ChatResponsePayload,
   CommitDraftPayload,
@@ -34,6 +35,7 @@ import type {
   RevokeAllDevicesResponse,
   RevokeDeviceResponse,
   SettingsSectionMap,
+  SpaceFilesResponse,
   SubmitDecisionPayload,
   SyncPricingRequest,
   SyncPricingResponse,
@@ -647,6 +649,32 @@ export async function fetchLedgers(): Promise<
     return data.ledgers as Record<string, LedgerFile> | LedgerFile[];
   }
   return null;
+}
+
+export async function fetchChatCommands(params: {
+  role: "intake" | "resolver";
+  spaceId?: string;
+  draftId?: string | null;
+  taskId?: string | null;
+}): Promise<ChatCommandsResponse> {
+  const qs = new URLSearchParams({ role: params.role });
+  if (params.spaceId) qs.set("space", params.spaceId);
+  if (params.draftId) qs.set("draftId", params.draftId);
+  if (params.taskId) qs.set("taskId", params.taskId);
+  return await requestJson<ChatCommandsResponse>(`/api/chat/commands?${qs.toString()}`);
+}
+
+export async function fetchSpaceFiles(
+  spaceId: string,
+  query = "",
+  limit = 24,
+): Promise<SpaceFilesResponse> {
+  const qs = new URLSearchParams();
+  if (query.trim().length > 0) qs.set("q", query.trim());
+  qs.set("limit", String(limit));
+  return await requestJson<SpaceFilesResponse>(
+    `/api/spaces/${encodeURIComponent(spaceId)}/files?${qs.toString()}`,
+  );
 }
 
 export interface SseSubscriptionHandlers {

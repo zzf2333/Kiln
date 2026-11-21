@@ -9,6 +9,7 @@ import type {
   DiscoverSpacesResponse,
   PickDirectoryResponse,
   SpaceConfig,
+  SpaceFileEntry,
   WorkspaceMode,
 } from "@kiln/protocol";
 import { buildSanitizedEnv } from "../gate/command-runner.js";
@@ -883,4 +884,173 @@ export function validateCommitWorkspace(
       });
     }
   }
+}
+
+const SPACE_FILES_CACHE_TTL_MS = 15_000;
+const SPACE_FILES_CACHE_MAX_REPOS = 16;
+const spaceFilesCache = new Map<string, { at: number; entries: SpaceFileEntry[] }>();
+
+export function clearSpaceFilesCache(): void {
+  spaceFilesCache.clear();
+}
+
+function walkBoundedRepoFiles(repoRoot: string, maxFiles = 2_000): string[] {
+  const skipDirs = new Set([".git", "node_modules", "dist", "target", ".turbo", ".next"]);
+  const out: string[] = [];
+  const queue: string[] = [repoRoot];
+
+  while (queue.length > 0 && out.length < maxFiles) {
+    const dir = queue.shift()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (out.length >= maxFiles) break;
+      if (entry.isDirectory()) {
+        if (!skipDirs.has(entry.name)) {
+          queue.push(path.join(dir, entry.name));
+        }
+        continue;
+      }
+      if (entry.isFile() || entry.isSymbolicLink()) {
+        const rel = path.relative(repoRoot, path.join(dir, entry.name)).replace(/\\/g, "/");
+        if (rel) {
+          out.push(rel);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+async function collectRepoEntries(canonicalRepo: string): Promise<SpaceFileEntry[]> {
+  const now = Date.now();
+  const cached = spaceFilesCache.get(canonicalRepo);
+  if (cached && now - cached.at < SPACE_FILES_CACHE_TTL_MS) {
+    return cached.entries;
+  }
+
+  let filePaths: string[] = [];
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["-C", canonicalRepo, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+      {
+        env: buildSanitizedEnv(),
+        encoding: "utf8",
+        timeout: 5_000,
+        maxBuffer: 8 * 1024 * 1024,
+      },
+    );
+    filePaths = stdout
+      .split("\0")
+      .map((s) => s.replace(/\\/g, "/").trim())
+      .filter(Boolean);
+  } catch {
+    filePaths = walkBoundedRepoFiles(canonicalRepo);
+  }
+
+  const dirs = new Set<string>();
+  const seenFiles = new Set<string>();
+  for (const rel of filePaths) {
+    if (seenFiles.has(rel)) continue;
+    seenFiles.add(rel);
+    const parts = rel.split("/");
+    for (let i = 1; i < parts.length; i += 1) {
+      dirs.add(`${parts.slice(0, i).join("/")}/`);
+    }
+  }
+
+  const combined: SpaceFileEntry[] = [
+    ...Array.from(dirs, (d) => ({ path: d, kind: "dir" as const })),
+    ...Array.from(seenFiles, (f) => ({ path: f, kind: "file" as const })),
+  ];
+
+  if (spaceFilesCache.size >= SPACE_FILES_CACHE_MAX_REPOS) {
+    const oldestKey = spaceFilesCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      spaceFilesCache.delete(oldestKey);
+    }
+  }
+  spaceFilesCache.set(canonicalRepo, { at: now, entries: combined });
+  return combined;
+}
+
+function scoreRepoEntry(entry: SpaceFileEntry, query: string): number | null {
+  const q = query.trim().toLowerCase().replace(/^[@./\\]+/, "");
+  if (!q) {
+    const depth = entry.path.split("/").filter(Boolean).length;
+    return depth * 10 + (entry.kind === "dir" ? 0 : 2) + entry.path.length * 0.001;
+  }
+
+  const p = entry.path.toLowerCase();
+  const trimmed = p.endsWith("/") ? p.slice(0, -1) : p;
+  const slashIdx = trimmed.lastIndexOf("/");
+  const base = slashIdx >= 0 ? trimmed.slice(slashIdx + 1) : trimmed;
+
+  if (base === q) return 0 + entry.path.length * 0.001;
+  if (base.startsWith(q)) return 10 + entry.path.length * 0.001;
+  const baseSub = base.indexOf(q);
+  if (baseSub !== -1) return 20 + baseSub * 0.01 + entry.path.length * 0.001;
+  const pathSub = p.indexOf(q);
+  if (pathSub !== -1) return 40 + pathSub * 0.01 + entry.path.length * 0.001;
+
+  let qi = 0;
+  let gap = 0;
+  for (let i = 0; i < p.length && qi < q.length; i += 1) {
+    if (p[i] === q[qi]) {
+      qi += 1;
+    } else if (qi > 0) {
+      gap += 1;
+    }
+  }
+  if (qi === q.length) {
+    return 100 + gap + entry.path.length * 0.001;
+  }
+  return null;
+}
+
+/**
+ * Lists matching relative files and directories inside a registered Git project space
+ * using git index + non-ignored untracked files with a short in-memory cache.
+ */
+export async function listSpaceFiles(
+  repoPath: string,
+  query = "",
+  limit = 24,
+): Promise<{ files: SpaceFileEntry[]; truncated: boolean }> {
+  const safeLimit = Math.max(1, Math.min(80, Number.isFinite(limit) ? Math.floor(limit) : 24));
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(repoPath);
+  } catch {
+    return { files: [], truncated: false };
+  }
+  if (!stat.isDirectory()) {
+    return { files: [], truncated: false };
+  }
+
+  const canonicalRepo = realpathCanonical(repoPath);
+  const allEntries = await collectRepoEntries(canonicalRepo);
+  const scored: Array<{ score: number; entry: SpaceFileEntry }> = [];
+  for (const entry of allEntries) {
+    const score = scoreRepoEntry(entry, query);
+    if (score !== null) {
+      scored.push({ score, entry });
+    }
+  }
+
+  scored.sort((a, b) => {
+    if (a.score !== b.score) return a.score - b.score;
+    return a.entry.path.localeCompare(b.entry.path);
+  });
+
+  const truncated = scored.length > safeLimit;
+  return {
+    files: scored.slice(0, safeLimit).map((item) => item.entry),
+    truncated,
+  };
 }

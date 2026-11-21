@@ -2,6 +2,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SseEventSchema, type RolesConfig, type TaskCard } from "@kiln/protocol";
 import { FakeBackend, type ExecutionBackend } from "../../backend/index.js";
@@ -1781,5 +1782,257 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     const handoffText = fs.readFileSync(handoffPath, "utf8");
     expect(handoffText).toContain("## 3. 选定落地方案与关键取舍");
     expect(handoffText).toContain("方案 A（推荐）：复用 Zod 契约校验");
+  });
+
+  it("exposes GET /api/chat/commands, GET /api/spaces/:id/files, protects leading slash commands, and expands @task:/@ledger: mentions", async () => {
+    const kilnHome = makeTempDir("kiln-home-cmd-");
+    const repoDir = makeTempDir("kiln-repo-cmd-");
+    execFileSync("git", ["init"], { cwd: repoDir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "kiln@example.com"], { cwd: repoDir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.name", "Kiln"], { cwd: repoDir, stdio: "ignore" });
+    fs.mkdirSync(path.join(repoDir, "apps", "web", "src"), { recursive: true });
+    fs.mkdirSync(path.join(repoDir, "ignored_dir"), { recursive: true });
+    fs.writeFileSync(path.join(repoDir, ".gitignore"), "ignored_dir/\n*.log\n", "utf8");
+    fs.writeFileSync(path.join(repoDir, "apps", "web", "src", "ChatComposer.tsx"), "// tracked\n", "utf8");
+    execFileSync("git", ["add", ".gitignore", "apps/web/src/ChatComposer.tsx"], { cwd: repoDir, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "init"], { cwd: repoDir, stdio: "ignore" });
+    fs.writeFileSync(path.join(repoDir, "apps", "web", "src", "UntrackedGuide.md"), "# guide\n", "utf8");
+    fs.writeFileSync(path.join(repoDir, "ignored_dir", "secret.ts"), "secret\n", "utf8");
+    fs.writeFileSync(path.join(repoDir, "debug.log"), "noise\n", "utf8");
+
+    const receivedMessages: string[] = [];
+    const fakeBackend = new FakeBackend({
+      commandsByAgent: {
+        pi: [
+          {
+            name: "compact",
+            description: "Compact session context",
+            argumentHint: "[focus]",
+            kind: "command",
+          },
+          {
+            name: "forge-dialogue",
+            description: "整理并对齐产品设计模型",
+            argumentHint: "",
+            kind: "skill",
+          },
+          {
+            // Should be deduplicated against Kiln built-in /brief
+            name: "brief",
+            description: "Duplicate agent brief",
+            argumentHint: "",
+            kind: "command",
+          },
+        ],
+      },
+    });
+
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      publicDir: null,
+      tokenSecret: "m2-slash-mention-secret-0123456789ab",
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    await server.start();
+
+    server.store.writeConfig("roles", {
+      schema_version: 1,
+      heterogeneous_review: true,
+      roles: {
+        intake: {
+          backend_id: "fake",
+          agent: "pi",
+          model: "magpie/group/fast",
+          allow_full_access_fallback: false,
+        },
+        resolver: {
+          backend_id: "fake",
+          agent: "pi",
+          model: "magpie/group/fast",
+          allow_full_access_fallback: false,
+        },
+      },
+    });
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "kiln",
+      name: "Kiln",
+      repo_path: repoDir,
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    });
+    server.store.writeLedger({
+      schema_version: 1,
+      space: "kiln",
+      entries: [
+        {
+          id: "l-slash-1",
+          space: "kiln",
+          rule: "禁止新增 UI 组件库依赖",
+          source_task_id: "t-base",
+          created_at: new Date().toISOString(),
+        },
+      ],
+    });
+    const refCreatedAt = new Date().toISOString();
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-ref-1",
+        space: "kiln",
+        priority: "P1",
+        title: "修复输入框快捷指令",
+        track: "L2",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        contract_version: 1,
+        contract: {
+          goal: "支持 / 与 @ 触发",
+          end: "单测全绿",
+          accept_cmd: "pnpm test",
+          accept_files_hash: "pending",
+          scope: ["apps/web/**"],
+          deliver: { mode: "manual", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 200000 },
+        created_at: refCreatedAt,
+        updated_at: refCreatedAt,
+      },
+      "# Brief",
+    );
+
+    // 1. GET /api/chat/commands merges Kiln built-ins + agent commands without overwriting built-ins
+    const cmdRes = await server.app.request(
+      new Request("http://127.0.0.1/api/chat/commands?role=intake&space=kiln"),
+    );
+    expect(cmdRes.status).toBe(200);
+    const cmdJson = (await cmdRes.json()) as {
+      ok: boolean;
+      agent: string | null;
+      commands: Array<{ name: string; source: string; kind: string; description: string }>;
+    };
+    expect(cmdJson.ok).toBe(true);
+    expect(cmdJson.agent).toBe("pi");
+    expect(cmdJson.commands.map((c) => c.name)).toEqual([
+      "brief",
+      "fill",
+      "split",
+      "new",
+      "compact",
+      "forge-dialogue",
+    ]);
+    expect(cmdJson.commands.find((c) => c.name === "brief")?.source).toBe("kiln");
+    expect(cmdJson.commands.find((c) => c.name === "forge-dialogue")?.kind).toBe("skill");
+
+    // 2. GET /api/spaces/:id/files indexes tracked & untracked files/dirs while excluding gitignored entries
+    const filesRes = await server.app.request(
+      new Request("http://127.0.0.1/api/spaces/kiln/files?q=composer"),
+    );
+    expect(filesRes.status).toBe(200);
+    const filesJson = (await filesRes.json()) as {
+      files: Array<{ path: string; kind: string }>;
+    };
+    expect(filesJson.files[0]).toEqual({
+      path: "apps/web/src/ChatComposer.tsx",
+      kind: "file",
+    });
+
+    const allFilesRes = await server.app.request(
+      new Request("http://127.0.0.1/api/spaces/kiln/files?limit=50"),
+    );
+    const allFilesJson = (await allFilesRes.json()) as {
+      files: Array<{ path: string; kind: string }>;
+    };
+    const allPaths = allFilesJson.files.map((f) => f.path);
+    expect(allPaths).toContain("apps/web/src/");
+    expect(allPaths).toContain("apps/web/src/UntrackedGuide.md");
+    expect(allPaths.some((x) => x.includes("secret.ts") || x.includes("debug.log"))).toBe(false);
+
+    const localFilesRes = await server.app.request(
+      new Request("http://127.0.0.1/api/spaces/local/files?q=foo"),
+    );
+    expect(localFilesRes.status).toBe(200);
+    expect(((await localFilesRes.json()) as { files: unknown[] }).files).toEqual([]);
+
+    // 3. Create draft and test slash preservation + @task:/@ledger: expansion across turns
+    await server.app.request(
+      new Request("http://127.0.0.1/api/drafts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: "d-slash-1",
+          title: "测试斜杠与引用",
+          space: "kiln",
+          workspace_mode: "git_worktree",
+        }),
+      }),
+    );
+
+    const captureScript = [
+      { kind: "message" as const, text: "收到并已处理。", delta: false },
+      { kind: "exit" as const, reason: "completed" as const },
+    ];
+    for (let i = 0; i < 4; i += 1) {
+      fakeBackend.enqueueScript(captureScript, (ctx) => {
+        if (ctx.runSpec.role !== "intake") return false;
+        receivedMessages.push(ctx.message);
+        return true;
+      });
+    }
+
+    // Turn 1 (session start): @task: + @ledger: injects context cleanly before normal message
+    await server.app.request(
+      new Request("http://127.0.0.1/api/drafts/d-slash-1/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: "结合 @task:t-ref-1 与 @ledger:kiln 帮我看 @apps/web/src/ChatComposer.tsx",
+        }),
+      }),
+    );
+
+    // Turn 2 (reuse non-MCP session): /compact stays pure without prepending draft snapshot!
+    await server.app.request(
+      new Request("http://127.0.0.1/api/drafts/d-slash-1/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "/compact" }),
+      }),
+    );
+
+    // Turn 3 (reuse non-MCP session): native skill /forge-dialogue keeps "/" at index 0 while snapshot moves to tail!
+    await server.app.request(
+      new Request("http://127.0.0.1/api/drafts/d-slash-1/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "/forge-dialogue 梳理输入交互" }),
+      }),
+    );
+
+    // Turn 4: Kiln built-in /brief expands to structured PM instruction
+    await server.app.request(
+      new Request("http://127.0.0.1/api/drafts/d-slash-1/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "/brief 重点写清键盘交互" }),
+      }),
+    );
+
+    expect(receivedMessages).toHaveLength(4);
+    expect(receivedMessages[0]).toContain("[用户引用上下文:");
+    expect(receivedMessages[0]).toContain("修复输入框快捷指令");
+    expect(receivedMessages[0]).toContain("禁止新增 UI 组件库依赖");
+    expect(receivedMessages[1]).toBe("/compact");
+    expect(receivedMessages[2]?.startsWith("/forge-dialogue 梳理输入交互")).toBe(true);
+    expect(receivedMessages[2]).toContain("[当前右侧草稿最新字段:");
+    expect(receivedMessages[3]).toContain("生成或更新完整的《产品方案 (BRIEF.md)》");
+    expect(receivedMessages[3]).toContain("重点写清键盘交互");
   });
 });

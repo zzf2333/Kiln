@@ -1,9 +1,10 @@
 import { useState } from "preact/hooks";
 import type { TaskDetailResponse } from "../api/types";
+import { ChatComposer } from "../components/ChatComposer";
 import { ChatTimeline } from "../components/ChatTimeline";
 import { DecisionBox } from "../components/DecisionBox";
 import { ViewFrame } from "../components/ViewFrame";
-import { useKilnStore } from "../state/store";
+import { isProjectSpace, useKilnStore } from "../state/store";
 
 export function HostStagedDiffSection({
   detail,
@@ -148,35 +149,17 @@ export function ResolveView() {
             defaultAgentName="resolver"
           />
 
-          <div class="composer">
-            <div class="composer-inner">
-              <textarea
-                id="chatIn"
-                class="input"
-                rows={2}
-                placeholder="说说你的想法（Enter 发送，Shift+Enter 换行）"
-                value={chatInput}
-                disabled={state.resolveBusy}
-                onInput={(e) =>
-                  setChatInput((e.currentTarget as HTMLTextAreaElement).value)
-                }
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-                    e.preventDefault();
-                    void handleSend();
-                  }
-                }}
-              />
-              <button
-                type="button"
-                class="btn btn-light"
-                disabled={state.resolveBusy || !chatInput.trim()}
-                onClick={() => void handleSend()}
-              >
-                发送
-              </button>
-            </div>
-          </div>
+          <ChatComposer
+            role="resolver"
+            spaceId={taskSummary.space}
+            isProjectSpace={isProjectSpace(state.spaces[taskSummary.space])}
+            taskId={taskId}
+            value={chatInput}
+            disabled={state.resolveBusy}
+            placeholder="说说你的想法（/ 调用命令或技能，@ 引用文件或任务）"
+            onChange={setChatInput}
+            onSend={() => void handleSend()}
+          />
         </div>
 
         <aside class={`draft ${state.draftOpen ? "open" : ""}`}>
