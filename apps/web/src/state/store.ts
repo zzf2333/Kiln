@@ -68,6 +68,15 @@ import type {
   UpsertSpacePayload,
   UsageSnapshot,
 } from "../api/types";
+import {
+  applyThemeToDocument,
+  readStoredThemePreference,
+  resolveTheme,
+  subscribeSystemThemeChange,
+  writeStoredThemePreference,
+  type ResolvedTheme,
+  type ThemePreference,
+} from "./theme";
 
 export type MvpView =
   | "board"
@@ -125,8 +134,11 @@ export interface KilnStoreState {
   showParentSlices: boolean;
   navOpen: boolean;
   draftOpen: boolean;
+  desktopDraftCollapsed: boolean;
   paletteOpen: boolean;
   toastMessage: string | null;
+  themePreference: ThemePreference;
+  resolvedTheme: ResolvedTheme;
 
   bootstrapping: boolean;
   bootstrapLoaded: boolean;
@@ -559,10 +571,12 @@ export class KilnWebStore {
   private sseCleanup: (() => void) | null = null;
   private refreshInFlight: Promise<void> | null = null;
   private authProbeInFlight: Promise<void> | null = null;
+  private systemThemeCleanup: (() => void) | null = null;
   private intakeRestoredOnce = false;
 
   constructor() {
     const parsed = parseLocationHash();
+    const initialThemePref = readStoredThemePreference();
     this.state = {
       view: parsed.view,
       taskId: parsed.taskId,
@@ -574,8 +588,11 @@ export class KilnWebStore {
       showParentSlices: false,
       navOpen: false,
       draftOpen: false,
+      desktopDraftCollapsed: false,
       paletteOpen: false,
       toastMessage: null,
+      themePreference: initialThemePref,
+      resolvedTheme: resolveTheme(initialThemePref),
 
       bootstrapping: true,
       bootstrapLoaded: false,
@@ -916,6 +933,20 @@ export class KilnWebStore {
   }
 
   start(): () => void {
+    const appliedTheme = applyThemeToDocument(this.state.themePreference);
+    if (appliedTheme !== this.state.resolvedTheme) {
+      this.setState({ resolvedTheme: appliedTheme });
+    }
+    this.systemThemeCleanup?.();
+    this.systemThemeCleanup = subscribeSystemThemeChange(() => {
+      if (this.state.themePreference === "system") {
+        const next = applyThemeToDocument("system");
+        if (next !== this.state.resolvedTheme) {
+          this.setState({ resolvedTheme: next });
+        }
+      }
+    });
+
     const onUnauthorized = (_url: string, err: ApiError): void => {
       if (this.state.authMode === "remote" || err.code === "unauthorized") {
         this.handleRemoteUnauthorized(
@@ -962,6 +993,8 @@ export class KilnWebStore {
     return () => {
       setUnauthorizedHandler(null);
       this.disconnectSse();
+      this.systemThemeCleanup?.();
+      this.systemThemeCleanup = null;
       if (this.toastTimer) {
         clearTimeout(this.toastTimer);
         this.toastTimer = null;
@@ -1370,6 +1403,16 @@ export class KilnWebStore {
 
   toggleDraftOpen(): void {
     this.setState({ draftOpen: !this.state.draftOpen });
+  }
+
+  toggleDesktopDraftCollapsed(): void {
+    this.setState({ desktopDraftCollapsed: !this.state.desktopDraftCollapsed });
+  }
+
+  setThemePreference(themePreference: ThemePreference): void {
+    writeStoredThemePreference(themePreference);
+    const resolvedTheme = applyThemeToDocument(themePreference);
+    this.setState({ themePreference, resolvedTheme });
   }
 
   setPaletteOpen(paletteOpen: boolean): void {

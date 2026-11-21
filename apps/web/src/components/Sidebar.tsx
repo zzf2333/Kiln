@@ -6,7 +6,10 @@ import {
   FeedIcon,
   InboxIcon,
   LedgerIcon,
+  MoonIcon,
   SettingsIcon,
+  SunIcon,
+  SystemThemeIcon,
   UsageIcon,
 } from "./Icons";
 import { UsagePanel } from "./UsagePanel";
@@ -52,6 +55,41 @@ export function Sidebar() {
               v{state.daemonVersion}
             </span>
           ) : null}
+          <div class="theme-switch" role="radiogroup" aria-label="外观主题">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={state.themePreference === "system"}
+              aria-label="跟随系统"
+              title={`跟随系统（当前：${state.resolvedTheme === "light" ? "浅色" : "深色"}）`}
+              class={state.themePreference === "system" ? "on" : ""}
+              onClick={() => store.setThemePreference("system")}
+            >
+              <SystemThemeIcon />
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={state.themePreference === "light"}
+              aria-label="浅色主题"
+              title="浅色主题"
+              class={state.themePreference === "light" ? "on" : ""}
+              onClick={() => store.setThemePreference("light")}
+            >
+              <SunIcon />
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={state.themePreference === "dark"}
+              aria-label="深色主题"
+              title="深色主题"
+              class={state.themePreference === "dark" ? "on" : ""}
+              onClick={() => store.setThemePreference("dark")}
+            >
+              <MoonIcon />
+            </button>
+          </div>
         </div>
 
         <button

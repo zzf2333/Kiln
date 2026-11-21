@@ -8,9 +8,13 @@
   --hover: #201f1c;
   --line: rgba(255, 244, 230, 0.07);
   --line-2: rgba(255, 244, 230, 0.13);
+  --line-focus: rgba(255, 244, 230, 0.32);
   --t1: #ece7e1;
   --t2: #a39d96;
   --t3: #726c66;
+
+  --btn-light-hover: #ffffff;
+  --key-on-light: rgba(0, 0, 0, 0.12);
 
   /* 阶段色：每种颜色只表示一个阶段 */
   --s-intake: #8f87c6;
@@ -26,11 +30,46 @@
   --ask: #dba145;
   --bad: #d1625b;
   --ok: #5aa57c;
+  --live-fg: #f6b26b;
+  --ok-fg: #7cc29b;
+  --bad-fg: #e08b85;
+  --bad-strong-fg: #f2a7a1;
+  --ask-strong-fg: #ebbd6e;
 
   /* 余烬：只用于正在运行 */
   --ember-1: #c2410c;
   --ember-2: #f08a24;
   --ember-3: #fcd34d;
+
+  /* 代码 / 路径胶囊 / 表格 / 链接 */
+  --code-bg: #0e0d0c;
+  --code-inline-bg: rgba(255, 244, 230, 0.075);
+  --code-inline-fg: #efe5d8;
+  --file-pill-bg: rgba(255, 244, 230, 0.045);
+  --file-pill-border: rgba(255, 244, 230, 0.11);
+  --file-pill-fg: #e6d7c3;
+  --file-pill-hover: rgba(255, 244, 230, 0.08);
+  --file-pill-sep: rgba(255, 244, 230, 0.09);
+  --table-stripe: rgba(255, 244, 230, 0.015);
+  --link-fg: #9fc5f8;
+  --link-hover: #c7defc;
+
+  /* 语法高亮 */
+  --tok-cmt: #7d7770;
+  --tok-str: #b7cb9c;
+  --tok-kw: #d6a273;
+  --tok-num: #d8b97f;
+  --tok-key: #9fc0db;
+  --tok-add: #84c59e;
+  --tok-add-bg: rgba(90, 165, 124, 0.1);
+  --tok-del: #e28d87;
+  --tok-del-bg: rgba(209, 98, 91, 0.11);
+  --tok-hunk: #9ab3e0;
+
+  /* 遮罩与投影 */
+  --mask-bg: rgba(0, 0, 0, 0.5);
+  --shadow-float: 0 6px 18px rgba(0, 0, 0, 0.45);
+  --shadow-dock: 0 12px 28px rgba(0, 0, 0, 0.42);
 
   --ease: cubic-bezier(0.2, 0, 0, 1);
   --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
@@ -38,4 +77,133 @@
 
   scrollbar-color: var(--raised) transparent;
   scrollbar-width: thin;
+}
+
+/* 暖纸工业风浅色令牌：显式浅色与未设 dark 时的系统自适应浅色 */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f7f5f0;
+  --rail: #efece5;
+  --surface: #ffffff;
+  --raised: #e7e3da;
+  --hover: #ece8df;
+  --line: rgba(38, 31, 24, 0.09);
+  --line-2: rgba(38, 31, 24, 0.16);
+  --line-focus: rgba(38, 31, 24, 0.34);
+  --t1: #1c1917;
+  --t2: #575049;
+  --t3: #7d746a;
+
+  --btn-light-hover: #2f2a25;
+  --key-on-light: rgba(255, 255, 255, 0.18);
+
+  --s-intake: #695fb0;
+  --s-impl: #1f7f91;
+  --s-research: #2b72a8;
+  --s-verify: #2f7d53;
+  --s-review: #4668bd;
+  --s-accept: #9e5684;
+  --s-advise: #916d27;
+  --s-deliver: #686f77;
+
+  --ask: #b47412;
+  --bad: #c03e37;
+  --ok: #2e7d52;
+  --live-fg: #c2570c;
+  --ok-fg: #246b45;
+  --bad-fg: #b5352e;
+  --bad-strong-fg: #a62b24;
+  --ask-strong-fg: #9c6109;
+
+  --code-bg: #f1eee7;
+  --code-inline-bg: rgba(38, 31, 24, 0.07);
+  --code-inline-fg: #2d261f;
+  --file-pill-bg: rgba(38, 31, 24, 0.045);
+  --file-pill-border: rgba(38, 31, 24, 0.13);
+  --file-pill-fg: #3d342b;
+  --file-pill-hover: rgba(38, 31, 24, 0.085);
+  --file-pill-sep: rgba(38, 31, 24, 0.11);
+  --table-stripe: rgba(38, 31, 24, 0.024);
+  --link-fg: #1d5ea8;
+  --link-hover: #12437d;
+
+  --tok-cmt: #7b7369;
+  --tok-str: #3e6b2c;
+  --tok-kw: #9f4f17;
+  --tok-num: #8f5e0c;
+  --tok-key: #235c8c;
+  --tok-add: #216b42;
+  --tok-add-bg: rgba(46, 125, 82, 0.11);
+  --tok-del: #b3342d;
+  --tok-del-bg: rgba(192, 62, 55, 0.1);
+  --tok-hunk: #3659a3;
+
+  --mask-bg: rgba(24, 20, 16, 0.34);
+  --shadow-float: 0 6px 18px rgba(34, 28, 22, 0.14);
+  --shadow-dock: 0 12px 28px rgba(34, 28, 22, 0.14);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --bg: #f7f5f0;
+    --rail: #efece5;
+    --surface: #ffffff;
+    --raised: #e7e3da;
+    --hover: #ece8df;
+    --line: rgba(38, 31, 24, 0.09);
+    --line-2: rgba(38, 31, 24, 0.16);
+    --line-focus: rgba(38, 31, 24, 0.34);
+    --t1: #1c1917;
+    --t2: #575049;
+    --t3: #7d746a;
+
+    --btn-light-hover: #2f2a25;
+    --key-on-light: rgba(255, 255, 255, 0.18);
+
+    --s-intake: #695fb0;
+    --s-impl: #1f7f91;
+    --s-research: #2b72a8;
+    --s-verify: #2f7d53;
+    --s-review: #4668bd;
+    --s-accept: #9e5684;
+    --s-advise: #916d27;
+    --s-deliver: #686f77;
+
+    --ask: #b47412;
+    --bad: #c03e37;
+    --ok: #2e7d52;
+    --live-fg: #c2570c;
+    --ok-fg: #246b45;
+    --bad-fg: #b5352e;
+    --bad-strong-fg: #a62b24;
+    --ask-strong-fg: #9c6109;
+
+    --code-bg: #f1eee7;
+    --code-inline-bg: rgba(38, 31, 24, 0.07);
+    --code-inline-fg: #2d261f;
+    --file-pill-bg: rgba(38, 31, 24, 0.045);
+    --file-pill-border: rgba(38, 31, 24, 0.13);
+    --file-pill-fg: #3d342b;
+    --file-pill-hover: rgba(38, 31, 24, 0.085);
+    --file-pill-sep: rgba(38, 31, 24, 0.11);
+    --table-stripe: rgba(38, 31, 24, 0.024);
+    --link-fg: #1d5ea8;
+    --link-hover: #12437d;
+
+    --tok-cmt: #7b7369;
+    --tok-str: #3e6b2c;
+    --tok-kw: #9f4f17;
+    --tok-num: #8f5e0c;
+    --tok-key: #235c8c;
+    --tok-add: #216b42;
+    --tok-add-bg: rgba(46, 125, 82, 0.11);
+    --tok-del: #b3342d;
+    --tok-del-bg: rgba(192, 62, 55, 0.1);
+    --tok-hunk: #3659a3;
+
+    --mask-bg: rgba(24, 20, 16, 0.34);
+    --shadow-float: 0 6px 18px rgba(34, 28, 22, 0.14);
+    --shadow-dock: 0 12px 28px rgba(34, 28, 22, 0.14);
+  }
 }

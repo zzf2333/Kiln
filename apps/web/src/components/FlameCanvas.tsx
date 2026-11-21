@@ -9,11 +9,23 @@ const FIRE_STOPS: ReadonlyArray<readonly [number, number, number, number, number
   [1.0, 90, 20, 8, 0],
 ];
 
-function fireColor(t: number): [number, number, number, number] {
-  for (let i = 1; i < FIRE_STOPS.length; i += 1) {
-    const hi = FIRE_STOPS[i]!;
+const LIGHT_FIRE_STOPS: ReadonlyArray<readonly [number, number, number, number, number]> = [
+  [0.0, 255, 244, 180, 0.95],
+  [0.14, 245, 158, 11, 0.92],
+  [0.36, 234, 88, 12, 0.85],
+  [0.62, 194, 52, 10, 0.6],
+  [0.85, 140, 32, 8, 0.28],
+  [1.0, 90, 20, 8, 0],
+];
+
+function fireColor(
+  t: number,
+  stops: ReadonlyArray<readonly [number, number, number, number, number]> = FIRE_STOPS,
+): [number, number, number, number] {
+  for (let i = 1; i < stops.length; i += 1) {
+    const hi = stops[i]!;
     if (t <= hi[0]) {
-      const lo = FIRE_STOPS[i - 1]!;
+      const lo = stops[i - 1]!;
       const k = (t - lo[0]) / (hi[0] - lo[0]);
       return [
         lo[1] + (hi[1] - lo[1]) * k,
@@ -27,13 +39,15 @@ function fireColor(t: number): [number, number, number, number] {
 }
 
 let cachedSprites: HTMLCanvasElement[] | null = null;
+let cachedLightSprites: HTMLCanvasElement[] | null = null;
 
-function getSprites(): HTMLCanvasElement[] | null {
-  if (cachedSprites) return cachedSprites;
+function buildSprites(
+  stops: ReadonlyArray<readonly [number, number, number, number, number]>,
+): HTMLCanvasElement[] | null {
   if (typeof document === "undefined") return null;
   const list: HTMLCanvasElement[] = [];
   for (let i = 0; i < 32; i += 1) {
-    const [r, g, b] = fireColor(i / 31);
+    const [r, g, b] = fireColor(i / 31, stops);
     const ri = r | 0;
     const gi = g | 0;
     const bi = b | 0;
@@ -53,8 +67,20 @@ function getSprites(): HTMLCanvasElement[] | null {
     ctx.fillRect(0, 0, 64, 64);
     list.push(c);
   }
-  cachedSprites = list;
   return list;
+}
+
+function getSprites(isLight: boolean): HTMLCanvasElement[] | null {
+  if (isLight) {
+    if (!cachedLightSprites) {
+      cachedLightSprites = buildSprites(LIGHT_FIRE_STOPS);
+    }
+    return cachedLightSprites;
+  }
+  if (!cachedSprites) {
+    cachedSprites = buildSprites(FIRE_STOPS);
+  }
+  return cachedSprites;
 }
 
 interface Particle {
@@ -122,8 +148,9 @@ export function FlameCanvas({ size = "default", heat }: FlameCanvasProps) {
     }
 
     const ctx = canvas.getContext("2d");
-    const spr = getSprites();
-    if (!ctx || !spr) return;
+    const darkSprites = getSprites(false);
+    const lightSprites = getSprites(true);
+    if (!ctx || !darkSprites || !lightSprites) return;
 
     let rafId = 0;
     let disposed = false;
@@ -135,6 +162,12 @@ export function FlameCanvas({ size = "default", heat }: FlameCanvasProps) {
       if (disposed) return;
       const host = canvas.parentElement;
       if (!host) return;
+
+      const isLight =
+        typeof document !== "undefined" &&
+        document.documentElement.dataset.theme === "light";
+      const spr = isLight ? lightSprites : darkSprites;
+      const activeStops = isLight ? LIGHT_FIRE_STOPS : FIRE_STOPS;
 
       const { sm, heat: currentHeat } = propsRef.current;
       const W = host.clientWidth;
@@ -172,7 +205,7 @@ export function FlameCanvas({ size = "default", heat }: FlameCanvasProps) {
 
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, cw, ch);
-        ctx.globalCompositeOperation = "lighter";
+        ctx.globalCompositeOperation = isLight ? "source-over" : "lighter";
 
         const lift = (sm ? 40 : 120) * (0.8 + currentHeat * 0.35);
         ps = ps.filter((p) => {
@@ -188,7 +221,7 @@ export function FlameCanvas({ size = "default", heat }: FlameCanvasProps) {
           p.y += p.vy * dt;
 
           if (p.spark) {
-            const [r, g, b, a] = fireColor(Math.min(0.6, t * 0.6));
+            const [r, g, b, a] = fireColor(Math.min(0.6, t * 0.6), activeStops);
             ctx.globalAlpha = 1;
             const alpha =
               a *
@@ -200,9 +233,9 @@ export function FlameCanvas({ size = "default", heat }: FlameCanvasProps) {
           }
 
           const edge = Math.max(0, Math.min(1, (p.y - 2) / (up * 0.65)));
-          const a = fireColor(t)[3] * edge;
+          const a = fireColor(t, activeStops)[3] * edge;
           const s = p.s * (1 - t * 0.65);
-          ctx.globalAlpha = Math.min(1, a * 0.62);
+          ctx.globalAlpha = Math.min(1, a * (isLight ? 0.72 : 0.62));
           const sprite = spr[Math.min(31, (t * 31) | 0)];
           if (sprite) {
             ctx.drawImage(sprite, p.x - s, p.y - s * 1.25, s * 2, s * 2.5);

@@ -119,16 +119,26 @@ export function ResolveView() {
         </div>
       }
       right={
-        <button
-          type="button"
-          class="btn btn-ghost"
-          onClick={() => store.openTask(taskId)}
-        >
-          返回详情
-        </button>
+        <>
+          <button
+            type="button"
+            class="btn btn-ghost desktop-panel-toggle"
+            aria-pressed={state.desktopDraftCollapsed}
+            onClick={() => store.toggleDesktopDraftCollapsed()}
+          >
+            {state.desktopDraftCollapsed ? "展开拍板栏" : "收起侧栏"}
+          </button>
+          <button
+            type="button"
+            class="btn btn-ghost"
+            onClick={() => store.openTask(taskId)}
+          >
+            返回详情
+          </button>
+        </>
       }
     >
-      <div class="converse">
+      <div class={`converse ${state.desktopDraftCollapsed ? "is-panel-collapsed" : ""}`}>
         <div class="chat">
           <ChatTimeline
             messages={messages}
@@ -139,31 +149,33 @@ export function ResolveView() {
           />
 
           <div class="composer">
-            <textarea
-              id="chatIn"
-              class="input"
-              rows={2}
-              placeholder="说说你的想法（Enter 发送，Shift+Enter 换行）"
-              value={chatInput}
-              disabled={state.resolveBusy}
-              onInput={(e) =>
-                setChatInput((e.currentTarget as HTMLTextAreaElement).value)
-              }
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-                  e.preventDefault();
-                  void handleSend();
+            <div class="composer-inner">
+              <textarea
+                id="chatIn"
+                class="input"
+                rows={2}
+                placeholder="说说你的想法（Enter 发送，Shift+Enter 换行）"
+                value={chatInput}
+                disabled={state.resolveBusy}
+                onInput={(e) =>
+                  setChatInput((e.currentTarget as HTMLTextAreaElement).value)
                 }
-              }}
-            />
-            <button
-              type="button"
-              class="btn btn-light"
-              disabled={state.resolveBusy || !chatInput.trim()}
-              onClick={() => void handleSend()}
-            >
-              发送
-            </button>
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+                    e.preventDefault();
+                    void handleSend();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                class="btn btn-light"
+                disabled={state.resolveBusy || !chatInput.trim()}
+                onClick={() => void handleSend()}
+              >
+                发送
+              </button>
+            </div>
           </div>
         </div>
 

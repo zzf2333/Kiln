@@ -89,6 +89,27 @@ export function CommandPalette() {
     { label: "设置 · 项目空间", run: nav("settings", "spaces") },
     { label: "设置 · 模型单价", run: nav("settings", "pricing") },
     { label: "设置 · 远程访问", run: nav("settings", "remote") },
+    {
+      label: "主题 · 跟随系统",
+      run: () => {
+        store.setThemePreference("system");
+        store.setPaletteOpen(false);
+      },
+    },
+    {
+      label: "主题 · 浅色模式",
+      run: () => {
+        store.setThemePreference("light");
+        store.setPaletteOpen(false);
+      },
+    },
+    {
+      label: "主题 · 深色模式",
+      run: () => {
+        store.setThemePreference("dark");
+        store.setPaletteOpen(false);
+      },
+    },
   ];
 
   const q = query.trim().toLowerCase();

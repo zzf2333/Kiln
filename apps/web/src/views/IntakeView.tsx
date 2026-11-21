@@ -118,6 +118,14 @@ export function IntakeView() {
       }
       right={
         <>
+          <button
+            type="button"
+            class="btn btn-ghost desktop-panel-toggle"
+            aria-pressed={state.desktopDraftCollapsed}
+            onClick={() => store.toggleDesktopDraftCollapsed()}
+          >
+            {state.desktopDraftCollapsed ? "展开方案栏" : "收起侧栏"}
+          </button>
           {intakeActiveOpen || hasDraftOrChat ? (
             <button
               type="button"
@@ -148,7 +156,7 @@ export function IntakeView() {
         </>
       }
     >
-      <div class="converse">
+      <div class={`converse ${state.desktopDraftCollapsed ? "is-panel-collapsed" : ""}`}>
         <div class="chat">
           {drafts.length > 0 ? (
             <div class="drafts">
@@ -341,37 +349,39 @@ export function IntakeView() {
           />
 
           <div class="composer">
-            <textarea
-              id="chatIn"
-              class="input"
-              rows={2}
-              placeholder={
-                projectBlocked
-                  ? "请先添加或选择项目空间"
-                  : isProjectMode && selectedProject
-                    ? `描述「${selectedProject.name}」需求（Enter 发送，Shift+Enter 换行）`
-                    : "描述本机或临时任务需求（Enter 发送，Shift+Enter 换行）"
-              }
-              value={chatInput}
-              disabled={intakeBusy || projectBlocked}
-              onInput={(e) =>
-                setChatInput((e.currentTarget as HTMLTextAreaElement).value)
-              }
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-                  e.preventDefault();
-                  void handleSend();
+            <div class="composer-inner">
+              <textarea
+                id="chatIn"
+                class="input"
+                rows={2}
+                placeholder={
+                  projectBlocked
+                    ? "请先添加或选择项目空间"
+                    : isProjectMode && selectedProject
+                      ? `描述「${selectedProject.name}」需求（Enter 发送，Shift+Enter 换行）`
+                      : "描述本机或临时任务需求（Enter 发送，Shift+Enter 换行）"
                 }
-              }}
-            />
-            <button
-              type="button"
-              class="btn btn-light"
-              disabled={intakeBusy || projectBlocked || !chatInput.trim()}
-              onClick={() => void handleSend()}
-            >
-              发送
-            </button>
+                value={chatInput}
+                disabled={intakeBusy || projectBlocked}
+                onInput={(e) =>
+                  setChatInput((e.currentTarget as HTMLTextAreaElement).value)
+                }
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+                    e.preventDefault();
+                    void handleSend();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                class="btn btn-light"
+                disabled={intakeBusy || projectBlocked || !chatInput.trim()}
+                onClick={() => void handleSend()}
+              >
+                发送
+              </button>
+            </div>
           </div>
         </div>
 

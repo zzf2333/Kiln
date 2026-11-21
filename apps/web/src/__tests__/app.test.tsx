@@ -242,6 +242,9 @@ beforeEach(() => {
   window.location.hash = "";
   window.history.replaceState(null, "", "/");
   document.body.className = "";
+  document.documentElement.removeAttribute("data-theme");
+  document.documentElement.removeAttribute("data-theme-pref");
+  document.documentElement.style.colorScheme = "";
   (window as unknown as { EventSource?: unknown }).EventSource = MockEventSource;
   fetchMock = vi.fn<MockFetchHandler>(async () =>
     jsonResponse(makeBaseBootstrap()),
@@ -3489,5 +3492,148 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     // Agent message renders header metadata and copy button
     expect(screen.getByText("立项助手")).toBeTruthy();
     expect(screen.getByRole("button", { name: "复制消息正文" })).toBeTruthy();
+  });
+
+  it("supports system/light/dark theme switching with matchMedia adaptation and localStorage persistence", async () => {
+    let systemMatchesLight = true;
+    const changeListeners = new Set<(e: MediaQueryListEvent) => void>();
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("prefers-color-scheme: light") ? systemMatchesLight : false,
+      media: query,
+      onchange: null,
+      addEventListener: (_event: string, cb: (e: MediaQueryListEvent) => void) => {
+        changeListeners.add(cb);
+      },
+      removeEventListener: (_event: string, cb: (e: MediaQueryListEvent) => void) => {
+        changeListeners.delete(cb);
+      },
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => true,
+    }));
+
+    let meta = document.querySelector('meta[name="theme-color"]');
+    let createdMeta = false;
+    if (!meta) {
+      meta = document.createElement("meta");
+      meta.setAttribute("name", "theme-color");
+      meta.setAttribute("content", "#121110");
+      document.head.appendChild(meta);
+      createdMeta = true;
+    }
+
+    try {
+      const r1 = render(<App />);
+      await waitFor(() => {
+        expect(screen.getByRole("heading", { name: "总览" })).toBeTruthy();
+      });
+
+      // Default "system" picks up OS light preference and updates dynamically on system change
+      expect(document.documentElement.dataset.theme).toBe("light");
+      expect(document.documentElement.dataset.themePref).toBe("system");
+      expect(document.documentElement.style.colorScheme).toBe("light");
+      expect(meta.getAttribute("content")).toBe("#f7f5f0");
+
+      const sidebarThemeGroup = screen.getByRole("radiogroup", { name: "外观主题" });
+      expect(
+        within(sidebarThemeGroup)
+          .getByRole("radio", { name: "跟随系统" })
+          .getAttribute("aria-checked"),
+      ).toBe("true");
+
+      systemMatchesLight = false;
+      for (const cb of changeListeners) {
+        cb({ matches: false } as MediaQueryListEvent);
+      }
+      await waitFor(() => {
+        expect(document.documentElement.dataset.theme).toBe("dark");
+      });
+      expect(meta.getAttribute("content")).toBe("#121110");
+
+      // Switch to explicit light via Sidebar quick switcher
+      fireEvent.click(within(sidebarThemeGroup).getByRole("radio", { name: "浅色主题" }));
+      expect(document.documentElement.dataset.theme).toBe("light");
+      expect(document.documentElement.dataset.themePref).toBe("light");
+      expect(window.localStorage.getItem("kiln.theme")).toBe("light");
+      expect(meta.getAttribute("content")).toBe("#f7f5f0");
+
+      // Navigate to Settings -> 连接与底座 and verify synced segmented control
+      window.location.hash = "#view=settings&tab=conn";
+      fireEvent(window, new HashChangeEvent("hashchange"));
+      const settingsThemeGroup = await screen.findByRole("radiogroup", {
+        name: "外观主题设置",
+      });
+      expect(
+        within(settingsThemeGroup)
+          .getByRole("radio", { name: "浅色" })
+          .getAttribute("aria-checked"),
+      ).toBe("true");
+
+      fireEvent.click(within(settingsThemeGroup).getByRole("radio", { name: "深色" }));
+      expect(document.documentElement.dataset.theme).toBe("dark");
+      expect(window.localStorage.getItem("kiln.theme")).toBe("dark");
+
+      // Unmount and remount to verify localStorage persistence
+      r1.unmount();
+      render(<App />);
+      await waitFor(() => {
+        expect(screen.getByRole("radiogroup", { name: "外观主题" })).toBeTruthy();
+      });
+      expect(document.documentElement.dataset.theme).toBe("dark");
+      expect(document.documentElement.dataset.themePref).toBe("dark");
+      expect(
+        within(screen.getByRole("radiogroup", { name: "外观主题" }))
+          .getByRole("radio", { name: "深色主题" })
+          .getAttribute("aria-checked"),
+      ).toBe("true");
+
+      // Switch back to system (currently OS dark)
+      fireEvent.click(
+        within(screen.getByRole("radiogroup", { name: "外观主题" })).getByRole(
+          "radio",
+          { name: "跟随系统" },
+        ),
+      );
+      expect(window.localStorage.getItem("kiln.theme")).toBe("system");
+      expect(document.documentElement.dataset.themePref).toBe("system");
+      expect(document.documentElement.dataset.theme).toBe("dark");
+    } finally {
+      if (createdMeta) {
+        meta.remove();
+      }
+      window.localStorage.removeItem("kiln.theme");
+      document.documentElement.removeAttribute("data-theme");
+      document.documentElement.removeAttribute("data-theme-pref");
+      document.documentElement.style.colorScheme = "";
+    }
+  });
+
+  it("allows collapsing and re-expanding the desktop right panel in IntakeView without affecting mobile toggle", async () => {
+    window.location.hash = "#view=intake";
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "收起侧栏" })).toBeTruthy();
+    });
+
+    const converse = document.querySelector(".converse")!;
+    const collapseBtn = screen.getByRole("button", { name: "收起侧栏" });
+    expect(converse.classList.contains("is-panel-collapsed")).toBe(false);
+    expect(collapseBtn.getAttribute("aria-pressed")).toBe("false");
+
+    fireEvent.click(collapseBtn);
+    expect(converse.classList.contains("is-panel-collapsed")).toBe(true);
+    const expandBtn = screen.getByRole("button", { name: "展开方案栏" });
+    expect(expandBtn.getAttribute("aria-pressed")).toBe("true");
+
+    // Existing mobile drawer toggle remains intact and independent
+    const mobileToggle = document.getElementById("btnDraftToggle")!;
+    const aside = document.querySelector("aside.draft")!;
+    expect(aside.classList.contains("open")).toBe(false);
+    fireEvent.click(mobileToggle);
+    expect(aside.classList.contains("open")).toBe(true);
+
+    fireEvent.click(expandBtn);
+    expect(converse.classList.contains("is-panel-collapsed")).toBe(false);
   });
 });

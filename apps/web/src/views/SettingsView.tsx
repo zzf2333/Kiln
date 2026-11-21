@@ -962,6 +962,50 @@ export function SettingsView() {
         </span>
       </div>
 
+      <div class="setting-row setting-row-wide">
+        <div>
+          <span>外观主题</span>
+          <p>
+            支持浅色、深色或跟随系统自动切换（当前生效：
+            {state.resolvedTheme === "light" ? "浅色" : "深色"}）
+          </p>
+        </div>
+        <div
+          class="seg"
+          role="radiogroup"
+          aria-label="外观主题设置"
+          style={{ justifySelf: "end" }}
+        >
+          <button
+            type="button"
+            role="radio"
+            aria-checked={state.themePreference === "system"}
+            class={state.themePreference === "system" ? "on" : ""}
+            onClick={() => store.setThemePreference("system")}
+          >
+            跟随系统
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={state.themePreference === "light"}
+            class={state.themePreference === "light" ? "on" : ""}
+            onClick={() => store.setThemePreference("light")}
+          >
+            浅色
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={state.themePreference === "dark"}
+            class={state.themePreference === "dark" ? "on" : ""}
+            onClick={() => store.setThemePreference("dark")}
+          >
+            深色
+          </button>
+        </div>
+      </div>
+
       {backends.length > 0 ? (
         backends.map((b, idx) => (
           <div key={b.backendId ?? b.id ?? idx} class="setting-row">
