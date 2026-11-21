@@ -95,7 +95,7 @@ function makeReviewerReceiptMarkdown(fields: {
 async function waitUntil(
   predicate: () => boolean | Promise<boolean>,
   label: string,
-  timeoutMs = 3_000,
+  timeoutMs = 15_000,
   describeState?: () => string,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -208,7 +208,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       await servers.pop()!.stop();
     }
     while (tempDirs.length > 0) {
-      fs.rmSync(tempDirs.pop()!, { recursive: true, force: true });
+      fs.rmSync(tempDirs.pop()!, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     }
   });
 

@@ -48,7 +48,7 @@ function makeTempDir(prefix = "kiln-gate-test-"): string {
 afterEach(() => {
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop()!;
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 

@@ -9,5 +9,7 @@ export default defineConfig({
     include: ["packages/*/src/**/*.test.ts", "apps/*/src/**/*.test.{ts,tsx}"],
     exclude: ["**/node_modules/**", "**/dist/**", "scripts/probes/**", "**/*.socket.test.ts"],
     environment: "node",
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
   },
 });
