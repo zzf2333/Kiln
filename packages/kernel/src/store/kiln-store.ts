@@ -1078,9 +1078,13 @@ export class KilnStore {
           // Ignore secondary close errors during cleanup.
         }
       }
-      fs.rmSync(tmpDbPath, { force: true });
-      fs.rmSync(`${tmpDbPath}-wal`, { force: true });
-      fs.rmSync(`${tmpDbPath}-shm`, { force: true });
+      for (const cleanupPath of [tmpDbPath, `${tmpDbPath}-wal`, `${tmpDbPath}-shm`]) {
+        try {
+          fs.rmSync(cleanupPath, { force: true });
+        } catch {
+          // Preserve primary rebuild error if temporary file cleanup fails.
+        }
+      }
       throw error;
     }
   }

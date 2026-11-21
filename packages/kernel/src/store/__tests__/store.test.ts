@@ -293,6 +293,9 @@ describe("KilnStore concurrency, contract bump, locks, usage, and isolation", ()
         }),
       ).toThrow("abort outer tx");
       expect(getStmt.get("reverted")).toBeUndefined();
+      ins.finalize();
+      ins.finalize();
+      getStmt.finalize();
     } finally {
       db.close();
     }

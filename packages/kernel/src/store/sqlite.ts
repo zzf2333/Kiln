@@ -357,7 +357,11 @@ export class KilnSqliteIndex {
     const stmt = this.db.prepare(
       `SELECT * FROM tasks_index ${whereClause} ORDER BY created_at ASC, id ASC`,
     );
-    return (clauses.length > 0 ? stmt.all(params) : stmt.all()) as unknown as TaskIndexRow[];
+    try {
+      return (clauses.length > 0 ? stmt.all(params) : stmt.all()) as unknown as TaskIndexRow[];
+    } finally {
+      stmt.finalize();
+    }
   }
 
   updateTaskStatusAndPriority(id: string, patch: TaskStatusAndPriorityPatch): boolean {
@@ -391,8 +395,12 @@ export class KilnSqliteIndex {
     const stmt = this.db.prepare(
       `UPDATE tasks_index SET ${assignments.join(", ")} WHERE id = @id`,
     );
-    const info = stmt.run(params);
-    return info.changes > 0;
+    try {
+      const info = stmt.run(params);
+      return info.changes > 0;
+    } finally {
+      stmt.finalize();
+    }
   }
 
   /**
@@ -550,12 +558,20 @@ export class KilnSqliteIndex {
       const stmt = this.db.prepare(
         `SELECT * FROM host_path_locks WHERE task_id = ? ORDER BY canonical_path ASC`,
       );
-      return stmt.all(taskId) as unknown as HostPathLockRow[];
+      try {
+        return stmt.all(taskId) as unknown as HostPathLockRow[];
+      } finally {
+        stmt.finalize();
+      }
     }
     const stmt = this.db.prepare(
       `SELECT * FROM host_path_locks ORDER BY canonical_path ASC`,
     );
-    return stmt.all() as unknown as HostPathLockRow[];
+    try {
+      return stmt.all() as unknown as HostPathLockRow[];
+    } finally {
+      stmt.finalize();
+    }
   }
 
   /**
@@ -593,7 +609,11 @@ export class KilnSqliteIndex {
     const stmt = this.db.prepare(
       `SELECT * FROM usage_turns ${whereClause} ORDER BY recorded_at ASC, run_id ASC, turn_id ASC`,
     );
-    return (clauses.length > 0 ? stmt.all(params) : stmt.all()) as unknown as UsageTurnRow[];
+    try {
+      return (clauses.length > 0 ? stmt.all(params) : stmt.all()) as unknown as UsageTurnRow[];
+    } finally {
+      stmt.finalize();
+    }
   }
 
   getTaskTotalTokens(taskId: string): TaskTokenTotals {

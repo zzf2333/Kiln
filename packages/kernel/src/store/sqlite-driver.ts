@@ -10,6 +10,7 @@ export interface SqliteStatement {
   run(...params: unknown[]): SqliteRunResult;
   get(...params: unknown[]): Record<string, unknown> | undefined;
   all(...params: unknown[]): Record<string, unknown>[];
+  finalize(): void;
 }
 
 export interface SqliteDatabase {
@@ -35,6 +36,7 @@ interface RawSqliteStatement {
   get(...params: unknown[]): unknown;
   all(...params: unknown[]): unknown[];
   setAllowUnknownNamedParameters?(enabled: boolean): void;
+  finalize?(): void;
 }
 
 interface RawSqliteDatabase {
@@ -69,11 +71,15 @@ function normalizeRow(row: unknown): Record<string, unknown> {
   return {};
 }
 
-function wrapStatement(rawStmt: RawSqliteStatement): SqliteStatement {
+function wrapStatement(
+  rawStmt: RawSqliteStatement,
+  onFinalize?: () => void,
+): SqliteStatement {
   // Belt-and-suspenders for Node 22.13-22.14 statement-level toggle alongside constructor option.
   if (typeof rawStmt.setAllowUnknownNamedParameters === "function") {
     rawStmt.setAllowUnknownNamedParameters(true);
   }
+  let finalized = false;
 
   return {
     run(...params: unknown[]): SqliteRunResult {
@@ -95,12 +101,22 @@ function wrapStatement(rawStmt: RawSqliteStatement): SqliteStatement {
       const rows = rawStmt.all(...params);
       return rows.map((row) => normalizeRow(row));
     },
+
+    finalize(): void {
+      if (finalized) {
+        return;
+      }
+      finalized = true;
+      onFinalize?.();
+      rawStmt.finalize?.();
+    },
   };
 }
 
 class DualSqliteDatabase implements SqliteDatabase {
   readonly driver: SqliteRuntimeKind;
   private readonly raw: RawSqliteDatabase;
+  private readonly statementRefs = new Set<WeakRef<RawSqliteStatement>>();
   private txDepth = 0;
 
   constructor(driver: SqliteRuntimeKind, raw: RawSqliteDatabase) {
@@ -113,11 +129,32 @@ class DualSqliteDatabase implements SqliteDatabase {
   }
 
   prepare(sql: string): SqliteStatement {
-    return wrapStatement(this.raw.prepare(sql));
+    const rawStmt = this.raw.prepare(sql);
+    if (typeof rawStmt.finalize === "function") {
+      const ref = new WeakRef(rawStmt);
+      this.statementRefs.add(ref);
+      if (this.statementRefs.size > 64) {
+        for (const existing of this.statementRefs) {
+          if (existing.deref() === undefined) {
+            this.statementRefs.delete(existing);
+          }
+        }
+      }
+      return wrapStatement(rawStmt, () => {
+        this.statementRefs.delete(ref);
+      });
+    }
+    return wrapStatement(rawStmt);
   }
 
   pragmaSimple<T = unknown>(statement: string): T {
-    const row = this.prepare(`PRAGMA ${statement}`).get();
+    const stmt = this.prepare(`PRAGMA ${statement}`);
+    let row: Record<string, unknown> | undefined;
+    try {
+      row = stmt.get();
+    } finally {
+      stmt.finalize();
+    }
     if (!row) {
       return undefined as T;
     }
@@ -166,6 +203,20 @@ class DualSqliteDatabase implements SqliteDatabase {
   }
 
   close(): void {
+    // Under bun:sqlite, sqlite3_close_v2 defers closing the underlying OS file handle
+    // until all prepared statements are finalized; finalize tracked statements explicitly
+    // so Windows NTFS never raises EBUSY on subsequent rename/unlink.
+    for (const ref of this.statementRefs) {
+      const rawStmt = ref.deref();
+      if (rawStmt) {
+        try {
+          rawStmt.finalize?.();
+        } catch {
+          // Best-effort cleanup before closing raw database handle.
+        }
+      }
+    }
+    this.statementRefs.clear();
     this.raw.close();
   }
 }
