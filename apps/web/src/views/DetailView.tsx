@@ -4,6 +4,7 @@ import type { TaskRunDetail } from "../api/types";
 import { DecisionBox } from "../components/DecisionBox";
 import { FlameCanvas } from "../components/FlameCanvas";
 import { CheckIcon } from "../components/Icons";
+import { MarkdownContent } from "../components/MarkdownContent";
 import { PrioritySelect } from "../components/PrioritySelect";
 import { ViewFrame } from "../components/ViewFrame";
 import { HostStagedDiffSection } from "./ResolveView";
@@ -18,7 +19,6 @@ import {
   getPipelineStages,
   heatOf,
   isSafeHttpOrPaseoUrl,
-  parseMarkdownBlocks,
   splitFrontmatter,
   stageMeta,
 } from "../state/format";
@@ -77,47 +77,6 @@ function verdictMeta(vs: RunVisualState, stage: StageId): [string, string] {
       : "完成",
     "ok",
   ];
-}
-
-function SafeMarkdownBlocks({ text }: { text: string }) {
-  const blocks = parseMarkdownBlocks(text);
-  return (
-    <>
-      {blocks.map((b, idx) => {
-        if (b.kind === "heading") {
-          return (
-            <div key={idx} class="block" style={{ marginBottom: "8px" }}>
-              <h4>{b.title}</h4>
-            </div>
-          );
-        }
-        if (b.kind === "code") {
-          return (
-            <div key={idx} class="block">
-              {b.title ? <h4>{b.title}</h4> : null}
-              <div class="code">{b.body}</div>
-            </div>
-          );
-        }
-        if (b.kind === "list" && b.items) {
-          return (
-            <div key={idx} class="block">
-              <ul>
-                {b.items.map((item, j) => (
-                  <li key={j}>{item}</li>
-                ))}
-              </ul>
-            </div>
-          );
-        }
-        return (
-          <div key={idx} class="block">
-            <p>{b.body}</p>
-          </div>
-        );
-      })}
-    </>
-  );
 }
 
 export function DetailView() {
@@ -851,7 +810,7 @@ export function DetailView() {
                                       .join("\n")}
                                   </div>
                                 ) : null}
-                                <SafeMarkdownBlocks text={body} />
+                                <MarkdownContent text={body} />
                               </div>
                             );
                           })()
@@ -890,7 +849,7 @@ export function DetailView() {
                         selectedRun.raw.handoff ? (
                           <div class="block">
                             <h4>交接包（HANDOFF.md）</h4>
-                            <SafeMarkdownBlocks text={selectedRun.raw.handoff} />
+                            <MarkdownContent text={selectedRun.raw.handoff} />
                           </div>
                         ) : null}
                       </>
@@ -900,7 +859,7 @@ export function DetailView() {
               ) : (
                 <div class="block">
                   <h4>立项说明（BRIEF.md）</h4>
-                  <SafeMarkdownBlocks text={brief || card.contract.goal} />
+                  <MarkdownContent text={brief || card.contract.goal} />
                 </div>
               )}
             </div>

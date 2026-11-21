@@ -3,6 +3,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BootstrapResponse, TaskDetailResponse } from "../api/types";
 import { App } from "../app";
+import { ChatTimeline } from "../components/ChatTimeline";
+import { MarkdownContent } from "../components/MarkdownContent";
 import { fmtTime } from "../state/format";
 
 type MockFetchHandler = (
@@ -3390,5 +3392,102 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
 
     expect(screen.getByText("Kiln 版本与运行模式")).toBeTruthy();
     expect(screen.getAllByText("v0.0.3").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("renders file:// path pills cleanly, prevents narrow-column table crushing, nests indented lists, and highlights long fenced code", () => {
+    const richMarkdown = [
+      "| 类别 | 估算体积 | 最近活跃 | 说明 |",
+      "| :--- | :--- | :--- | :--- |",
+      "| [`/private/tmp`](file:///private/tmp) | 约 750MB+ | Nov 19-20 | 含 [`t3dmg`](file:///private/tmp/t3dmg) (481M)、[`kiln-verify`](file:///private/tmp/kiln) (133M) 与 `pnpm-cache` 及一批临时构建产物 \\| 附注 |",
+      "",
+      "1. 一级要点",
+      "   - 嵌套列表项 `npm_cache`",
+      "   - 跨行链接 [~/.pnpm-store](file:///Users/saonian/.pnpm-store#L12)",
+      "",
+      "```sh",
+      ...Array.from({ length: 30 }, (_, i) => `echo "line-${i + 1}" # comment ${i + 1}`),
+      "```",
+    ].join("\n");
+
+    const { rerender } = render(
+      <MarkdownContent text={richMarkdown} allowReveal={true} />,
+    );
+
+    // No raw file:// link syntax leaks into visible text and no dangerous <a href="file://">
+    expect(document.body.textContent).not.toContain("file:///");
+    expect(document.querySelector('a[href^="file:"]')).toBeNull();
+
+    // Renders file pills with copy + local reveal button
+    const tmpPill = screen.getByRole("button", { name: "/private/tmp" });
+    expect(tmpPill.getAttribute("title")).toBe("点击复制路径：/private/tmp");
+    expect(
+      screen.getByRole("button", { name: "在文件管理器中定位 /private/tmp" }),
+    ).toBeTruthy();
+    expect(screen.getByText("~/.pnpm-store:12")).toBeTruthy();
+
+    // Compact vs wide table columns prevent single-character vertical wrapping
+    const volumeCell = screen.getByText("约 750MB+").closest("td");
+    const dateCell = screen.getByText("Nov 19-20").closest("td");
+    const descCell = screen.getByText(/与/).closest("td");
+    expect(volumeCell?.className).toContain("col-compact");
+    expect(dateCell?.className).toContain("col-compact");
+    expect(descCell?.className).toContain("col-wide");
+    expect(descCell?.textContent).toContain("| 附注");
+
+    // Nested indented list lives inside parent <li>
+    const outerLi = screen.getByText("一级要点").closest("li");
+    expect(outerLi?.querySelector("ul")?.textContent).toContain("嵌套列表项");
+
+    // Syntax highlight tokens & long-code collapse toggle
+    expect(document.querySelector(".tok-cmt")).toBeTruthy();
+    expect(document.querySelector(".tok-str")).toBeTruthy();
+    const expandCodeBtn = screen.getByRole("button", { name: "展开全部 30 行" });
+    fireEvent.click(expandCodeBtn);
+    expect(screen.getByRole("button", { name: "收起代码" })).toBeTruthy();
+
+    // Remote mode hides local reveal buttons while preserving copy pills
+    rerender(<MarkdownContent text={richMarkdown} allowReveal={false} />);
+    expect(
+      screen.queryByRole("button", { name: "在文件管理器中定位 /private/tmp" }),
+    ).toBeNull();
+    expect(screen.getByRole("button", { name: "/private/tmp" })).toBeTruthy();
+  });
+
+  it("groups tool steps into a collapsible Work Log timeline with coalesced repeats and agent copy button", () => {
+    const messages = [
+      { who: "me" as const, text: "帮我巡检临时目录", at: "2026-11-21T10:20:29.000Z" },
+      { who: "tool" as const, toolName: "run_command", text: "run_command · ls -la /Users/saonian && df -h /" },
+      { who: "tool" as const, toolName: "manage_task", text: "manage_task" },
+      { who: "tool" as const, toolName: "manage_task", text: "manage_task" },
+      { who: "tool" as const, toolName: "manage_task", text: "manage_task" },
+      { who: "tool" as const, toolName: "draft_patch", text: "draft_patch · 自动回填格式校验失败，请核对" },
+      { who: "agent" as const, name: "intake", text: "## 分析结论\n已完成扫描。", at: "2026-11-21T10:24:34.000Z" },
+    ];
+
+    render(
+      <ChatTimeline
+        messages={messages}
+        busy={false}
+        busyLabel="思考中…"
+        roleLabel="立项助手"
+        defaultAgentName="intake"
+      />,
+    );
+
+    const toggle = screen.getByRole("button", { name: /探索与操作 · 5 步/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.textContent).toContain("含提示");
+    // Tool step details hidden before expanding
+    expect(screen.queryByText(/ls -la \/Users\/saonian/)).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText(/ls -la \/Users\/saonian/)).toBeTruthy();
+    // Repeated arg-less manage_task calls coalesce with x3 badge
+    expect(screen.getByText("×3")).toBeTruthy();
+
+    // Agent message renders header metadata and copy button
+    expect(screen.getByText("立项助手")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "复制消息正文" })).toBeTruthy();
   });
 });

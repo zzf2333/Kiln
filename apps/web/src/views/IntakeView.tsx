@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useState } from "preact/hooks";
 import type { Priority, Track } from "@kiln/protocol/web";
+import { ChatTimeline } from "../components/ChatTimeline";
 import { CheckIcon } from "../components/Icons";
 import { MarkdownContent } from "../components/MarkdownContent";
 import { ViewFrame } from "../components/ViewFrame";
@@ -28,7 +29,6 @@ export function IntakeView() {
   const [chatInput, setChatInput] = useState("");
   const [editingBriefRaw, setEditingBriefRaw] = useState(false);
   const [contractEditOpen, setContractEditOpen] = useState(false);
-  const msgsRef = useRef<HTMLDivElement | null>(null);
 
   const {
     intakeDraftId,
@@ -44,12 +44,6 @@ export function IntakeView() {
     spaces,
     draftOpen,
   } = state;
-
-  useEffect(() => {
-    if (msgsRef.current) {
-      msgsRef.current.scrollTop = msgsRef.current.scrollHeight;
-    }
-  }, [intakeMessages.length, intakeBusy, intakeProgressLogs.length]);
 
   const isProjectMode = intakeForm.mode === "project";
   const projectSpaces = getProjectSpaces(spaces);
@@ -291,95 +285,60 @@ export function IntakeView() {
             )}
           </div>
 
-          <div class="msgs" id="msgs" ref={msgsRef}>
-            {projectBlocked ? (
-              <div class="intake-empty">
-                <h3>
-                  {projectSpaces.length === 0
-                    ? "还没有登记项目空间"
-                    : "当前所选空间未绑定 Git 仓库"}
-                </h3>
-                <p>
-                  {projectSpaces.length === 0
-                    ? "先绑定一个本地 Git 项目目录，立项对话就会直接进入该项目仓库只读探索代码与测试命令。"
-                    : "当前草稿指向的空间尚未登记或缺少本地 Git 仓库路径，请在上方切换项目空间，或添加/补全对应空间。"}
-                </p>
-                <div class="intake-empty-actions">
-                  <button
-                    type="button"
-                    class="btn btn-light"
-                    onClick={() => store.openAddSpaceModal(true)}
-                  >
-                    + 添加本地 Git 项目
-                  </button>
-                  {authMode === "local" ? (
+          <ChatTimeline
+            messages={intakeMessages}
+            busy={intakeBusy}
+            busyLabel={
+              isProjectMode && selectedProject
+                ? `正在探索 ${selectedProject.name} 并整理产品方案…`
+                : "正在思考并整理产品方案…"
+            }
+            progressLogs={intakeProgressLogs}
+            roleLabel="立项助手"
+            defaultAgentName="intake"
+            emptySlot={
+              projectBlocked ? (
+                <div class="intake-empty">
+                  <h3>
+                    {projectSpaces.length === 0
+                      ? "还没有登记项目空间"
+                      : "当前所选空间未绑定 Git 仓库"}
+                  </h3>
+                  <p>
+                    {projectSpaces.length === 0
+                      ? "先绑定一个本地 Git 项目目录，立项对话就会直接进入该项目仓库只读探索代码与测试命令。"
+                      : "当前草稿指向的空间尚未登记或缺少本地 Git 仓库路径，请在上方切换项目空间，或添加/补全对应空间。"}
+                  </p>
+                  <div class="intake-empty-actions">
+                    <button
+                      type="button"
+                      class="btn btn-light"
+                      onClick={() => store.openAddSpaceModal(true)}
+                    >
+                      + 添加本地 Git 项目
+                    </button>
+                    {authMode === "local" ? (
+                      <button
+                        type="button"
+                        class="btn"
+                        disabled={pickDirBusy}
+                        onClick={() => void store.pickDirectoryAndAttach(true)}
+                      >
+                        {pickDirBusy ? "等待选择…" : "从文件目录选择"}
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       class="btn"
-                      disabled={pickDirBusy}
-                      onClick={() => void store.pickDirectoryAndAttach(true)}
+                      onClick={() => store.setIntakeMode("local")}
                     >
-                      {pickDirBusy ? "等待选择…" : "从文件目录选择"}
+                      改用本机 / 临时任务
                     </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    class="btn"
-                    onClick={() => store.setIntakeMode("local")}
-                  >
-                    改用本机 / 临时任务
-                  </button>
-                </div>
-              </div>
-            ) : null}
-
-            {intakeMessages.map((m, idx) => {
-              const who =
-                m.who ??
-                (m.role === "user" ? "me" : m.role === "tool" ? "tool" : "agent");
-              if (who === "tool") {
-                return (
-                  <div key={idx} class="msg tool">
-                    <span class="dot" style={{ background: "var(--t3)" }} />
-                    <span>{m.text}</span>
                   </div>
-                );
-              }
-              return (
-                <div key={idx} class={`msg ${who === "me" ? "me" : "agent"}`}>
-                  {who !== "me" ? (
-                    <div class="msg-who">{m.name ?? "intake"}</div>
-                  ) : null}
-                  {who === "me" ? (
-                    <div class="msg-text">{m.text}</div>
-                  ) : (
-                    <MarkdownContent text={m.text} className="msg-md" />
-                  )}
                 </div>
-              );
-            })}
-
-            {intakeBusy ? (
-              <div class="msg msg-thinking">
-                <div class="msg-who">intake</div>
-                <div class="msg-text muted">
-                  {isProjectMode && selectedProject
-                    ? `正在探索 ${selectedProject.name} 并整理产品方案…`
-                    : "正在思考并整理产品方案…"}
-                </div>
-                {intakeProgressLogs.length > 0 ? (
-                  <ul class="thinking-steps" aria-label="立项探索进度">
-                    {intakeProgressLogs.map((step, idx) => (
-                      <li key={`${step.at}-${idx}`} class={`thinking-step is-${step.kind}`}>
-                        <span class="dot" />
-                        <span>{step.text}</span>
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
+              ) : null
+            }
+          />
 
           <div class="composer">
             <textarea

@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useState } from "preact/hooks";
 import type { TaskDetailResponse } from "../api/types";
+import { ChatTimeline } from "../components/ChatTimeline";
 import { DecisionBox } from "../components/DecisionBox";
-import { MarkdownContent } from "../components/MarkdownContent";
 import { ViewFrame } from "../components/ViewFrame";
 import { useKilnStore } from "../state/store";
 
@@ -50,7 +50,6 @@ export function HostStagedDiffSection({
 export function ResolveView() {
   const { store, state } = useKilnStore();
   const [chatInput, setChatInput] = useState("");
-  const msgsRef = useRef<HTMLDivElement | null>(null);
 
   const taskId = state.taskId;
   const taskSummary = taskId
@@ -76,12 +75,6 @@ export function ResolveView() {
             },
           ]
         : [];
-
-  useEffect(() => {
-    if (msgsRef.current) {
-      msgsRef.current.scrollTop = msgsRef.current.scrollHeight;
-    }
-  }, [messages.length]);
 
   if (!taskId || !taskSummary || !pendingDecision) {
     return (
@@ -137,39 +130,13 @@ export function ResolveView() {
     >
       <div class="converse">
         <div class="chat">
-          <div class="msgs" id="msgs" ref={msgsRef}>
-            {messages.map((m, idx) => {
-              const who =
-                m.who ??
-                (m.role === "user" ? "me" : m.role === "tool" ? "tool" : "agent");
-              if (who === "tool") {
-                return (
-                  <div key={idx} class="msg tool">
-                    <span class="dot" style={{ background: "var(--t3)" }} />
-                    <span>{m.text}</span>
-                  </div>
-                );
-              }
-              return (
-                <div key={idx} class={`msg ${who === "me" ? "me" : "agent"}`}>
-                  {who !== "me" ? (
-                    <div class="msg-who">{m.name ?? "resolver"}</div>
-                  ) : null}
-                  {who === "me" ? (
-                    <div class="msg-text">{m.text}</div>
-                  ) : (
-                    <MarkdownContent text={m.text} className="msg-md" />
-                  )}
-                </div>
-              );
-            })}
-            {state.resolveBusy ? (
-              <div class="msg agent msg-thinking">
-                <div class="msg-who">resolver</div>
-                <div class="msg-text muted">正在整理上下文并思考回应…</div>
-              </div>
-            ) : null}
-          </div>
+          <ChatTimeline
+            messages={messages}
+            busy={state.resolveBusy}
+            busyLabel="正在整理上下文并思考回应…"
+            roleLabel="讨论助手"
+            defaultAgentName="resolver"
+          />
 
           <div class="composer">
             <textarea
