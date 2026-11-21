@@ -104,6 +104,7 @@ export const DraftCardSchema = z.object({
   track: TrackSchema.default("L2"),
   workspace_mode: WorkspaceModeSchema.default("git_worktree"),
   depends_on: z.array(z.string().min(1)).default([]),
+  open_questions: z.array(z.string().min(1)).optional(),
   contract: CardContractSchema.partial().default({}),
   session_ref: SessionRefSchema.nullable().optional(),
   intake_open: z.boolean().optional(),

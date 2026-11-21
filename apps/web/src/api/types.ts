@@ -158,10 +158,14 @@ export interface BackendConnectionInfo {
   detail?: string;
 }
 
+export type DraftCardWithBrief = DraftCard & {
+  brief_markdown?: string;
+};
+
 export interface BootstrapResponse {
   tasks: BootstrapTask[];
   pendingDecisions: PendingDecision[];
-  drafts: DraftCard[];
+  drafts: DraftCardWithBrief[];
   spaces: Record<string, SpaceConfig>;
   settings?: {
     roles: RolesConfig | null;
@@ -326,7 +330,9 @@ export interface UpsertDraftPayload {
   track?: Track;
   workspace_mode?: WorkspaceMode;
   depends_on?: string[];
+  open_questions?: string[];
   contract?: Partial<CardContract>;
+  brief_markdown?: string;
   intake_open?: boolean;
 }
 
@@ -347,7 +353,8 @@ export interface CommitDraftPayload {
 export interface ChatResponsePayload {
   messages?: ChatMessage[];
   reply?: ChatMessage | string;
-  draft?: DraftCard;
+  draft?: DraftCardWithBrief;
+  brief_markdown?: string;
   pendingDecision?: PendingDecision | null;
   contractPatch?: Partial<CardContract>;
   card?: TaskCard;

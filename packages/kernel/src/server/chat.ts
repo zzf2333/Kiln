@@ -59,6 +59,8 @@ const NonMcpDraftPatchSchema = z.object({
   track: z.enum(["L1", "L2"]).optional(),
   workspace_mode: z.enum(["git_worktree", "host_scoped", "scratch_dir"]).optional(),
   depends_on: z.array(z.string().min(1)).optional(),
+  open_questions: z.array(z.string().min(1)).optional(),
+  brief_markdown: z.string().optional(),
   contract: z
     .object({
       goal: z.string().min(1).optional(),
@@ -768,6 +770,7 @@ export class KilnChatEngine {
     backend: ExecutionBackend,
     sessionRef: SessionRef,
     roleName: "intake" | "resolver",
+    onProgress?: (ev: RunEvent) => void,
   ): Promise<{ replyText: string; toolMessages: ChatMessageRecord[] }> {
     const fullMessages: string[] = [];
     const deltaChunks: string[] = [];
@@ -775,13 +778,16 @@ export class KilnChatEngine {
     let exitEvent: Extract<RunEvent, { kind: "exit" }> | null = null;
 
     for await (const ev of backend.events(sessionRef)) {
-      if (ev.kind === "message") {
+      if (ev.kind === "thinking") {
+        onProgress?.(ev);
+      } else if (ev.kind === "message") {
         if (ev.delta) {
           deltaChunks.push(ev.text);
         } else if (ev.text.trim().length > 0) {
           fullMessages.push(ev.text);
         }
       } else if (ev.kind === "tool") {
+        onProgress?.(ev);
         toolMessages.push({
           id: `msg-${randomUUID().slice(0, 8)}`,
           role: "tool",
@@ -849,7 +855,12 @@ export class KilnChatEngine {
   }
 
   private formatDraftSnapshotLine(draft: DraftCard): string {
-    return `[当前右侧草稿最新字段: title=${draft.title || "(未填)"}, space=${draft.space}, priority=${draft.priority}, track=${draft.track}, workspace_mode=${draft.workspace_mode}, end=${draft.contract.end ?? "(未填)"}, accept_cmd=${draft.contract.accept_cmd ?? "(未填)"}, scope=${draft.contract.scope?.join(", ") || "(未填)"}, depends_on=${draft.depends_on.join(", ") || "无"}]`;
+    const brief = this.store.readDraftBrief(draft.id);
+    const hasBrief = brief !== null && brief.trim().length > 0;
+    const openCount = draft.open_questions?.length ?? 0;
+    return `[当前右侧草稿最新字段: title=${draft.title || "(未填)"}, space=${draft.space}, priority=${draft.priority}, track=${draft.track}, workspace_mode=${draft.workspace_mode}, end=${draft.contract.end ?? "(未填)"}, accept_cmd=${draft.contract.accept_cmd ?? "(未填)"}, scope=${draft.contract.scope?.join(", ") || "(未填)"}, depends_on=${draft.depends_on.join(", ") || "无"}, brief=${hasBrief ? "已生成" : "未生成"}, open_questions=${openCount}项${
+      openCount > 0 ? ` (${draft.open_questions!.join(" | ")})` : ""
+    }]`;
   }
 
   private applyNonMcpDraftPatch(params: {
@@ -899,6 +910,10 @@ export class KilnChatEngine {
       if (patch.priority !== undefined) updatedFields.push("priority");
       if (patch.track !== undefined) updatedFields.push("track");
       if (patch.depends_on !== undefined) updatedFields.push("depends_on");
+      if (patch.open_questions !== undefined) updatedFields.push("open_questions");
+
+      const nextOpenQuestions =
+        patch.open_questions !== undefined ? patch.open_questions : latest.open_questions;
 
       const merged = DraftCardSchema.parse({
         ...latest,
@@ -907,10 +922,28 @@ export class KilnChatEngine {
         ...(patch.track !== undefined ? { track: patch.track } : {}),
         workspace_mode: nextWorkspaceMode,
         ...(patch.depends_on !== undefined ? { depends_on: patch.depends_on } : {}),
+        ...(nextOpenQuestions !== undefined ? { open_questions: nextOpenQuestions } : {}),
         contract: nextContract,
         updated_at: new Date().toISOString(),
       });
       this.store.writeDraft(merged);
+
+      if (patch.brief_markdown !== undefined) {
+        this.store.writeDraftBrief(params.safeDraftId, patch.brief_markdown);
+        updatedFields.push("brief_markdown");
+      }
+
+      this.sseHub?.publish({
+        type: "intake.progress",
+        draftId: params.safeDraftId,
+        kind: "draft_updated",
+        toolName: "draft_patch",
+        text:
+          patch.brief_markdown !== undefined && patch.brief_markdown.trim().length > 0
+            ? "已同步《产品方案》与立项草稿"
+            : "已更新立项草稿字段",
+        at: new Date().toISOString(),
+      });
       return { applied: true, updatedFields };
     } catch (err) {
       return {
@@ -1081,22 +1114,48 @@ export class KilnChatEngine {
       `- accept_cmd: ${draft.contract.accept_cmd ?? "(未填)"}`,
       `- scope: ${draft.contract.scope?.join(", ") || "(未填)"}`,
       `- depends_on: ${draft.depends_on.join(", ") || "无"}`,
+      `- open_questions: ${
+        draft.open_questions && draft.open_questions.length > 0
+          ? draft.open_questions.join(" | ")
+          : "无"
+      }`,
+    ].join("\n");
+
+    const currentBrief = this.store.readDraftBrief(draft.id);
+    const currentBriefSection =
+      currentBrief && currentBrief.trim().length > 0
+        ? `当前已记录的《产品方案 (BRIEF.md)》：\n${currentBrief.trim()}`
+        : "(尚未生成《产品方案 (BRIEF.md)》，请在本轮完成后输出并同步)";
+
+    const pmWorkflowProtocol = [
+      `你的职责是 Kiln 的产品经理与技术立项架构师（intake）：将用户的原始想法打磨为清晰、无歧义、可执行的产品设计方案（BRIEF.md）与工程契约，并将确认后的方案无损传递给下游 worker / reviewer / verifier。`,
+      `核心工作方法（四步协议）：`,
+      `1. **先查代码与账本，基于事实提案**：若在项目仓库目录，先只读检索相关源码、接口、测试脚本与上方空间长期账本（ledger），搞清现有模块、依赖与约束后再给方案，绝不猜测路径或命令。`,
+      `2. **先出可编辑模型与方案草案，不抛长问卷**：直接给出当前理解的方案雏形，明确区分「已确认」/「建议」/「待拍板」；每轮仅聚焦最多 2–3 个真正影响用户流程、数据结构、边界或范围的关键分叉点，并在 open_questions 中维护尚未拍板的事项（用户确认后置空 []）。`,
+      `3. **方案对比取舍与垂直切分**：存在重要技术路线或交互分叉时，对比 2–3 个可行方案的效果、改动代价与风险并给出明确推荐；若需求过大过重，主动建议切分为垂直 MVP 切片，先收敛首片。`,
+      `4. **L1 / L2 自适应探索深度**：`,
+      draft.track === "L1"
+        ? `- 当前为 **L1 快车道**：保持 1–2 轮高效收敛，避免过度访谈；生成精简 4 段设计稿（目标与改动、边界约束、方案要点、验收命令）并尽快补齐全部契约字段。`
+        : `- 当前为 **L2 标准交付**：确保业务规则、多状态流转、异常边界与人工兜底全部梳理清晰，直至 open_questions 清零；BRIEF.md 固定采用 5 段结构：\n  ## 1. 目标与用户场景\n  ## 2. 已确认规则与关键流程 / 边界\n  ## 3. 选定落地方案与关键取舍\n  ## 4. 范围边界（做什么 / 明确不做什么）\n  ## 5. 可观察验收场景`,
+      `自动补全与安全边界：用户已在前端通过 Tab 选定了项目空间、优先级或轨道；请主动替用户推导并回填 title、end、accept_cmd、scope、depends_on、open_questions 与 brief_markdown，严禁私自调用 commit_card 直接建卡（必须由用户点击「开始推进」确认）。`,
     ].join("\n");
 
     const priorSummary = this.formatPriorChatSummary(priorHistory);
     const protocolInstruction = mcpEnabled
-      ? `你拥有 kiln-mcp 工具权限（wb_list_tasks, wb_read_ledger, wb_plan），请协助用户梳理目标、验收标准、可改范围、依赖前置并调用 wb_plan(mode: "upsert_draft") 更新草稿。`
+      ? `你拥有 kiln-mcp 工具权限（wb_list_tasks, wb_read_ledger, wb_plan），请每轮及时调用 wb_plan(mode: "upsert_draft") 将已确定的 title、contract（goal/end/accept_cmd/scope）、depends_on、open_questions 与完整 brief_markdown 同步写入草稿与 BRIEF.md。`
       : [
-          `当前对话运行在无 MCP 模式：已将项目空间、在途任务、长期账本与草稿字段注入上下文，无需调用 kiln-mcp 工具。`,
-          `如本次对话确认或变更了任何立项字段，请在正常回复末尾附一个 \`\`\`kiln-draft-patch\\n{...}\\n\`\`\` JSON 代码块（仅填需更新的可选字段：title、priority、track ("L1"|"L2")、workspace_mode、depends_on、contract: { goal, end, accept_cmd, scope }；严禁更改 space 或直接建卡）。系统会自动剥离该代码块并回填右侧立项单。`,
+          `当前对话运行在无 MCP 模式：已将项目空间、在途任务、长期账本、当前方案与草稿字段注入上下文，无需调用 kiln-mcp 工具。`,
+          `如本次对话确认或变更了任何立项字段或产品方案，请在正常回复末尾附一个 \`\`\`kiln-draft-patch\\n{...}\\n\`\`\` JSON 代码块（可选字段：title、priority、track ("L1"|"L2")、workspace_mode、depends_on、open_questions (string[])、brief_markdown (完整 Markdown 设计方案)、contract: { goal, end, accept_cmd, scope }；严禁更改 space 或直接建卡）。系统会自动剥离该代码块并同步到右侧「产品方案」与立项单。`,
         ].join("\n");
 
     return [
       `你是 Kiln 的 intake 立项对话角色。当前草稿 ID: ${draft.id}，空间: ${draft.space}，cwd: ${cwd}。`,
+      pmWorkflowProtocol,
       modeSummary,
       protocolInstruction,
       `已登记项目空间列表：\n${registeredSpacesText}`,
       draftSummary,
+      currentBriefSection,
       `当前在途任务：\n${taskLines}`,
       `空间 ${draft.space} 长期决策账本：\n${ledgerLines}`,
       priorSummary,
@@ -1276,7 +1335,40 @@ export class KilnChatEngine {
         }
 
         appendNdjsonLine(chatFile, userRecord);
-        const consumed = await this.consumeTurnEvents(activeBackend, sessionRef, "intake");
+        let lastProgressKind: "thinking" | "tool" | null = null;
+        const consumed = await this.consumeTurnEvents(
+          activeBackend,
+          sessionRef,
+          "intake",
+          (ev) => {
+            if (!this.sseHub) return;
+            if (ev.kind === "thinking") {
+              if (lastProgressKind === "thinking") return;
+              lastProgressKind = "thinking";
+              this.sseHub.publish({
+                type: "intake.progress",
+                draftId: safeDraftId,
+                kind: "thinking",
+                text: resolvedWorkspace.isProjectRepo
+                  ? "正在分析项目结构与方案可行性…"
+                  : "正在梳理需求并整理方案…",
+                at: ev.at,
+              });
+            } else if (ev.kind === "tool") {
+              lastProgressKind = "tool";
+              this.sseHub.publish({
+                type: "intake.progress",
+                draftId: safeDraftId,
+                kind: "tool",
+                toolName: ev.name,
+                text: ev.target
+                  ? `正在读取/调用 ${ev.name} · ${ev.target}`
+                  : `正在调用 ${ev.name}`,
+                at: ev.at,
+              });
+            }
+          },
+        );
         replyText = consumed.replyText;
         toolMessages = consumed.toolMessages;
 

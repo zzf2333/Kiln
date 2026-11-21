@@ -198,6 +198,8 @@ describe("@kiln/mcp server & client", () => {
     expect(wbPlanTool?.inputSchema.required).toContain("mode");
     expect(wbPlanTool?.inputSchema.properties).toHaveProperty("mode");
     expect(wbPlanTool?.inputSchema.properties).toHaveProperty("contract");
+    expect(wbPlanTool?.inputSchema.properties).toHaveProperty("brief_markdown");
+    expect(wbPlanTool?.inputSchema.properties).toHaveProperty("open_questions");
     expect(Array.isArray(wbPlanTool?.inputSchema.anyOf)).toBe(true);
     expect((wbPlanTool?.inputSchema.anyOf as unknown[]).length).toBe(3);
   });
@@ -251,6 +253,8 @@ describe("@kiln/mcp server & client", () => {
           title: "Implement MCP server",
           space: "kiln",
           priority: "P1",
+          open_questions: ["确认超时阈值"],
+          brief_markdown: "## 1. 目标与用户场景\n完善 MCP 工具链",
         },
         expectedBody: {
           mode: "upsert_draft",
@@ -258,6 +262,8 @@ describe("@kiln/mcp server & client", () => {
           title: "Implement MCP server",
           space: "kiln",
           priority: "P1",
+          open_questions: ["确认超时阈值"],
+          brief_markdown: "## 1. 目标与用户场景\n完善 MCP 工具链",
         },
       },
       {

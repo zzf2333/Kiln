@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import type { Priority, Track, WorkspaceMode } from "@kiln/protocol/web";
+import type { Priority, Track } from "@kiln/protocol/web";
 import { CheckIcon } from "../components/Icons";
 import { MarkdownContent } from "../components/MarkdownContent";
 import { ViewFrame } from "../components/ViewFrame";
@@ -11,14 +11,30 @@ import {
   type IntakeFormState,
 } from "../state/store";
 
+const PRIORITY_TABS: Array<[Priority, string]> = [
+  ["P0", "P0 紧急"],
+  ["P1", "P1 重要"],
+  ["P2", "P2 普通"],
+  ["P3", "P3 有空"],
+];
+
+const TRACK_TABS: Array<[Exclude<Track, "L3">, string]> = [
+  ["L1", "L1 快车道"],
+  ["L2", "L2 标准交付"],
+];
+
 export function IntakeView() {
   const { store, state } = useKilnStore();
   const [chatInput, setChatInput] = useState("");
+  const [editingBriefRaw, setEditingBriefRaw] = useState(false);
+  const [contractEditOpen, setContractEditOpen] = useState(false);
   const msgsRef = useRef<HTMLDivElement | null>(null);
 
   const {
     intakeDraftId,
     intakeForm,
+    intakeRightTab,
+    intakeProgressLogs,
     intakeMessages,
     intakeBusy,
     intakeActiveOpen,
@@ -33,7 +49,7 @@ export function IntakeView() {
     if (msgsRef.current) {
       msgsRef.current.scrollTop = msgsRef.current.scrollHeight;
     }
-  }, [intakeMessages.length, intakeBusy]);
+  }, [intakeMessages.length, intakeBusy, intakeProgressLogs.length]);
 
   const isProjectMode = intakeForm.mode === "project";
   const projectSpaces = getProjectSpaces(spaces);
@@ -45,7 +61,13 @@ export function IntakeView() {
   const hasDraftOrChat =
     Boolean(intakeDraftId) ||
     intakeMessages.length > 1 ||
-    intakeForm.title.trim().length > 0;
+    intakeForm.title.trim().length > 0 ||
+    intakeForm.brief_markdown.trim().length > 0;
+
+  const scopeList = intakeForm.scope
+    .split(/[\n,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
 
   const requiredChecks: Array<[keyof IntakeFormState, boolean]> = [
     ["title", intakeForm.title.trim().length > 0],
@@ -61,16 +83,27 @@ export function IntakeView() {
     ],
     ["end", intakeForm.end.trim().length > 0],
     ["accept_cmd", intakeForm.accept_cmd.trim().length > 0],
-    [
-      "scope",
-      intakeForm.scope
-        .split(/[\n,]+/)
-        .map((s) => s.trim())
-        .filter(Boolean).length > 0,
-    ],
+    ["scope", scopeList.length > 0],
   ];
   const doneCount = requiredChecks.filter(([, ok]) => ok).length;
+  const contractDoneCount = [
+    requiredChecks[5]![1],
+    requiredChecks[6]![1],
+    requiredChecks[7]![1],
+  ].filter(Boolean).length;
   const ready = doneCount === 8;
+
+  const hasBrief = intakeForm.brief_markdown.trim().length > 0;
+  const openQuestions = intakeForm.open_questions;
+  const targetSummary = isProjectMode
+    ? selectedProject
+      ? `${selectedProject.name} (${selectedProject.id}) · 代码工作树 git_worktree`
+      : `${intakeForm.space || "未选择"}（请先绑定项目仓库）`
+    : `本机与临时 (local) · ${
+        intakeForm.workspace_mode === "host_scoped"
+          ? "本机配置修改 host_scoped"
+          : "临时沙盒 scratch_dir"
+      }`;
 
   const handleSend = async (): Promise<void> => {
     const val = chatInput.trim();
@@ -134,7 +167,10 @@ export function IntakeView() {
                   <button
                     type="button"
                     class="btn btn-sm"
-                    onClick={() => void store.loadDraftIntoIntake(d)}
+                    onClick={() => {
+                      setEditingBriefRaw(false);
+                      void store.loadDraftIntoIntake(d);
+                    }}
                   >
                     <span>{d.title || d.id}</span>
                     <span class="muted mono">{fmtTime(d.updated_at)}</span>
@@ -173,82 +209,64 @@ export function IntakeView() {
             </div>
 
             {isProjectMode ? (
-              projectSpaces.length > 0 ? (
-                <div class="intake-target">
-                  <select
-                    class="select"
-                    aria-label="目标项目空间"
-                    value={intakeForm.space}
-                    onChange={(e) =>
-                      store.selectIntakeProjectSpace(
-                        (e.currentTarget as HTMLSelectElement).value,
-                      )
-                    }
-                  >
-                    {intakeForm.space && !selectedProject ? (
-                      <option value={intakeForm.space} disabled>
-                        {intakeForm.space}（未登记或缺少仓库路径）
-                      </option>
-                    ) : null}
+              <div class="intake-target">
+                {projectSpaces.length > 0 || (intakeForm.space && !selectedProject) ? (
+                  <div class="intake-chips" role="radiogroup" aria-label="目标项目空间">
                     {projectSpaces.map((sp) => (
-                      <option key={sp.id} value={sp.id}>
-                        {sp.name} ({sp.id})
-                      </option>
+                      <button
+                        key={sp.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={intakeForm.space === sp.id}
+                        data-space-id={sp.id}
+                        class={`chip-tab ${intakeForm.space === sp.id ? "on" : ""}`}
+                        onClick={() => store.selectIntakeProjectSpace(sp.id)}
+                      >
+                        {sp.name}
+                      </button>
                     ))}
-                  </select>
-                  {selectedProject?.repo_path ? (
-                    <span
-                      class="intake-path mono muted"
-                      title={selectedProject.repo_path}
-                    >
-                      {selectedProject.repo_path}
-                    </span>
-                  ) : null}
+                    {intakeForm.space && !selectedProject ? (
+                      <span class="chip chip-bad">
+                        {intakeForm.space}（未登记或缺少仓库路径）
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
+                {selectedProject?.repo_path ? (
+                  <span
+                    class="intake-path mono muted"
+                    title={selectedProject.repo_path}
+                  >
+                    {selectedProject.repo_path}
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  class={`btn btn-sm ${projectSpaces.length === 0 ? "btn-light" : ""}`}
+                  onClick={() => store.openAddSpaceModal(true)}
+                >
+                  + 添加项目
+                </button>
+                {authMode === "local" ? (
                   <button
                     type="button"
                     class="btn btn-sm"
-                    onClick={() => store.openAddSpaceModal(true)}
+                    disabled={pickDirBusy}
+                    onClick={() => void store.pickDirectoryAndAttach(true)}
                   >
-                    + 添加项目
+                    {pickDirBusy ? "等待选择…" : "从文件目录选择"}
                   </button>
-                  {authMode === "local" ? (
-                    <button
-                      type="button"
-                      class="btn btn-sm"
-                      disabled={pickDirBusy}
-                      onClick={() => void store.pickDirectoryAndAttach(true)}
-                    >
-                      {pickDirBusy ? "等待选择…" : "从文件目录选择"}
-                    </button>
-                  ) : null}
-                </div>
-              ) : (
-                <div class="intake-target">
-                  <button
-                    type="button"
-                    class="btn btn-sm btn-light"
-                    onClick={() => store.openAddSpaceModal(true)}
-                  >
-                    + 添加项目
-                  </button>
-                  {authMode === "local" ? (
-                    <button
-                      type="button"
-                      class="btn btn-sm"
-                      disabled={pickDirBusy}
-                      onClick={() => void store.pickDirectoryAndAttach(true)}
-                    >
-                      {pickDirBusy ? "等待选择…" : "从文件目录选择"}
-                    </button>
-                  ) : null}
-                </div>
-              )
+                ) : null}
+              </div>
             ) : (
               <div class="intake-target">
                 <span class="chip">本机与临时 (local)</span>
-                <div class="seg" role="group" aria-label="本机工作区模式">
+                <div class="seg" role="radiogroup" aria-label="本机工作区模式">
                   <button
                     type="button"
+                    role="radio"
+                    aria-checked={intakeForm.workspace_mode !== "host_scoped"}
+                    data-workspace-mode="scratch_dir"
                     class={intakeForm.workspace_mode !== "host_scoped" ? "on" : ""}
                     onClick={() =>
                       store.updateIntakeForm({ workspace_mode: "scratch_dir" })
@@ -258,6 +276,9 @@ export function IntakeView() {
                   </button>
                   <button
                     type="button"
+                    role="radio"
+                    aria-checked={intakeForm.workspace_mode === "host_scoped"}
+                    data-workspace-mode="host_scoped"
                     class={intakeForm.workspace_mode === "host_scoped" ? "on" : ""}
                     onClick={() =>
                       store.updateIntakeForm({ workspace_mode: "host_scoped" })
@@ -281,7 +302,7 @@ export function IntakeView() {
                 <p>
                   {projectSpaces.length === 0
                     ? "先绑定一个本地 Git 项目目录，立项对话就会直接进入该项目仓库只读探索代码与测试命令。"
-                    : "当前草稿指向的空间尚未登记或缺少本地 Git 仓库路径，请在上方下拉框改选项目空间，或添加/补全对应空间。"}
+                    : "当前草稿指向的空间尚未登记或缺少本地 Git 仓库路径，请在上方切换项目空间，或添加/补全对应空间。"}
                 </p>
                 <div class="intake-empty-actions">
                   <button
@@ -343,9 +364,19 @@ export function IntakeView() {
                 <div class="msg-who">intake</div>
                 <div class="msg-text muted">
                   {isProjectMode && selectedProject
-                    ? `正在探索 ${selectedProject.name} 并整理立项草稿…`
-                    : "正在思考并更新立项草稿…"}
+                    ? `正在探索 ${selectedProject.name} 并整理产品方案…`
+                    : "正在思考并整理产品方案…"}
                 </div>
+                {intakeProgressLogs.length > 0 ? (
+                  <ul class="thinking-steps" aria-label="立项探索进度">
+                    {intakeProgressLogs.map((step, idx) => (
+                      <li key={`${step.at}-${idx}`} class={`thinking-step is-${step.kind}`}>
+                        <span class="dot" />
+                        <span>{step.text}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -387,12 +418,34 @@ export function IntakeView() {
 
         <aside class={`draft ${draftOpen ? "open" : ""}`}>
           <div class="draft-head">
-            <h3>
-              立项单草稿 ·{" "}
-              <span class="mono muted" id="draftProg">
-                {doneCount} / 8
-              </span>
-            </h3>
+            <div class="draft-tabs" role="tablist" aria-label="立项面板">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={intakeRightTab === "brief"}
+                class={`draft-tab ${intakeRightTab === "brief" ? "on" : ""}`}
+                onClick={() => store.setIntakeRightTab("brief")}
+              >
+                <span>产品方案</span>
+                {openQuestions.length > 0 ? (
+                  <span class="draft-tab-badge is-ask">{openQuestions.length}</span>
+                ) : hasBrief ? (
+                  <span class="draft-tab-badge is-ok">✓</span>
+                ) : null}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={intakeRightTab === "settings"}
+                class={`draft-tab ${intakeRightTab === "settings" ? "on" : ""}`}
+                onClick={() => store.setIntakeRightTab("settings")}
+              >
+                <span>立项设置</span>
+                <span class="mono muted" id="draftProg">
+                  {doneCount} / 8
+                </span>
+              </button>
+            </div>
             <button
               type="button"
               class="btn btn-sm draft-toggle"
@@ -403,254 +456,322 @@ export function IntakeView() {
             </button>
           </div>
 
-          <dl class="draft-fields">
-            <div class="field">
-              <div>
-                <dt>标题</dt>
-                <dd>
-                  <input
-                    aria-label="标题"
-                    class="draft-edit"
-                    placeholder="对话生成或直接点击填写"
-                    value={intakeForm.title}
-                    onInput={(e) =>
-                      store.updateIntakeForm({
-                        title: (e.currentTarget as HTMLInputElement).value,
-                      })
-                    }
-                  />
-                </dd>
-              </div>
-              <span class="field-mark">
-                {requiredChecks[0]![1] ? <CheckIcon /> : null}
-              </span>
-            </div>
-
-            <div class="field">
-              <div>
-                <dt>优先级</dt>
-                <dd>
-                  <select
-                    aria-label="优先级"
-                    class="draft-edit"
-                    value={intakeForm.priority}
-                    onChange={(e) =>
-                      store.updateIntakeForm({
-                        priority: (e.currentTarget as HTMLSelectElement)
-                          .value as Priority,
-                      })
-                    }
-                  >
-                    <option value="P0">P0 紧急</option>
-                    <option value="P1">P1 重要</option>
-                    <option value="P2">P2 普通</option>
-                    <option value="P3">P3 有空再做</option>
-                  </select>
-                </dd>
-              </div>
-              <span class="field-mark">
-                {requiredChecks[1]![1] ? <CheckIcon /> : null}
-              </span>
-            </div>
-
-            <div class="field">
-              <div>
-                <dt>空间</dt>
-                <dd>
-                  {isProjectMode ? (
-                    <select
-                      aria-label="空间"
-                      class="draft-edit"
-                      value={intakeForm.space}
-                      onChange={(e) =>
-                        store.selectIntakeProjectSpace(
-                          (e.currentTarget as HTMLSelectElement).value,
-                        )
-                      }
+          <div class="draft-body">
+            {intakeRightTab === "brief" ? (
+              <div class="brief-panel" role="tabpanel" aria-label="产品方案">
+                <div class="brief-bar">
+                  <span class="brief-status">
+                    {openQuestions.length > 0
+                      ? `待拍板 ${openQuestions.length} 项`
+                      : hasBrief
+                        ? "方案已就绪 · 提交后写入 BRIEF.md"
+                        : "尚未生成产品方案"}
+                  </span>
+                  {hasBrief || editingBriefRaw ? (
+                    <button
+                      type="button"
+                      class="btn btn-sm"
+                      onClick={() => setEditingBriefRaw((v) => !v)}
                     >
-                      {projectSpaces.length === 0 && !intakeForm.space ? (
-                        <option value="">未配置项目空间</option>
-                      ) : null}
-                      {intakeForm.space && !selectedProject ? (
-                        <option value={intakeForm.space} disabled>
-                          {intakeForm.space}（未登记或缺少仓库路径）
-                        </option>
-                      ) : null}
-                      {projectSpaces.map((sp) => (
-                        <option key={sp.id} value={sp.id}>
-                          {sp.name} ({sp.id})
-                        </option>
+                      {editingBriefRaw ? "完成预览" : "编辑原文"}
+                    </button>
+                  ) : null}
+                </div>
+
+                {openQuestions.length > 0 ? (
+                  <div class="open-questions" aria-label="待拍板事项">
+                    <div class="oq-title">待拍板（{openQuestions.length}）</div>
+                    <ul>
+                      {openQuestions.map((q, idx) => (
+                        <li key={idx}>{q}</li>
                       ))}
-                    </select>
-                  ) : (
-                    <div class="draft-static" aria-label="空间">
-                      本机与临时 (local)
+                    </ul>
+                  </div>
+                ) : null}
+
+                {editingBriefRaw ? (
+                  <textarea
+                    aria-label="产品方案原文"
+                    class="input mono brief-editor"
+                    rows={14}
+                    placeholder="Markdown 格式产品设计方案与验收标准…"
+                    value={intakeForm.brief_markdown}
+                    onInput={(e) =>
+                      store.updateIntakeForm({
+                        brief_markdown: (e.currentTarget as HTMLTextAreaElement).value,
+                      })
+                    }
+                  />
+                ) : hasBrief ? (
+                  <div class="brief-preview" data-brief-preview="true">
+                    <MarkdownContent text={intakeForm.brief_markdown} />
+                  </div>
+                ) : (
+                  <div class="brief-empty">
+                    <p>
+                      在左侧描述你的想法后，立项助手会先只读探索代码库与账本，输出结构化的《产品方案》(BRIEF.md) 并在本页实时预览，提交后直接驱动后续实施与验收。
+                    </p>
+                    <button
+                      type="button"
+                      class="btn btn-sm btn-light"
+                      disabled={intakeBusy || projectBlocked}
+                      onClick={() => void store.requestPmAutofill()}
+                    >
+                      让立项助手生成方案
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div class="settings-panel" role="tabpanel" aria-label="立项设置">
+                <dl class="draft-fields">
+                  <div class="field">
+                    <div>
+                      <dt>标题</dt>
+                      <dd>
+                        <input
+                          aria-label="标题"
+                          class="draft-edit"
+                          placeholder="可简写，也可由助手自动提炼"
+                          value={intakeForm.title}
+                          onInput={(e) =>
+                            store.updateIntakeForm({
+                              title: (e.currentTarget as HTMLInputElement).value,
+                            })
+                          }
+                        />
+                      </dd>
                     </div>
-                  )}
-                </dd>
-              </div>
-              <span class="field-mark">
-                {requiredChecks[2]![1] ? <CheckIcon /> : null}
-              </span>
-            </div>
+                    <span class="field-mark">
+                      {requiredChecks[0]![1] ? <CheckIcon /> : null}
+                    </span>
+                  </div>
 
-            <div class="field">
-              <div>
-                <dt>轨道</dt>
-                <dd>
-                  <select
-                    aria-label="轨道"
-                    class="draft-edit"
-                    value={intakeForm.track}
-                    onChange={(e) =>
-                      store.updateIntakeForm({
-                        track: (e.currentTarget as HTMLSelectElement)
-                          .value as Exclude<Track, "L3">,
-                      })
-                    }
-                  >
-                    <option value="L1">L1 快车道</option>
-                    <option value="L2">L2 标准交付</option>
-                  </select>
-                </dd>
-              </div>
-              <span class="field-mark">
-                {requiredChecks[3]![1] ? <CheckIcon /> : null}
-              </span>
-            </div>
+                  <div class="field">
+                    <div>
+                      <dt>优先级</dt>
+                      <dd>
+                        <div class="seg seg-wrap" role="radiogroup" aria-label="优先级">
+                          {PRIORITY_TABS.map(([val, label]) => (
+                            <button
+                              key={val}
+                              type="button"
+                              role="radio"
+                              aria-checked={intakeForm.priority === val}
+                              data-priority={val}
+                              class={intakeForm.priority === val ? "on" : ""}
+                              onClick={() => store.updateIntakeForm({ priority: val })}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </dd>
+                    </div>
+                    <span class="field-mark">
+                      {requiredChecks[1]![1] ? <CheckIcon /> : null}
+                    </span>
+                  </div>
 
-            <div class="field">
-              <div>
-                <dt>工作区</dt>
-                <dd>
-                  {isProjectMode ? (
-                    <select
-                      aria-label="工作区"
-                      class="draft-edit"
-                      value="git_worktree"
-                      onChange={() =>
-                        store.updateIntakeForm({ workspace_mode: "git_worktree" })
-                      }
-                    >
-                      <option value="git_worktree">git_worktree · 代码工作树</option>
-                    </select>
+                  <div class="field">
+                    <div>
+                      <dt>轨道</dt>
+                      <dd>
+                        <div class="seg seg-wrap" role="radiogroup" aria-label="轨道">
+                          {TRACK_TABS.map(([val, label]) => (
+                            <button
+                              key={val}
+                              type="button"
+                              role="radio"
+                              aria-checked={intakeForm.track === val}
+                              data-track={val}
+                              class={intakeForm.track === val ? "on" : ""}
+                              onClick={() => store.updateIntakeForm({ track: val })}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </dd>
+                    </div>
+                    <span class="field-mark">
+                      {requiredChecks[3]![1] ? <CheckIcon /> : null}
+                    </span>
+                  </div>
+
+                  <div class="field">
+                    <div>
+                      <dt>目标空间与工作区</dt>
+                      <dd>
+                        <div class="draft-static" aria-label="空间与工作区摘要">
+                          {targetSummary}
+                        </div>
+                      </dd>
+                    </div>
+                    <span class="field-mark">
+                      {requiredChecks[2]![1] && requiredChecks[4]![1] ? (
+                        <CheckIcon />
+                      ) : null}
+                    </span>
+                  </div>
+                </dl>
+
+                <div class="contract-card">
+                  <div class="contract-head">
+                    <div>
+                      <span class="contract-title">PM 执行契约摘要</span>
+                      <span class="mono muted contract-count">
+                        {contractDoneCount} / 3
+                      </span>
+                    </div>
+                    <div class="contract-actions">
+                      <button
+                        type="button"
+                        class="btn btn-sm btn-light"
+                        disabled={intakeBusy || projectBlocked}
+                        onClick={() => void store.requestPmAutofill()}
+                      >
+                        让立项助手补全
+                      </button>
+                      <button
+                        type="button"
+                        class="btn btn-sm"
+                        aria-expanded={contractEditOpen}
+                        onClick={() => setContractEditOpen((v) => !v)}
+                      >
+                        {contractEditOpen ? "收起编辑" : "手动编辑"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {!contractEditOpen ? (
+                    <dl class="contract-summary">
+                      <div class="cs-row">
+                        <dt>交付终点</dt>
+                        <dd>
+                          {intakeForm.end.trim() || <span class="muted">待 PM 补全</span>}
+                        </dd>
+                      </div>
+                      <div class="cs-row">
+                        <dt>验收命令</dt>
+                        <dd class="mono">
+                          {intakeForm.accept_cmd.trim() || (
+                            <span class="muted">待 PM 补全</span>
+                          )}
+                        </dd>
+                      </div>
+                      <div class="cs-row">
+                        <dt>可改范围</dt>
+                        <dd class="mono">
+                          {scopeList.length > 0 ? (
+                            scopeList.join(", ")
+                          ) : (
+                            <span class="muted">待 PM 补全</span>
+                          )}
+                        </dd>
+                      </div>
+                      {intakeForm.depends_on.trim() ? (
+                        <div class="cs-row">
+                          <dt>前置任务</dt>
+                          <dd class="mono">{intakeForm.depends_on.trim()}</dd>
+                        </div>
+                      ) : null}
+                    </dl>
                   ) : (
-                    <select
-                      aria-label="工作区"
-                      class="draft-edit"
-                      value={
-                        intakeForm.workspace_mode === "host_scoped"
-                          ? "host_scoped"
-                          : "scratch_dir"
-                      }
-                      onChange={(e) =>
-                        store.updateIntakeForm({
-                          workspace_mode: (e.currentTarget as HTMLSelectElement)
-                            .value as Exclude<WorkspaceMode, "external_only">,
-                        })
-                      }
-                    >
-                      <option value="scratch_dir">scratch_dir · 临时沙盒</option>
-                      <option value="host_scoped">
-                        host_scoped · 本机白名单（两阶段暂存）
-                      </option>
-                    </select>
+                    <dl class="draft-fields">
+                      <div class="field">
+                        <div>
+                          <dt>交付终点</dt>
+                          <dd>
+                            <input
+                              aria-label="交付终点"
+                              class="draft-edit"
+                              placeholder="对话生成或直接点击填写"
+                              value={intakeForm.end}
+                              onInput={(e) =>
+                                store.updateIntakeForm({
+                                  end: (e.currentTarget as HTMLInputElement).value,
+                                })
+                              }
+                            />
+                          </dd>
+                        </div>
+                        <span class="field-mark">
+                          {requiredChecks[5]![1] ? <CheckIcon /> : null}
+                        </span>
+                      </div>
+
+                      <div class="field">
+                        <div>
+                          <dt>验收命令</dt>
+                          <dd>
+                            <input
+                              aria-label="验收命令"
+                              class="draft-edit mono"
+                              placeholder="如 pnpm test"
+                              value={intakeForm.accept_cmd}
+                              onInput={(e) =>
+                                store.updateIntakeForm({
+                                  accept_cmd: (e.currentTarget as HTMLInputElement).value,
+                                })
+                              }
+                            />
+                          </dd>
+                        </div>
+                        <span class="field-mark">
+                          {requiredChecks[6]![1] ? <CheckIcon /> : null}
+                        </span>
+                      </div>
+
+                      <div class="field">
+                        <div>
+                          <dt>可改范围</dt>
+                          <dd>
+                            <input
+                              aria-label="可改范围"
+                              class="draft-edit mono"
+                              placeholder="多个路径用逗号或换行分隔"
+                              value={intakeForm.scope}
+                              onInput={(e) =>
+                                store.updateIntakeForm({
+                                  scope: (e.currentTarget as HTMLInputElement).value,
+                                })
+                              }
+                            />
+                          </dd>
+                        </div>
+                        <span class="field-mark">
+                          {requiredChecks[7]![1] ? <CheckIcon /> : null}
+                        </span>
+                      </div>
+
+                      <div class="field">
+                        <div>
+                          <dt>前置任务（可选）</dt>
+                          <dd>
+                            <input
+                              aria-label="前置任务"
+                              class="draft-edit mono"
+                              placeholder="选填，如 t-118"
+                              value={intakeForm.depends_on}
+                              onInput={(e) =>
+                                store.updateIntakeForm({
+                                  depends_on: (e.currentTarget as HTMLInputElement).value,
+                                })
+                              }
+                            />
+                          </dd>
+                        </div>
+                        <span class="field-mark">
+                          {intakeForm.depends_on.trim() ? <CheckIcon /> : null}
+                        </span>
+                      </div>
+                    </dl>
                   )}
-                </dd>
+                </div>
               </div>
-              <span class="field-mark">
-                {requiredChecks[4]![1] ? <CheckIcon /> : null}
-              </span>
-            </div>
-
-            <div class="field">
-              <div>
-                <dt>交付终点</dt>
-                <dd>
-                  <input
-                    aria-label="交付终点"
-                    class="draft-edit"
-                    placeholder="对话生成或直接点击填写"
-                    value={intakeForm.end}
-                    onInput={(e) =>
-                      store.updateIntakeForm({
-                        end: (e.currentTarget as HTMLInputElement).value,
-                      })
-                    }
-                  />
-                </dd>
-              </div>
-              <span class="field-mark">
-                {requiredChecks[5]![1] ? <CheckIcon /> : null}
-              </span>
-            </div>
-
-            <div class="field">
-              <div>
-                <dt>验收命令</dt>
-                <dd>
-                  <input
-                    aria-label="验收命令"
-                    class="draft-edit mono"
-                    placeholder="如 pnpm test"
-                    value={intakeForm.accept_cmd}
-                    onInput={(e) =>
-                      store.updateIntakeForm({
-                        accept_cmd: (e.currentTarget as HTMLInputElement).value,
-                      })
-                    }
-                  />
-                </dd>
-              </div>
-              <span class="field-mark">
-                {requiredChecks[6]![1] ? <CheckIcon /> : null}
-              </span>
-            </div>
-
-            <div class="field">
-              <div>
-                <dt>可改范围</dt>
-                <dd>
-                  <input
-                    aria-label="可改范围"
-                    class="draft-edit mono"
-                    placeholder="多个路径用逗号或换行分隔"
-                    value={intakeForm.scope}
-                    onInput={(e) =>
-                      store.updateIntakeForm({
-                        scope: (e.currentTarget as HTMLInputElement).value,
-                      })
-                    }
-                  />
-                </dd>
-              </div>
-              <span class="field-mark">
-                {requiredChecks[7]![1] ? <CheckIcon /> : null}
-              </span>
-            </div>
-
-            <div class="field">
-              <div>
-                <dt>前置任务（可选）</dt>
-                <dd>
-                  <input
-                    aria-label="前置任务"
-                    class="draft-edit mono"
-                    placeholder="选填，如 t-118"
-                    value={intakeForm.depends_on}
-                    onInput={(e) =>
-                      store.updateIntakeForm({
-                        depends_on: (e.currentTarget as HTMLInputElement).value,
-                      })
-                    }
-                  />
-                </dd>
-              </div>
-              <span class="field-mark">
-                {intakeForm.depends_on.trim() ? <CheckIcon /> : null}
-              </span>
-            </div>
-          </dl>
+            )}
+          </div>
 
           <div class="draft-foot">
             <button
@@ -677,8 +798,12 @@ export function IntakeView() {
               {projectBlocked
                 ? "请先添加或选择目标项目空间"
                 : ready
-                  ? "确认后写入 card.yaml 和 BRIEF.md，进入队列调度"
-                  : `还差 ${8 - doneCount} 项，继续对话或直接点击字段补齐`}
+                  ? openQuestions.length > 0
+                    ? `契约已齐，但仍有 ${openQuestions.length} 项待拍板；也可直接点击开始推进`
+                    : hasBrief
+                      ? "《产品方案》与契约已就绪，确认后写入 card.yaml 和 BRIEF.md"
+                      : "确认后写入 card.yaml 和 BRIEF.md，进入队列调度"
+                  : `还差 ${8 - doneCount} 项，继续对话或点「让立项助手补全」`}
             </span>
           </div>
         </aside>

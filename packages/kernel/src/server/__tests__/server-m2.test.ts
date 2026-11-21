@@ -1525,4 +1525,207 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
       args: ["__mcp"],
     });
   });
+
+  it("upgrades PM (intake) agent with L1/L2 four-step prompt, non-MCP BRIEF.md/open_questions patches, SSE intake.progress, and lossless handoff to downstream worker", async () => {
+    const kilnHome = makeTempDir("kiln-m2-pm-upgrade-");
+    const fakeBackend = new FakeBackend();
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      publicDir: null,
+      tokenSecret: "m2-pm-upgrade-secret-0123456789abcd",
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    await server.start();
+
+    server.store.writeConfig("roles", {
+      schema_version: 1,
+      heterogeneous_review: true,
+      roles: {
+        intake: {
+          backend_id: "fake",
+          agent: "pi",
+          model: "magpie/group/fast",
+          allow_full_access_fallback: false,
+        },
+        worker: {
+          backend_id: "fake",
+          agent: "codex",
+          model: "gpt-5.4",
+          allow_full_access_fallback: false,
+        },
+      },
+    });
+
+    await server.app.request(
+      new Request("http://127.0.0.1/api/drafts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: "d-pm-l2",
+          title: "重构设置架构",
+          space: "local",
+          track: "L2",
+          workspace_mode: "scratch_dir",
+        }),
+      }),
+    );
+
+    const sseLog: Array<{ type: string; kind?: string; toolName?: string; draftId?: string }> = [];
+    const unsubscribe = server.sseHub.subscribe((ev) => {
+      if (ev.type === "intake.progress") {
+        sseLog.push({
+          type: ev.type,
+          kind: ev.kind,
+          toolName: ev.toolName,
+          draftId: ev.draftId,
+        });
+      }
+    });
+
+    const designDoc = [
+      "## 1. 目标与用户场景",
+      "为本地用户提供可回滚的配置向导。",
+      "",
+      "## 2. 已确认规则与关键流程 / 边界",
+      "- 非法字段回绝并返回 400。",
+      "",
+      "## 3. 选定落地方案与关键取舍",
+      "- 方案 A（推荐）：复用 Zod 契约校验；放弃手写 parser。",
+      "",
+      "## 4. 范围边界（做什么 / 明确不做什么）",
+      "- 只改 CLI 与 store；不做云端同步。",
+      "",
+      "## 5. 可观察验收场景",
+      "- 写入合法 YAML 返回 0，非法字段报错。",
+    ].join("\n");
+
+    fakeBackend.enqueueScript(
+      [
+        { kind: "thinking" },
+        { kind: "tool", name: "read_file", target: "packages/cli/src/commands.ts" },
+        {
+          kind: "message",
+          delta: false,
+          text: [
+            "已先检查现有配置路径并整理出《产品方案》草案（L2 五段式）。",
+            "```kiln-draft-patch",
+            JSON.stringify({
+              title: "本地配置向导与契约校验",
+              open_questions: ["是否需要保留旧 YAML 迁移提示？"],
+              brief_markdown: designDoc,
+              contract: {
+                end: "支持向导写入与 Zod 校验",
+                accept_cmd: "echo wizard-ok",
+                scope: ["workspaces/<新任务>/**"],
+              },
+            }),
+            "```",
+          ].join("\n"),
+        },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "intake" },
+    );
+
+    const chatRes = await server.app.request(
+      new Request("http://127.0.0.1/api/drafts/d-pm-l2/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "帮我设计一个配置向导方案" }),
+      }),
+    );
+    unsubscribe();
+
+    expect(chatRes.status).toBe(200);
+    const chatJson = (await chatRes.json()) as {
+      brief_markdown: string;
+      draft: { open_questions: string[]; title: string };
+    };
+    expect(chatJson.draft.title).toBe("本地配置向导与契约校验");
+    expect(chatJson.draft.open_questions).toEqual(["是否需要保留旧 YAML 迁移提示？"]);
+    expect(chatJson.brief_markdown).toContain("## 5. 可观察验收场景");
+
+    // Verify SSE emitted thinking -> tool -> draft_updated progression
+    expect(sseLog.map((s) => s.kind)).toEqual(["thinking", "tool", "draft_updated"]);
+    expect(sseLog[1]?.toolName).toBe("read_file");
+    expect(sseLog[2]?.toolName).toBe("draft_patch");
+
+    // Verify L2 system prompt enforces 4-step PM workflow & 5-section BRIEF template
+    const l2Spec = fakeBackend
+      .getRecordedSpecs()
+      .find((s) => s.role === "intake" && s.taskId === "d-pm-l2");
+    expect(l2Spec?.systemPrompt).toContain("L2 标准交付");
+    expect(l2Spec?.systemPrompt).toContain("## 3. 选定落地方案与关键取舍");
+    expect(l2Spec?.systemPrompt).toContain("严禁私自调用 commit_card");
+
+    // L1 track draft gets concise L1 guidance & injects persisted BRIEF.md when created fresh
+    await server.app.request(
+      new Request("http://127.0.0.1/api/drafts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: "d-pm-l1",
+          title: "快速修复文案",
+          space: "local",
+          track: "L1",
+          workspace_mode: "scratch_dir",
+          brief_markdown: "## 1. 目标\n调整文案并补单测",
+        }),
+      }),
+    );
+    fakeBackend.enqueueScript(
+      [{ kind: "message", text: "L1 方案已精简补全。", delta: false }, { kind: "exit", reason: "completed" }],
+      { role: "intake" },
+    );
+    await server.app.request(
+      new Request("http://127.0.0.1/api/drafts/d-pm-l1/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "补一下契约" }),
+      }),
+    );
+    const l1Spec = fakeBackend
+      .getRecordedSpecs()
+      .find((s) => s.role === "intake" && s.taskId === "d-pm-l1");
+    expect(l1Spec?.systemPrompt).toContain("L1 快车道");
+    expect(l1Spec?.systemPrompt).toContain("调整文案并补单测");
+
+    // Commit d-pm-l2 -> orchestrator tick injects full BRIEF.md into worker HANDOFF.md!
+    const commitRes = await server.app.request(
+      new Request("http://127.0.0.1/api/drafts/d-pm-l2/commit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: "t-pm-handoff",
+          contract: {
+            goal: "本地配置向导与契约校验",
+            end: "支持向导写入与 Zod 校验",
+            accept_cmd: "echo wizard-ok",
+            accept_files_hash: "pending",
+            scope: ["workspaces/t-pm-handoff/**"],
+            deliver: { mode: "manual", cmd: null },
+            human_accept: false,
+            external_actions: "ask",
+          },
+        }),
+      }),
+    );
+    expect(commitRes.status).toBe(201);
+
+    fakeBackend.enqueueScript(
+      [{ kind: "message", text: "done", delta: false }, { kind: "exit", reason: "completed" }],
+      { role: "worker" },
+    );
+    await server.orchestrator.start();
+    await server.orchestrator.wake();
+    const handoffPath = server.store.paths.handoffMd("t-pm-handoff", "001-implement");
+    await vi.waitFor(() => {
+      expect(fs.existsSync(handoffPath)).toBe(true);
+    });
+    const handoffText = fs.readFileSync(handoffPath, "utf8");
+    expect(handoffText).toContain("## 3. 选定落地方案与关键取舍");
+    expect(handoffText).toContain("方案 A（推荐）：复用 Zod 契约校验");
+  });
 });

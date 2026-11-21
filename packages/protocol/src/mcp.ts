@@ -52,7 +52,9 @@ export const WbPlanInputSchema = z.discriminatedUnion("mode", [
     track: TrackSchema.optional(),
     workspace_mode: WorkspaceModeSchema.optional(),
     depends_on: z.array(z.string().min(1)).optional(),
+    open_questions: z.array(z.string().min(1)).optional(),
     contract: CardContractSchema.partial().optional(),
+    brief_markdown: z.string().optional(),
   }),
   z.object({
     mode: z.literal("commit_card"),

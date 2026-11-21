@@ -1084,19 +1084,24 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       expect(document.body.classList.contains("in-converse")).toBe(true);
     });
 
-    // Default mode is 项目任务 with project space kiln -> workspace locked to git_worktree
-    const trackSelect = screen.getByLabelText("轨道") as HTMLSelectElement;
-    expect(Array.from(trackSelect.options).map((o) => o.value)).toEqual(["L1", "L2"]);
+    // Issue #5: Zero <select> dropdowns in IntakeView
+    const { container } = { container: document.body.querySelector(".converse")! };
+    expect(container.querySelectorAll("select")).toHaveLength(0);
 
-    const projectWsSelect = screen.getByLabelText("工作区") as HTMLSelectElement;
-    expect(Array.from(projectWsSelect.options).map((o) => o.value)).toEqual([
-      "git_worktree",
-    ]);
+    // Default right panel opens 产品方案 tab; switch to 立项设置 tab to verify track & workspace controls
+    fireEvent.click(screen.getByRole("tab", { name: /立项设置/ }));
+    const trackGroup = screen.getByRole("radiogroup", { name: "轨道" });
+    const trackRadios = within(trackGroup).getAllByRole("radio");
+    expect(trackRadios.map((el) => el.getAttribute("data-track"))).toEqual(["L1", "L2"]);
+    expect(
+      screen.getByLabelText("空间与工作区摘要").textContent,
+    ).toContain("git_worktree");
 
-    // Switch to 本机 / 临时任务 -> workspace options are only scratch_dir and host_scoped (no L3/external_only)
+    // Switch to 本机 / 临时任务 -> workspace tabs are only scratch_dir and host_scoped (no L3/external_only)
     fireEvent.click(screen.getByRole("button", { name: "本机 / 临时任务" }));
-    const localWsSelect = screen.getByLabelText("工作区") as HTMLSelectElement;
-    expect(Array.from(localWsSelect.options).map((o) => o.value)).toEqual([
+    const localWsGroup = screen.getByRole("radiogroup", { name: "本机工作区模式" });
+    const localWsRadios = within(localWsGroup).getAllByRole("radio");
+    expect(localWsRadios.map((el) => el.getAttribute("data-workspace-mode"))).toEqual([
       "scratch_dir",
       "host_scoped",
     ]);
@@ -1113,10 +1118,11 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     fireEvent.focusIn(chatInput);
     expect(document.body.classList.contains("kb-open")).toBe(true);
 
-    // Fill local scratch task containing <新任务> placeholder and commit
+    // Expand PM 执行契约摘要 to fill local scratch task containing <新任务> placeholder and commit
     fireEvent.input(screen.getByLabelText("标题"), {
       target: { value: "临时沙盒统计脚本" },
     });
+    fireEvent.click(screen.getByRole("button", { name: "手动编辑" }));
     fireEvent.input(screen.getByLabelText("交付终点"), {
       target: { value: "output.md 生成且非空" },
     });
@@ -2281,7 +2287,13 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     await waitFor(() => {
       expect((document.getElementById("chatIn") as HTMLTextAreaElement).disabled).toBe(false);
     });
-    expect((screen.getByLabelText("目标项目空间") as HTMLSelectElement).value).toBe("alpha");
+    const alphaRadio = within(screen.getByRole("radiogroup", { name: "目标项目空间" })).getByRole(
+      "radio",
+      { name: "Alpha" },
+    );
+    expect(alphaRadio.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(screen.getByRole("tab", { name: /立项设置/ }));
+    fireEvent.click(screen.getByRole("button", { name: "手动编辑" }));
     expect((screen.getByLabelText("验收命令") as HTMLInputElement).value).toBe("pnpm test");
 
     // 3. Delete old draft via × button
@@ -2408,8 +2420,13 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     fireEvent.click(screen.getByRole("button", { name: "新需求 N" }));
 
     await waitFor(() => {
-      expect((screen.getByLabelText("目标项目空间") as HTMLSelectElement).value).toBe("beta");
+      const betaRadio = within(
+        screen.getByRole("radiogroup", { name: "目标项目空间" }),
+      ).getByRole("radio", { name: "Beta" });
+      expect(betaRadio.getAttribute("aria-checked")).toBe("true");
     });
+    fireEvent.click(screen.getByRole("tab", { name: /立项设置/ }));
+    fireEvent.click(screen.getByRole("button", { name: "手动编辑" }));
     expect((screen.getByLabelText("验收命令") as HTMLInputElement).value).toBe("cargo test");
   });
 
@@ -2685,7 +2702,11 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     await waitFor(() => {
       expect(screen.queryByRole("dialog", { name: "添加项目空间" })).toBeNull();
     });
-    expect((screen.getByLabelText("目标项目空间") as HTMLSelectElement).value).toBe("gamma");
+    expect(
+      within(screen.getByRole("radiogroup", { name: "目标项目空间" }))
+        .getByRole("radio", { name: "gamma" })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
 
     // 4. Open modal again: search discovered repos and 1-click add colliding id "kiln" -> "kiln-2"
     fireEvent.click(screen.getByRole("button", { name: "+ 添加项目" }));
@@ -2702,7 +2723,12 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     await waitFor(() => {
       expect(putCalls.some((c) => c.url === "/api/spaces/kiln-2")).toBe(true);
     });
-    expect((screen.getByLabelText("目标项目空间") as HTMLSelectElement).value).toBe("kiln-2");
+    expect(
+      screen
+        .getByRole("radiogroup", { name: "目标项目空间" })
+        .querySelector('[data-space-id="kiln-2"]')
+        ?.getAttribute("aria-checked"),
+    ).toBe("true");
   });
 
   it("renders rich XSS-safe Markdown in IntakeView & ResolveView, persists active intake context across reload, and clears on close or commit", async () => {
@@ -2991,6 +3017,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     // 6. Re-load draft and commit -> clears dock and persistence cleanly
     fireEvent.click(screen.getByRole("button", { name: "新需求 N" }));
     fireEvent.click(await screen.findByRole("button", { name: /^支持 Markdown 立项对话/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /立项设置/ }));
     await waitFor(() => {
       expect((screen.getByLabelText("标题") as HTMLInputElement).value).toBe(
         "支持 Markdown 立项对话",
@@ -3120,5 +3147,225 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     });
     expect(syncCalls.at(-1)).toEqual({ force: false, restore_model: "gpt-5.4" });
     expect(document.getElementById("upTotalCost")?.textContent).toBe("$3.10");
+  });
+
+  it("supports zero-select Tab intake selectors, live SSE intake.progress, 产品方案 preview/raw edit & open_questions, 1-click PM autofill, and lossless BRIEF.md commit (#5 + #6)", async () => {
+    const now = new Date().toISOString();
+    let resolveChatDeferred: ((res: Response) => void) | null = null;
+    let commitPayload: Record<string, unknown> | null = null;
+    const chatMessagesSent: string[] = [];
+
+    const fullBrief = [
+      "## 1. 目标与用户场景",
+      "通过结构化产品方案替代手工表单填充。",
+      "",
+      "## 2. 已确认规则与关键流程 / 边界",
+      "- 右侧默认展示 Markdown 方案；待拍板清零后即可直接立项。",
+      "",
+      "## 3. 选定落地方案与关键取舍",
+      "- 方案 A（推荐）：`drafts/<id>/BRIEF.md` 与 `card.yaml` 并行同步。",
+    ].join("\n");
+
+    fetchMock.mockImplementation(async (url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      const body = init?.body
+        ? (JSON.parse(String(init.body)) as Record<string, unknown>)
+        : undefined;
+
+      if (url === "/api/bootstrap") {
+        return jsonResponse(
+          makeBaseBootstrap({
+            spaces: {
+              alpha: {
+                schema_version: 1,
+                id: "alpha",
+                name: "Alpha",
+                repo_path: "/repos/alpha",
+                default_branch: "main",
+                copy_untracked: [],
+                clone_deps: [],
+                default_accept_cmd: "pnpm alpha:test",
+                freeze_patterns: [],
+              },
+              beta: {
+                schema_version: 1,
+                id: "beta",
+                name: "Beta",
+                repo_path: "/repos/beta",
+                default_branch: "main",
+                copy_untracked: [],
+                clone_deps: [],
+                default_accept_cmd: "cargo test",
+                freeze_patterns: [],
+              },
+            },
+          }),
+        );
+      }
+      if (url === "/api/drafts" && method === "POST") {
+        return jsonResponse(
+          {
+            ok: true,
+            draft: {
+              schema_version: 1,
+              id: String(body?.id ?? "d-pm-ui-1"),
+              title: String(body?.title ?? ""),
+              space: String(body?.space ?? "alpha"),
+              priority: String(body?.priority ?? "P2"),
+              track: String(body?.track ?? "L2"),
+              workspace_mode: String(body?.workspace_mode ?? "git_worktree"),
+              depends_on: [],
+              open_questions: (body?.open_questions as string[]) ?? [],
+              contract: (body?.contract ?? {}) as Record<string, unknown>,
+              created_at: now,
+              updated_at: now,
+            },
+          },
+          201,
+        );
+      }
+      if (url === "/api/drafts/d-pm-ui-1/chat" && method === "POST") {
+        chatMessagesSent.push(String(body?.message ?? ""));
+        return await new Promise<Response>((resolve) => {
+          resolveChatDeferred = resolve;
+        });
+      }
+      if (url === "/api/drafts/d-pm-ui-1/commit" && method === "POST") {
+        commitPayload = body ?? {};
+        return jsonResponse({ ok: true, card: { id: body?.id ?? "t-101" }, state: {} }, 201);
+      }
+      return jsonResponse({});
+    });
+
+    window.location.hash = "#view=intake";
+    const { container } = render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole("radiogroup", { name: "目标项目空间" })).toBeTruthy();
+    });
+
+    // Zero <select> inside IntakeView
+    expect(container.querySelectorAll(".converse select")).toHaveLength(0);
+
+    // Click Beta project chip
+    const betaRadio = within(screen.getByRole("radiogroup", { name: "目标项目空间" })).getByRole(
+      "radio",
+      { name: "Beta" },
+    );
+    fireEvent.click(betaRadio);
+    expect(betaRadio.getAttribute("aria-checked")).toBe("true");
+
+    // Switch to 立项设置 tab -> pick P1 priority chip & L1 track chip, then trigger 1-click 「让立项助手补全」
+    fireEvent.click(screen.getByRole("tab", { name: /立项设置/ }));
+    fireEvent.click(
+      within(screen.getByRole("radiogroup", { name: "优先级" })).getByRole("radio", {
+        name: "P1 重要",
+      }),
+    );
+    fireEvent.click(
+      within(screen.getByRole("radiogroup", { name: "轨道" })).getByRole("radio", {
+        name: "L1 快车道",
+      }),
+    );
+    expect(screen.getByText("PM 执行契约摘要")).toBeTruthy();
+    expect(screen.queryByLabelText("交付终点")).toBeNull(); // Collapsed by default!
+
+    fireEvent.click(screen.getByRole("button", { name: "让立项助手补全" }));
+    await waitFor(() => {
+      expect(chatMessagesSent).toHaveLength(1);
+    });
+
+    // Emit live SSE intake.progress events while turn is in-flight
+    const sse = MockEventSource.instances[0]!;
+    sse.emit("intake.progress", {
+      seq: 10,
+      type: "intake.progress",
+      draftId: "d-pm-ui-1",
+      kind: "tool",
+      toolName: "read_file",
+      text: "正在读取/调用 read_file · src/lib.rs",
+      at: now,
+    });
+    sse.emit("intake.progress", {
+      seq: 11,
+      type: "intake.progress",
+      draftId: "d-pm-ui-1",
+      kind: "draft_updated",
+      toolName: "wb_plan",
+      text: "已同步《产品方案》与立项草稿",
+      at: now,
+    });
+
+    const progressList = await screen.findByRole("list", { name: "立项探索进度" });
+    expect(progressList.textContent).toContain("src/lib.rs");
+    expect(progressList.textContent).toContain("已同步《产品方案》与立项草稿");
+
+    // Finish PM turn with open_questions + brief_markdown + auto-filled contract
+    resolveChatDeferred!(
+      jsonResponse({
+        ok: true,
+        messages: [
+          { who: "me", text: chatMessagesSent[0]! },
+          { who: "agent", name: "intake", text: "已为你生成首版设计方案并补全契约。" },
+        ],
+        brief_markdown: fullBrief,
+        draft: {
+          schema_version: 1,
+          id: "d-pm-ui-1",
+          title: "升级 Beta 导出流程",
+          space: "beta",
+          priority: "P1",
+          track: "L1",
+          workspace_mode: "git_worktree",
+          depends_on: [],
+          open_questions: ["是否限制单次导出上限？"],
+          contract: {
+            goal: "升级 Beta 导出流程",
+            end: "支持 CSV 与 JSON 双格式导出",
+            accept_cmd: "cargo test",
+            scope: ["src/export/**"],
+          },
+          brief_markdown: fullBrief,
+          created_at: now,
+          updated_at: now,
+        },
+      }),
+    );
+
+    // Thinking progress list disappears when turn completes
+    await waitFor(() => {
+      expect(screen.queryByRole("list", { name: "立项探索进度" })).toBeNull();
+    });
+
+    // Collapsed contract summary immediately reflects PM auto-filled values (8/8 ready)
+    expect(screen.getByText("支持 CSV 与 JSON 双格式导出")).toBeTruthy();
+    expect(document.getElementById("draftProg")?.textContent).toBe("8 / 8");
+
+    // Switch back to 产品方案 tab -> verifies Markdown preview + open_questions + raw edit
+    fireEvent.click(screen.getByRole("tab", { name: /产品方案/ }));
+    expect(screen.getByLabelText("待拍板事项").textContent).toContain("是否限制单次导出上限？");
+    const briefPreview = document.querySelector('[data-brief-preview="true"]')!;
+    expect(briefPreview.querySelector("h2")?.textContent).toContain("1. 目标与用户场景");
+
+    // Edit raw Markdown and verify commit passes the edited full brief verbatim (NOT the 4-line fallback!)
+    fireEvent.click(screen.getByRole("button", { name: "编辑原文" }));
+    const rawEditor = screen.getByLabelText("产品方案原文") as HTMLTextAreaElement;
+    fireEvent.input(rawEditor, {
+      target: { value: `${fullBrief}\n\n- 人工追加：单次上限 10000 条。` },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "完成预览" }));
+    expect(document.querySelector('[data-brief-preview="true"]')?.textContent).toContain(
+      "人工追加：单次上限 10000 条。",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "开始推进" }));
+    await waitFor(() => {
+      expect(commitPayload).not.toBeNull();
+    });
+    const sentCommit = commitPayload as Record<string, unknown> | null;
+    expect(sentCommit?.priority).toBe("P1");
+    expect(sentCommit?.track).toBe("L1");
+    expect(sentCommit?.space).toBe("beta");
+    expect(String(sentCommit?.brief_markdown)).toContain("## 3. 选定落地方案与关键取舍");
+    expect(String(sentCommit?.brief_markdown)).toContain("人工追加：单次上限 10000 条。");
   });
 });

@@ -116,5 +116,14 @@ export const SseEventSchema = z.discriminatedUnion("type", [
     runId: z.string().min(1),
     event: RunEventSchema,
   }),
+  z.object({
+    seq: z.number().int().positive(),
+    type: z.literal("intake.progress"),
+    draftId: z.string().min(1),
+    kind: z.enum(["thinking", "tool", "draft_updated"]),
+    text: z.string().min(1),
+    toolName: z.string().min(1).optional(),
+    at: z.string().min(1),
+  }),
 ]);
 export type SseEvent = z.infer<typeof SseEventSchema>;

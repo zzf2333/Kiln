@@ -2893,4 +2893,109 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     expect((await readJson(closeRes)).draft.intake_open).toBe(false);
     expect(server.store.readDraft("d-open-1")?.title).toBe("进行中立项");
   });
+
+  it("persists drafts/<id>/BRIEF.md and open_questions via wb_plan(upsert_draft), emits SSE intake.progress, and commits full BRIEF.md into tasks/<id>/BRIEF.md", async () => {
+    const kilnHome = makeTempDir("kiln-draft-brief-");
+    tempDirs.push(kilnHome);
+
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      tokenSecret: "draft-brief-secret-0123456789abcde",
+    });
+    servers.push(server);
+    await server.start();
+
+    const sseEvents: SseEvent[] = [];
+    const unsubscribe = server.sseHub.subscribe((ev) => {
+      sseEvents.push(ev);
+    });
+
+    const intakeToken = server.issueRunToken({
+      taskId: "d-brief-mcp",
+      runId: "chat-intake-brief",
+      role: "intake",
+      contractVersion: 1,
+    });
+
+    const fullBrief = [
+      "## 1. 目标与用户场景",
+      "支持从立项讨论直接沉淀完整产品设计并无损流转下游。",
+      "",
+      "## 2. 已确认规则与关键流程 / 边界",
+      "- 未确认事项同步写入 open_questions，确认后清零。",
+      "",
+      "## 3. 选定落地方案与关键取舍",
+      "采用 drafts/<id>/BRIEF.md 文件存储，删除草稿时级联清理。",
+    ].join("\n");
+
+    const upsertMcpRes = await requestMcpRpc(server, {
+      method: "POST",
+      path: "/rpc/mcp/wb_plan",
+      headers: { Authorization: `Bearer ${intakeToken}` },
+      body: {
+        mode: "upsert_draft",
+        draft_id: "d-brief-mcp",
+        title: "无损 BRIEF 传递",
+        space: "local",
+        workspace_mode: "scratch_dir",
+        open_questions: ["是否支持编辑原文"],
+        brief_markdown: fullBrief,
+      },
+    });
+    unsubscribe();
+
+    expect(upsertMcpRes.status).toBe(200);
+    expect(upsertMcpRes.json.brief_markdown).toContain("支持从立项讨论直接沉淀完整产品设计");
+    expect(server.store.readDraft("d-brief-mcp")?.open_questions).toEqual(["是否支持编辑原文"]);
+    expect(server.store.readDraftBrief("d-brief-mcp")).toContain("## 3. 选定落地方案与关键取舍");
+
+    // SSE published intake.progress draft_updated event
+    const progressEv = sseEvents.find((e) => e.type === "intake.progress");
+    expect(progressEv).toMatchObject({
+      type: "intake.progress",
+      draftId: "d-brief-mcp",
+      kind: "draft_updated",
+      toolName: "wb_plan",
+    });
+
+    // GET /api/drafts/:id and /api/bootstrap surface persisted brief_markdown & open_questions
+    const detailRes = await requestHttp(server, "/api/drafts/d-brief-mcp");
+    expect(detailRes.status).toBe(200);
+    const detailJson = await readJson(detailRes);
+    expect(detailJson.brief_markdown).toContain("## 2. 已确认规则与关键流程 / 边界");
+    expect(detailJson.draft.open_questions).toEqual(["是否支持编辑原文"]);
+    expect(detailJson.draft.brief_markdown).toContain("## 1. 目标与用户场景");
+
+    const bootJson = await readJson(await requestHttp(server, "/api/bootstrap"));
+    const bootDraft = (bootJson.drafts as Array<Record<string, unknown>>).find(
+      (d) => d.id === "d-brief-mcp",
+    );
+    expect(bootDraft?.brief_markdown).toContain("## 3. 选定落地方案与关键取舍");
+
+    // Clear open_questions via HTTP POST /api/drafts, then commit WITHOUT passing brief_markdown -> inherits persisted BRIEF.md
+    const clearOqRes = await requestHttp(server, "/api/drafts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "d-brief-mcp",
+        open_questions: [],
+        contract: makeContract(),
+      }),
+    });
+    expect(clearOqRes.status).toBe(200);
+    expect(server.store.readDraft("d-brief-mcp")?.open_questions).toEqual([]);
+
+    const commitRes = await requestHttp(server, "/api/drafts/d-brief-mcp/commit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "t-brief-ok" }),
+    });
+    expect(commitRes.status).toBe(201);
+    const taskBrief = fs.readFileSync(server.store.paths.briefMd("t-brief-ok"), "utf8");
+    expect(taskBrief).toContain("## 1. 目标与用户场景");
+    expect(taskBrief).toContain("## 3. 选定落地方案与关键取舍");
+    expect(server.store.readDraft("d-brief-mcp")).toBeNull();
+    expect(server.store.readDraftBrief("d-brief-mcp")).toBeNull();
+  });
 });

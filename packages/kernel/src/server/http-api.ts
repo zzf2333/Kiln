@@ -164,7 +164,9 @@ const UpsertDraftRequestSchema = z.object({
   track: TrackSchema.optional(),
   workspace_mode: WorkspaceModeSchema.optional(),
   depends_on: z.array(z.string().min(1)).optional(),
+  open_questions: z.array(z.string().min(1)).optional(),
   contract: CardContractSchema.partial().optional(),
+  brief_markdown: z.string().optional(),
   session_ref: SessionRefSchema.nullable().optional(),
   intake_open: z.boolean().optional(),
 });
@@ -180,7 +182,7 @@ const CommitDraftRequestSchema = z.object({
   depends_on: z.array(z.string().min(1)).optional(),
   contract: CardContractSchema.partial().optional(),
   limits: CardLimitsSchema.optional(),
-  brief_markdown: z.string().min(1),
+  brief_markdown: z.string().optional(),
 });
 
 const OptionalReasonBodySchema = z.object({
@@ -442,6 +444,16 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       });
     }
     return taskId;
+  };
+
+  const serializeDraftWithBrief = (
+    draft: NonNullable<ReturnType<KilnStore["readDraft"]>>,
+  ) => {
+    const brief = store.readDraftBrief(draft.id);
+    if (brief !== null && brief.trim().length > 0) {
+      return { ...draft, brief_markdown: brief };
+    }
+    return draft;
   };
 
   app.onError((err, c) => {
@@ -1032,7 +1044,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     return c.json({
       tasks,
       pendingDecisions: pendingDecisions.listAll(),
-      drafts: store.listDrafts(),
+      drafts: store.listDrafts().map(serializeDraftWithBrief),
       spaces,
       ledgers,
       agents: backendSnap.agents,
@@ -1149,9 +1161,11 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
 
   app.get("/api/drafts/:id", (c) => {
     const { draftId, draft } = requireExistingDraft(c.req.param("id"));
+    const brief = store.readDraftBrief(draftId);
     return c.json({
       ok: true,
-      draft,
+      draft: serializeDraftWithBrief(draft),
+      ...(brief !== null && brief.trim().length > 0 ? { brief_markdown: brief } : {}),
       messages: readDraftChatFallback(draftId),
     });
   });
@@ -1186,12 +1200,14 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       });
     }
     const res = await chatEngine.sendDraftChat(draftId, body.message);
+    const brief = store.readDraftBrief(draftId);
     return c.json({
       ok: true,
       draftId,
       messages: res.messages,
       reply: res.reply,
-      draft: res.draft,
+      draft: serializeDraftWithBrief(res.draft),
+      ...(brief !== null && brief.trim().length > 0 ? { brief_markdown: brief } : {}),
     });
   });
 
@@ -1217,6 +1233,9 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       track: input.track ?? existing?.track ?? "L2",
       workspace_mode: input.workspace_mode ?? existing?.workspace_mode ?? "git_worktree",
       depends_on: input.depends_on ?? existing?.depends_on ?? [],
+      ...((input.open_questions ?? existing?.open_questions) !== undefined
+        ? { open_questions: input.open_questions ?? existing?.open_questions }
+        : {}),
       contract: {
         ...(existing?.contract ?? {}),
         ...(input.contract ?? {}),
@@ -1233,7 +1252,10 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     });
 
     store.writeDraft(draft);
-    return c.json({ ok: true, draft }, existing ? 200 : 201);
+    if (input.brief_markdown !== undefined) {
+      store.writeDraftBrief(draftId, input.brief_markdown);
+    }
+    return c.json({ ok: true, draft: serializeDraftWithBrief(draft) }, existing ? 200 : 201);
   });
 
   app.post("/api/drafts/:id/commit", async (c) => {
@@ -1249,6 +1271,20 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
 
     const rawBody = await readJsonBodyStrict(c);
     const input = CommitDraftRequestSchema.parse(rawBody);
+
+    const persistedBrief = store.readDraftBrief(draftId);
+    const effectiveBrief =
+      input.brief_markdown && input.brief_markdown.trim().length > 0
+        ? input.brief_markdown
+        : persistedBrief && persistedBrief.trim().length > 0
+          ? persistedBrief
+          : "";
+    if (effectiveBrief.trim().length === 0) {
+      throw new ServerHttpError(400, {
+        error: "invalid_request",
+        message: "brief_markdown cannot be empty",
+      });
+    }
 
     const taskId = assertSafeSegment(
       input.id ?? `t-${randomUUID().slice(0, 8)}`,
@@ -1279,7 +1315,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       updated_at: now,
     });
 
-    const created = stateMachine.createTask(card, input.brief_markdown);
+    const created = stateMachine.createTask(card, effectiveBrief);
     store.deleteDraft(draftId);
     if (created.state.status === "waiting") {
       const dec = pendingDecisions.ensureUpstreamCancelledDecision(created.card.id);

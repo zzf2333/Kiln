@@ -825,6 +825,29 @@ export class KilnStore {
     writeYamlAtomic(this.paths.draftYaml(parsed.id), parsed, DraftCardSchema);
   }
 
+  readDraftBrief(draftId: string): string | null {
+    const safeId = assertSafeSegment(draftId, "draftId");
+    try {
+      return fs.readFileSync(this.paths.draftBriefMd(safeId), "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  writeDraftBrief(draftId: string, markdown: string): void {
+    const safeId = assertSafeSegment(draftId, "draftId");
+    const briefPath = this.paths.draftBriefMd(safeId);
+    if (markdown.trim().length === 0) {
+      fs.rmSync(briefPath, { force: true });
+      return;
+    }
+    const content = markdown.endsWith("\n") ? markdown : `${markdown}\n`;
+    writeFileAtomic(briefPath, content);
+  }
+
   deleteDraft(draftId: string): boolean {
     const safeId = assertSafeSegment(draftId, "draftId");
     const dir = this.paths.draftDir(safeId);

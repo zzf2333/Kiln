@@ -667,6 +667,7 @@ export function subscribeSseEvents(handlers: SseSubscriptionHandlers): () => voi
     "rate.tick",
     "decision.requested",
     "run.event",
+    "intake.progress",
   ];
 
   const listener = (ev: Event): void => {

@@ -813,6 +813,9 @@ export class McpRpcServer {
           track: input.track ?? existing?.track ?? "L2",
           workspace_mode: input.workspace_mode ?? existing?.workspace_mode ?? "git_worktree",
           depends_on: input.depends_on ?? existing?.depends_on ?? [],
+          ...((input.open_questions ?? existing?.open_questions) !== undefined
+            ? { open_questions: input.open_questions ?? existing?.open_questions }
+            : {}),
           contract: {
             ...(existing?.contract ?? {}),
             ...(input.contract ?? {}),
@@ -825,7 +828,27 @@ export class McpRpcServer {
           updated_at: now,
         });
         this.store.writeDraft(draft);
-        return { ok: true, mode: "upsert_draft", draft };
+        if (input.brief_markdown !== undefined) {
+          this.store.writeDraftBrief(input.draft_id, input.brief_markdown);
+        }
+        const storedBrief = this.store.readDraftBrief(input.draft_id);
+        this.sseHub.publish({
+          type: "intake.progress",
+          draftId: input.draft_id,
+          kind: "draft_updated",
+          toolName: "wb_plan",
+          text:
+            input.brief_markdown !== undefined && input.brief_markdown.trim().length > 0
+              ? "已同步《产品方案》与立项草稿"
+              : "已更新立项草稿字段",
+          at: now,
+        });
+        return {
+          ok: true,
+          mode: "upsert_draft",
+          draft,
+          ...(storedBrief !== null ? { brief_markdown: storedBrief } : {}),
+        };
       }
 
       case "commit_card": {

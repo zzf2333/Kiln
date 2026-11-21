@@ -54,6 +54,7 @@ import type {
   ChatMessage,
   CommitDraftPayload,
   DiscoveredGitRepo,
+  DraftCardWithBrief,
   InspectSpaceResult,
   PairCompleteRequest,
   PublicPairedDevice,
@@ -80,7 +81,15 @@ export type MvpView =
 export type SettingsTab = "roles" | "spaces" | "limits" | "pricing" | "remote" | "conn";
 export type PeriodFilter = "week" | "month" | "year" | "all";
 export type IntakeMode = "project" | "local";
+export type IntakeRightTab = "brief" | "settings";
 export type AuthMode = "local" | "remote";
+
+export interface IntakeProgressItem {
+  kind: "thinking" | "tool" | "draft_updated";
+  text: string;
+  toolName?: string;
+  at: string;
+}
 
 export interface PairSubmitOutcome {
   ok: boolean;
@@ -100,6 +109,8 @@ export interface IntakeFormState {
   accept_cmd: string;
   scope: string;
   depends_on: string;
+  open_questions: string[];
+  brief_markdown: string;
 }
 
 export interface KilnStoreState {
@@ -155,6 +166,8 @@ export interface KilnStoreState {
 
   intakeDraftId: string | null;
   intakeForm: IntakeFormState;
+  intakeRightTab: IntakeRightTab;
+  intakeProgressLogs: IntakeProgressItem[];
   intakeMessages: ChatMessage[];
   intakeBusy: boolean;
   intakeActiveOpen: boolean;
@@ -258,6 +271,8 @@ export function createDefaultIntakeForm(
       accept_cmd: "",
       scope: "",
       depends_on: "",
+      open_questions: [],
+      brief_markdown: "",
     };
   }
   const projects = getProjectSpaces(spaces);
@@ -277,6 +292,8 @@ export function createDefaultIntakeForm(
     accept_cmd: chosen?.default_accept_cmd ?? "",
     scope: "",
     depends_on: "",
+    open_questions: [],
+    brief_markdown: "",
   };
 }
 
@@ -330,6 +347,14 @@ function removeStorageItem(key: string): void {
   }
 }
 
+function normalizeIntakeForm(form: IntakeFormState): IntakeFormState {
+  return {
+    ...form,
+    open_questions: Array.isArray(form.open_questions) ? form.open_questions : [],
+    brief_markdown: typeof form.brief_markdown === "string" ? form.brief_markdown : "",
+  };
+}
+
 function readLocalIntakeSnapshot(): LocalIntakeSnapshot | null {
   const raw = readStorageItem(ACTIVE_INTAKE_LOCAL_KEY);
   if (!raw) return null;
@@ -339,7 +364,7 @@ function readLocalIntakeSnapshot(): LocalIntakeSnapshot | null {
       return null;
     }
     return {
-      form: parsed.form,
+      form: normalizeIntakeForm(parsed.form),
       messages: parsed.messages,
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : "",
     };
@@ -364,7 +389,7 @@ function clearActiveIntakePersistence(): void {
   removeStorageItem(ACTIVE_INTAKE_LOCAL_KEY);
 }
 
-function draftToIntakeForm(draft: DraftCard): IntakeFormState {
+function draftToIntakeForm(draft: DraftCardWithBrief): IntakeFormState {
   const isLocal = draft.space === "local";
   return {
     mode: isLocal ? "local" : "project",
@@ -379,6 +404,8 @@ function draftToIntakeForm(draft: DraftCard): IntakeFormState {
     accept_cmd: draft.contract.accept_cmd ?? "",
     scope: (draft.contract.scope ?? []).join("\n"),
     depends_on: draft.depends_on.join(", "),
+    open_questions: Array.isArray(draft.open_questions) ? draft.open_questions : [],
+    brief_markdown: typeof draft.brief_markdown === "string" ? draft.brief_markdown : "",
   };
 }
 
@@ -587,6 +614,8 @@ export class KilnWebStore {
 
       intakeDraftId: null,
       intakeForm: createDefaultIntakeForm({}),
+      intakeRightTab: "brief",
+      intakeProgressLogs: [],
       intakeMessages: defaultWelcomeIntakeMessages(),
       intakeBusy: false,
       intakeActiveOpen: false,
@@ -1193,6 +1222,25 @@ export class KilnWebStore {
       return;
     }
 
+    if (event.type === "intake.progress") {
+      if (
+        this.state.intakeBusy &&
+        (!this.state.intakeDraftId || this.state.intakeDraftId === event.draftId)
+      ) {
+        const nextLogs = [
+          ...this.state.intakeProgressLogs,
+          {
+            kind: event.kind,
+            text: event.text,
+            ...(event.toolName ? { toolName: event.toolName } : {}),
+            at: event.at,
+          },
+        ].slice(-8);
+        this.setState({ intakeProgressLogs: nextLogs });
+      }
+      return;
+    }
+
     if (event.type === "run.event") {
       const detail = this.state.taskDetails[event.taskId];
       if (detail) {
@@ -1450,6 +1498,10 @@ export class KilnWebStore {
     }
   }
 
+  setIntakeRightTab(tab: IntakeRightTab): void {
+    this.setState({ intakeRightTab: tab });
+  }
+
   updateIntakeForm(patch: Partial<IntakeFormState>): void {
     const nextForm = { ...this.state.intakeForm, ...patch };
     this.setState({ intakeForm: nextForm });
@@ -1552,6 +1604,8 @@ export class KilnWebStore {
     this.setState({
       intakeDraftId: null,
       intakeForm: createDefaultIntakeForm(this.state.spaces, preferred),
+      intakeRightTab: "brief",
+      intakeProgressLogs: [],
       intakeMessages: defaultWelcomeIntakeMessages(),
       draftOpen: false,
       intakeActiveOpen: false,
@@ -1589,12 +1643,14 @@ export class KilnWebStore {
     }
   }
 
-  async loadDraftIntoIntake(draft: DraftCard): Promise<void> {
+  async loadDraftIntoIntake(draft: DraftCardWithBrief): Promise<void> {
     const nextForm = draftToIntakeForm(draft);
     writeStorageItem(ACTIVE_INTAKE_DRAFT_KEY, draft.id);
     this.setState({
       intakeDraftId: draft.id,
       intakeForm: nextForm,
+      intakeRightTab: "brief",
+      intakeProgressLogs: [],
       intakeActiveOpen: true,
       intakeHasUnreadReply: false,
     });
@@ -1647,6 +1703,8 @@ export class KilnWebStore {
         track: (f.track || "L2") as Track,
         workspace_mode: effectiveWorkspaceMode,
         depends_on,
+        open_questions: f.open_questions,
+        brief_markdown: f.brief_markdown,
         ...(keepActiveOpen ? { intake_open: true } : {}),
         contract: {
           goal: f.title.trim(),
@@ -1746,6 +1804,9 @@ export class KilnWebStore {
       const deliverMode =
         effectiveWorkspaceMode === "git_worktree" ? "merge_main" : "manual";
 
+      const customBrief = f.brief_markdown.trim();
+      const fallbackBrief = `# ${f.title.trim()}\n\n- 目标：${f.title.trim()}\n- 交付终点：${f.end.trim()}\n- 验收命令：\`${f.accept_cmd.trim()}\`\n- 可改范围：${scopeList.join(", ")}\n`;
+
       const payload: CommitDraftPayload = {
         id: taskId,
         title: f.title.trim(),
@@ -1764,7 +1825,7 @@ export class KilnWebStore {
           human_accept: false,
           external_actions: "ask",
         },
-        brief_markdown: `# ${f.title.trim()}\n\n- 目标：${f.title.trim()}\n- 交付终点：${f.end.trim()}\n- 验收命令：\`${f.accept_cmd.trim()}\`\n- 可改范围：${scopeList.join(", ")}\n`,
+        brief_markdown: customBrief.length > 0 ? f.brief_markdown : fallbackBrief,
       };
 
       const committed = await apiCommitDraft(draftId, payload);
@@ -1775,6 +1836,8 @@ export class KilnWebStore {
         intakeBusy: false,
         intakeDraftId: null,
         intakeForm: createDefaultIntakeForm(this.state.spaces, preferred),
+        intakeRightTab: "brief",
+        intakeProgressLogs: [],
         intakeMessages: defaultWelcomeIntakeMessages(),
         draftOpen: false,
         intakeActiveOpen: false,
@@ -1789,6 +1852,12 @@ export class KilnWebStore {
       this.showToast(err instanceof Error ? err.message : "立项提交失败");
       return false;
     }
+  }
+
+  async requestPmAutofill(): Promise<void> {
+    await this.sendIntakeChat(
+      "请结合当前项目目录与上述需求上下文，整理《产品方案 (BRIEF.md)》并自动补全立项单中的标题、交付终点、验收命令与可改范围。",
+    );
   }
 
   async sendIntakeChat(text: string): Promise<void> {
@@ -1812,6 +1881,7 @@ export class KilnWebStore {
     this.setState({
       intakeMessages: optimisticMessages,
       intakeBusy: true,
+      intakeProgressLogs: [],
       intakeActiveOpen: true,
       intakeHasUnreadReply: false,
     });
@@ -1840,6 +1910,8 @@ export class KilnWebStore {
         track: (f.track || "L2") as Track,
         workspace_mode: effectiveWorkspaceMode,
         depends_on,
+        open_questions: f.open_questions,
+        ...(f.brief_markdown.trim() ? { brief_markdown: f.brief_markdown } : {}),
         intake_open: true,
         ...(Object.keys(contractPatch).length > 0 ? { contract: contractPatch } : {}),
       });
@@ -1882,12 +1954,20 @@ export class KilnWebStore {
         if (res.draft.depends_on.length) {
           nextForm.depends_on = res.draft.depends_on.join(", ");
         }
+        if (res.draft.open_questions !== undefined) {
+          nextForm.open_questions = res.draft.open_questions;
+        }
+      }
+      const nextBrief = res.brief_markdown ?? res.draft?.brief_markdown;
+      if (typeof nextBrief === "string") {
+        nextForm.brief_markdown = nextBrief;
       }
       const unread = this.state.view !== "intake";
       this.setState({
         intakeMessages: nextMsgs,
         intakeForm: nextForm,
         intakeBusy: false,
+        intakeProgressLogs: [],
         intakeActiveOpen: true,
         intakeHasUnreadReply: unread,
       });
@@ -1910,6 +1990,7 @@ export class KilnWebStore {
       ];
       this.setState({
         intakeBusy: false,
+        intakeProgressLogs: [],
         intakeMessages: errMsgs,
         intakeHasUnreadReply: this.state.view !== "intake",
       });
