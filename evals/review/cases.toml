@@ -47,3 +47,11 @@ fix = ["810e3c88a2f99c49519ee8a8644d297209af9586"]
 risk = "high"
 files = ["apps/desktop/src-tauri/src/daemon_client.rs", "apps/desktop/src-tauri/src/tray.rs"]
 defect = "Finder 启动下极简 PATH 未补全导致 spawn_kiln_up/run_kiln_down 执行 #!/usr/bin/env node 失败且 resolve_kiln_binary 缺少版本管理器目录扫描，同时 MENU_START_KILND 仅 eprintln 静默吞错导致菜单无任何失败反馈。"
+
+[[cases]]
+id = "R7"
+intro = "958925261c92c80dd2f8ac67ff3e658d436a0134"
+fix = ["bbed1d6780185656680a5b8fae9ed9b2b46fb9c4"]
+risk = "medium"
+files = ["apps/web/src/state/pricing.ts"]
+defect = "computeTaskCostUsd 将整张任务卡跨阶段累计的全部 input/cached/output tokens 直接乘以最后阶段单个 task.model 的单价覆盖 task.cost_usd，导致开启异构审查或多模型执行时看板与用量页单卡费用失真并与总计/详情不一致。"
