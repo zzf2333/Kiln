@@ -146,6 +146,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     git(["init", "-b", "main", repoPath]);
     git(["config", "user.name", "Kiln M2 E2E"], repoPath);
     git(["config", "user.email", "kiln-m2@example.com"], repoPath);
+    git(["config", "core.autocrlf", "false"], repoPath);
     fs.mkdirSync(path.join(repoPath, "src"), { recursive: true });
     fs.mkdirSync(path.join(repoPath, "tests"), { recursive: true });
     fs.writeFileSync(path.join(repoPath, "src", "app.ts"), "export const v = 1;\n");

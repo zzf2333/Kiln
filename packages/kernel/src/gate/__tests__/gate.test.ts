@@ -77,6 +77,7 @@ function initGitRepoWithBareRemote(): {
   git(["init", "-b", "main", repoPath]);
   git(["config", "user.name", "Kiln Test"], repoPath);
   git(["config", "user.email", "kiln-test@example.com"], repoPath);
+  git(["config", "core.autocrlf", "false"], repoPath);
 
   fs.writeFileSync(path.join(repoPath, ".gitignore"), ".env.local\nnode_modules/\n");
   fs.mkdirSync(path.join(repoPath, "src"), { recursive: true });

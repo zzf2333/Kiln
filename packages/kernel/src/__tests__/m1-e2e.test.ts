@@ -157,6 +157,7 @@ describe("M1 zero-token full-stack headless kernel E2E", () => {
     git(["init", "-b", "main", repoPath]);
     git(["config", "user.name", "Kiln E2E"], repoPath);
     git(["config", "user.email", "kiln-e2e@example.com"], repoPath);
+    git(["config", "core.autocrlf", "false"], repoPath);
     fs.mkdirSync(path.join(repoPath, "src"), { recursive: true });
     fs.mkdirSync(path.join(repoPath, "tests"), { recursive: true });
     fs.writeFileSync(path.join(repoPath, ".env.local"), "APP_MODE=test\n");
