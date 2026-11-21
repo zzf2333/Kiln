@@ -8,10 +8,10 @@
 cask "kiln-app" do
   arch arm: "arm64", intel: "x64"
 
-  version "0.0.1"
-  # TODO: Replace placeholder sha256 values with the signed & notarized Kiln DMG hashes.
-  sha256 arm:   "0000000000000000000000000000000000000000000000000000000000000000",
-         intel: "0000000000000000000000000000000000000000000000000000000000000000"
+  version "0.0.2"
+  # SHA-256 digests from unsigned v0.0.2 GitHub Release DMGs; update after enabling Developer ID signing & notarization.
+  sha256 arm:   "fb6262f3b9ac11d9c58039c0444566ed75028bda14ecf6441c6334bbb777982a",
+         intel: "f3bdd4a749150db31c44b6fce596b69ad22d5730c3fdfd6f017673e78cf8255a"
 
   url "https://github.com/zzf2333/Kiln/releases/download/v#{version}/Kiln-v#{version}-darwin-#{arch}.dmg"
   name "Kiln"
