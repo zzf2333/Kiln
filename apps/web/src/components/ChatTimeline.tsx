@@ -319,6 +319,7 @@ export function ChatTimeline({
   emptySlot,
 }: ChatTimelineProps) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const liveRailRef = useRef<HTMLUListElement | null>(null);
   const stickBottomRef = useRef(true);
   const [showJumpBottom, setShowJumpBottom] = useState(false);
 
@@ -348,6 +349,12 @@ export function ChatTimeline({
       scrollerRef.current.scrollTop = scrollerRef.current.scrollHeight;
     }
   }, [messages.length, busy, progressLogs.length]);
+
+  useEffect(() => {
+    if (busy && liveRailRef.current) {
+      liveRailRef.current.scrollTop = liveRailRef.current.scrollHeight;
+    }
+  }, [busy, progressLogs.length]);
 
   const segments = groupTimelineSegments(messages);
 
@@ -393,9 +400,18 @@ export function ChatTimeline({
                 </div>
               </div>
               <div class="worklog is-live">
-                <div class="worklog-live-head">{busyLabel}</div>
+                <div class="worklog-live-head">
+                  <span>{busyLabel}</span>
+                  {progressLogs.length > 0 ? (
+                    <span class="worklog-toggle-r mono">{progressLogs.length} 步</span>
+                  ) : null}
+                </div>
                 {progressLogs.length > 0 ? (
-                  <ul class="worklog-rail" aria-label="立项探索进度">
+                  <ul
+                    class="worklog-rail"
+                    aria-label="立项探索进度"
+                    ref={liveRailRef}
+                  >
                     {progressLogs.map((step, idx) => (
                       <li
                         key={`${step.at}-${idx}`}
@@ -405,7 +421,11 @@ export function ChatTimeline({
                       >
                         <span class="worklog-node" aria-hidden="true" />
                         <div class="worklog-body">
-                          <span class="worklog-detail mono">{step.text}</span>
+                          <div class="worklog-row">
+                            <span class="worklog-detail mono" title={step.text}>
+                              {step.text}
+                            </span>
+                          </div>
                         </div>
                       </li>
                     ))}

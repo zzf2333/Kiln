@@ -71,12 +71,15 @@
   --shadow-float: 0 6px 18px rgba(0, 0, 0, 0.45);
   --shadow-dock: 0 12px 28px rgba(0, 0, 0, 0.42);
 
+  /* 滚动条 */
+  --scroll-thumb-idle: rgba(255, 244, 230, 0.08);
+  --scroll-thumb: rgba(255, 244, 230, 0.18);
+  --scroll-thumb-hover: rgba(255, 244, 230, 0.34);
+  --scroll-thumb-active: rgba(255, 244, 230, 0.48);
+
   --ease: cubic-bezier(0.2, 0, 0, 1);
   --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
   --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
-
-  scrollbar-color: var(--raised) transparent;
-  scrollbar-width: thin;
 }
 
 /* 暖纸工业风浅色令牌：显式浅色与未设 dark 时的系统自适应浅色 */
@@ -141,6 +144,11 @@
   --mask-bg: rgba(24, 20, 16, 0.34);
   --shadow-float: 0 6px 18px rgba(34, 28, 22, 0.14);
   --shadow-dock: 0 12px 28px rgba(34, 28, 22, 0.14);
+
+  --scroll-thumb-idle: rgba(38, 31, 24, 0.09);
+  --scroll-thumb: rgba(38, 31, 24, 0.2);
+  --scroll-thumb-hover: rgba(38, 31, 24, 0.36);
+  --scroll-thumb-active: rgba(38, 31, 24, 0.5);
 }
 
 @media (prefers-color-scheme: light) {
@@ -205,5 +213,10 @@
     --mask-bg: rgba(24, 20, 16, 0.34);
     --shadow-float: 0 6px 18px rgba(34, 28, 22, 0.14);
     --shadow-dock: 0 12px 28px rgba(34, 28, 22, 0.14);
+
+    --scroll-thumb-idle: rgba(38, 31, 24, 0.09);
+    --scroll-thumb: rgba(38, 31, 24, 0.2);
+    --scroll-thumb-hover: rgba(38, 31, 24, 0.36);
+    --scroll-thumb-active: rgba(38, 31, 24, 0.5);
   }
 }

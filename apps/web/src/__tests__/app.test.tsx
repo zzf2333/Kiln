@@ -3636,4 +3636,59 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     fireEvent.click(expandBtn);
     expect(converse.classList.contains("is-panel-collapsed")).toBe(false);
   });
+
+  it("renders live thinking progress steps inside .worklog-row without vertical flex-basis regression or unconditional scrollbar-width", async () => {
+    const now = new Date().toISOString();
+    render(
+      <ChatTimeline
+        messages={[{ who: "me", text: "扫描大目录" }]}
+        busy={true}
+        busyLabel="正在思考并整理产品方案…"
+        progressLogs={[
+          {
+            kind: "tool",
+            toolName: "run_command",
+            text: "正在读取/调用 run_command · ls -la /Users/saonian/.kiln/drafts/d-1e1321f0",
+            at: now,
+          },
+          {
+            kind: "tool",
+            toolName: "read_file",
+            text: "正在调用 read_file",
+            at: now,
+          },
+        ]}
+        roleLabel="立项助手"
+        defaultAgentName="intake"
+      />,
+    );
+
+    const liveCard = document.querySelector(".worklog.is-live");
+    expect(liveCard).toBeTruthy();
+    expect(liveCard?.querySelector(".worklog-live-head")?.textContent).toContain(
+      "2 步",
+    );
+
+    const list = screen.getByRole("list", { name: "立项探索进度" });
+    const rows = list.querySelectorAll(".worklog-item .worklog-row > .worklog-detail");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.getAttribute("title")).toContain("run_command");
+
+    // Static CSS regression guards: prevent flex-basis: 200px in vertical container & global scrollbar-width disabling webkit styling
+    const [{ existsSync, readFileSync }, { resolve }] = await Promise.all([
+      import("node:fs"),
+      import("node:path"),
+    ]);
+    const stylesDir = existsSync(resolve(process.cwd(), "apps/web/src/styles/tokens.css"))
+      ? resolve(process.cwd(), "apps/web/src/styles")
+      : resolve(process.cwd(), "src/styles");
+    const tokensCss = readFileSync(resolve(stylesDir, "tokens.css"), "utf8");
+    const layoutCss = readFileSync(resolve(stylesDir, "layout.css"), "utf8");
+    expect(tokensCss.length).toBeGreaterThan(200);
+    expect(layoutCss.length).toBeGreaterThan(2000);
+    expect(tokensCss).not.toContain("scrollbar-width:");
+    expect(layoutCss).not.toMatch(/\.worklog-detail\s*\{[^}]*flex:\s*1\s+1\s+200px/);
+    expect(layoutCss).toContain(".worklog-row > .worklog-detail");
+    expect(layoutCss).toContain("::-webkit-scrollbar-thumb");
+  });
 });
