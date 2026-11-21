@@ -15,12 +15,14 @@ import type {
   ChatMessage,
   ChatResponsePayload,
   CommitDraftPayload,
+  DiscoverSpacesResponse,
   HostBackupManifestInfo,
   HostRestoreConflictDetail,
   InspectSpaceResult,
   LogoutResponse,
   PairAuthResponse,
   PairCompleteRequest,
+  PickDirectoryResponse,
   RemoteAuthStatusResponse,
   RemoteConfig,
   RemoteDevicesResponse,
@@ -415,6 +417,38 @@ export async function inspectSpacePath(rawPath: string): Promise<InspectSpaceRes
   return await requestJson<InspectSpaceResult>("/api/spaces/inspect", {
     method: "POST",
     body: JSON.stringify({ path: rawPath }),
+  });
+}
+
+export async function discoverSpaces(): Promise<DiscoverSpacesResponse> {
+  const url = "/api/spaces/discover";
+  const res = await apiFetch(url);
+  if (res.status === 404) {
+    return { ok: true, repos: [], scanned_roots: [], truncated: false };
+  }
+  const data = await parseJsonSafe(res);
+  if (!res.ok) {
+    const err = makeApiError(res, data, "扫描本机 Git 项目失败");
+    notifyIfUnauthorized(url, err);
+    throw err;
+  }
+  if (!Array.isArray(data.repos)) {
+    return { ok: true, repos: [], scanned_roots: [], truncated: false };
+  }
+  return {
+    ok: true,
+    repos: data.repos as DiscoverSpacesResponse["repos"],
+    scanned_roots: Array.isArray(data.scanned_roots)
+      ? (data.scanned_roots as string[])
+      : [],
+    truncated: Boolean(data.truncated),
+  };
+}
+
+export async function pickSpaceDirectory(): Promise<PickDirectoryResponse> {
+  return await requestJson<PickDirectoryResponse>("/api/spaces/pick-directory", {
+    method: "POST",
+    body: JSON.stringify({}),
   });
 }
 

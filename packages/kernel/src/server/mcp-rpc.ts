@@ -818,6 +818,9 @@ export class McpRpcServer {
             ...(input.contract ?? {}),
           },
           session_ref: existing?.session_ref ?? null,
+          ...(existing?.intake_open !== undefined
+            ? { intake_open: existing.intake_open }
+            : {}),
           created_at: existing?.created_at ?? now,
           updated_at: now,
         });

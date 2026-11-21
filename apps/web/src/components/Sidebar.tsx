@@ -54,8 +54,22 @@ export function Sidebar() {
           class="new-btn"
           onClick={() => store.go("intake")}
         >
-          <span>新需求</span>
-          <span class="key">N</span>
+          <span>
+            新需求
+            {state.intakeActiveOpen ? (
+              <span
+                class="side-live-dot"
+                title={
+                  state.intakeBusy
+                    ? "AI 正在回复"
+                    : state.intakeHasUnreadReply
+                      ? "有未读立项回复"
+                      : "有未完成的立项对话"
+                }
+              />
+            ) : null}
+          </span>
+          <span class="key">{state.intakeActiveOpen ? "进行中" : "N"}</span>
         </button>
 
         <div class="nav-label">视图</div>

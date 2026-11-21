@@ -1092,4 +1092,58 @@ describe("@kiln/web Slice 4: QR Generator, PWA, Remote Auth Gate, Offline Banner
       recordedMutations.every((m) => m.clientHeader === "web"),
     ).toBe(true);
   });
+
+  it("hides host-only 从文件目录选择 action in remote mode while keeping discovered Git repos accessible in SpaceModal", async () => {
+    fetchMock.mockImplementation(async (url) => {
+      if (url === "/api/auth/status") {
+        return jsonResponse({
+          ok: true,
+          mode: "remote",
+          authenticated: true,
+          device: {
+            id: "dev-r1",
+            label: "Phone",
+            created_at: new Date().toISOString(),
+            last_seen_at: new Date().toISOString(),
+          },
+        });
+      }
+      if (url === "/api/bootstrap") {
+        return jsonResponse(makeBaseBootstrap({ spaces: {} }));
+      }
+      if (url === "/api/spaces/discover") {
+        return jsonResponse({
+          ok: true,
+          scanned_roots: ["~/AI"],
+          truncated: false,
+          repos: [
+            {
+              repo_path: "/Users/me/AI/Kiln",
+              display_path: "~/AI/Kiln",
+              name: "Kiln",
+              suggested_id: "kiln",
+              default_branch: "main",
+              modified_at: new Date().toISOString(),
+              already_added: false,
+            },
+          ],
+        });
+      }
+      return jsonResponse({});
+    });
+
+    window.location.hash = "#view=intake";
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("还没有登记项目空间")).toBeTruthy();
+    });
+    expect(screen.queryByRole("button", { name: "从文件目录选择" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "+ 添加本地 Git 项目" }));
+    const modal = await screen.findByRole("dialog", { name: "添加项目空间" });
+    await waitFor(() => {
+      expect(within(modal).getByText("~/AI/Kiln")).toBeTruthy();
+    });
+    expect(within(modal).queryByRole("button", { name: "从文件目录选择" })).toBeNull();
+  });
 });

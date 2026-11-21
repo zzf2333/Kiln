@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from "preact/hooks";
 import { CommandPalette } from "./components/CommandPalette";
+import { IntakeDock } from "./components/IntakeDock";
 import { Sidebar } from "./components/Sidebar";
 import { SpaceModal } from "./components/SpaceModal";
 import { Tabbar } from "./components/Tabbar";
@@ -131,6 +132,7 @@ function AppShell() {
         onClick={() => store.setNavOpen(false)}
       />
       <Tabbar />
+      <IntakeDock />
       <CommandPalette />
       <SpaceModal />
       {renderToast()}

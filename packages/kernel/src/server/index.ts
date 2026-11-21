@@ -144,9 +144,14 @@ export {
 } from "./remote-tailscale.js";
 export {
   InvalidSpacePathError,
+  discoverLocalGitRepos,
   inspectGitSpacePath,
+  pickLocalDirectory,
   validateCommitWorkspace,
+  type DiscoverLocalGitReposOptions,
   type InspectedSpaceInfo,
+  type PickLocalDirectoryExecFn,
+  type PickLocalDirectoryOptions,
 } from "./space-inspect.js";
 export {
   SseHub,

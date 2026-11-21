@@ -29,12 +29,15 @@ import {
   RunTokenAuthError,
   SseHub,
   WindowsPowerController,
+  discoverLocalGitRepos,
   formatSseFrame,
+  pickLocalDirectory,
   prepareIpcSocketPath,
   signRunToken,
   verifyRunToken,
   type AcPowerStatus,
   type CaffeinateChildProcess,
+  type PickLocalDirectoryExecFn,
 } from "../index.js";
 
 async function readJson<T = Record<string, any>>(res: Response): Promise<T> {
@@ -2707,5 +2710,187 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     });
     expect(task?.tokens_by_model?.["gpt-6.2-sol"]?.costUsd).toBeCloseTo(0.02187, 8);
     expect(task?.cost_usd).toBeCloseTo(0.02472, 8);
+  });
+
+  it("discovers local Git repos without Paseo, picks native directories cross-platform, and persists draft intake_open", async () => {
+    const fakeHome = makeTempDir("kiln-discover-home-");
+    const kilnHome = path.join(fakeHome, ".kiln");
+    const customParent = makeTempDir("kiln-discover-custom-");
+    tempDirs.push(fakeHome, customParent);
+
+    const repoAlpha = path.join(fakeHome, "AI", "alpha-app");
+    const repoBeta = path.join(fakeHome, "Code", "nested", "beta-lib");
+    const repoWorktree = path.join(fakeHome, "Projects", "wt-repo");
+    const fakeBareGitDir = path.join(fakeHome, "Projects", ".wt-meta");
+    const repoNodeModules = path.join(repoAlpha, "node_modules", "nested-git-ignored");
+    const kilnWorkspaceRepo = path.join(kilnHome, "workspaces", "t-1");
+    const customExistingRepo = path.join(customParent, "pinned-repo");
+    const customSiblingRepo = path.join(customParent, "sibling-repo");
+
+    for (const dir of [
+      path.join(repoAlpha, ".git"),
+      path.join(repoBeta, ".git"),
+      path.join(fakeBareGitDir),
+      path.join(repoNodeModules, ".git"),
+      path.join(kilnWorkspaceRepo, ".git"),
+      path.join(customExistingRepo, ".git"),
+      path.join(customSiblingRepo, ".git"),
+    ]) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.mkdirSync(repoWorktree, { recursive: true });
+    fs.writeFileSync(path.join(repoAlpha, ".git", "HEAD"), "ref: refs/heads/main\n");
+    fs.writeFileSync(path.join(repoBeta, ".git", "HEAD"), "ref: refs/heads/develop\n");
+    fs.writeFileSync(path.join(fakeBareGitDir, "HEAD"), "ref: refs/heads/feat/wt\n");
+    fs.writeFileSync(path.join(repoWorktree, ".git"), `gitdir: ${fakeBareGitDir}\n`);
+    fs.writeFileSync(path.join(customExistingRepo, ".git", "HEAD"), "ref: refs/heads/main\n");
+    fs.writeFileSync(path.join(customSiblingRepo, ".git", "HEAD"), "ref: refs/heads/release\n");
+
+    // 1. discoverLocalGitRepos finds regular + worktree repos & sibling of registered space, skips node_modules & kilnHome
+    const discovered = await discoverLocalGitRepos({
+      homeDir: fakeHome,
+      kilnHome,
+      existingSpaces: {
+        pinned: {
+          schema_version: 1,
+          id: "pinned",
+          name: "Pinned",
+          repo_path: customExistingRepo,
+          default_branch: "main",
+          copy_untracked: [],
+          clone_deps: [],
+          freeze_patterns: [],
+        },
+      },
+    });
+    const canonicalAlpha = realpathCanonical(repoAlpha);
+    const canonicalBeta = realpathCanonical(repoBeta);
+    const canonicalWt = realpathCanonical(repoWorktree);
+    const canonicalPinned = realpathCanonical(customExistingRepo);
+    const canonicalSibling = realpathCanonical(customSiblingRepo);
+    const paths = discovered.repos.map((r) => r.repo_path);
+
+    expect(paths).toContain(canonicalAlpha);
+    expect(paths).toContain(canonicalBeta);
+    expect(paths).toContain(canonicalWt);
+    expect(paths).toContain(canonicalPinned);
+    expect(paths).toContain(canonicalSibling);
+    expect(paths).not.toContain(realpathCanonical(repoNodeModules));
+    expect(paths).not.toContain(realpathCanonical(kilnWorkspaceRepo));
+
+    const betaEntry = discovered.repos.find((r) => r.repo_path === canonicalBeta);
+    expect(betaEntry?.default_branch).toBe("develop");
+    expect(betaEntry?.display_path).toBe(`~${path.sep}Code${path.sep}nested${path.sep}beta-lib`);
+    expect(betaEntry?.already_added).toBe(false);
+
+    const wtEntry = discovered.repos.find((r) => r.repo_path === canonicalWt);
+    expect(wtEntry?.default_branch).toBe("feat/wt");
+
+    const pinnedEntry = discovered.repos.find((r) => r.repo_path === canonicalPinned);
+    expect(pinnedEntry?.already_added).toBe(true);
+    expect(pinnedEntry?.space_id).toBe("pinned");
+    // Unadded repos must sort before already-added repos
+    expect(discovered.repos.at(-1)?.repo_path).toBe(canonicalPinned);
+
+    // 2. pickLocalDirectory across darwin / win32 / linux (including cancel & fallback)
+    const darwinOk: PickLocalDirectoryExecFn = async () => ({
+      stdout: "/Users/me/Projects/kiln/\n",
+      stderr: "",
+    });
+    expect(await pickLocalDirectory({ platform: "darwin", execFileFn: darwinOk })).toEqual({
+      ok: true,
+      cancelled: false,
+      path: "/Users/me/Projects/kiln",
+    });
+
+    const darwinCancel: PickLocalDirectoryExecFn = async () => {
+      const err = new Error("User canceled. (-128)") as Error & { stderr?: string };
+      err.stderr = "execution error: User canceled. (-128)";
+      throw err;
+    };
+    expect(await pickLocalDirectory({ platform: "darwin", execFileFn: darwinCancel })).toEqual({
+      ok: true,
+      cancelled: true,
+      path: null,
+    });
+
+    const winCancel: PickLocalDirectoryExecFn = async () => ({ stdout: "\r\n", stderr: "" });
+    expect(await pickLocalDirectory({ platform: "win32", execFileFn: winCancel })).toEqual({
+      ok: true,
+      cancelled: true,
+      path: null,
+    });
+
+    const linuxFallback: PickLocalDirectoryExecFn = async (file) => {
+      if (file === "zenity") {
+        const err = new Error("ENOENT") as NodeJS.ErrnoException;
+        err.code = "ENOENT";
+        throw err;
+      }
+      return { stdout: "/home/me/code\n", stderr: "" };
+    };
+    expect(await pickLocalDirectory({ platform: "linux", execFileFn: linuxFallback })).toEqual({
+      ok: true,
+      cancelled: false,
+      path: "/home/me/code",
+    });
+
+    const linuxUnavailable: PickLocalDirectoryExecFn = async () => {
+      const err = new Error("ENOENT") as NodeJS.ErrnoException;
+      err.code = "ENOENT";
+      throw err;
+    };
+    await expect(
+      pickLocalDirectory({ platform: "linux", execFileFn: linuxUnavailable }),
+    ).rejects.toMatchObject({ statusCode: 501 });
+
+    // 3. HTTP endpoints + draft intake_open lifecycle
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      tokenSecret: "discover-pick-secret-0123456789abc",
+      discoverSpaces: async () => discovered,
+      pickDirectory: async () => ({ ok: true, cancelled: false, path: canonicalAlpha }),
+      chatResponder: async () => ({ replyText: "## 立项确认\n\n已探索仓库。" }),
+    });
+    servers.push(server);
+    await server.start();
+
+    const discoverRes = await requestHttp(server, "/api/spaces/discover");
+    expect(discoverRes.status).toBe(200);
+    expect((await readJson(discoverRes)).repos.length).toBe(discovered.repos.length);
+
+    const pickRes = await requestHttp(server, "/api/spaces/pick-directory", { method: "POST" });
+    expect(pickRes.status).toBe(200);
+    expect(await readJson(pickRes)).toEqual({
+      ok: true,
+      cancelled: false,
+      path: canonicalAlpha,
+    });
+
+    // POST /api/drafts + POST /api/drafts/:id/chat sets intake_open: true, and closing sets false
+    const createDraftRes = await requestHttp(server, "/api/drafts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "d-open-1", title: "进行中立项" }),
+    });
+    expect(createDraftRes.status).toBe(201);
+
+    const chatRes = await requestHttp(server, "/api/drafts/d-open-1/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "帮我拆解这个需求" }),
+    });
+    expect(chatRes.status).toBe(200);
+    expect((await readJson(chatRes)).draft.intake_open).toBe(true);
+
+    const closeRes = await requestHttp(server, "/api/drafts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "d-open-1", intake_open: false }),
+    });
+    expect(closeRes.status).toBe(200);
+    expect((await readJson(closeRes)).draft.intake_open).toBe(false);
+    expect(server.store.readDraft("d-open-1")?.title).toBe("进行中立项");
   });
 });

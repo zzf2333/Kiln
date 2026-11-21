@@ -5,6 +5,8 @@ import type { AddressInfo } from "node:net";
 import { serve, type ServerType } from "@hono/node-server";
 import type { Hono } from "hono";
 import type {
+  DiscoverSpacesResponse,
+  PickDirectoryResponse,
   RemoteConfig,
   RoleId,
   RunMeta,
@@ -93,6 +95,8 @@ export interface KilndServerOptions {
   remoteAuthNow?: () => number;
   shutdownToken?: string;
   onShutdownRequested?: () => Promise<void> | void;
+  discoverSpaces?: () => Promise<DiscoverSpacesResponse>;
+  pickDirectory?: () => Promise<PickDirectoryResponse>;
 }
 
 export interface KilndServerAddress {
@@ -307,6 +311,12 @@ export class KilndServer {
       getRemoteRuntimeStatus: () => this.getRemoteRuntimeStatus(),
       onRemoteConfigUpdated: (nextConfig) => this.applyRemoteConfig(nextConfig),
       inspectTailscale,
+      ...(options.discoverSpaces !== undefined
+        ? { discoverSpaces: options.discoverSpaces }
+        : {}),
+      ...(options.pickDirectory !== undefined
+        ? { pickDirectory: options.pickDirectory }
+        : {}),
       ...(options.publicDir !== undefined ? { publicDir: options.publicDir } : {}),
       ...(options.embeddedPublicAssets !== undefined
         ? { embeddedPublicAssets: options.embeddedPublicAssets }

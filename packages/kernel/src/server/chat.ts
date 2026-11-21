@@ -1268,6 +1268,7 @@ export class KilnChatEngine {
           };
           const updatedDraft = DraftCardSchema.parse({
             ...draft,
+            intake_open: true,
             session_ref: taggedSessionRef,
             updated_at: new Date().toISOString(),
           });
@@ -1323,7 +1324,18 @@ export class KilnChatEngine {
       };
       appendNdjsonLine(chatFile, replyRecord);
 
-      const latestDraft = this.store.readDraft(safeDraftId) ?? draft;
+      const latestBeforeReturn = this.store.readDraft(safeDraftId) ?? draft;
+      const latestDraft =
+        latestBeforeReturn.intake_open === true
+          ? latestBeforeReturn
+          : DraftCardSchema.parse({
+              ...latestBeforeReturn,
+              intake_open: true,
+              updated_at: new Date().toISOString(),
+            });
+      if (latestBeforeReturn.intake_open !== true) {
+        this.store.writeDraft(latestDraft);
+      }
       return {
         messages: this.getDraftChatMessages(safeDraftId),
         reply: replyRecord,

@@ -28,8 +28,10 @@ import {
   TrackSchema,
   UpsertSpaceRequestSchema,
   WorkspaceModeSchema,
+  type DiscoverSpacesResponse,
   type LedgerFile,
   type PendingDecision,
+  type PickDirectoryResponse,
   type PublicPairedDevice,
   type RemoteConfig,
   type RunMeta,
@@ -85,7 +87,12 @@ import {
 } from "./remote-auth.js";
 import { RemoteNotifier } from "./remote-notify.js";
 import { inspectTailscaleStatus } from "./remote-tailscale.js";
-import { inspectGitSpacePath, validateCommitWorkspace } from "./space-inspect.js";
+import {
+  discoverLocalGitRepos,
+  inspectGitSpacePath,
+  pickLocalDirectory,
+  validateCommitWorkspace,
+} from "./space-inspect.js";
 import type { SseHub } from "./sse.js";
 import {
   createStaticFilesHandler,
@@ -110,7 +117,8 @@ function isLocalOnlyRemoteAdminPath(rawPath: string): boolean {
     lower === "/api/settings/remote" ||
     lower.startsWith("/api/settings/remote/") ||
     lower === "/api/remote" ||
-    lower.startsWith("/api/remote/")
+    lower.startsWith("/api/remote/") ||
+    lower === "/api/spaces/pick-directory"
   );
 }
 
@@ -133,6 +141,8 @@ export interface HttpApiDependencies {
   getRemoteRuntimeStatus?: () => RemoteRuntimeStatus;
   onRemoteConfigUpdated?: (nextConfig: RemoteConfig) => Promise<void> | void;
   inspectTailscale?: (remotePort: number) => Promise<TailscaleStatusResponse>;
+  discoverSpaces?: () => Promise<DiscoverSpacesResponse>;
+  pickDirectory?: () => Promise<PickDirectoryResponse>;
   onTaskQueued?: (taskId: string) => void;
   onTaskPaused?: (taskId: string) => Promise<void> | void;
   onTaskCancelled?: (taskId: string) => Promise<void> | void;
@@ -151,6 +161,7 @@ const UpsertDraftRequestSchema = z.object({
   depends_on: z.array(z.string().min(1)).optional(),
   contract: CardContractSchema.partial().optional(),
   session_ref: SessionRefSchema.nullable().optional(),
+  intake_open: z.boolean().optional(),
 });
 
 const CommitDraftRequestSchema = z.object({
@@ -821,6 +832,32 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     });
   });
 
+  app.get("/api/spaces/discover", async (c) => {
+    if (deps.discoverSpaces) {
+      return c.json(await deps.discoverSpaces());
+    }
+    const existingSpaces = loadAllSpaces(store, []);
+    const discovered = await discoverLocalGitRepos({
+      existingSpaces,
+      kilnHome: store.paths.home,
+    });
+    return c.json(discovered);
+  });
+
+  app.post("/api/spaces/pick-directory", async (c) => {
+    if (listenerMode !== "local") {
+      throw new ServerHttpError(403, {
+        error: "local_only_endpoint",
+        path: c.req.path,
+        message: "Directory picker is restricted to the local Kiln port",
+      });
+    }
+    const result = deps.pickDirectory
+      ? await deps.pickDirectory()
+      : await pickLocalDirectory();
+    return c.json(result);
+  });
+
   app.post("/api/spaces/inspect", async (c) => {
     const rawBody = await readJsonBodyStrict(c);
     const body = InspectSpaceRequestSchema.parse(rawBody);
@@ -1183,6 +1220,9 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         input.session_ref !== undefined
           ? input.session_ref
           : (existing?.session_ref ?? null),
+      ...((input.intake_open ?? existing?.intake_open) !== undefined
+        ? { intake_open: input.intake_open ?? existing?.intake_open }
+        : {}),
       created_at: existing?.created_at ?? now,
       updated_at: now,
     });

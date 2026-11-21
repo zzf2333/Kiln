@@ -55,6 +55,33 @@ export const InspectSpaceResponseSchema = z.object({
 });
 export type InspectSpaceResponse = z.infer<typeof InspectSpaceResponseSchema>;
 
+export const DiscoveredGitRepoSchema = z.object({
+  repo_path: z.string().min(1),
+  display_path: z.string().min(1),
+  name: z.string().min(1),
+  suggested_id: z.string().min(1),
+  default_branch: z.string().min(1),
+  modified_at: z.string().min(1),
+  already_added: z.boolean(),
+  space_id: z.string().min(1).optional(),
+});
+export type DiscoveredGitRepo = z.infer<typeof DiscoveredGitRepoSchema>;
+
+export const DiscoverSpacesResponseSchema = z.object({
+  ok: z.literal(true),
+  repos: z.array(DiscoveredGitRepoSchema),
+  scanned_roots: z.array(z.string()),
+  truncated: z.boolean().default(false),
+});
+export type DiscoverSpacesResponse = z.infer<typeof DiscoverSpacesResponseSchema>;
+
+export const PickDirectoryResponseSchema = z.object({
+  ok: z.literal(true),
+  cancelled: z.boolean(),
+  path: z.string().min(1).nullable(),
+});
+export type PickDirectoryResponse = z.infer<typeof PickDirectoryResponseSchema>;
+
 export const UpsertSpaceRequestSchema = z.object({
   name: z.string().trim().min(1),
   repo_path: z.string().trim().min(1),

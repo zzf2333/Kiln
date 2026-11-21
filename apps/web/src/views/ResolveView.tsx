@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { TaskDetailResponse } from "../api/types";
 import { DecisionBox } from "../components/DecisionBox";
+import { MarkdownContent } from "../components/MarkdownContent";
 import { ViewFrame } from "../components/ViewFrame";
 import { useKilnStore } from "../state/store";
 
@@ -150,28 +151,40 @@ export function ResolveView() {
                 );
               }
               return (
-                <div key={idx} class={`msg ${who === "me" ? "me" : ""}`}>
+                <div key={idx} class={`msg ${who === "me" ? "me" : "agent"}`}>
                   {who !== "me" ? (
                     <div class="msg-who">{m.name ?? "resolver"}</div>
                   ) : null}
-                  <div class="msg-text">{m.text}</div>
+                  {who === "me" ? (
+                    <div class="msg-text">{m.text}</div>
+                  ) : (
+                    <MarkdownContent text={m.text} className="msg-md" />
+                  )}
                 </div>
               );
             })}
+            {state.resolveBusy ? (
+              <div class="msg agent msg-thinking">
+                <div class="msg-who">resolver</div>
+                <div class="msg-text muted">正在整理上下文并思考回应…</div>
+              </div>
+            ) : null}
           </div>
 
           <div class="composer">
-            <input
+            <textarea
               id="chatIn"
               class="input"
-              placeholder="说说你的想法（回车发送）"
+              rows={2}
+              placeholder="说说你的想法（Enter 发送，Shift+Enter 换行）"
               value={chatInput}
               disabled={state.resolveBusy}
               onInput={(e) =>
-                setChatInput((e.currentTarget as HTMLInputElement).value)
+                setChatInput((e.currentTarget as HTMLTextAreaElement).value)
               }
               onKeyDown={(e) => {
-                if (e.key === "Enter") {
+                if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+                  e.preventDefault();
                   void handleSend();
                 }
               }}

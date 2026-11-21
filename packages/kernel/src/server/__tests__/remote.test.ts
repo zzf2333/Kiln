@@ -1260,4 +1260,91 @@ describe("Tunnel-Agnostic Remote Access: Fail-Closed Dual-Port Security & Auth",
     expect(tsBody.installed).toBe(true);
     expect(tsBody.recommendedCommand).toBe("tailscale serve --bg http://127.0.0.1:4311");
   });
+
+  it("blocks /api/spaces/pick-directory with 403 local_only_endpoint on :4311 while keeping /api/spaces/discover auth-gated", async () => {
+    const { server } = createServer({
+      discoverSpaces: async () => ({
+        ok: true,
+        repos: [],
+        scanned_roots: [],
+        truncated: false,
+      }),
+      pickDirectory: async () => ({
+        ok: true,
+        cancelled: false,
+        path: "/tmp/should-never-run",
+      }),
+    });
+
+    await server.app.request(
+      new Request("http://127.0.0.1:4310/api/settings/remote", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          schema_version: 1,
+          enabled: true,
+          remote_port: 4311,
+          public_url: "https://mac.tail99.ts.net",
+        }),
+      }),
+    );
+
+    // Unauthenticated /api/spaces/discover on :4311 -> 401
+    const unauthDiscover = await server.remoteApp.request(
+      new Request("http://127.0.0.1:4311/api/spaces/discover"),
+    );
+    expect(unauthDiscover.status).toBe(401);
+
+    // Unauthenticated OR authenticated /api/spaces/pick-directory on :4311 -> 403 local_only_endpoint
+    const unauthPick = await server.remoteApp.request(
+      new Request("http://127.0.0.1:4311/api/spaces/pick-directory", {
+        method: "POST",
+      }),
+    );
+    expect(unauthPick.status).toBe(403);
+    expect(((await unauthPick.json()) as { error: string }).error).toBe(
+      "local_only_endpoint",
+    );
+
+    // Pair a remote device and verify authenticated /api/spaces/discover -> 200 while pick-directory -> 403
+    const chRes = await server.app.request(
+      new Request("http://127.0.0.1:4310/api/remote/pair", { method: "POST" }),
+    );
+    const ch = (await chRes.json()) as { token: string };
+    const pairRes = await server.remoteApp.request(
+      new Request("http://127.0.0.1:4311/api/auth/pair", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Origin: "https://mac.tail99.ts.net",
+          "User-Agent": "MobileTest",
+        },
+        body: JSON.stringify({ token: ch.token, label: "Phone" }),
+      }),
+    );
+    expect(pairRes.status).toBe(200);
+    const cookie = pairRes.headers.get("set-cookie")!.split(";")[0]!;
+
+    const authDiscover = await server.remoteApp.request(
+      new Request("http://127.0.0.1:4311/api/spaces/discover", {
+        headers: { Cookie: cookie, "User-Agent": "MobileTest" },
+      }),
+    );
+    expect(authDiscover.status).toBe(200);
+
+    const authPick = await server.remoteApp.request(
+      new Request("http://127.0.0.1:4311/api/spaces/pick-directory", {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          Origin: "https://mac.tail99.ts.net",
+          "User-Agent": "MobileTest",
+        },
+      }),
+    );
+    expect(authPick.status).toBe(403);
+    expect(((await authPick.json()) as { error: string }).error).toBe(
+      "local_only_endpoint",
+    );
+  });
 });

@@ -3,10 +3,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { WorkspaceMode } from "@kiln/protocol";
+import type {
+  DiscoveredGitRepo,
+  DiscoverSpacesResponse,
+  PickDirectoryResponse,
+  SpaceConfig,
+  WorkspaceMode,
+} from "@kiln/protocol";
 import { buildSanitizedEnv } from "../gate/command-runner.js";
 import { realpathCanonical } from "../store/fs-atomic.js";
-import { KilnStore, assertSafeSegment } from "../store/index.js";
+import { KilnStore, assertSafeSegment, resolveKilnHome } from "../store/index.js";
 import { ServerHttpError } from "./errors.js";
 
 const execFileAsync = promisify(execFile);
@@ -198,7 +204,7 @@ export async function inspectGitSpacePath(rawPath: string): Promise<InspectedSpa
     topLevel = stdout.trim();
   } catch {
     throw new InvalidSpacePathError(
-      `Directory "${canonicalInput}" is not inside a Git repository`,
+      `Directory "${canonicalInput}" is not inside a Git repository（所选目录不是 Git 仓库；项目空间需要 Git 仓库以支持 worktree 隔离，若只需运行临时任务请改选「本机 / 临时任务」）`,
     );
   }
 
@@ -227,6 +233,500 @@ export async function inspectGitSpacePath(rawPath: string): Promise<InspectedSpa
     copy_untracked: [],
     clone_deps: hasNodeModules ? ["node_modules"] : [],
   };
+}
+
+const DEFAULT_DISCOVER_SUBDIRS = [
+  "AI",
+  "Projects",
+  "projects",
+  "Code",
+  "code",
+  "Workspace",
+  "workspace",
+  "Work",
+  "work",
+  "dev",
+  "Dev",
+  "src",
+  "github",
+  "GitHub",
+  "repos",
+  "Repos",
+] as const;
+
+const SKIP_DISCOVER_DIR_NAMES = new Set<string>([
+  "node_modules",
+  "target",
+  "dist",
+  "build",
+  "out",
+  "vendor",
+  "Library",
+  "Applications",
+  "Movies",
+  "Music",
+  "Pictures",
+  "Downloads",
+  "__pycache__",
+  ".venv",
+  "venv",
+  "Pods",
+  "DerivedData",
+]);
+
+export interface DiscoverLocalGitReposOptions {
+  existingSpaces?: Record<string, SpaceConfig>;
+  extraRoots?: readonly string[];
+  homeDir?: string;
+  kilnHome?: string;
+  maxDepth?: number;
+  maxRepos?: number;
+  timeoutMs?: number;
+}
+
+function tryRealpathCanonical(targetPath: string): string | null {
+  try {
+    return realpathCanonical(targetPath);
+  } catch {
+    return null;
+  }
+}
+
+function tryStatSync(targetPath: string): fs.Stats | null {
+  try {
+    return fs.statSync(targetPath);
+  } catch {
+    return null;
+  }
+}
+
+function isSameOrInsidePath(candidate: string, ancestor: string): boolean {
+  if (candidate === ancestor) {
+    return true;
+  }
+  const prefix = ancestor.endsWith(path.sep) ? ancestor : `${ancestor}${path.sep}`;
+  return candidate.startsWith(prefix);
+}
+
+function formatDisplayPath(targetPath: string, canonicalHome: string | null): string {
+  if (!canonicalHome) {
+    return targetPath;
+  }
+  if (targetPath === canonicalHome) {
+    return "~";
+  }
+  const homePrefix = canonicalHome.endsWith(path.sep)
+    ? canonicalHome
+    : `${canonicalHome}${path.sep}`;
+  if (targetPath.startsWith(homePrefix)) {
+    return `~${path.sep}${targetPath.slice(homePrefix.length)}`;
+  }
+  return targetPath;
+}
+
+async function resolveGitEntryDir(repoPath: string, gitEntryPath: string): Promise<string | null> {
+  try {
+    const lst = await fs.promises.lstat(gitEntryPath);
+    if (lst.isDirectory()) {
+      return gitEntryPath;
+    }
+    if (lst.isFile()) {
+      const content = await fs.promises.readFile(gitEntryPath, "utf8");
+      const match = /^gitdir:\s*(.+)$/im.exec(content);
+      if (match?.[1]) {
+        const rawGitDir = match[1].trim();
+        return path.isAbsolute(rawGitDir) ? rawGitDir : path.resolve(repoPath, rawGitDir);
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function readGitBranchFast(gitDir: string | null): Promise<string> {
+  if (!gitDir) {
+    return "main";
+  }
+  try {
+    const headRaw = await fs.promises.readFile(path.join(gitDir, "HEAD"), "utf8");
+    const trimmed = headRaw.trim();
+    const prefix = "ref: refs/heads/";
+    if (trimmed.startsWith(prefix)) {
+      const branch = trimmed.slice(prefix.length).trim();
+      if (branch.length > 0) {
+        return branch;
+      }
+    }
+  } catch {
+    // Fallback to default branch when HEAD is missing or unreadable.
+  }
+  return "main";
+}
+
+async function readRepoModifiedAt(
+  repoPath: string,
+  gitDir: string | null,
+): Promise<string> {
+  let latestMs = 0;
+  for (const candidate of [
+    repoPath,
+    ...(gitDir ? [path.join(gitDir, "index"), path.join(gitDir, "HEAD")] : []),
+  ]) {
+    try {
+      const st = await fs.promises.stat(candidate);
+      if (st.mtimeMs > latestMs) {
+        latestMs = st.mtimeMs;
+      }
+    } catch {
+      // Ignore missing index or HEAD.
+    }
+  }
+  return new Date(latestMs > 0 ? latestMs : Date.now()).toISOString();
+}
+
+/**
+ * Discovers local Git repositories in common code roots and registered space parent
+ * directories without relying on external daemons such as Paseo.
+ */
+export async function discoverLocalGitRepos(
+  options: DiscoverLocalGitReposOptions = {},
+): Promise<DiscoverSpacesResponse> {
+  const rawHome = options.homeDir ?? os.homedir();
+  const canonicalHome = tryRealpathCanonical(rawHome) ?? path.resolve(rawHome);
+  const rawKilnHome = options.kilnHome ?? resolveKilnHome();
+  const canonicalKilnHome = tryRealpathCanonical(rawKilnHome) ?? path.resolve(rawKilnHome);
+
+  const maxDepth = options.maxDepth ?? 3;
+  const maxRepos = options.maxRepos ?? 150;
+  const timeoutMs = options.timeoutMs ?? 2_500;
+  const deadline = Date.now() + timeoutMs;
+
+  const existingCanonicalMap = new Map<string, string>();
+  const rawCandidates: string[] = [];
+
+  for (const sub of DEFAULT_DISCOVER_SUBDIRS) {
+    rawCandidates.push(path.join(canonicalHome, sub));
+  }
+
+  for (const sp of Object.values(options.existingSpaces ?? {})) {
+    if (sp.id === "local" || !sp.repo_path) {
+      continue;
+    }
+    const expanded = expandTildePath(sp.repo_path);
+    const canonicalRepo = tryRealpathCanonical(expanded) ?? path.resolve(expanded);
+    existingCanonicalMap.set(canonicalRepo, sp.id);
+
+    const parent = path.dirname(canonicalRepo);
+    const grandParent = path.dirname(parent);
+    if (
+      parent !== canonicalRepo &&
+      grandParent !== parent &&
+      parent !== canonicalHome
+    ) {
+      rawCandidates.push(parent);
+    }
+  }
+
+  for (const extra of options.extraRoots ?? []) {
+    const trimmed = extra.trim();
+    if (trimmed.length > 0) {
+      rawCandidates.push(expandTildePath(trimmed));
+    }
+  }
+
+  const canonicalCandidates: string[] = [];
+  const seenCandidates = new Set<string>();
+  for (const candidate of rawCandidates) {
+    const canonical = tryRealpathCanonical(candidate);
+    if (!canonical || seenCandidates.has(canonical)) {
+      continue;
+    }
+    const st = tryStatSync(canonical);
+    if (!st || !st.isDirectory()) {
+      continue;
+    }
+    if (isSameOrInsidePath(canonical, canonicalKilnHome)) {
+      continue;
+    }
+    seenCandidates.add(canonical);
+    canonicalCandidates.push(canonical);
+  }
+
+  // Deduplicate nested roots (keep ancestors first so shallower roots cover descendants).
+  canonicalCandidates.sort((a, b) => a.length - b.length);
+  const scanRoots: string[] = [];
+  for (const candidate of canonicalCandidates) {
+    if (scanRoots.some((root) => isSameOrInsidePath(candidate, root))) {
+      continue;
+    }
+    scanRoots.push(candidate);
+  }
+
+  const visitedDirs = new Set<string>();
+  const discoveredByPath = new Map<string, DiscoveredGitRepo>();
+  const queue: Array<{ dir: string; depth: number }> = scanRoots.map((root) => ({
+    dir: root,
+    depth: 0,
+  }));
+  let truncated = false;
+
+  while (queue.length > 0) {
+    if (Date.now() >= deadline || discoveredByPath.size >= maxRepos) {
+      truncated = true;
+      break;
+    }
+
+    const current = queue.shift()!;
+    const canonicalDir = tryRealpathCanonical(current.dir);
+    if (!canonicalDir || visitedDirs.has(canonicalDir)) {
+      continue;
+    }
+    if (isSameOrInsidePath(canonicalDir, canonicalKilnHome)) {
+      continue;
+    }
+    visitedDirs.add(canonicalDir);
+
+    const gitEntryPath = path.join(canonicalDir, ".git");
+    const gitDir = await resolveGitEntryDir(canonicalDir, gitEntryPath);
+    if (gitDir !== null || tryStatSync(gitEntryPath) !== null) {
+      const name = path.basename(canonicalDir) || "project";
+      const suggestedId = deriveSuggestedSpaceId(name);
+      const existingSpaceId = existingCanonicalMap.get(canonicalDir);
+      const [defaultBranch, modifiedAt] = await Promise.all([
+        readGitBranchFast(gitDir),
+        readRepoModifiedAt(canonicalDir, gitDir),
+      ]);
+
+      discoveredByPath.set(canonicalDir, {
+        repo_path: canonicalDir,
+        display_path: formatDisplayPath(canonicalDir, canonicalHome),
+        name,
+        suggested_id: suggestedId,
+        default_branch: defaultBranch,
+        modified_at: modifiedAt,
+        already_added: existingSpaceId !== undefined,
+        ...(existingSpaceId !== undefined ? { space_id: existingSpaceId } : {}),
+      });
+      continue;
+    }
+
+    if (current.depth >= maxDepth) {
+      continue;
+    }
+
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(canonicalDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (entry.name.startsWith(".") || SKIP_DISCOVER_DIR_NAMES.has(entry.name)) {
+        continue;
+      }
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) {
+        continue;
+      }
+      const childPath = path.join(canonicalDir, entry.name);
+      if (entry.isSymbolicLink()) {
+        const st = tryStatSync(childPath);
+        if (!st || !st.isDirectory()) {
+          continue;
+        }
+      }
+      queue.push({ dir: childPath, depth: current.depth + 1 });
+    }
+  }
+
+  const repos = Array.from(discoveredByPath.values()).sort((a, b) => {
+    if (a.already_added !== b.already_added) {
+      return a.already_added ? 1 : -1;
+    }
+    const timeCmp = b.modified_at.localeCompare(a.modified_at);
+    if (timeCmp !== 0) {
+      return timeCmp;
+    }
+    return a.name.localeCompare(b.name);
+  });
+
+  return {
+    ok: true,
+    repos,
+    scanned_roots: scanRoots.map((root) => formatDisplayPath(root, canonicalHome)),
+    truncated,
+  };
+}
+
+export type PickLocalDirectoryExecFn = (
+  file: string,
+  args: readonly string[],
+  options: { timeout?: number; windowsHide?: boolean; encoding?: BufferEncoding },
+) => Promise<{ stdout: string; stderr: string }>;
+
+export interface PickLocalDirectoryOptions {
+  platform?: NodeJS.Platform;
+  execFileFn?: PickLocalDirectoryExecFn;
+}
+
+function extractExecErrorInfo(err: unknown): {
+  code: string | number | undefined;
+  message: string;
+  stderr: string;
+} {
+  if (typeof err !== "object" || err === null) {
+    return { code: undefined, message: String(err), stderr: "" };
+  }
+  const obj = err as { code?: string | number; message?: string; stderr?: string };
+  return {
+    code: obj.code,
+    message: typeof obj.message === "string" ? obj.message : String(err),
+    stderr: typeof obj.stderr === "string" ? obj.stderr : "",
+  };
+}
+
+function normalizePickedPath(rawPath: string): string {
+  const trimmed = rawPath.trim();
+  if (trimmed.length > 1 && (trimmed.endsWith("/") || trimmed.endsWith("\\"))) {
+    // Keep Windows drive roots like "C:\" intact while stripping trailing slash on POSIX/subdirs.
+    if (!/^[A-Za-z]:\\$/.test(trimmed)) {
+      return trimmed.slice(0, -1);
+    }
+  }
+  return trimmed;
+}
+
+/**
+ * Opens the host OS native folder picker dialog (Finder on macOS, FolderBrowserDialog on Windows,
+ * zenity/kdialog on Linux) for local-port users.
+ */
+export async function pickLocalDirectory(
+  options: PickLocalDirectoryOptions = {},
+): Promise<PickDirectoryResponse> {
+  const platform = options.platform ?? process.platform;
+  const execFn: PickLocalDirectoryExecFn =
+    options.execFileFn ??
+    (async (file, args, opts) => {
+      const res = await execFileAsync(file, [...args], {
+        encoding: "utf8",
+        ...opts,
+      });
+      return {
+        stdout: String(res.stdout ?? ""),
+        stderr: String(res.stderr ?? ""),
+      };
+    });
+
+  if (platform === "darwin") {
+    try {
+      const { stdout } = await execFn(
+        "/usr/bin/osascript",
+        ["-e", 'POSIX path of (choose folder with prompt "选择本地 Git 项目目录")'],
+        { timeout: 120_000, encoding: "utf8" },
+      );
+      const picked = normalizePickedPath(stdout);
+      if (picked.length === 0) {
+        return { ok: true, cancelled: true, path: null };
+      }
+      return { ok: true, cancelled: false, path: picked };
+    } catch (err) {
+      const info = extractExecErrorInfo(err);
+      if (/-128|User canceled|cancelled/i.test(`${info.stderr}\n${info.message}`)) {
+        return { ok: true, cancelled: true, path: null };
+      }
+      throw new ServerHttpError(500, {
+        error: "directory_picker_failed",
+        message: `无法打开系统文件夹选择器：${info.message}`,
+      });
+    }
+  }
+
+  if (platform === "win32") {
+    const psScript = [
+      "Add-Type -AssemblyName System.Windows.Forms;",
+      "$d = New-Object System.Windows.Forms.FolderBrowserDialog;",
+      "$d.Description = '选择本地 Git 项目目录';",
+      "$d.ShowNewFolderButton = $false;",
+      "if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.SelectedPath }",
+    ].join(" ");
+    try {
+      const { stdout } = await execFn(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-STA", "-Command", psScript],
+        { timeout: 120_000, windowsHide: true, encoding: "utf8" },
+      );
+      const picked = normalizePickedPath(stdout);
+      if (picked.length === 0) {
+        return { ok: true, cancelled: true, path: null };
+      }
+      return { ok: true, cancelled: false, path: picked };
+    } catch (err) {
+      const info = extractExecErrorInfo(err);
+      throw new ServerHttpError(500, {
+        error: "directory_picker_failed",
+        message: `无法打开系统文件夹选择器：${info.message}`,
+      });
+    }
+  }
+
+  if (platform === "linux") {
+    try {
+      const { stdout } = await execFn(
+        "zenity",
+        ["--file-selection", "--directory", "--title=选择本地 Git 项目目录"],
+        { timeout: 120_000, encoding: "utf8" },
+      );
+      const picked = normalizePickedPath(stdout);
+      return picked.length === 0
+        ? { ok: true, cancelled: true, path: null }
+        : { ok: true, cancelled: false, path: picked };
+    } catch (zenityErr) {
+      const zInfo = extractExecErrorInfo(zenityErr);
+      if (zInfo.code === 1 || /cancel/i.test(`${zInfo.stderr}\n${zInfo.message}`)) {
+        return { ok: true, cancelled: true, path: null };
+      }
+      if (zInfo.code !== "ENOENT") {
+        throw new ServerHttpError(500, {
+          error: "directory_picker_failed",
+          message: `无法打开系统文件夹选择器：${zInfo.message}`,
+        });
+      }
+
+      try {
+        const { stdout } = await execFn(
+          "kdialog",
+          ["--getexistingdirectory", os.homedir()],
+          { timeout: 120_000, encoding: "utf8" },
+        );
+        const picked = normalizePickedPath(stdout);
+        return picked.length === 0
+          ? { ok: true, cancelled: true, path: null }
+          : { ok: true, cancelled: false, path: picked };
+      } catch (kErr) {
+        const kInfo = extractExecErrorInfo(kErr);
+        if (kInfo.code === 1 || /cancel/i.test(`${kInfo.stderr}\n${kInfo.message}`)) {
+          return { ok: true, cancelled: true, path: null };
+        }
+        if (kInfo.code === "ENOENT") {
+          throw new ServerHttpError(501, {
+            error: "directory_picker_unavailable",
+            message:
+              "当前环境未安装系统文件夹选择器（zenity/kdialog），请从扫描列表选择或手动输入路径",
+          });
+        }
+        throw new ServerHttpError(500, {
+          error: "directory_picker_failed",
+          message: `无法打开系统文件夹选择器：${kInfo.message}`,
+        });
+      }
+    }
+  }
+
+  throw new ServerHttpError(501, {
+    error: "directory_picker_unavailable",
+    message: `当前平台 (${platform}) 暂不支持系统文件夹选择器，请从扫描列表选择或手动输入路径`,
+  });
 }
 
 /**

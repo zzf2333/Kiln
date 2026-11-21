@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { Priority, Track, WorkspaceMode } from "@kiln/protocol/web";
 import { CheckIcon } from "../components/Icons";
+import { MarkdownContent } from "../components/MarkdownContent";
 import { ViewFrame } from "../components/ViewFrame";
 import { fmtTime } from "../state/format";
 import {
@@ -20,6 +21,9 @@ export function IntakeView() {
     intakeForm,
     intakeMessages,
     intakeBusy,
+    intakeActiveOpen,
+    authMode,
+    pickDirBusy,
     drafts,
     spaces,
     draftOpen,
@@ -87,6 +91,16 @@ export function IntakeView() {
       }
       right={
         <>
+          {intakeActiveOpen || hasDraftOrChat ? (
+            <button
+              type="button"
+              class="btn btn-ghost"
+              disabled={intakeBusy}
+              onClick={() => void store.closeIntakeSession()}
+            >
+              关闭对话
+            </button>
+          ) : null}
           {hasDraftOrChat ? (
             <button
               type="button"
@@ -197,6 +211,16 @@ export function IntakeView() {
                   >
                     + 添加项目
                   </button>
+                  {authMode === "local" ? (
+                    <button
+                      type="button"
+                      class="btn btn-sm"
+                      disabled={pickDirBusy}
+                      onClick={() => void store.pickDirectoryAndAttach(true)}
+                    >
+                      {pickDirBusy ? "等待选择…" : "从文件目录选择"}
+                    </button>
+                  ) : null}
                 </div>
               ) : (
                 <div class="intake-target">
@@ -207,6 +231,16 @@ export function IntakeView() {
                   >
                     + 添加项目
                   </button>
+                  {authMode === "local" ? (
+                    <button
+                      type="button"
+                      class="btn btn-sm"
+                      disabled={pickDirBusy}
+                      onClick={() => void store.pickDirectoryAndAttach(true)}
+                    >
+                      {pickDirBusy ? "等待选择…" : "从文件目录选择"}
+                    </button>
+                  ) : null}
                 </div>
               )
             ) : (
@@ -257,6 +291,16 @@ export function IntakeView() {
                   >
                     + 添加本地 Git 项目
                   </button>
+                  {authMode === "local" ? (
+                    <button
+                      type="button"
+                      class="btn"
+                      disabled={pickDirBusy}
+                      onClick={() => void store.pickDirectoryAndAttach(true)}
+                    >
+                      {pickDirBusy ? "等待选择…" : "从文件目录选择"}
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     class="btn"
@@ -281,11 +325,15 @@ export function IntakeView() {
                 );
               }
               return (
-                <div key={idx} class={`msg ${who === "me" ? "me" : ""}`}>
+                <div key={idx} class={`msg ${who === "me" ? "me" : "agent"}`}>
                   {who !== "me" ? (
                     <div class="msg-who">{m.name ?? "intake"}</div>
                   ) : null}
-                  <div class="msg-text">{m.text}</div>
+                  {who === "me" ? (
+                    <div class="msg-text">{m.text}</div>
+                  ) : (
+                    <MarkdownContent text={m.text} className="msg-md" />
+                  )}
                 </div>
               );
             })}

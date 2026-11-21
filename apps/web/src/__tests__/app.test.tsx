@@ -236,6 +236,7 @@ let fetchMock: ReturnType<typeof vi.fn<MockFetchHandler>>;
 
 beforeEach(() => {
   MockEventSource.instances = [];
+  window.localStorage.clear();
   window.location.hash = "";
   window.history.replaceState(null, "", "/");
   document.body.className = "";
@@ -2533,5 +2534,474 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       expect((container.querySelector(".rank-row") as HTMLElement).textContent).toContain("$0.07");
     });
     expect(container.querySelector(".stats dd")?.textContent).toBe("$0.07");
+  });
+
+  it("discovers local Git repos in SpaceModal with search & 1-click add (disambiguating IDs), picks local directory from IntakeView, and handles non-Git error", async () => {
+    const spacesState: BootstrapResponse["spaces"] = {
+      kiln: {
+        schema_version: 1,
+        id: "kiln",
+        name: "Kiln Existing",
+        repo_path: "/Users/me/AI/Kiln",
+        default_branch: "main",
+        copy_untracked: [],
+        clone_deps: [],
+        freeze_patterns: [],
+      },
+    };
+    const putCalls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    let pickBehavior: "cancel" | "non_git" | "valid" = "cancel";
+
+    fetchMock.mockImplementation(async (url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      const body = init?.body
+        ? (JSON.parse(String(init.body)) as Record<string, unknown>)
+        : undefined;
+
+      if (url === "/api/bootstrap") {
+        return jsonResponse(makeBaseBootstrap({ spaces: spacesState }));
+      }
+      if (url === "/api/spaces/discover") {
+        return jsonResponse({
+          ok: true,
+          scanned_roots: ["~/AI", "~/Code"],
+          truncated: false,
+          repos: [
+            {
+              repo_path: "/Users/me/Code/kiln",
+              display_path: "~/Code/kiln",
+              name: "kiln",
+              suggested_id: "kiln",
+              default_branch: "develop",
+              modified_at: "2026-11-21T10:00:00.000Z",
+              already_added: false,
+            },
+            {
+              repo_path: "/Users/me/AI/Kiln",
+              display_path: "~/AI/Kiln",
+              name: "Kiln",
+              suggested_id: "kiln",
+              default_branch: "main",
+              modified_at: "2026-11-21T09:00:00.000Z",
+              already_added: true,
+              space_id: "kiln",
+            },
+          ],
+        });
+      }
+      if (url === "/api/spaces/pick-directory" && method === "POST") {
+        if (pickBehavior === "cancel") {
+          return jsonResponse({ ok: true, cancelled: true, path: null });
+        }
+        if (pickBehavior === "non_git") {
+          return jsonResponse({ ok: true, cancelled: false, path: "/tmp/plain-folder" });
+        }
+        return jsonResponse({ ok: true, cancelled: false, path: "/Users/me/Work/gamma" });
+      }
+      if (url === "/api/spaces/inspect" && method === "POST") {
+        if (body?.path === "/tmp/plain-folder") {
+          return jsonResponse(
+            {
+              error: "invalid_repo_path",
+              message: "目录 \"/tmp/plain-folder\" 不是 Git 仓库",
+            },
+            400,
+          );
+        }
+        if (body?.path === "/Users/me/Code/kiln") {
+          return jsonResponse({
+            ok: true,
+            repo_path: "/Users/me/Code/kiln",
+            suggested_id: "kiln",
+            suggested_name: "kiln",
+            default_branch: "develop",
+            default_accept_cmd: "pnpm test",
+            copy_untracked: [],
+            clone_deps: ["node_modules"],
+          });
+        }
+        return jsonResponse({
+          ok: true,
+          repo_path: "/Users/me/Work/gamma",
+          suggested_id: "gamma",
+          suggested_name: "gamma",
+          default_branch: "main",
+          default_accept_cmd: "cargo test",
+          copy_untracked: [],
+          clone_deps: [],
+        });
+      }
+      if (url.startsWith("/api/spaces/") && method === "PUT") {
+        const id = url.slice("/api/spaces/".length);
+        putCalls.push({ url, body: body ?? {} });
+        const saved = {
+          schema_version: 1 as const,
+          id,
+          name: String(body?.name ?? id),
+          repo_path: String(body?.repo_path ?? ""),
+          default_branch: String(body?.default_branch ?? "main"),
+          copy_untracked: [],
+          clone_deps: (body?.clone_deps as string[]) ?? [],
+          ...(body?.default_accept_cmd
+            ? { default_accept_cmd: String(body.default_accept_cmd) }
+            : {}),
+          freeze_patterns: [],
+        };
+        spacesState[id] = saved;
+        return jsonResponse({ ok: true, space: saved }, 201);
+      }
+      return jsonResponse({});
+    });
+
+    window.location.hash = "#view=intake";
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "从文件目录选择" })).toBeTruthy();
+    });
+
+    // 1. Cancel directory picker silently does nothing
+    fireEvent.click(screen.getByRole("button", { name: "从文件目录选择" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "添加项目空间" })).toBeNull();
+    });
+
+    // 2. Non-Git directory shows clear error toast without opening modal
+    pickBehavior = "non_git";
+    fireEvent.click(await screen.findByRole("button", { name: "从文件目录选择" }));
+    await waitFor(() => {
+      expect(document.getElementById("toast")?.textContent).toContain("不是 Git 仓库");
+    });
+
+    // 3. Valid directory auto-opens SpaceModal pre-inspected and saves gamma
+    pickBehavior = "valid";
+    fireEvent.click(await screen.findByRole("button", { name: "从文件目录选择" }));
+    const prefilledModal = await screen.findByRole("dialog", { name: "添加项目空间" });
+    await waitFor(() => {
+      expect(
+        (within(prefilledModal).getByLabelText("空间标识") as HTMLInputElement).value,
+      ).toBe("gamma");
+    });
+    fireEvent.click(within(prefilledModal).getByRole("button", { name: "保存空间" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "添加项目空间" })).toBeNull();
+    });
+    expect((screen.getByLabelText("目标项目空间") as HTMLSelectElement).value).toBe("gamma");
+
+    // 4. Open modal again: search discovered repos and 1-click add colliding id "kiln" -> "kiln-2"
+    fireEvent.click(screen.getByRole("button", { name: "+ 添加项目" }));
+    const listModal = await screen.findByRole("dialog", { name: "添加项目空间" });
+    await waitFor(() => {
+      expect(within(listModal).getByText("~/Code/kiln")).toBeTruthy();
+    });
+    fireEvent.input(within(listModal).getByLabelText("搜索本机 Git 项目"), {
+      target: { value: "Code/kiln" },
+    });
+    expect(within(listModal).queryByText("~/AI/Kiln")).toBeNull();
+
+    fireEvent.click(within(listModal).getByRole("button", { name: "一键添加" }));
+    await waitFor(() => {
+      expect(putCalls.some((c) => c.url === "/api/spaces/kiln-2")).toBe(true);
+    });
+    expect((screen.getByLabelText("目标项目空间") as HTMLSelectElement).value).toBe("kiln-2");
+  });
+
+  it("renders rich XSS-safe Markdown in IntakeView & ResolveView, persists active intake context across reload, and clears on close or commit", async () => {
+    const now = new Date().toISOString();
+    let activeDraft: Record<string, unknown> | null = null;
+    const richMarkdown = [
+      "## 架构确认",
+      "",
+      "保留 `git_worktree` 和 `<script>alert(1)</script>` 原样。",
+      "",
+      "- **加粗** *斜体* ~~删除线~~",
+      "- [x] 已读 `packages/kernel`",
+      "- [ ] 待确认 [官方文档](https://example.com/docs) 与 [拦截链接](javascript:alert(1))",
+      "",
+      "> 引用说明：支持 **Markdown** 与代码块",
+      "",
+      "| 模块 | 状态 |",
+      "| :--- | ---: |",
+      "| kernel | OK |",
+      "",
+      "```ts",
+      "const x = '<input><script>bad()</script>';",
+      "```",
+    ].join("\n");
+
+    let savedChatMessages: Array<{ who: string; name?: string; text: string }> = [];
+    const draftPayloads: Array<Record<string, unknown>> = [];
+
+    fetchMock.mockImplementation(async (url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      const body = init?.body
+        ? (JSON.parse(String(init.body)) as Record<string, unknown>)
+        : undefined;
+
+      if (url === "/api/bootstrap") {
+        return jsonResponse(
+          makeBaseBootstrap({
+            drafts: activeDraft ? [activeDraft as never] : [],
+            tasks: [
+              {
+                id: "t-res-md",
+                space: "kiln",
+                parent_id: null,
+                title: "Markdown 讨论任务",
+                priority: "P1",
+                effective_priority: "P1",
+                track: "L2",
+                workspace_mode: "git_worktree",
+                status: "waiting",
+                stage: "implement",
+                round: 1,
+                active_run_id: null,
+                contract_version: 1,
+                depends_on: [],
+                created_at: now,
+                updated_at: now,
+                tokens: {
+                  input_tokens: 0,
+                  cached_input_tokens: 0,
+                  output_tokens: 0,
+                  total_tokens: 0,
+                },
+                cost_usd: 0,
+              },
+            ],
+            pendingDecisions: [
+              {
+                id: "dec-md",
+                task_id: "t-res-md",
+                contract_version: 1,
+                reason: "confirm",
+                category: "arch",
+                question: "请确认 **方案 A**（含 `<script>xss</script>`）",
+                options: [
+                  { id: "opt-1", label: "采纳", action: "resume", recommended: true },
+                ],
+                created_at: now,
+              },
+            ],
+          }),
+        );
+      }
+      if (url === "/api/drafts" && method === "POST") {
+        draftPayloads.push(body ?? {});
+        activeDraft = {
+          schema_version: 1,
+          id: String(body?.id ?? "d-persist-1"),
+          title: String(body?.title ?? activeDraft?.title ?? "持久化需求"),
+          space: String(body?.space ?? activeDraft?.space ?? "kiln"),
+          priority: String(body?.priority ?? activeDraft?.priority ?? "P2"),
+          track: String(body?.track ?? activeDraft?.track ?? "L2"),
+          workspace_mode: String(
+            body?.workspace_mode ?? activeDraft?.workspace_mode ?? "git_worktree",
+          ),
+          depends_on: [],
+          contract: (body?.contract ?? activeDraft?.contract ?? {}) as Record<string, unknown>,
+          intake_open: body?.intake_open ?? activeDraft?.intake_open,
+          created_at: now,
+          updated_at: now,
+        };
+        return jsonResponse({ ok: true, draft: activeDraft }, 201);
+      }
+      if (url === "/api/drafts/d-persist-1/chat" && method === "POST") {
+        savedChatMessages = [
+          { who: "me", text: String(body?.message ?? "") },
+          { who: "agent", name: "intake", text: richMarkdown },
+        ];
+        activeDraft = {
+          ...activeDraft,
+          title: "支持 Markdown 立项对话",
+          contract: {
+            goal: "支持 Markdown 立项对话",
+            end: "完成格式化渲染",
+            accept_cmd: "pnpm test",
+            scope: ["apps/web/**"],
+          },
+          intake_open: true,
+        };
+        return jsonResponse({
+          ok: true,
+          messages: savedChatMessages,
+          draft: activeDraft,
+        });
+      }
+      if (url === "/api/drafts/d-persist-1/chat" && method === "GET") {
+        return jsonResponse({ ok: true, draftId: "d-persist-1", messages: savedChatMessages });
+      }
+      if (url === "/api/drafts/d-persist-1/commit" && method === "POST") {
+        activeDraft = null;
+        return jsonResponse({ ok: true, card: { id: body?.id ?? "t-101" }, state: {} }, 201);
+      }
+      if (url === "/api/tasks/t-res-md") {
+        return jsonResponse({
+          card: {
+            schema_version: 1,
+            id: "t-res-md",
+            title: "Markdown 讨论任务",
+            space: "kiln",
+            priority: "P1",
+            track: "L2",
+            workspace_mode: "git_worktree",
+            parent: null,
+            depends_on: [],
+            contract_version: 1,
+            contract: {
+              goal: "g",
+              end: "e",
+              accept_cmd: "pnpm test",
+              accept_files_hash: "h",
+              scope: ["src/**"],
+              deliver: { mode: "merge_main", cmd: null },
+              human_accept: false,
+              external_actions: "ask",
+            },
+            limits: {
+              retries_per_stage: 2,
+              review_rounds: 2,
+              advisor_calls: 1,
+              max_tokens: 250000,
+            },
+            created_at: now,
+            updated_at: now,
+          },
+          state: {
+            status: "waiting",
+            stage: "implement",
+            round: 1,
+            activeRunId: null,
+            priority: "P1",
+            effectivePriority: "P1",
+            track: "L2",
+            contractVersion: 1,
+            updatedAt: now,
+          },
+          brief: "",
+          decisions: "",
+          pendingDecision: {
+            id: "dec-md",
+            task_id: "t-res-md",
+            contract_version: 1,
+            reason: "confirm",
+            category: "arch",
+            question: "请确认 **方案 A**（含 `<script>xss</script>`）",
+            options: [{ id: "opt-1", label: "采纳", action: "resume", recommended: true }],
+            created_at: now,
+          },
+          ledgerProposals: [],
+          runs: [],
+          usageTurns: [],
+          usage: makeBaseBootstrap().usage,
+        });
+      }
+      if (url === "/api/tasks/t-res-md/chat" && method === "GET") {
+        return jsonResponse({ ok: true, messages: [] });
+      }
+      if (url === "/api/tasks/t-res-md/chat" && method === "POST") {
+        return jsonResponse({
+          ok: true,
+          messages: [
+            { who: "me", text: String(body?.message ?? "") },
+            { who: "agent", name: "resolver", text: "### 建议\n\n采用 **方案 A**" },
+          ],
+        });
+      }
+      return jsonResponse({});
+    });
+
+    // 1. Start chat in IntakeView -> renders rich Markdown safely
+    window.location.hash = "#view=intake";
+    const first = render(<App />);
+    await waitFor(() => {
+      expect(document.getElementById("chatIn")).toBeTruthy();
+    });
+    fireEvent.input(document.getElementById("chatIn")!, {
+      target: { value: "我想优化立项对话体验" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "架构确认" })).toBeTruthy();
+    });
+    expect(draftPayloads[0]?.intake_open).toBe(true);
+
+    const msgsEl = document.getElementById("msgs")!;
+    expect(msgsEl.querySelector("strong")?.textContent).toBe("加粗");
+    expect(msgsEl.querySelector("em")?.textContent).toBe("斜体");
+    expect(msgsEl.querySelector("del")?.textContent).toBe("删除线");
+    expect(msgsEl.querySelector("blockquote")).toBeTruthy();
+    expect(msgsEl.querySelector("table.md-table")).toBeTruthy();
+    expect(msgsEl.querySelector(".md-code-head")?.textContent).toContain("ts");
+    // snake_case identifier must NOT be turned into italic
+    expect(msgsEl.querySelectorAll("em")).toHaveLength(1);
+    // Safe https link allowed; javascript: link blocked from <a>
+    const links = Array.from(msgsEl.querySelectorAll("a"));
+    expect(links).toHaveLength(1);
+    expect(links[0]?.getAttribute("href")).toBe("https://example.com/docs");
+    expect(msgsEl.querySelectorAll("script")).toHaveLength(0);
+    expect(msgsEl.querySelectorAll("input")).toHaveLength(0);
+
+    // 2. Navigate to board -> IntakeDock stays visible
+    fireEvent.click(screen.getByRole("button", { name: "返回看板" }));
+    await waitFor(() => {
+      expect(document.querySelector('[data-intake-dock="true"]')).toBeTruthy();
+    });
+    expect(document.querySelector('[data-intake-dock="true"]')?.textContent).toContain(
+      "支持 Markdown 立项对话",
+    );
+
+    // 3. Simulate page reload / Desktop window destroy & reopen (unmount & remount) -> Dock auto-restores
+    first.unmount();
+    window.location.hash = "";
+    const second = render(<App />);
+    await waitFor(() => {
+      expect(document.querySelector('[data-intake-dock="true"]')).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /继续对话/ }));
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "架构确认" })).toBeTruthy();
+    });
+
+    // 4. Verify ResolveView uses Markdown + textarea Shift+Enter / Enter
+    window.location.hash = "#resolve=t-res-md";
+    fireEvent(window, new HashChangeEvent("hashchange"));
+    await waitFor(() => {
+      expect(screen.getAllByText("方案 A").length).toBeGreaterThanOrEqual(1);
+    });
+    const resolveInput = document.getElementById("chatIn") as HTMLTextAreaElement;
+    expect(resolveInput.tagName).toBe("TEXTAREA");
+    fireEvent.input(resolveInput, { target: { value: "请细化方案 A" } });
+    fireEvent.keyDown(resolveInput, { key: "Enter", shiftKey: false });
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "建议" })).toBeTruthy();
+    });
+
+    // 5. Close active intake via dock × -> sends intake_open: false and hides dock
+    fireEvent.click(screen.getAllByRole("button", { name: "总览" })[0]!);
+    const closeDockBtn = await screen.findByRole("button", {
+      name: "关闭未完成的新需求对话",
+    });
+    fireEvent.click(closeDockBtn);
+    await waitFor(() => {
+      expect(document.querySelector('[data-intake-dock="true"]')).toBeNull();
+    });
+    expect(draftPayloads.at(-1)).toMatchObject({ id: "d-persist-1", intake_open: false });
+
+    // 6. Re-load draft and commit -> clears dock and persistence cleanly
+    fireEvent.click(screen.getByRole("button", { name: "新需求 N" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^支持 Markdown 立项对话/ }));
+    await waitFor(() => {
+      expect((screen.getByLabelText("标题") as HTMLInputElement).value).toBe(
+        "支持 Markdown 立项对话",
+      );
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始推进" }));
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "总览" })).toBeTruthy();
+    });
+    expect(document.querySelector('[data-intake-dock="true"]')).toBeNull();
+    expect(window.localStorage.getItem("kiln.activeIntakeDraftId")).toBeNull();
+    second.unmount();
   });
 });

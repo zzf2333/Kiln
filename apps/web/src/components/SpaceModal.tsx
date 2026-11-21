@@ -1,12 +1,25 @@
 import { useEffect, useState } from "preact/hooks";
+import type { DiscoveredGitRepo } from "../api/types";
 import { useKilnStore } from "../state/store";
 
 export function SpaceModal() {
   const { store, state } = useKilnStore();
-  const { spaceModalOpen, editingSpaceId, spaces } = state;
+  const {
+    spaceModalOpen,
+    editingSpaceId,
+    spaceModalSelectInIntake,
+    spaceModalPrefillPath,
+    spaces,
+    authMode,
+    discoveredRepos,
+    discoverBusy,
+    discoverError,
+    pickDirBusy,
+  } = state;
   const editingSpace = editingSpaceId ? spaces[editingSpaceId] : undefined;
   const isEditing = Boolean(editingSpaceId);
 
+  const [searchQuery, setSearchQuery] = useState("");
   const [repoPath, setRepoPath] = useState("");
   const [spaceId, setSpaceId] = useState("");
   const [name, setName] = useState("");
@@ -18,11 +31,60 @@ export function SpaceModal() {
   const [nameTouched, setNameTouched] = useState(false);
   const [inspectBusy, setInspectBusy] = useState(false);
   const [saveBusy, setSaveBusy] = useState(false);
+  const [quickBusyPath, setQuickBusyPath] = useState<string | null>(null);
   const [inspectInfo, setInspectInfo] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  const runInspect = async (
+    targetPath: string,
+    resetTouched = false,
+  ): Promise<void> => {
+    const raw = targetPath.trim();
+    if (!raw) return;
+    setInspectBusy(true);
+    setErrorMsg(null);
+    setInspectInfo(null);
+    try {
+      const info = await store.inspectSpace(raw);
+      setRepoPath(info.repo_path);
+      if (!isEditing && (resetTouched || !idTouched)) {
+        setSpaceId(
+          store.suggestUniqueSpaceId(info.suggested_id, info.repo_path),
+        );
+      }
+      if (resetTouched || !nameTouched) {
+        setName(info.suggested_name);
+      }
+      setDefaultBranch(info.default_branch);
+      if (resetTouched || !defaultAcceptCmd.trim()) {
+        setDefaultAcceptCmd(info.default_accept_cmd ?? "");
+      }
+      if (resetTouched || !cloneDeps.trim()) {
+        setCloneDeps(info.clone_deps.join(", "));
+      }
+      setInspectInfo(
+        `已识别 Git 仓库（分支：${info.default_branch}${
+          info.default_accept_cmd
+            ? ` · 默认验收：${info.default_accept_cmd}`
+            : ""
+        }）`,
+      );
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : "识别 Git 仓库失败");
+    } finally {
+      setInspectBusy(false);
+    }
+  };
+
   useEffect(() => {
     if (!spaceModalOpen) return;
+    setSearchQuery("");
+    setInspectInfo(null);
+    setErrorMsg(null);
+    setInspectBusy(false);
+    setSaveBusy(false);
+    setQuickBusyPath(null);
+
     if (editingSpace) {
       setRepoPath(editingSpace.repo_path ?? "");
       setSpaceId(editingSpace.id);
@@ -33,58 +95,61 @@ export function SpaceModal() {
       setCloneDeps(editingSpace.clone_deps.join(", "));
       setIdTouched(true);
       setNameTouched(true);
-    } else {
-      setRepoPath("");
-      setSpaceId("");
-      setName("");
-      setDefaultBranch("main");
-      setDefaultAcceptCmd("");
-      setCopyUntracked("");
-      setCloneDeps("");
-      setIdTouched(false);
-      setNameTouched(false);
+      return;
     }
-    setInspectInfo(null);
-    setErrorMsg(null);
-    setInspectBusy(false);
-    setSaveBusy(false);
-  }, [spaceModalOpen, editingSpaceId]);
+
+    setRepoPath(spaceModalPrefillPath ?? "");
+    setSpaceId("");
+    setName("");
+    setDefaultBranch("main");
+    setDefaultAcceptCmd("");
+    setCopyUntracked("");
+    setCloneDeps("");
+    setIdTouched(false);
+    setNameTouched(false);
+
+    void store.discoverLocalSpaces(true);
+    if (spaceModalPrefillPath) {
+      void runInspect(spaceModalPrefillPath, true);
+    }
+  }, [spaceModalOpen, editingSpaceId, spaceModalPrefillPath]);
 
   if (!spaceModalOpen) {
     return null;
   }
 
   const handleInspect = async (): Promise<void> => {
-    const raw = repoPath.trim();
-    if (!raw || inspectBusy) return;
-    setInspectBusy(true);
+    if (inspectBusy) return;
+    await runInspect(repoPath, false);
+  };
+
+  const handlePickFromFolder = async (): Promise<void> => {
+    if (pickDirBusy || saveBusy) return;
+    const picked = await store.pickSpaceDirectory();
+    if (!picked) return;
+    setRepoPath(picked);
+    await runInspect(picked, true);
+  };
+
+  const handleSelectExisting = (spaceIdToUse: string): void => {
+    if (spaceModalSelectInIntake) {
+      store.selectIntakeProjectSpace(spaceIdToUse);
+    }
+    store.closeSpaceModal();
+    const label = spaces[spaceIdToUse]?.name ?? spaceIdToUse;
+    store.showToast(`已选择项目空间 ${label}`);
+  };
+
+  const handleQuickAdd = async (repo: DiscoveredGitRepo): Promise<void> => {
+    if (quickBusyPath || saveBusy) return;
+    setQuickBusyPath(repo.repo_path);
     setErrorMsg(null);
-    setInspectInfo(null);
     try {
-      const info = await store.inspectSpace(raw);
-      setRepoPath(info.repo_path);
-      if (!isEditing && !idTouched) {
-        setSpaceId(info.suggested_id);
-      }
-      if (!nameTouched) {
-        setName(info.suggested_name);
-      }
-      setDefaultBranch(info.default_branch);
-      if (!defaultAcceptCmd.trim() && info.default_accept_cmd) {
-        setDefaultAcceptCmd(info.default_accept_cmd);
-      }
-      if (!cloneDeps.trim() && info.clone_deps.length > 0) {
-        setCloneDeps(info.clone_deps.join(", "));
-      }
-      setInspectInfo(
-        `已识别 Git 仓库（分支：${info.default_branch}${
-          info.default_accept_cmd ? ` · 默认验收：${info.default_accept_cmd}` : ""
-        }）`,
-      );
+      await store.quickAddDiscoveredRepo(repo);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "识别 Git 仓库失败");
+      setErrorMsg(err instanceof Error ? err.message : "添加项目空间失败");
     } finally {
-      setInspectBusy(false);
+      setQuickBusyPath(null);
     }
   };
 
@@ -122,17 +187,27 @@ export function SpaceModal() {
     }
   };
 
+  const q = searchQuery.trim().toLowerCase();
+  const filteredRepos = discoveredRepos.filter((r) => {
+    if (!q) return true;
+    return (
+      r.name.toLowerCase().includes(q) ||
+      r.display_path.toLowerCase().includes(q) ||
+      r.repo_path.toLowerCase().includes(q)
+    );
+  });
+
   return (
     <div
       class="palette-mask open"
       onClick={(e) => {
-        if (e.target === e.currentTarget && !saveBusy) {
+        if (e.target === e.currentTarget && !saveBusy && !quickBusyPath) {
           store.closeSpaceModal();
         }
       }}
     >
       <div
-        class="modal-card"
+        class="modal-card modal-card-wide"
         role="dialog"
         aria-modal="true"
         aria-label={isEditing ? "编辑项目空间" : "添加项目空间"}
@@ -149,6 +224,112 @@ export function SpaceModal() {
         </div>
 
         <div class="modal-body">
+          {!isEditing ? (
+            <section class="discover-section" aria-label="选择本机 Git 项目">
+              <div class="discover-toolbar">
+                <input
+                  aria-label="搜索本机 Git 项目"
+                  class="input"
+                  placeholder="搜索本机扫描出的 Git 项目或路径…"
+                  value={searchQuery}
+                  onInput={(e) =>
+                    setSearchQuery((e.currentTarget as HTMLInputElement).value)
+                  }
+                />
+                {authMode === "local" ? (
+                  <button
+                    type="button"
+                    class="btn btn-sm"
+                    disabled={pickDirBusy || saveBusy}
+                    onClick={() => void handlePickFromFolder()}
+                  >
+                    {pickDirBusy ? "等待选择…" : "从文件目录选择"}
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  class="btn btn-ghost btn-sm"
+                  disabled={discoverBusy}
+                  onClick={() => void store.discoverLocalSpaces(true)}
+                >
+                  {discoverBusy ? "扫描中…" : "重新扫描"}
+                </button>
+              </div>
+
+              {discoverError ? (
+                <p class="warn-line" style={{ marginTop: "6px" }}>
+                  {discoverError}
+                </p>
+              ) : discoverBusy && discoveredRepos.length === 0 ? (
+                <div class="discover-empty">
+                  正在扫描常见代码目录中的 Git 项目…
+                </div>
+              ) : filteredRepos.length === 0 ? (
+                <div class="discover-empty">
+                  {discoveredRepos.length === 0
+                    ? "未在常见目录扫描到 Git 项目，可点击「从文件目录选择」或下方手动输入路径。"
+                    : "没有匹配的 Git 项目，请调整关键词或从文件目录选择。"}
+                </div>
+              ) : (
+                <div class="discover-list" role="list">
+                  {filteredRepos.map((repo) => {
+                    const isExisting = repo.already_added && Boolean(repo.space_id);
+                    const isQuickBusy = quickBusyPath === repo.repo_path;
+                    return (
+                      <div key={repo.repo_path} class="discover-item" role="listitem">
+                        <button
+                          type="button"
+                          class="discover-main"
+                          onClick={() => {
+                            if (isExisting && repo.space_id && spaceModalSelectInIntake) {
+                              handleSelectExisting(repo.space_id);
+                              return;
+                            }
+                            setRepoPath(repo.repo_path);
+                            void runInspect(repo.repo_path, true);
+                          }}
+                        >
+                          <div class="discover-title-row">
+                            <span class="discover-name">{repo.name}</span>
+                            <span class="chip mono">{repo.default_branch}</span>
+                            {isExisting ? (
+                              <span class="chip chip-ok">已添加</span>
+                            ) : null}
+                          </div>
+                          <div class="discover-path mono" title={repo.repo_path}>
+                            {repo.display_path}
+                          </div>
+                        </button>
+                        <div class="discover-act">
+                          {isExisting && repo.space_id ? (
+                            spaceModalSelectInIntake ? (
+                              <button
+                                type="button"
+                                class="btn btn-sm btn-light"
+                                onClick={() => handleSelectExisting(repo.space_id!)}
+                              >
+                                选用
+                              </button>
+                            ) : null
+                          ) : (
+                            <button
+                              type="button"
+                              class="btn btn-sm btn-light"
+                              disabled={quickBusyPath !== null || saveBusy}
+                              onClick={() => void handleQuickAdd(repo)}
+                            >
+                              {isQuickBusy ? "添加中…" : "一键添加"}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          ) : null}
+
           <div class="modal-field">
             <label for="spaceRepoPath">仓库路径</label>
             <div class="modal-row">
@@ -281,7 +462,7 @@ export function SpaceModal() {
           <button
             type="button"
             class="btn"
-            disabled={saveBusy}
+            disabled={saveBusy || quickBusyPath !== null}
             onClick={() => store.closeSpaceModal()}
           >
             取消
@@ -289,7 +470,13 @@ export function SpaceModal() {
           <button
             type="button"
             class="btn btn-light"
-            disabled={saveBusy || !spaceId.trim() || !name.trim() || !repoPath.trim()}
+            disabled={
+              saveBusy ||
+              quickBusyPath !== null ||
+              !spaceId.trim() ||
+              !name.trim() ||
+              !repoPath.trim()
+            }
             onClick={() => void handleSave()}
           >
             {saveBusy ? "保存中…" : "保存空间"}

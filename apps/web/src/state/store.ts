@@ -20,6 +20,7 @@ import {
   commitDraft as apiCommitDraft,
   deleteDraft as apiDeleteDraft,
   deleteSpace as apiDeleteSpace,
+  discoverSpaces as apiDiscoverSpaces,
   fetchAgents as apiFetchAgents,
   fetchAuthStatus as apiFetchAuthStatus,
   fetchBootstrap as apiFetchBootstrap,
@@ -31,6 +32,7 @@ import {
   logoutRemoteDevice as apiLogoutRemoteDevice,
   pairRemoteDevice as apiPairRemoteDevice,
   pauseTask as apiPauseTask,
+  pickSpaceDirectory as apiPickSpaceDirectory,
   restoreHostBackup as apiRestoreHostBackup,
   resumeTask as apiResumeTask,
   sendIntakeChat as apiSendIntakeChat,
@@ -50,6 +52,7 @@ import type {
   BootstrapTask,
   ChatMessage,
   CommitDraftPayload,
+  DiscoveredGitRepo,
   InspectSpaceResult,
   PairCompleteRequest,
   PublicPairedDevice,
@@ -152,10 +155,18 @@ export interface KilnStoreState {
   intakeForm: IntakeFormState;
   intakeMessages: ChatMessage[];
   intakeBusy: boolean;
+  intakeActiveOpen: boolean;
+  intakeHasUnreadReply: boolean;
 
   spaceModalOpen: boolean;
   editingSpaceId: string | null;
   spaceModalSelectInIntake: boolean;
+  spaceModalPrefillPath: string | null;
+  discoveredRepos: DiscoveredGitRepo[];
+  discoverBusy: boolean;
+  discoverError: string | null;
+  discoverLoaded: boolean;
+  pickDirBusy: boolean;
 
   resolveMessagesByTask: Record<string, ChatMessage[]>;
   resolveBusy: boolean;
@@ -278,6 +289,103 @@ function defaultWelcomeIntakeMessages(): ChatMessage[] {
       text: "说说你想做什么。代码需求、本机配置或临时沙盒任务都可以。我会把交付终点、验收命令和可改范围定下来；右侧立项单任意字段也可直接手改。",
     },
   ];
+}
+
+const ACTIVE_INTAKE_DRAFT_KEY = "kiln.activeIntakeDraftId";
+const ACTIVE_INTAKE_LOCAL_KEY = "kiln.activeIntakeLocalDraft";
+
+interface LocalIntakeSnapshot {
+  form: IntakeFormState;
+  messages: ChatMessage[];
+  updatedAt: string;
+}
+
+function readStorageItem(key: string): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStorageItem(key: string, value: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Ignore storage quota or private-browsing errors
+  }
+}
+
+function removeStorageItem(key: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+function readLocalIntakeSnapshot(): LocalIntakeSnapshot | null {
+  const raw = readStorageItem(ACTIVE_INTAKE_LOCAL_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<LocalIntakeSnapshot>;
+    if (!parsed || typeof parsed !== "object" || !parsed.form || !Array.isArray(parsed.messages)) {
+      return null;
+    }
+    return {
+      form: parsed.form,
+      messages: parsed.messages,
+      updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalIntakeSnapshot(form: IntakeFormState, messages: ChatMessage[]): void {
+  writeStorageItem(
+    ACTIVE_INTAKE_LOCAL_KEY,
+    JSON.stringify({
+      form,
+      messages,
+      updatedAt: new Date().toISOString(),
+    } satisfies LocalIntakeSnapshot),
+  );
+}
+
+function clearActiveIntakePersistence(): void {
+  removeStorageItem(ACTIVE_INTAKE_DRAFT_KEY);
+  removeStorageItem(ACTIVE_INTAKE_LOCAL_KEY);
+}
+
+function draftToIntakeForm(draft: DraftCard): IntakeFormState {
+  const isLocal = draft.space === "local";
+  return {
+    mode: isLocal ? "local" : "project",
+    title: draft.title,
+    priority: draft.priority,
+    space: draft.space,
+    track: draft.track === "L3" ? "L2" : draft.track,
+    workspace_mode: isLocal
+      ? (draft.workspace_mode === "host_scoped" ? "host_scoped" : "scratch_dir")
+      : "git_worktree",
+    end: draft.contract.end ?? "",
+    accept_cmd: draft.contract.accept_cmd ?? "",
+    scope: (draft.contract.scope ?? []).join("\n"),
+    depends_on: draft.depends_on.join(", "),
+  };
+}
+
+function findSpaceByRepoPath(
+  repoPath: string,
+  spaces: Record<string, SpaceConfig>,
+): SpaceConfig | undefined {
+  return Object.values(spaces).find(
+    (sp) => isProjectSpace(sp) && sp.repo_path === repoPath,
+  );
 }
 
 function parseLocationHash(): {
@@ -419,6 +527,7 @@ export class KilnWebStore {
   private sseCleanup: (() => void) | null = null;
   private refreshInFlight: Promise<void> | null = null;
   private authProbeInFlight: Promise<void> | null = null;
+  private intakeRestoredOnce = false;
 
   constructor() {
     const parsed = parseLocationHash();
@@ -477,10 +586,18 @@ export class KilnWebStore {
       intakeForm: createDefaultIntakeForm({}),
       intakeMessages: defaultWelcomeIntakeMessages(),
       intakeBusy: false,
+      intakeActiveOpen: false,
+      intakeHasUnreadReply: false,
 
       spaceModalOpen: false,
       editingSpaceId: null,
       spaceModalSelectInIntake: false,
+      spaceModalPrefillPath: null,
+      discoveredRepos: [],
+      discoverBusy: false,
+      discoverError: null,
+      discoverLoaded: false,
+      pickDirBusy: false,
 
       resolveMessagesByTask: {},
       resolveBusy: false,
@@ -602,6 +719,7 @@ export class KilnWebStore {
 
   private clearRemoteSession(notice: string): void {
     this.disconnectSse();
+    this.intakeRestoredOnce = false;
     this.setState({
       authChecked: true,
       authMode: "remote",
@@ -617,6 +735,10 @@ export class KilnWebStore {
       draftOpen: false,
       paletteOpen: false,
       spaceModalOpen: false,
+      intakeActiveOpen: false,
+      intakeHasUnreadReply: false,
+      discoveredRepos: [],
+      discoverLoaded: false,
       tasks: [],
       pendingDecisions: [],
       drafts: [],
@@ -858,9 +980,46 @@ export class KilnWebStore {
           : this.state.ratesByTask;
 
         const nextSpaces = data.spaces ?? {};
+        const nextDrafts = data.drafts ?? [];
         let nextIntakeForm = this.state.intakeForm;
+        let nextIntakeDraftId = this.state.intakeDraftId;
+        let nextIntakeMessages = this.state.intakeMessages;
+        let nextIntakeActiveOpen = this.state.intakeActiveOpen;
+        let nextIntakeHasUnread = this.state.intakeHasUnreadReply;
+        let restoredDraftIdForChat: string | null = null;
+
+        if (!this.intakeRestoredOnce && !this.state.intakeActiveOpen) {
+          this.intakeRestoredOnce = true;
+          const storedId = readStorageItem(ACTIVE_INTAKE_DRAFT_KEY);
+          const matched =
+            (storedId ? nextDrafts.find((d) => d.id === storedId) : undefined) ??
+            nextDrafts.find((d) => d.intake_open === true) ??
+            null;
+          if (matched) {
+            writeStorageItem(ACTIVE_INTAKE_DRAFT_KEY, matched.id);
+            nextIntakeDraftId = matched.id;
+            nextIntakeForm = draftToIntakeForm(matched);
+            nextIntakeActiveOpen = true;
+            nextIntakeHasUnread = false;
+            restoredDraftIdForChat = matched.id;
+          } else {
+            if (storedId) {
+              removeStorageItem(ACTIVE_INTAKE_DRAFT_KEY);
+            }
+            const localSnap = readLocalIntakeSnapshot();
+            if (localSnap && localSnap.messages.length > 1) {
+              nextIntakeDraftId = null;
+              nextIntakeForm = localSnap.form;
+              nextIntakeMessages = localSnap.messages;
+              nextIntakeActiveOpen = true;
+              nextIntakeHasUnread = false;
+            }
+          }
+        }
+
         if (
-          !this.state.intakeDraftId &&
+          !nextIntakeDraftId &&
+          !nextIntakeActiveOpen &&
           nextIntakeForm.mode === "project" &&
           !isProjectSpace(nextSpaces[nextIntakeForm.space])
         ) {
@@ -898,9 +1057,13 @@ export class KilnWebStore {
             : {}),
           tasks: data.tasks ?? [],
           pendingDecisions: data.pendingDecisions ?? [],
-          drafts: data.drafts ?? [],
+          drafts: nextDrafts,
           spaces: nextSpaces,
+          intakeDraftId: nextIntakeDraftId,
           intakeForm: nextIntakeForm,
+          intakeMessages: nextIntakeMessages,
+          intakeActiveOpen: nextIntakeActiveOpen,
+          intakeHasUnreadReply: nextIntakeHasUnread,
           roles,
           limits,
           pricing,
@@ -921,6 +1084,10 @@ export class KilnWebStore {
         });
 
         this.enforceRouteGuard();
+
+        if (restoredDraftIdForChat) {
+          void this.hydrateRestoredDraftChat(restoredDraftIdForChat);
+        }
 
         if (
           (this.state.view === "detail" || this.state.view === "resolve") &&
@@ -1052,6 +1219,7 @@ export class KilnWebStore {
   go(view: MvpView, options?: { space?: string; settingsTab?: SettingsTab }): void {
     const shouldInitIntake =
       view === "intake" &&
+      !this.state.intakeActiveOpen &&
       !this.state.intakeDraftId &&
       !this.state.intakeForm.title.trim() &&
       this.state.intakeMessages.length <= 1;
@@ -1065,6 +1233,7 @@ export class KilnWebStore {
       draftOpen: false,
       paletteOpen: false,
       restoreResult: null,
+      ...(view === "intake" ? { intakeHasUnreadReply: false } : {}),
       ...(view !== "detail" && view !== "resolve" ? { taskId: null, selectedRunIdx: null } : {}),
       ...(options?.space !== undefined ? { spaceFilter: options.space } : {}),
       ...(options?.settingsTab !== undefined ? { settingsTab: options.settingsTab } : {}),
@@ -1278,9 +1447,11 @@ export class KilnWebStore {
   }
 
   updateIntakeForm(patch: Partial<IntakeFormState>): void {
-    this.setState({
-      intakeForm: { ...this.state.intakeForm, ...patch },
-    });
+    const nextForm = { ...this.state.intakeForm, ...patch };
+    this.setState({ intakeForm: nextForm });
+    if (this.state.intakeActiveOpen) {
+      writeLocalIntakeSnapshot(nextForm, this.state.intakeMessages);
+    }
   }
 
   setIntakeMode(mode: IntakeMode): void {
@@ -1301,33 +1472,37 @@ export class KilnWebStore {
       const prevDefault = this.state.spaces[cur.space]?.default_accept_cmd ?? "";
       const shouldFillAccept =
         cur.accept_cmd.trim() === "" || cur.accept_cmd === prevDefault;
-      this.setState({
-        intakeForm: {
-          ...cur,
-          mode: "project",
-          space: chosen?.id ?? "",
-          workspace_mode: "git_worktree",
-          track: cur.track || "L2",
-          accept_cmd:
-            shouldFillAccept && chosen?.default_accept_cmd
-              ? chosen.default_accept_cmd
-              : cur.accept_cmd,
-        },
-      });
+      const nextForm: IntakeFormState = {
+        ...cur,
+        mode: "project",
+        space: chosen?.id ?? "",
+        workspace_mode: "git_worktree",
+        track: cur.track || "L2",
+        accept_cmd:
+          shouldFillAccept && chosen?.default_accept_cmd
+            ? chosen.default_accept_cmd
+            : cur.accept_cmd,
+      };
+      this.setState({ intakeForm: nextForm });
+      if (this.state.intakeActiveOpen) {
+        writeLocalIntakeSnapshot(nextForm, this.state.intakeMessages);
+      }
       return;
     }
 
     const prevDefault = this.state.spaces[cur.space]?.default_accept_cmd ?? "";
-    this.setState({
-      intakeForm: {
-        ...cur,
-        mode: "local",
-        space: "local",
-        workspace_mode:
-          cur.workspace_mode === "host_scoped" ? "host_scoped" : "scratch_dir",
-        ...(cur.accept_cmd === prevDefault ? { accept_cmd: "" } : {}),
-      },
-    });
+    const nextForm: IntakeFormState = {
+      ...cur,
+      mode: "local",
+      space: "local",
+      workspace_mode:
+        cur.workspace_mode === "host_scoped" ? "host_scoped" : "scratch_dir",
+      ...(cur.accept_cmd === prevDefault ? { accept_cmd: "" } : {}),
+    };
+    this.setState({ intakeForm: nextForm });
+    if (this.state.intakeActiveOpen) {
+      writeLocalIntakeSnapshot(nextForm, this.state.intakeMessages);
+    }
   }
 
   selectIntakeProjectSpace(spaceId: string): void {
@@ -1336,20 +1511,38 @@ export class KilnWebStore {
     const nextSpace = this.state.spaces[spaceId];
     const shouldUpdateAccept =
       cur.accept_cmd.trim() === "" || cur.accept_cmd === prevDefault;
-    this.setState({
-      intakeForm: {
-        ...cur,
-        mode: "project",
-        space: spaceId,
-        workspace_mode: "git_worktree",
-        accept_cmd: shouldUpdateAccept
-          ? (nextSpace?.default_accept_cmd ?? "")
-          : cur.accept_cmd,
-      },
-    });
+    const nextForm: IntakeFormState = {
+      ...cur,
+      mode: "project",
+      space: spaceId,
+      workspace_mode: "git_worktree",
+      accept_cmd: shouldUpdateAccept
+        ? (nextSpace?.default_accept_cmd ?? "")
+        : cur.accept_cmd,
+    };
+    this.setState({ intakeForm: nextForm });
+    if (this.state.intakeActiveOpen) {
+      writeLocalIntakeSnapshot(nextForm, this.state.intakeMessages);
+    }
   }
 
-  startNewIntake(): void {
+  private async hydrateRestoredDraftChat(draftId: string): Promise<void> {
+    const msgs = await apiFetchDraftChat(draftId).catch(() => null);
+    if (
+      msgs &&
+      msgs.length > 0 &&
+      this.state.intakeActiveOpen &&
+      this.state.intakeDraftId === draftId &&
+      this.state.intakeMessages.length <= 1
+    ) {
+      this.setState({ intakeMessages: msgs });
+      writeLocalIntakeSnapshot(this.state.intakeForm, msgs);
+    }
+  }
+
+  private async resetIntakeSessionState(markClosedOnServer: boolean): Promise<void> {
+    const prevDraftId = this.state.intakeDraftId;
+    clearActiveIntakePersistence();
     const preferred =
       this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
     this.setState({
@@ -1357,14 +1550,33 @@ export class KilnWebStore {
       intakeForm: createDefaultIntakeForm(this.state.spaces, preferred),
       intakeMessages: defaultWelcomeIntakeMessages(),
       draftOpen: false,
+      intakeActiveOpen: false,
+      intakeHasUnreadReply: false,
     });
+    if (markClosedOnServer && prevDraftId) {
+      try {
+        await apiUpsertDraft({ id: prevDraftId, intake_open: false });
+        await this.bootstrap();
+      } catch {
+        // Best-effort server closure; local state is already reset.
+      }
+    }
+  }
+
+  startNewIntake(): void {
+    void this.resetIntakeSessionState(true);
+  }
+
+  async closeIntakeSession(): Promise<void> {
+    await this.resetIntakeSessionState(true);
+    this.showToast("已关闭当前立项对话");
   }
 
   async deleteIntakeDraft(draftId: string): Promise<void> {
     try {
       await apiDeleteDraft(draftId);
       if (this.state.intakeDraftId === draftId) {
-        this.startNewIntake();
+        await this.resetIntakeSessionState(false);
       }
       await this.bootstrap();
       this.showToast("已删除草稿");
@@ -1374,31 +1586,19 @@ export class KilnWebStore {
   }
 
   async loadDraftIntoIntake(draft: DraftCard): Promise<void> {
-    const isLocal = draft.space === "local";
-    const mode: IntakeMode = isLocal ? "local" : "project";
-    const workspaceMode: Exclude<WorkspaceMode, "external_only"> = isLocal
-      ? (draft.workspace_mode === "host_scoped" ? "host_scoped" : "scratch_dir")
-      : "git_worktree";
+    const nextForm = draftToIntakeForm(draft);
+    writeStorageItem(ACTIVE_INTAKE_DRAFT_KEY, draft.id);
     this.setState({
       intakeDraftId: draft.id,
-      intakeForm: {
-        mode,
-        title: draft.title,
-        priority: draft.priority,
-        space: draft.space,
-        track: draft.track === "L3" ? "L2" : draft.track,
-        workspace_mode: workspaceMode,
-        end: draft.contract.end ?? "",
-        accept_cmd: draft.contract.accept_cmd ?? "",
-        scope: (draft.contract.scope ?? []).join("\n"),
-        depends_on: draft.depends_on.join(", "),
-      },
+      intakeForm: nextForm,
+      intakeActiveOpen: true,
+      intakeHasUnreadReply: false,
     });
     const msgs = await apiFetchDraftChat(draft.id).catch(() => null);
-    this.setState({
-      intakeMessages:
-        msgs && msgs.length > 0 ? msgs : defaultWelcomeIntakeMessages(),
-    });
+    const nextMessages =
+      msgs && msgs.length > 0 ? msgs : defaultWelcomeIntakeMessages();
+    this.setState({ intakeMessages: nextMessages });
+    writeLocalIntakeSnapshot(nextForm, nextMessages);
   }
 
   private buildDraftContractFromForm(): {
@@ -1433,6 +1633,8 @@ export class KilnWebStore {
 
     this.setState({ intakeBusy: true });
     try {
+      const keepActiveOpen =
+        this.state.intakeActiveOpen || this.state.intakeMessages.length > 1;
       const res = await apiUpsertDraft({
         ...(this.state.intakeDraftId ? { id: this.state.intakeDraftId } : {}),
         title: f.title.trim(),
@@ -1441,6 +1643,7 @@ export class KilnWebStore {
         track: (f.track || "L2") as Track,
         workspace_mode: effectiveWorkspaceMode,
         depends_on,
+        ...(keepActiveOpen ? { intake_open: true } : {}),
         contract: {
           goal: f.title.trim(),
           ...(f.end.trim() ? { end: f.end.trim() } : {}),
@@ -1448,7 +1651,15 @@ export class KilnWebStore {
           ...(scopeList.length > 0 ? { scope: scopeList } : {}),
         },
       });
-      this.setState({ intakeDraftId: res.draft.id, intakeBusy: false });
+      if (keepActiveOpen) {
+        writeStorageItem(ACTIVE_INTAKE_DRAFT_KEY, res.draft.id);
+        writeLocalIntakeSnapshot(f, this.state.intakeMessages);
+      }
+      this.setState({
+        intakeDraftId: res.draft.id,
+        intakeBusy: false,
+        ...(keepActiveOpen ? { intakeActiveOpen: true, intakeHasUnreadReply: false } : {}),
+      });
       this.showToast("已保存至 drafts/ 草稿箱");
       await this.bootstrap();
       return res.draft;
@@ -1553,6 +1764,7 @@ export class KilnWebStore {
       };
 
       const committed = await apiCommitDraft(draftId, payload);
+      clearActiveIntakePersistence();
       const preferred =
         this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
       this.setState({
@@ -1561,6 +1773,8 @@ export class KilnWebStore {
         intakeForm: createDefaultIntakeForm(this.state.spaces, preferred),
         intakeMessages: defaultWelcomeIntakeMessages(),
         draftOpen: false,
+        intakeActiveOpen: false,
+        intakeHasUnreadReply: false,
       });
       await this.bootstrap();
       this.go("board");
@@ -1590,10 +1804,14 @@ export class KilnWebStore {
     }
 
     const userMsg: ChatMessage = { who: "me", text: trimmed };
+    const optimisticMessages = [...this.state.intakeMessages, userMsg];
     this.setState({
-      intakeMessages: [...this.state.intakeMessages, userMsg],
+      intakeMessages: optimisticMessages,
       intakeBusy: true,
+      intakeActiveOpen: true,
+      intakeHasUnreadReply: false,
     });
+    writeLocalIntakeSnapshot(this.state.intakeForm, optimisticMessages);
 
     try {
       const { depends_on, scopeList } = this.buildDraftContractFromForm();
@@ -1618,9 +1836,11 @@ export class KilnWebStore {
         track: (f.track || "L2") as Track,
         workspace_mode: effectiveWorkspaceMode,
         depends_on,
+        intake_open: true,
         ...(Object.keys(contractPatch).length > 0 ? { contract: contractPatch } : {}),
       });
       const draftId = synced.draft.id;
+      writeStorageItem(ACTIVE_INTAKE_DRAFT_KEY, draftId);
       if (this.state.intakeDraftId !== draftId) {
         this.setState({ intakeDraftId: draftId });
       }
@@ -1659,27 +1879,37 @@ export class KilnWebStore {
           nextForm.depends_on = res.draft.depends_on.join(", ");
         }
       }
+      const unread = this.state.view !== "intake";
       this.setState({
         intakeMessages: nextMsgs,
         intakeForm: nextForm,
         intakeBusy: false,
+        intakeActiveOpen: true,
+        intakeHasUnreadReply: unread,
       });
+      writeLocalIntakeSnapshot(nextForm, nextMsgs);
+      if (unread) {
+        this.showToast("立项助手已回复，点击右下角窗口继续");
+      }
       void this.bootstrap();
     } catch (err) {
+      const errMsgs: ChatMessage[] = [
+        ...this.state.intakeMessages,
+        {
+          who: "agent",
+          name: "系统提示",
+          text:
+            err instanceof Error
+              ? `对话请求未完成（${err.message}），你也可以直接在右侧填写立项字段并提交。`
+              : "对话暂不可用，请直接在右侧填写立项字段。",
+        },
+      ];
       this.setState({
         intakeBusy: false,
-        intakeMessages: [
-          ...this.state.intakeMessages,
-          {
-            who: "agent",
-            name: "系统提示",
-            text:
-              err instanceof Error
-                ? `对话请求未完成（${err.message}），你也可以直接在右侧填写立项字段并提交。`
-                : "对话暂不可用，请直接在右侧填写立项字段。",
-          },
-        ],
+        intakeMessages: errMsgs,
+        intakeHasUnreadReply: this.state.view !== "intake",
       });
+      writeLocalIntakeSnapshot(this.state.intakeForm, errMsgs);
     }
   }
 
@@ -1832,11 +2062,15 @@ export class KilnWebStore {
     }
   }
 
-  openAddSpaceModal(selectInIntake = false): void {
+  openAddSpaceModal(
+    selectInIntake = false,
+    prefillPath: string | null = null,
+  ): void {
     this.setState({
       spaceModalOpen: true,
       editingSpaceId: null,
       spaceModalSelectInIntake: selectInIntake,
+      spaceModalPrefillPath: prefillPath,
     });
   }
 
@@ -1845,6 +2079,7 @@ export class KilnWebStore {
       spaceModalOpen: true,
       editingSpaceId: spaceId,
       spaceModalSelectInIntake: false,
+      spaceModalPrefillPath: null,
     });
   }
 
@@ -1853,11 +2088,118 @@ export class KilnWebStore {
       spaceModalOpen: false,
       editingSpaceId: null,
       spaceModalSelectInIntake: false,
+      spaceModalPrefillPath: null,
     });
+  }
+
+  suggestUniqueSpaceId(preferredId: string, repoPath: string): string {
+    const existing = this.state.spaces[preferredId];
+    if (!existing || existing.repo_path === repoPath) {
+      return preferredId;
+    }
+    let suffix = 2;
+    while (this.state.spaces[`${preferredId}-${suffix}`]) {
+      const candidate = this.state.spaces[`${preferredId}-${suffix}`];
+      if (candidate?.repo_path === repoPath) {
+        return candidate.id;
+      }
+      suffix += 1;
+    }
+    return `${preferredId}-${suffix}`;
+  }
+
+  async discoverLocalSpaces(force = false): Promise<void> {
+    if (this.state.discoverBusy) return;
+    if (!force && this.state.discoverLoaded) return;
+    this.setState({ discoverBusy: true, discoverError: null });
+    try {
+      const res = await apiDiscoverSpaces();
+      this.setState({
+        discoveredRepos: res.repos,
+        discoverBusy: false,
+        discoverLoaded: true,
+      });
+    } catch (err) {
+      this.setState({
+        discoverBusy: false,
+        discoverError:
+          err instanceof Error ? err.message : "扫描本机 Git 项目失败",
+      });
+    }
+  }
+
+  async pickSpaceDirectory(): Promise<string | null> {
+    if (this.state.pickDirBusy) return null;
+    this.setState({ pickDirBusy: true });
+    try {
+      const res = await apiPickSpaceDirectory();
+      if (res.cancelled || !res.path) {
+        return null;
+      }
+      return res.path;
+    } catch (err) {
+      this.showToast(
+        err instanceof Error ? err.message : "打开系统文件夹选择器失败",
+      );
+      return null;
+    } finally {
+      this.setState({ pickDirBusy: false });
+    }
+  }
+
+  async pickDirectoryAndAttach(selectInIntake = true): Promise<void> {
+    const pickedPath = await this.pickSpaceDirectory();
+    if (!pickedPath) return;
+    try {
+      const info = await this.inspectSpace(pickedPath);
+      const existing = findSpaceByRepoPath(info.repo_path, this.state.spaces);
+      if (existing) {
+        if (selectInIntake) {
+          this.selectIntakeProjectSpace(existing.id);
+          if (this.state.view !== "intake") {
+            this.go("intake");
+          }
+          this.showToast(`已切换到项目空间 ${existing.name}`);
+        } else {
+          this.showToast(`项目空间 ${existing.name} 已存在`);
+        }
+        return;
+      }
+      this.openAddSpaceModal(selectInIntake, info.repo_path);
+    } catch (err) {
+      this.showToast(
+        err instanceof Error ? err.message : "所选目录不是有效的 Git 仓库",
+      );
+    }
   }
 
   async inspectSpace(rawPath: string): Promise<InspectSpaceResult> {
     return await apiInspectSpacePath(rawPath);
+  }
+
+  async quickAddDiscoveredRepo(repo: DiscoveredGitRepo): Promise<SpaceConfig | null> {
+    const info = await this.inspectSpace(repo.repo_path);
+    const existing = findSpaceByRepoPath(info.repo_path, this.state.spaces);
+    if (existing) {
+      if (this.state.spaceModalSelectInIntake) {
+        this.selectIntakeProjectSpace(existing.id);
+      }
+      this.closeSpaceModal();
+      this.showToast(`已选择项目空间 ${existing.name}`);
+      return existing;
+    }
+    const targetId = this.suggestUniqueSpaceId(info.suggested_id, info.repo_path);
+    return await this.saveSpace(targetId, {
+      name: info.suggested_name,
+      repo_path: info.repo_path,
+      default_branch: info.default_branch,
+      copy_untracked: info.copy_untracked,
+      clone_deps: info.clone_deps,
+      ...(info.default_accept_cmd
+        ? { default_accept_cmd: info.default_accept_cmd }
+        : {}),
+      freeze_patterns: [],
+    });
   }
 
   async saveSpace(
@@ -1872,6 +2214,7 @@ export class KilnWebStore {
     const res = await apiUpsertSpace(spaceId, payload);
     this.closeSpaceModal();
     await this.bootstrap();
+    void this.discoverLocalSpaces(true);
     if (shouldSelectInIntake) {
       this.selectIntakeProjectSpace(res.space.id);
     }

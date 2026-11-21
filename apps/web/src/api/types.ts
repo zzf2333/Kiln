@@ -3,6 +3,8 @@ import type {
   CardContract,
   CardLimits,
   DecisionAction,
+  DiscoveredGitRepo,
+  DiscoverSpacesResponse,
   DraftCard,
   GateReport,
   HashMismatchError,
@@ -12,6 +14,7 @@ import type {
   LimitsConfig,
   PairCompleteRequest,
   PendingDecision,
+  PickDirectoryResponse,
   PricingConfig,
   Priority,
   PublicPairedDevice,
@@ -321,6 +324,7 @@ export interface UpsertDraftPayload {
   workspace_mode?: WorkspaceMode;
   depends_on?: string[];
   contract?: Partial<CardContract>;
+  intake_open?: boolean;
 }
 
 export interface CommitDraftPayload {
@@ -412,7 +416,10 @@ export interface RemoteNotificationTestResponse {
 }
 
 export type {
+  DiscoveredGitRepo,
+  DiscoverSpacesResponse,
   PairCompleteRequest,
+  PickDirectoryResponse,
   PublicPairedDevice,
   RemoteAuthStatusResponse,
   RemoteConfig,

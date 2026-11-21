@@ -3,6 +3,7 @@ import type { DecisionAction, PendingDecision } from "@kiln/protocol/web";
 import type { SubmitDecisionPayload } from "../api/types";
 import { fmtTime } from "../state/format";
 import { WarnCircleIcon } from "./Icons";
+import { MarkdownContent } from "./MarkdownContent";
 
 const ACTION_DESC: Record<DecisionAction, string> = {
   resume: "继续推进",
@@ -77,7 +78,9 @@ export function DecisionBox({
           {decision.category} · {fmtTime(decision.created_at)} · {decision.reason}
         </span>
       </div>
-      <p class="decision-q">{decision.question}</p>
+      <div class="decision-q">
+        <MarkdownContent text={decision.question} />
+      </div>
       <div class="options">
         {decision.options.map((opt) => {
           const checked = opt.id === selectedOption?.id;

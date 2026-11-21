@@ -106,6 +106,7 @@ export const DraftCardSchema = z.object({
   depends_on: z.array(z.string().min(1)).default([]),
   contract: CardContractSchema.partial().default({}),
   session_ref: SessionRefSchema.nullable().optional(),
+  intake_open: z.boolean().optional(),
   created_at: z.string().min(1),
   updated_at: z.string().min(1),
 });
