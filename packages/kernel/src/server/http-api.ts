@@ -376,7 +376,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
   const listenerMode: HttpApiListenerMode = deps.listenerMode ?? "local";
   const remoteAuth = deps.remoteAuth ?? new RemoteAuthManager({ store, sseHub });
   const remoteNotifier = deps.remoteNotifier ?? new RemoteNotifier({ store });
-  const version = deps.version ?? "0.0.1";
+  const version = deps.version ?? "0.0.2";
   const app = new Hono();
   const authenticatedDevicesByRequest = new WeakMap<Request, PublicPairedDevice>();
 

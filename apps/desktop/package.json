@@ -1,6 +1,6 @@
 {
   "name": "@kiln/desktop",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "scripts": {
     "tauri:dev": "cargo tauri dev --manifest-path src-tauri/Cargo.toml",
