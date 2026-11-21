@@ -35,6 +35,8 @@ import type {
   RevokeDeviceResponse,
   SettingsSectionMap,
   SubmitDecisionPayload,
+  SyncPricingRequest,
+  SyncPricingResponse,
   TailscaleStatusResponse,
   TaskDetailResponse,
   UpdateRemoteSettingsResponse,
@@ -537,6 +539,15 @@ export async function updateSettings<K extends keyof SettingsSectionMap>(
   return await requestJson(`/api/settings/${encodeURIComponent(section)}`, {
     method: "PUT",
     body: JSON.stringify(data),
+  });
+}
+
+export async function syncModelPricing(
+  payload?: SyncPricingRequest,
+): Promise<SyncPricingResponse> {
+  return await requestJson<SyncPricingResponse>("/api/settings/pricing/sync", {
+    method: "POST",
+    body: JSON.stringify(payload ?? {}),
   });
 }
 

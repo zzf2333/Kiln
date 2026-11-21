@@ -40,6 +40,7 @@ import {
   setUnauthorizedHandler,
   submitDecision as apiSubmitDecision,
   subscribeSseEvents,
+  syncModelPricing as apiSyncModelPricing,
   updatePriority as apiUpdatePriority,
   updateSettings as apiUpdateSettings,
   upsertDraft as apiUpsertDraft,
@@ -60,6 +61,7 @@ import type {
   RestoreHostBackupResult,
   SettingsSectionMap,
   SubmitDecisionPayload,
+  SyncPricingRequest,
   TaskDetailResponse,
   UpsertSpacePayload,
   UsageSnapshot,
@@ -170,6 +172,7 @@ export interface KilnStoreState {
 
   resolveMessagesByTask: Record<string, ChatMessage[]>;
   resolveBusy: boolean;
+  pricingSyncBusy: boolean;
 }
 
 const VALID_VIEWS = new Set<MvpView>([
@@ -601,6 +604,7 @@ export class KilnWebStore {
 
       resolveMessagesByTask: {},
       resolveBusy: false,
+      pricingSyncBusy: false,
     };
 
     // Immediately strip #pair=<token> (or invalid routes) so one-time pairing tokens
@@ -1989,6 +1993,10 @@ export class KilnWebStore {
       cached: 0,
       out: 0,
     };
+    const prevCustom = this.state.pricing.custom_models ?? [];
+    const nextCustom = prevCustom.includes(modelName)
+      ? prevCustom
+      : [...prevCustom, modelName];
     this.setState({
       pricing: {
         ...this.state.pricing,
@@ -1999,8 +2007,46 @@ export class KilnWebStore {
             [field]: val,
           },
         },
+        custom_models: nextCustom,
       },
     });
+  }
+
+  async syncPricing(options: SyncPricingRequest = {}): Promise<boolean> {
+    if (this.state.pricingSyncBusy) return false;
+    this.setState({ pricingSyncBusy: true });
+    try {
+      const res = await apiSyncModelPricing(options);
+      this.setState({ pricing: res.pricing, pricingSyncBusy: false });
+      const sourceLabel =
+        res.source === "models.dev"
+          ? "models.dev"
+          : res.source === "litellm"
+            ? "LiteLLM"
+            : "内置离线基线";
+      if (options.restore_model) {
+        this.showToast(`已恢复 ${options.restore_model} 为同步单价（${sourceLabel}）`);
+      } else if (res.warning) {
+        this.showToast(res.warning);
+      } else {
+        const overrideHint =
+          res.preserved_overrides.length > 0
+            ? `，保留 ${res.preserved_overrides.length} 项自定义覆盖`
+            : "";
+        this.showToast(
+          `已从 ${sourceLabel} 同步 ${res.matched_models.length} 个模型单价${overrideHint}`,
+        );
+      }
+      return true;
+    } catch (err) {
+      this.setState({ pricingSyncBusy: false });
+      this.showToast(err instanceof Error ? err.message : "同步模型单价失败");
+      return false;
+    }
+  }
+
+  async restoreModelPricing(modelName: string): Promise<boolean> {
+    return await this.syncPricing({ force: false, restore_model: modelName });
   }
 
   async saveSettingsSection<K extends keyof SettingsSectionMap>(

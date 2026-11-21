@@ -3004,4 +3004,121 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     expect(window.localStorage.getItem("kiln.activeIntakeDraftId")).toBeNull();
     second.unmount();
   });
+
+  it("syncs model pricing from remote API, tags custom edits, preserves overrides, and restores synced prices", async () => {
+    let pricingState: NonNullable<BootstrapResponse["pricing"]> = {
+      schema_version: 1,
+      models: {
+        "gpt-5.4": { in: 1.25, cached: 0.125, out: 10 },
+      },
+    };
+    const syncCalls: Array<Record<string, unknown>> = [];
+
+    fetchMock.mockImplementation(async (url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      const body = init?.body
+        ? (JSON.parse(String(init.body)) as Record<string, unknown>)
+        : undefined;
+
+      if (url === "/api/bootstrap") {
+        return jsonResponse(
+          makeBaseBootstrap({
+            pricing: pricingState,
+          }),
+        );
+      }
+      if (url === "/api/settings/pricing/sync" && method === "POST") {
+        syncCalls.push(body ?? {});
+        if (body?.restore_model === "gpt-5.4") {
+          pricingState = {
+            schema_version: 1,
+            models: {
+              "gpt-5.4": { in: 2.5, cached: 0.25, out: 15 },
+              "claude-sonnet-4-6": { in: 3, cached: 0.3, out: 15 },
+            },
+            sync: {
+              source: "models.dev",
+              synced_at: "2026-11-21T12:05:00.000Z",
+            },
+          };
+          return jsonResponse({
+            ok: true,
+            pricing: pricingState,
+            source: "models.dev",
+            synced_at: "2026-11-21T12:05:00.000Z",
+            from_cache: true,
+            matched_models: ["gpt-5.4", "claude-sonnet-4-6"],
+            unmatched_models: [],
+            preserved_overrides: [],
+          });
+        }
+        pricingState = {
+          schema_version: 1,
+          models: {
+            "gpt-5.4": { in: 2.5, cached: 0.25, out: 15 },
+            "claude-sonnet-4-6": { in: 3, cached: 0.3, out: 15 },
+          },
+          sync: {
+            source: "models.dev",
+            synced_at: "2026-11-21T12:00:00.000Z",
+          },
+        };
+        return jsonResponse({
+          ok: true,
+          pricing: pricingState,
+          source: "models.dev",
+          synced_at: "2026-11-21T12:00:00.000Z",
+          from_cache: false,
+          matched_models: ["gpt-5.4", "claude-sonnet-4-6"],
+          unmatched_models: [],
+          preserved_overrides: [],
+        });
+      }
+      if (url === "/api/settings/pricing" && method === "PUT") {
+        pricingState = body as NonNullable<BootstrapResponse["pricing"]>;
+        return jsonResponse({ ok: true, section: "pricing", data: pricingState });
+      }
+      return jsonResponse({});
+    });
+
+    window.location.hash = "#view=settings&tab=pricing";
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "立即同步单价" })).toBeTruthy();
+    });
+
+    // Baseline cost before sync: (600k*1.25 + 400k*0.125 + 100k*10)/1e6 = $1.80
+    expect(document.getElementById("upTotalCost")?.textContent).toBe("$1.80");
+
+    fireEvent.click(screen.getByRole("button", { name: "立即同步单价" }));
+    await waitFor(() => {
+      expect(screen.getByText("models.dev")).toBeTruthy();
+    });
+    expect(syncCalls[0]).toEqual({ force: true });
+    expect(screen.getByText("claude-sonnet-4-6")).toBeTruthy();
+    // Updated cost: (600k*2.5 + 400k*0.25 + 100k*15)/1e6 = $3.10
+    expect(document.getElementById("upTotalCost")?.textContent).toBe("$3.10");
+
+    // Manual edit marks custom_models, shows 自定义 chip & 恢复同步价 button
+    fireEvent.input(screen.getByLabelText("gpt-5.4 输入单价"), {
+      target: { value: "10" },
+    });
+    await waitFor(() => {
+      expect(screen.getByText("自定义")).toBeTruthy();
+      expect(document.getElementById("upTotalCost")?.textContent).toBe("$7.60");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "保存单价表" }));
+    await waitFor(() => {
+      expect(pricingState.custom_models).toEqual(["gpt-5.4"]);
+    });
+
+    // Clicking 恢复同步价 restores synced pricing and removes 自定义 tag
+    fireEvent.click(screen.getByRole("button", { name: "恢复 gpt-5.4 同步单价" }));
+    await waitFor(() => {
+      expect(screen.queryByText("自定义")).toBeNull();
+    });
+    expect(syncCalls.at(-1)).toEqual({ force: false, restore_model: "gpt-5.4" });
+    expect(document.getElementById("upTotalCost")?.textContent).toBe("$3.10");
+  });
 });

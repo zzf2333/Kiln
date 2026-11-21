@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { DecisionActionSchema, PrioritySchema } from "./card.js";
 import {
+  PricingConfigSchema,
+  PricingSyncSourceSchema,
   PublicPairedDeviceSchema,
   RemoteNotificationChannelSchema,
   RoleIdSchema,
@@ -154,3 +156,22 @@ export const TailscaleStatusResponseSchema = z.object({
 export type TailscaleStatusResponse = z.infer<
   typeof TailscaleStatusResponseSchema
 >;
+
+export const SyncPricingRequestSchema = z.object({
+  force: z.boolean().optional(),
+  restore_model: z.string().trim().min(1).optional(),
+});
+export type SyncPricingRequest = z.infer<typeof SyncPricingRequestSchema>;
+
+export const SyncPricingResponseSchema = z.object({
+  ok: z.literal(true),
+  pricing: PricingConfigSchema,
+  source: PricingSyncSourceSchema,
+  synced_at: z.string().min(1),
+  from_cache: z.boolean(),
+  matched_models: z.array(z.string()),
+  unmatched_models: z.array(z.string()),
+  preserved_overrides: z.array(z.string()),
+  warning: z.string().optional(),
+});
+export type SyncPricingResponse = z.infer<typeof SyncPricingResponseSchema>;

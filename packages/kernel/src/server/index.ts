@@ -97,6 +97,19 @@ export {
   type UsageSnapshot,
 } from "./pending-decisions.js";
 export {
+  BUILTIN_MODEL_PRICING,
+  DEFAULT_PRICING_CACHE_TTL_MS,
+  DEFAULT_PRICING_FETCH_TIMEOUT_MS,
+  LITELLM_PRICING_URL,
+  MODELS_DEV_PRICING_URL,
+  isPricingSyncStale,
+  lookupModelPrice,
+  parseLiteLlmCatalog,
+  parseModelsDevCatalog,
+  syncModelPricing,
+  type SyncModelPricingOptions,
+} from "./pricing-sync.js";
+export {
   LiveRateTracker,
   approximateDeltaTokens,
   type LiveRateSampleInput,

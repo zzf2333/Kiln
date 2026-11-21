@@ -11,6 +11,8 @@ import type {
   RoleId,
   RunMeta,
   RunTokenClaims,
+  SyncPricingRequest,
+  SyncPricingResponse,
   TailscaleStatusResponse,
 } from "@kiln/protocol";
 import { BackendRegistry } from "../backend/index.js";
@@ -51,6 +53,7 @@ import {
   inspectTailscaleStatus,
   type TailscaleExecFileFn,
 } from "./remote-tailscale.js";
+import { syncModelPricing as syncModelPricingImpl } from "./pricing-sync.js";
 import { SseHub } from "./sse.js";
 import type { EmbeddedStaticAssets } from "./static-files.js";
 import { signRunToken, verifyRunToken } from "./token.js";
@@ -97,6 +100,10 @@ export interface KilndServerOptions {
   onShutdownRequested?: () => Promise<void> | void;
   discoverSpaces?: () => Promise<DiscoverSpacesResponse>;
   pickDirectory?: () => Promise<PickDirectoryResponse>;
+  pricingFetchImpl?: typeof fetch;
+  pricingCacheTtlMs?: number;
+  pricingFetchTimeoutMs?: number;
+  syncPricing?: (input: SyncPricingRequest) => Promise<SyncPricingResponse>;
 }
 
 export interface KilndServerAddress {
@@ -165,6 +172,12 @@ export class KilndServer {
   private readonly pinnedShutdownToken: string | undefined;
   private readonly mcpRpcServer: McpRpcServer;
   private readonly unsubscribeNotify: () => void;
+  private readonly customSyncPricing:
+    | ((input: SyncPricingRequest) => Promise<SyncPricingResponse>)
+    | undefined;
+  private readonly pricingFetchImpl: typeof fetch | undefined;
+  private readonly pricingCacheTtlMs: number | undefined;
+  private readonly pricingFetchTimeoutMs: number | undefined;
 
   private activeShutdownToken: string | null = null;
   private httpServer: ServerType | null = null;
@@ -210,6 +223,10 @@ export class KilndServer {
     this.socketPath = options.socketPath ?? this.store.paths.kilndSock;
     this.tokenSecret = normalizeTokenSecret(options.tokenSecret);
     this.pinnedShutdownToken = options.shutdownToken;
+    this.customSyncPricing = options.syncPricing;
+    this.pricingFetchImpl = options.pricingFetchImpl;
+    this.pricingCacheTtlMs = options.pricingCacheTtlMs;
+    this.pricingFetchTimeoutMs = options.pricingFetchTimeoutMs;
 
     this.unsubscribeNotify = this.sseHub.subscribe((event) => {
       if (event.type === "decision.requested") {
@@ -317,6 +334,7 @@ export class KilndServer {
       ...(options.pickDirectory !== undefined
         ? { pickDirectory: options.pickDirectory }
         : {}),
+      syncPricing: (input) => this.syncModelPricing(input),
       ...(options.publicDir !== undefined ? { publicDir: options.publicDir } : {}),
       ...(options.embeddedPublicAssets !== undefined
         ? { embeddedPublicAssets: options.embeddedPublicAssets }
@@ -821,6 +839,26 @@ export class KilndServer {
     const count = countRunningLeafTasks(this.store);
     this.caffeinate.syncRunningCount(count);
     return count;
+  }
+
+  /**
+   * Synchronizes `config/pricing.yaml` from public price catalogs (`models.dev` / `litellm`)
+   * or the built-in offline baseline while keeping user custom overrides intact.
+   */
+  async syncModelPricing(input: SyncPricingRequest = {}): Promise<SyncPricingResponse> {
+    if (this.customSyncPricing) {
+      return await this.customSyncPricing(input);
+    }
+    return await syncModelPricingImpl({
+      store: this.store,
+      backendRegistry: this.backendRegistry,
+      request: input,
+      ...(this.pricingFetchImpl !== undefined ? { fetchImpl: this.pricingFetchImpl } : {}),
+      ...(this.pricingCacheTtlMs !== undefined ? { cacheTtlMs: this.pricingCacheTtlMs } : {}),
+      ...(this.pricingFetchTimeoutMs !== undefined
+        ? { timeoutMs: this.pricingFetchTimeoutMs }
+        : {}),
+    });
   }
 
   /**

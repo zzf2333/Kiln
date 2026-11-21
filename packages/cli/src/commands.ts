@@ -44,6 +44,7 @@ import {
   ensureDir,
   inspectGitSpacePath,
   isCompiledKilnBinary,
+  isPricingSyncStale,
   writeFileAtomic,
   type EmbeddedStaticAssets,
   type ExecutionBackend,
@@ -940,6 +941,9 @@ async function handleUp(
       });
       const addr = await server.start();
       writeFileAtomic(pidFile, `${process.pid}\n`);
+      if (!process.env.VITEST && isPricingSyncStale(server.store.readConfig("pricing"))) {
+        void server.syncModelPricing({ force: false }).catch(() => {});
+      }
       io.out(
         `kilnd listening in foreground at ${addr.baseUrl} (PID ${process.pid}, socket ${addr.socketPath}).`,
       );

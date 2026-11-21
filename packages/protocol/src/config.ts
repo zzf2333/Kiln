@@ -86,9 +86,21 @@ export const ModelPricingSchema = z.object({
 });
 export type ModelPricing = z.infer<typeof ModelPricingSchema>;
 
+export const PRICING_SYNC_SOURCES = ["models.dev", "litellm", "builtin"] as const;
+export type PricingSyncSource = (typeof PRICING_SYNC_SOURCES)[number];
+export const PricingSyncSourceSchema = z.enum(PRICING_SYNC_SOURCES);
+
+export const PricingSyncMetaSchema = z.object({
+  source: PricingSyncSourceSchema,
+  synced_at: z.string().min(1),
+});
+export type PricingSyncMeta = z.infer<typeof PricingSyncMetaSchema>;
+
 export const PricingConfigSchema = z.object({
   schema_version: z.literal(1),
   models: z.record(z.string().min(1), ModelPricingSchema),
+  custom_models: z.array(z.string().min(1)).optional(),
+  sync: PricingSyncMetaSchema.optional(),
 });
 export type PricingConfig = z.infer<typeof PricingConfigSchema>;
 

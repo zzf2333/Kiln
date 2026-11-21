@@ -113,6 +113,14 @@ export class KilnPaths {
     return path.join(this.home, "config");
   }
 
+  get cacheDir(): string {
+    return path.join(this.home, "cache");
+  }
+
+  get pricingCacheFile(): string {
+    return path.join(this.cacheDir, "model-pricing-catalog.json");
+  }
+
   configFile(name: KilnConfigName): string {
     if (!CONFIG_NAMES.includes(name)) {
       throw new Error(`Unknown config name "${String(name)}"`);

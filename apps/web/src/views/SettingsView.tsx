@@ -3,6 +3,7 @@ import {
   REASONING_EFFORTS,
   ROLE_IDS,
   type LimitsConfig,
+  type PricingSyncSource,
   type ReasoningEffort,
   type RoleAssignment,
   type RoleId,
@@ -11,6 +12,7 @@ import {
 import type { AgentDescriptorInfo, AgentModeInfo } from "../api/types";
 import { RemoteSettingsPanel } from "../components/RemoteSettingsPanel";
 import { ViewFrame } from "../components/ViewFrame";
+import { fmtTime } from "../state/format";
 import { isProjectSpace, useKilnStore, type SettingsTab } from "../state/store";
 
 const ROLE_INFO: Record<
@@ -90,8 +92,17 @@ function modelsForAgent(
 
 export function SettingsView() {
   const { store, state } = useKilnStore();
-  const { settingsTab, roles, limits, pricing, spaces, agents, backends, sseStatus } =
-    state;
+  const {
+    settingsTab,
+    roles,
+    limits,
+    pricing,
+    pricingSyncBusy,
+    spaces,
+    agents,
+    backends,
+    sseStatus,
+  } = state;
 
   const [rolesDraft, setRolesDraft] = useState<RolesConfig>(() => ({
     schema_version: 1,
@@ -769,8 +780,16 @@ export function SettingsView() {
     );
   };
 
+  const formatPricingSource = (source: PricingSyncSource): string =>
+    source === "models.dev"
+      ? "models.dev"
+      : source === "litellm"
+        ? "LiteLLM"
+        : "内置离线基线";
+
   const renderPricingTab = () => {
     const modelEntries = Object.entries(pricing.models);
+    const customModels = new Set(pricing.custom_models ?? []);
     const addModel = (): void => {
       const m = newModelName.trim();
       if (!m) return;
@@ -782,77 +801,114 @@ export function SettingsView() {
       <>
         <div class="sync-line">
           <span>
-            统一按官方 API 标价折算（美元 / 百万 Token），写入
-            config/pricing.yaml，修改后左下角与用量页实时重算
+            按公开官方目录（models.dev 主源 / LiteLLM 备源 / 离线基线）自动匹配当前与历史模型，支持手动覆盖微调（美元 / 百万 Token）。
+            {pricing.sync ? (
+              <>
+                {" "}
+                最近同步：<span class="mono">{formatPricingSource(pricing.sync.source)}</span> ·{" "}
+                <span class="mono">{fmtTime(pricing.sync.synced_at)}</span>
+              </>
+            ) : (
+              " 尚未执行自动同步。"
+            )}
           </span>
+          <button
+            type="button"
+            class="btn btn-light btn-sm"
+            disabled={pricingSyncBusy}
+            onClick={() => void store.syncPricing({ force: true })}
+          >
+            {pricingSyncBusy ? "同步中…" : "立即同步单价"}
+          </button>
         </div>
 
         <table class="t">
           <thead>
             <tr>
               <th>模型标识</th>
-              <th style={{ width: "150px" }}>输入单价 ($/1M)</th>
-              <th style={{ width: "150px" }}>缓存命中 ($/1M)</th>
-              <th style={{ width: "150px" }}>输出单价 ($/1M)</th>
+              <th style={{ width: "140px" }}>输入单价 ($/1M)</th>
+              <th style={{ width: "140px" }}>缓存命中 ($/1M)</th>
+              <th style={{ width: "140px" }}>输出单价 ($/1M)</th>
             </tr>
           </thead>
           <tbody>
-            {modelEntries.map(([m, p]) => (
-              <tr key={m}>
-                <td class="mono">{m}</td>
-                <td>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    class="input mono"
-                    aria-label={`${m} 输入单价`}
-                    value={p.in}
-                    onInput={(e) =>
-                      store.updatePricingLocal(
-                        m,
-                        "in",
-                        Number((e.currentTarget as HTMLInputElement).value),
-                      )
-                    }
-                  />
-                </td>
-                <td>
-                  <input
-                    type="number"
-                    step="0.005"
-                    min="0"
-                    class="input mono"
-                    aria-label={`${m} 缓存命中`}
-                    value={p.cached}
-                    onInput={(e) =>
-                      store.updatePricingLocal(
-                        m,
-                        "cached",
-                        Number((e.currentTarget as HTMLInputElement).value),
-                      )
-                    }
-                  />
-                </td>
-                <td>
-                  <input
-                    type="number"
-                    step="0.1"
-                    min="0"
-                    class="input mono"
-                    aria-label={`${m} 输出单价`}
-                    value={p.out}
-                    onInput={(e) =>
-                      store.updatePricingLocal(
-                        m,
-                        "out",
-                        Number((e.currentTarget as HTMLInputElement).value),
-                      )
-                    }
-                  />
-                </td>
-              </tr>
-            ))}
+            {modelEntries.map(([m, p]) => {
+              const isCustom = customModels.has(m);
+              return (
+                <tr key={m}>
+                  <td>
+                    <div class="pricing-model-cell">
+                      <span class="mono">{m}</span>
+                      {isCustom ? (
+                        <>
+                          <span class="chip">自定义</span>
+                          <button
+                            type="button"
+                            class="btn btn-sm"
+                            aria-label={`恢复 ${m} 同步单价`}
+                            disabled={pricingSyncBusy}
+                            onClick={() => void store.restoreModelPricing(m)}
+                          >
+                            恢复同步价
+                          </button>
+                        </>
+                      ) : null}
+                    </div>
+                  </td>
+                  <td>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      class="input mono"
+                      aria-label={`${m} 输入单价`}
+                      value={p.in}
+                      onInput={(e) =>
+                        store.updatePricingLocal(
+                          m,
+                          "in",
+                          Number((e.currentTarget as HTMLInputElement).value),
+                        )
+                      }
+                    />
+                  </td>
+                  <td>
+                    <input
+                      type="number"
+                      step="0.005"
+                      min="0"
+                      class="input mono"
+                      aria-label={`${m} 缓存命中`}
+                      value={p.cached}
+                      onInput={(e) =>
+                        store.updatePricingLocal(
+                          m,
+                          "cached",
+                          Number((e.currentTarget as HTMLInputElement).value),
+                        )
+                      }
+                    />
+                  </td>
+                  <td>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      class="input mono"
+                      aria-label={`${m} 输出单价`}
+                      value={p.out}
+                      onInput={(e) =>
+                        store.updatePricingLocal(
+                          m,
+                          "out",
+                          Number((e.currentTarget as HTMLInputElement).value),
+                        )
+                      }
+                    />
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
 

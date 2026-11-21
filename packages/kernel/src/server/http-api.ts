@@ -24,6 +24,7 @@ import {
   SessionRefSchema,
   SpaceConfigSchema,
   StageIdSchema,
+  SyncPricingRequestSchema,
   TaskCardSchema,
   TrackSchema,
   UpsertSpaceRequestSchema,
@@ -37,6 +38,8 @@ import {
   type RunMeta,
   type SpaceConfig,
   type StageId,
+  type SyncPricingRequest,
+  type SyncPricingResponse,
   type TailscaleStatusResponse,
 } from "@kiln/protocol";
 import type { BackendRegistry } from "../backend/index.js";
@@ -87,6 +90,7 @@ import {
 } from "./remote-auth.js";
 import { RemoteNotifier } from "./remote-notify.js";
 import { inspectTailscaleStatus } from "./remote-tailscale.js";
+import { syncModelPricing } from "./pricing-sync.js";
 import {
   discoverLocalGitRepos,
   inspectGitSpacePath,
@@ -143,6 +147,7 @@ export interface HttpApiDependencies {
   inspectTailscale?: (remotePort: number) => Promise<TailscaleStatusResponse>;
   discoverSpaces?: () => Promise<DiscoverSpacesResponse>;
   pickDirectory?: () => Promise<PickDirectoryResponse>;
+  syncPricing?: (input: SyncPricingRequest) => Promise<SyncPricingResponse>;
   onTaskQueued?: (taskId: string) => void;
   onTaskPaused?: (taskId: string) => Promise<void> | void;
   onTaskCancelled?: (taskId: string) => Promise<void> | void;
@@ -1687,6 +1692,20 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       },
       409,
     );
+  });
+
+  app.post("/api/settings/pricing/sync", async (c) => {
+    const rawBody = await readJsonBodyOptional(c);
+    const body = SyncPricingRequestSchema.parse(rawBody);
+    const result = deps.syncPricing
+      ? await deps.syncPricing(body)
+      : await syncModelPricing({
+          store,
+          backendRegistry,
+          request: body,
+        });
+    onSettingsUpdated?.("pricing");
+    return c.json(result);
   });
 
   app.put("/api/settings/:section", async (c) => {
