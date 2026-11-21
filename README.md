@@ -36,7 +36,7 @@
 
 ## Installation
 
-> **Pre-release notice**: Current pre-release manifests target **`0.0.2`** (`0.1.0` is reserved for the first formal public release). Prebuilt GitHub Release binaries, desktop installers, and Homebrew tap checksums activate once the corresponding GitHub Release tag is published (see [`packaging/README.md`](packaging/README.md)); until then, you can [Build from Source](#build-from-source) or compile a local standalone binary with `pnpm build:binary`.
+> **Pre-release notice**: Current pre-release manifests target **`0.0.3`** (`0.1.0` is reserved for the first formal public release). Prebuilt GitHub Release binaries, desktop installers, and Homebrew tap checksums activate once the corresponding GitHub Release tag is published (see [`packaging/README.md`](packaging/README.md)); until then, you can [Build from Source](#build-from-source) or compile a local standalone binary with `pnpm build:binary`.
 
 ### 1. Standalone Binary Installer — macOS / Linux (Zero Node.js Required)
 
@@ -148,7 +148,7 @@ kiln uninstall                  # Stop daemon, remove service, inspect worktrees
 | `kiln doctor [--port <port>] [--host <host>] [--json]` | Check Node, Git, APFS clone support, `kilnd` reachability, Paseo agent discovery (`required: false`), and startup service state |
 | `kiln service <install\|uninstall\|status> [--platform <darwin\|linux>] [--label <label>] [--service-name <name>]` | Explicitly install, remove, or inspect the OS background service |
 | `kiln uninstall [--purge-data] [--platform <darwin\|linux>]` | Stop daemon, remove startup service, inspect worktrees (add `--purge-data` to delete `~/.kiln`) |
-| `kiln -h, --help` / `kiln -v, --version` / `kiln help` | Print CLI help or version (`0.0.2`) |
+| `kiln -h, --help` / `kiln -v, --version` / `kiln help` | Print CLI help or version (`0.0.3`) |
 
 ---
 
@@ -157,7 +157,7 @@ kiln uninstall                  # Stop daemon, remove service, inspect worktrees
 - [x] **M0 · Technical Probe Verification**: Verified underlying agent capabilities, permission policies, and token/cost accounting formats.
 - [x] **M1 · Protocol & Headless Kernel**: Completed `packages/protocol`, `kernel`, `mcp`, `cli`, and concurrency race / store-rebuild test suites.
 - [x] **M2 · MVP Workbench Loop**: Passed all 8 real-machine E2E scenarios (`S1`–`S8`) against live Paseo (`codex` + `pi`), real `stdio` `kiln-mcp`, and Playwright Chrome acceptance across desktop (`1440×900`) and mobile (`390×844` `<= 820px`) viewports (with SQLite rebuild parity verified).
-- [ ] **M3 / M3.5 · Desktop Sidecar, Standalone Distribution & Remote Access V1 (In Progress)**: Zero-dependency single-binary CLI (`bun:sqlite`/`node:sqlite`, `kiln __mcp`, embedded Web UI + PWA), macOS `.dmg` & Windows NSIS `.exe` Tauri v2 Sidecar apps, dual-port fail-closed remote mobile access (`:4310` local / `:4311` authenticated), Bark/ntfy/Webhook push, and 3-OS CI/Release pipeline validated (`0.0.2` pre-release; `0.1.0` reserved for signed/notarized formal release).
+- [ ] **M3 / M3.5 · Desktop Sidecar, Standalone Distribution & Remote Access V1 (In Progress)**: Zero-dependency single-binary CLI (`bun:sqlite`/`node:sqlite`, `kiln __mcp`, embedded Web UI + PWA), macOS `.dmg` & Windows NSIS `.exe` Tauri v2 Sidecar apps, dual-port fail-closed remote mobile access (`:4310` local / `:4311` authenticated), Bark/ntfy/Webhook push, and 3-OS CI/Release pipeline validated (`0.0.3` pre-release; `0.1.0` reserved for signed/notarized formal release).
 - [ ] **M4 · Post-MVP Evolution**: Retrospectives, serialized multi-slice merge queue, execution swimlanes, Tailscale/Passkey push notifications, and Epic Loop.
 
 ---

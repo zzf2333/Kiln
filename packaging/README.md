@@ -2,7 +2,7 @@
 
 This directory holds Homebrew distribution templates ([`Formula/kiln.rb`](homebrew/Formula/kiln.rb) and [`Casks/kiln-app.rb`](homebrew/Casks/kiln-app.rb)) that complement the standalone installers ([`scripts/install.sh`](../scripts/install.sh), [`scripts/install.ps1`](../scripts/install.ps1)), standalone binary compiler ([`scripts/build-binary.mjs`](../scripts/build-binary.mjs)), and 3-OS release workflow ([`.github/workflows/release.yml`](../.github/workflows/release.yml)).
 
-> **Current repository state (`0.0.2`)**: Current development and pre-release artifacts target **`0.0.2`** (`v0.0.2`), reserving **`0.1.0`** for the first formal external release. Kiln compiles to a zero-dependency standalone executable (`bun build --compile` with embedded Web UI assets and internal `kiln __mcp` stdio bridge) for macOS (`darwin-arm64`, `darwin-x64`), Windows (`windows-x64.exe`), and Linux (`linux-x64`), and bundles that binary as a Tauri v2 Sidecar inside macOS `.dmg` and Windows NSIS `.exe` desktop apps.
+> **Current repository state (`0.0.3`)**: Current development and pre-release artifacts target **`0.0.3`** (`v0.0.3`), reserving **`0.1.0`** for the first formal external release. Kiln compiles to a zero-dependency standalone executable (`bun build --compile` with embedded Web UI assets and internal `kiln __mcp` stdio bridge) for macOS (`darwin-arm64`, `darwin-x64`), Windows (`windows-x64.exe`), and Linux (`linux-x64`), and bundles that binary as a Tauri v2 Sidecar inside macOS `.dmg` and Windows NSIS `.exe` desktop apps.
 
 ## 1. Pre-Release Package Readiness
 

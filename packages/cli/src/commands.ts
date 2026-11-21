@@ -76,7 +76,7 @@ import {
 } from "./service.js";
 
 const execFileAsync = promisify(execFile);
-const CLI_VERSION = "0.0.2";
+const CLI_VERSION = "0.0.3";
 const HEALTH_TIMEOUT_MS = 1_500;
 const API_TIMEOUT_MS = 5_000;
 const DAEMON_START_TIMEOUT_MS = 5_000;

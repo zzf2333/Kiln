@@ -175,7 +175,7 @@ export function createKilnMcpServer(options: CreateKilnMcpServerOptions): Server
   const server = new Server(
     {
       name: options.name ?? "kiln-mcp",
-      version: options.version ?? "0.0.2",
+      version: options.version ?? "0.0.3",
     },
     {
       capabilities: {
