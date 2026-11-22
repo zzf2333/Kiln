@@ -8,10 +8,10 @@
 cask "kiln-app" do
   arch arm: "arm64", intel: "x64"
 
-  version "0.0.3"
-  # SHA-256 digests from unsigned v0.0.3 GitHub Release DMGs; update after enabling Developer ID signing & notarization.
-  sha256 arm:   "d246a6e3cf5b57c63c43de74d5afc0c2781847fa0e5b4266edd9d0af61106e7b",
-         intel: "cdceadcc592092d2fbc69f45a4281cdaaa8c19848955b5fb9d33c0fc74779ca3"
+  version "0.0.4"
+  # SHA-256 digests from unsigned v0.0.4 GitHub Release DMGs; update after enabling Developer ID signing & notarization.
+  sha256 arm:   "9bf9cb9c3dab5217a9487b43ff27df1ba086169bfb5108d159fe095c4406882f",
+         intel: "d442fc5b3fcaec254b4eb0833c2dcff815645e5489f1236c911f3d893ae58f97"
 
   url "https://github.com/zzf2333/Kiln/releases/download/v#{version}/Kiln-v#{version}-darwin-#{arch}.dmg"
   name "Kiln"

@@ -9,25 +9,25 @@
 class Kiln < Formula
   desc "Local-first autonomous developer workbench and kilnd CLI"
   homepage "https://github.com/zzf2333/Kiln"
-  version "0.0.3"
+  version "0.0.4"
   license "Apache-2.0"
 
   on_macos do
     on_arm do
       url "https://github.com/zzf2333/Kiln/releases/download/v#{version}/kiln-v#{version}-darwin-arm64"
-      sha256 "6a091377edb6a0d98e5c50dba37b87e10405333ab634b4bc651247c2910717c2"
+      sha256 "439ff43241fc423690d1e55eb8f59d841320e6ab815de5fe4c9435ce441d8442"
     end
 
     on_intel do
       url "https://github.com/zzf2333/Kiln/releases/download/v#{version}/kiln-v#{version}-darwin-x64"
-      sha256 "1186e45b38e0ca2ee653de5a56f63c5e37f02591ac89805566d62472f0c03a87"
+      sha256 "603fb89135d1e50979f063c3497fd4cbc8a8c789b0588f7990589a20b6c18526"
     end
   end
 
   on_linux do
     on_intel do
       url "https://github.com/zzf2333/Kiln/releases/download/v#{version}/kiln-v#{version}-linux-x64"
-      sha256 "01ec71a8e68391cf795c0b03f4d4eca5bd73615807ced5eb4677e12f3a3c231e"
+      sha256 "2847fabd30d5caffb5d64426575c1cd4987f8295adc5bf506925d1ca52fa315a"
     end
   end
 
