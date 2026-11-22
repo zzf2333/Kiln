@@ -11,8 +11,6 @@ import {
   type ApprovalRequestEvent,
   assertRoleAgentEligible,
   type BackendAgentDescriptor,
-  type BackendCommandDescriptor,
-  type BackendListCommandsQuery,
   type BackendModelDescriptor,
   type BackendRunSpec,
   type ExecutionBackend,
@@ -70,7 +68,6 @@ export interface FakeBackendOptions {
   backendId?: string;
   agents?: BackendAgentDescriptor[];
   models?: Record<string, BackendModelDescriptor[]>;
-  commandsByAgent?: Record<string, readonly BackendCommandDescriptor[]>;
   defaultTurnScript?: FakeTurnScript;
   turnScripts?: FakeTurnScript[];
   liveViewBaseUrl?: string | null;
@@ -307,7 +304,6 @@ export class FakeBackend implements ExecutionBackend {
 
   private readonly agents = new Map<string, BackendAgentDescriptor>();
   private readonly models = new Map<string, BackendModelDescriptor[]>();
-  private readonly commandsByAgent = new Map<string, BackendCommandDescriptor[]>();
   private readonly defaultTurnScript: FakeTurnScript;
   private readonly scriptQueue: QueuedScriptEntry[] = [];
   private readonly liveViewBaseUrl: string | null;
@@ -331,11 +327,6 @@ export class FakeBackend implements ExecutionBackend {
       this.agents.set(agent.id, cloneAgent(agent));
       const configuredModels = options?.models?.[agent.id] ?? DEFAULT_MODELS[agent.id] ?? [];
       this.models.set(agent.id, configuredModels.map(cloneModel));
-      const configuredCommands = options?.commandsByAgent?.[agent.id] ?? [];
-      this.commandsByAgent.set(
-        agent.id,
-        configuredCommands.map((cmd) => ({ ...cmd })),
-      );
     }
 
     if (options?.turnScripts) {
@@ -368,13 +359,6 @@ export class FakeBackend implements ExecutionBackend {
   async listModels(agent: string): Promise<BackendModelDescriptor[]> {
     this.requireAgent(agent);
     return (this.models.get(agent) ?? []).map(cloneModel);
-  }
-
-  async listCommands(query: BackendListCommandsQuery): Promise<BackendCommandDescriptor[]> {
-    if (!this.agents.has(query.agent)) {
-      return [];
-    }
-    return (this.commandsByAgent.get(query.agent) ?? []).map((cmd) => ({ ...cmd }));
   }
 
   async capabilities(agent: string): Promise<BackendCapabilities> {

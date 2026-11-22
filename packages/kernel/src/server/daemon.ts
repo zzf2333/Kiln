@@ -105,6 +105,7 @@ export interface KilndServerOptions {
   pricingCacheTtlMs?: number;
   pricingFetchTimeoutMs?: number;
   syncPricing?: (input: SyncPricingRequest) => Promise<SyncPricingResponse>;
+  extensionsHomeDir?: string;
 }
 
 export interface KilndServerAddress {
@@ -280,6 +281,9 @@ export class KilndServer {
       ...(options.chatResponder !== undefined
         ? { chatResponder: options.chatResponder }
         : {}),
+      ...(options.extensionsHomeDir !== undefined
+        ? { extensionsHomeDir: options.extensionsHomeDir }
+        : {}),
     });
 
     this.orchestrator = new KilnOrchestrator({
@@ -337,6 +341,9 @@ export class KilndServer {
         : {}),
       ...(options.revealPath !== undefined
         ? { revealPath: options.revealPath }
+        : {}),
+      ...(options.extensionsHomeDir !== undefined
+        ? { extensionsHomeDir: options.extensionsHomeDir }
         : {}),
       syncPricing: (input) => this.syncModelPricing(input),
       ...(options.publicDir !== undefined ? { publicDir: options.publicDir } : {}),

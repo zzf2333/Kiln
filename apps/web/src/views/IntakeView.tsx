@@ -366,8 +366,8 @@ export function IntakeView() {
               projectBlocked
                 ? "请先添加或选择项目空间"
                 : isProjectMode && selectedProject
-                  ? `描述「${selectedProject.name}」需求（/ 调用命令或技能，@ 引用文件或任务）`
-                  : "描述本机或临时任务需求（/ 调用命令或技能，@ 引用任务或账本）"
+                  ? `描述「${selectedProject.name}」需求（/ 调用指令或技能，@ 选择文件、MCP 或任务）`
+                  : "描述本机或临时任务需求（/ 调用指令或技能，@ 选择当前目录文件、MCP 或任务）"
             }
             onChange={setChatInput}
             onSend={() => void handleSend()}

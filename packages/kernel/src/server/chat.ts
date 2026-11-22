@@ -22,7 +22,6 @@ import {
   assertRoleAgentEligible,
   isFullAccessMode,
   type BackendAgentDescriptor,
-  type BackendCommandDescriptor,
   type BackendModelDescriptor,
   type BackendRegistry,
   type BackendRunSpec,
@@ -41,6 +40,7 @@ import {
 } from "../store/index.js";
 import type { CaffeinateController } from "./caffeinate.js";
 import { ServerHttpError } from "./errors.js";
+import { discoverMcpServers, discoverSkills } from "./extensions.js";
 import {
   countRunningLeafTasks,
   PendingDecisionStore,
@@ -642,6 +642,7 @@ export interface KilnChatEngineOptions {
   mcpServerCommand?: McpCommandSpec;
   chatResponder?: ChatResponder;
   onContractUpdated?: (taskId: string) => void;
+  extensionsHomeDir?: string;
 }
 
 interface ResolvedInteractiveExecutor {
@@ -670,6 +671,7 @@ export class KilnChatEngine {
   private readonly mcpServerCommand: McpCommandSpec;
   private readonly chatResponder: ChatResponder | undefined;
   private readonly onContractUpdated: ((taskId: string) => void) | undefined;
+  private readonly extensionsHomeDir: string | undefined;
   private readonly locks = new Map<string, Promise<unknown>>();
 
   constructor(options: KilnChatEngineOptions) {
@@ -684,6 +686,7 @@ export class KilnChatEngine {
     this.mcpServerCommand = resolveMcpServerCommand(options.mcpServerCommand);
     this.chatResponder = options.chatResponder;
     this.onContractUpdated = options.onContractUpdated;
+    this.extensionsHomeDir = options.extensionsHomeDir;
   }
 
   draftChatPath(draftId: string): string {
@@ -784,10 +787,52 @@ export class KilnChatEngine {
       }
     }
 
+    const mcpNames = new Set<string>();
+    for (const m of trimmed.matchAll(/@mcp:([a-zA-Z0-9._:-]+)/g)) {
+      if (m[1]) mcpNames.add(m[1]);
+      if (mcpNames.size >= 4) break;
+    }
+    for (const mcpName of mcpNames) {
+      blocks.push(
+        `- 指定外部 MCP 服务 ${mcpName}：请优先通过已配置的 MCP 服务 "${mcpName}" 获取所需上下文或执行只读查询（若当前会话未挂载该 MCP，请明确说明）。`,
+      );
+    }
+
     if (blocks.length === 0) {
       return null;
     }
     return `[用户引用上下文:\n${blocks.join("\n")}\n]`;
+  }
+
+  private buildSkillDirectiveNote(params: {
+    role: "intake" | "resolver";
+    trimmed: string;
+    projectDir: string | null;
+    agent: string | null;
+  }): string | null {
+    if (!params.trimmed.startsWith("/")) {
+      return null;
+    }
+    const match = /^\/([a-zA-Z0-9_:-]+)(?:\s|$)/.exec(params.trimmed);
+    const cmdName = match?.[1]?.trim();
+    if (!cmdName) {
+      return null;
+    }
+    const cmdLower = cmdName.toLowerCase();
+    if (KILN_BUILTIN_CHAT_COMMANDS[params.role].some((c) => c.name.toLowerCase() === cmdLower)) {
+      return null;
+    }
+    const skills = discoverSkills({
+      projectDir: params.projectDir,
+      kilnHome: this.store.paths.home,
+      agent: params.agent,
+      ...(this.extensionsHomeDir !== undefined ? { homeDir: this.extensionsHomeDir } : {}),
+    });
+    const matched = skills.find((s) => s.name.toLowerCase() === cmdLower);
+    if (!matched) {
+      return null;
+    }
+    return `[调用技能 ${matched.name}：请先只读读取技能说明文件 ${matched.skillMdPath} 并严格按其流程与约束执行。]`;
   }
 
   private composePromptForAgent(
@@ -799,7 +844,7 @@ export class KilnChatEngine {
       if (PURE_CONTROL_SLASH_PATTERN.test(effectiveMessage) || filtered.length === 0) {
         return effectiveMessage;
       }
-      // Keep native slash command at index 0 so underlying agents parse "/cmd args" properly.
+      // Keep skill invocation at index 0 while attaching skill/mention guidance cleanly after.
       return `${effectiveMessage}\n\n${filtered.join("\n")}`;
     }
     if (filtered.length === 0) {
@@ -826,90 +871,78 @@ export class KilnChatEngine {
     } catch {
       executor = null;
     }
+    const agent = executor?.agent ?? configured?.agent ?? null;
+    const model = executor?.model ?? configured?.model ?? null;
 
-    let cwd = process.cwd();
-    let sessionRef: SessionRef | null = null;
-
+    let projectDir: string | null = null;
     if (params.draftId) {
       try {
         const safeDraftId = assertSafeSegment(params.draftId, "draftId");
         const draft = this.store.readDraft(safeDraftId);
-        if (draft) {
-          cwd = this.resolveIntakeWorkspace(draft, safeDraftId).cwd;
-          const reusable = await this.canReuseSession(draft.session_ref);
-          if (reusable) {
-            sessionRef = reusable.sessionRef;
+        if (draft && draft.space !== "local") {
+          const spaceCfg = this.store.readSpace(draft.space);
+          if (spaceCfg?.repo_path && fs.existsSync(spaceCfg.repo_path)) {
+            projectDir = spaceCfg.repo_path;
           }
         }
       } catch {
-        // Fallback to spaceId or cwd
+        // Fallback to taskId/spaceId
       }
     } else if (params.taskId) {
       try {
         const safeTaskId = assertSafeSegment(params.taskId, "taskId");
         const card = this.store.readTaskCard(safeTaskId);
-        const spaceCfg = this.store.readSpace(card.space);
-        cwd = spaceCfg?.repo_path && fs.existsSync(spaceCfg.repo_path)
-          ? spaceCfg.repo_path
-          : this.store.paths.taskDir(safeTaskId);
+        if (card.space !== "local") {
+          const spaceCfg = this.store.readSpace(card.space);
+          if (spaceCfg?.repo_path && fs.existsSync(spaceCfg.repo_path)) {
+            projectDir = spaceCfg.repo_path;
+          }
+        }
       } catch {
-        // Fallback to cwd
+        // Fallback
       }
-    } else if (params.spaceId) {
+    } else if (params.spaceId && params.spaceId !== "local") {
       try {
         const safeSpace = assertSafeSegment(params.spaceId, "space");
         const spaceCfg = this.store.readSpace(safeSpace);
         if (spaceCfg?.repo_path && fs.existsSync(spaceCfg.repo_path)) {
-          cwd = spaceCfg.repo_path;
+          projectDir = spaceCfg.repo_path;
         }
       } catch {
-        // Fallback to cwd
+        // Fallback
       }
     }
 
-    let backendCommands: BackendCommandDescriptor[] = [];
-    if (executor?.backend.listCommands) {
-      try {
-        backendCommands = await withTimeout(
-          executor.backend.listCommands({
-            agent: executor.agent,
-            cwd,
-            model: executor.model,
-            ...(executor.reasoningEffort !== undefined
-              ? { reasoningEffort: executor.reasoningEffort }
-              : {}),
-            allowFullAccessFallback: executor.allowFullAccessFallback,
-            sessionRef,
-          }),
-          4_000,
-          "listCommands",
-        );
-      } catch {
-        backendCommands = [];
-      }
-    }
-
-    const agentItems: ChatCommandItem[] = [];
-    for (const cmd of backendCommands) {
-      const normalized = cmd.name.replace(/^\/+/, "").trim();
-      if (!normalized || builtinNames.has(normalized.toLowerCase())) {
+    const discoveryOpts = {
+      projectDir,
+      kilnHome: this.store.paths.home,
+      agent,
+      ...(this.extensionsHomeDir !== undefined ? { homeDir: this.extensionsHomeDir } : {}),
+    };
+    const skills = discoverSkills(discoveryOpts);
+    const skillItems: ChatCommandItem[] = [];
+    for (const skill of skills) {
+      if (builtinNames.has(skill.name.toLowerCase())) {
         continue;
       }
-      agentItems.push({
-        name: normalized,
-        description: cmd.description,
-        argumentHint: cmd.argumentHint,
-        kind: cmd.kind,
-        source: "agent",
+      skillItems.push({
+        name: skill.name,
+        description: skill.description,
+        argumentHint: "",
+        kind: "skill",
+        source: "skill",
+        scope: skill.scope,
       });
     }
+    const mcpServers = discoverMcpServers(discoveryOpts);
 
     return {
       ok: true,
       role: params.role,
-      agent: executor?.agent ?? configured?.agent ?? null,
-      model: executor?.model ?? configured?.model ?? null,
-      commands: [...builtins, ...agentItems],
+      agent,
+      model,
+      commands: [...builtins, ...skillItems],
+      mcpServers,
     };
   }
 
@@ -1554,12 +1587,26 @@ export class KilnChatEngine {
       let toolMessages: ChatMessageRecord[] = [];
 
       const effectiveMessage = this.expandKilnBuiltinSlashPrompt("intake", trimmed);
+      const draftSpaceCfg = draft.space !== "local" ? this.store.readSpace(draft.space) : null;
+      const draftProjectDir =
+        draftSpaceCfg?.repo_path && fs.existsSync(draftSpaceCfg.repo_path)
+          ? draftSpaceCfg.repo_path
+          : null;
+      const skillNote = this.buildSkillDirectiveNote({
+        role: "intake",
+        trimmed,
+        projectDir: draftProjectDir,
+        agent: executor?.agent ?? null,
+      });
       const mentionNote = this.buildMentionContextNote(trimmed);
+      const turnContextNotes = [skillNote, mentionNote].filter(
+        (line): line is string => line !== null,
+      );
 
       if (executor === null && this.chatResponder) {
         const promptForResponder = this.composePromptForAgent(
           effectiveMessage,
-          mentionNote ? [mentionNote] : [],
+          turnContextNotes,
         );
         const res = await this.chatResponder({
           role: "intake",
@@ -1600,16 +1647,14 @@ export class KilnChatEngine {
           if (!executor.mcpEnabled) {
             contextLines.push(this.formatDraftSnapshotLine(draft));
           }
-          if (mentionNote) {
-            contextLines.push(mentionNote);
-          }
+          contextLines.push(...turnContextNotes);
           const promptForAgent = this.composePromptForAgent(effectiveMessage, contextLines);
           await activeBackend.send(sessionRef, promptForAgent);
         } else {
           const allSpaces = this.store.listSpaces();
           const firstTurnPrompt = this.composePromptForAgent(
             effectiveMessage,
-            mentionNote ? [mentionNote] : [],
+            turnContextNotes,
           );
           const spec: BackendRunSpec = {
             runId,
@@ -1819,12 +1864,26 @@ export class KilnChatEngine {
       let toolMessages: ChatMessageRecord[] = [];
 
       const effectiveMessage = this.expandKilnBuiltinSlashPrompt("resolver", trimmed);
+      const cardSpaceCfg = card.space !== "local" ? this.store.readSpace(card.space) : null;
+      const cardProjectDir =
+        cardSpaceCfg?.repo_path && fs.existsSync(cardSpaceCfg.repo_path)
+          ? cardSpaceCfg.repo_path
+          : null;
+      const skillNote = this.buildSkillDirectiveNote({
+        role: "resolver",
+        trimmed,
+        projectDir: cardProjectDir,
+        agent: executor?.agent ?? null,
+      });
       const mentionNote = this.buildMentionContextNote(trimmed);
+      const turnContextNotes = [skillNote, mentionNote].filter(
+        (line): line is string => line !== null,
+      );
 
       if (executor === null && this.chatResponder) {
         const promptForResponder = this.composePromptForAgent(
           effectiveMessage,
-          mentionNote ? [mentionNote] : [],
+          turnContextNotes,
         );
         const res = await this.chatResponder({
           role: "resolver",
@@ -1877,15 +1936,13 @@ export class KilnChatEngine {
               `[当前任务契约 v${card.contract_version}: goal=${card.contract.goal}, end=${card.contract.end}, accept_cmd=${card.contract.accept_cmd}, scope=${card.contract.scope.join(", ")}]`,
             );
           }
-          if (mentionNote) {
-            contextLines.push(mentionNote);
-          }
+          contextLines.push(...turnContextNotes);
           const promptForAgent = this.composePromptForAgent(effectiveMessage, contextLines);
           await executor.backend.send(sessionRef, promptForAgent);
         } else {
           const firstTurnPrompt = this.composePromptForAgent(
             effectiveMessage,
-            mentionNote ? [mentionNote] : [],
+            turnContextNotes,
           );
           const spec: BackendRunSpec = {
             runId,

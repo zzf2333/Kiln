@@ -1784,51 +1784,95 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     expect(handoffText).toContain("方案 A（推荐）：复用 Zod 契约校验");
   });
 
-  it("exposes GET /api/chat/commands, GET /api/spaces/:id/files, protects leading slash commands, and expands @task:/@ledger: mentions", async () => {
+  it("exposes Skills/MCP in GET /api/chat/commands, current dir & repo listings in GET /api/spaces/:id/files, injects skill/MCP/task/ledger context, and preserves leading slash", async () => {
     const kilnHome = makeTempDir("kiln-home-cmd-");
+    const homeDir = makeTempDir("kiln-ext-home-");
     const repoDir = makeTempDir("kiln-repo-cmd-");
     execFileSync("git", ["init"], { cwd: repoDir, stdio: "ignore" });
     execFileSync("git", ["config", "user.email", "kiln@example.com"], { cwd: repoDir, stdio: "ignore" });
     execFileSync("git", ["config", "user.name", "Kiln"], { cwd: repoDir, stdio: "ignore" });
-    fs.mkdirSync(path.join(repoDir, "apps", "web", "src"), { recursive: true });
+    fs.mkdirSync(path.join(repoDir, "apps", "web", "src", "components"), { recursive: true });
     fs.mkdirSync(path.join(repoDir, "ignored_dir"), { recursive: true });
     fs.writeFileSync(path.join(repoDir, ".gitignore"), "ignored_dir/\n*.log\n", "utf8");
-    fs.writeFileSync(path.join(repoDir, "apps", "web", "src", "ChatComposer.tsx"), "// tracked\n", "utf8");
-    execFileSync("git", ["add", ".gitignore", "apps/web/src/ChatComposer.tsx"], { cwd: repoDir, stdio: "ignore" });
+    fs.writeFileSync(path.join(repoDir, "apps", "web", "src", "components", "ChatComposer.tsx"), "// tracked\n", "utf8");
+    fs.writeFileSync(path.join(repoDir, "apps", "web", "package.json"), "{}\n", "utf8");
+
+    // Project skill (overrides any user skill with same name) + project .mcp.json (with secret env that must never leak)
+    fs.mkdirSync(path.join(repoDir, ".agents", "skills", "forge-dialogue"), { recursive: true });
+    fs.writeFileSync(
+      path.join(repoDir, ".agents", "skills", "forge-dialogue", "SKILL.md"),
+      "---\nname: forge-dialogue\ndescription: 整理并对齐产品设计模型\n---\n\n# 流程\n",
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(repoDir, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          context7: {
+            command: "npx",
+            args: ["-y", "@upstash/context7-mcp"],
+            env: { SECRET_API_KEY: "secret-should-not-leak" },
+          },
+          kiln: { command: "ignored-kiln" },
+        },
+      }),
+      "utf8",
+    );
+
+    execFileSync(
+      "git",
+      ["add", ".gitignore", "apps/web/package.json", "apps/web/src/components/ChatComposer.tsx"],
+      { cwd: repoDir, stdio: "ignore" },
+    );
     execFileSync("git", ["commit", "-m", "init"], { cwd: repoDir, stdio: "ignore" });
     fs.writeFileSync(path.join(repoDir, "apps", "web", "src", "UntrackedGuide.md"), "# guide\n", "utf8");
     fs.writeFileSync(path.join(repoDir, "ignored_dir", "secret.ts"), "secret\n", "utf8");
     fs.writeFileSync(path.join(repoDir, "debug.log"), "noise\n", "utf8");
 
+    // User open standard & agent skills + agent MCP config + local home dirs (including sensitive dirs to block)
+    fs.mkdirSync(path.join(homeDir, ".agents", "skills", "frontend-design"), { recursive: true });
+    fs.writeFileSync(
+      path.join(homeDir, ".agents", "skills", "frontend-design", "SKILL.md"),
+      "---\nname: frontend-design\ndescription: 高质感界面设计规范\n---\n\nBody\n",
+      "utf8",
+    );
+    fs.mkdirSync(path.join(homeDir, ".agents", "skills", "forge-dialogue"), { recursive: true });
+    fs.writeFileSync(
+      path.join(homeDir, ".agents", "skills", "forge-dialogue", "SKILL.md"),
+      "---\nname: forge-dialogue\ndescription: 用户目录被项目同名技能覆盖\n---\n",
+      "utf8",
+    );
+    fs.mkdirSync(path.join(homeDir, ".pi", "agent", "skills", "pi-only-skill"), { recursive: true });
+    fs.writeFileSync(
+      path.join(homeDir, ".pi", "agent", "skills", "pi-only-skill", "SKILL.md"),
+      "---\nname: pi-only-skill\ndescription: Pi 专属技能\n---\n",
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(homeDir, ".pi", "agent", "mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          linear: { command: "npx", env: { LINEAR_TOKEN: "secret-should-not-leak" } },
+          disabled_srv: { command: "noop", disabled: true },
+          kiln: { command: "self-kiln" },
+        },
+      }),
+      "utf8",
+    );
+    fs.mkdirSync(path.join(homeDir, "AI", "Kiln"), { recursive: true });
+    fs.writeFileSync(path.join(homeDir, "AI", "Kiln", "README.md"), "# Kiln\n", "utf8");
+    fs.mkdirSync(path.join(homeDir, ".ssh"), { recursive: true });
+    fs.writeFileSync(path.join(homeDir, ".ssh", "id_rsa"), "private\n", "utf8");
+    fs.mkdirSync(path.join(homeDir, ".jianhe"), { recursive: true });
+    fs.writeFileSync(path.join(homeDir, ".jianhe", "private.md"), "private\n", "utf8");
+    fs.mkdirSync(path.join(homeDir, ".hidden_dir"), { recursive: true });
+
     const receivedMessages: string[] = [];
-    const fakeBackend = new FakeBackend({
-      commandsByAgent: {
-        pi: [
-          {
-            name: "compact",
-            description: "Compact session context",
-            argumentHint: "[focus]",
-            kind: "command",
-          },
-          {
-            name: "forge-dialogue",
-            description: "整理并对齐产品设计模型",
-            argumentHint: "",
-            kind: "skill",
-          },
-          {
-            // Should be deduplicated against Kiln built-in /brief
-            name: "brief",
-            description: "Duplicate agent brief",
-            argumentHint: "",
-            kind: "command",
-          },
-        ],
-      },
-    });
+    const fakeBackend = new FakeBackend();
 
     const server = new KilndServer({
       kilnHome,
+      extensionsHomeDir: homeDir,
       port: 0,
       publicDir: null,
       tokenSecret: "m2-slash-mention-secret-0123456789ab",
@@ -1908,15 +1952,19 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
       "# Brief",
     );
 
-    // 1. GET /api/chat/commands merges Kiln built-ins + agent commands without overwriting built-ins
+    // 1. GET /api/chat/commands exposes ONLY Kiln commands + Skills (no agent CLI clutter, no secrets, no skillMdPath) + MCP servers
     const cmdRes = await server.app.request(
       new Request("http://127.0.0.1/api/chat/commands?role=intake&space=kiln"),
     );
     expect(cmdRes.status).toBe(200);
-    const cmdJson = (await cmdRes.json()) as {
+    const cmdText = await cmdRes.text();
+    expect(cmdText).not.toContain("SKILL.md");
+    expect(cmdText).not.toContain("secret-should-not-leak");
+    const cmdJson = JSON.parse(cmdText) as {
       ok: boolean;
       agent: string | null;
-      commands: Array<{ name: string; source: string; kind: string; description: string }>;
+      commands: Array<{ name: string; source: string; kind: string; scope?: string; description: string }>;
+      mcpServers: Array<{ name: string; scope: string; origin: string }>;
     };
     expect(cmdJson.ok).toBe(true);
     expect(cmdJson.agent).toBe("pi");
@@ -1925,24 +1973,47 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
       "fill",
       "split",
       "new",
-      "compact",
       "forge-dialogue",
+      "frontend-design",
+      "pi-only-skill",
     ]);
-    expect(cmdJson.commands.find((c) => c.name === "brief")?.source).toBe("kiln");
-    expect(cmdJson.commands.find((c) => c.name === "forge-dialogue")?.kind).toBe("skill");
+    const forgeSkill = cmdJson.commands.find((c) => c.name === "forge-dialogue");
+    expect(forgeSkill).toMatchObject({
+      source: "skill",
+      kind: "skill",
+      scope: "project",
+      description: "整理并对齐产品设计模型",
+    });
+    expect(cmdJson.mcpServers).toEqual([
+      { name: "context7", scope: "project", origin: ".mcp.json" },
+      { name: "linear", scope: "agent", origin: "pi" },
+    ]);
 
-    // 2. GET /api/spaces/:id/files indexes tracked & untracked files/dirs while excluding gitignored entries
+    // 2. GET /api/spaces/:id/files lists repo children (with dir drill-down) AND home directory in local mode while guarding secrets
     const filesRes = await server.app.request(
       new Request("http://127.0.0.1/api/spaces/kiln/files?q=composer"),
     );
     expect(filesRes.status).toBe(200);
     const filesJson = (await filesRes.json()) as {
+      rootLabel?: string;
       files: Array<{ path: string; kind: string }>;
     };
+    expect(filesJson.rootLabel).toBe("Kiln");
     expect(filesJson.files[0]).toEqual({
-      path: "apps/web/src/ChatComposer.tsx",
+      path: "apps/web/src/components/ChatComposer.tsx",
       kind: "file",
     });
+
+    const drillRepoRes = await server.app.request(
+      new Request("http://127.0.0.1/api/spaces/kiln/files?q=apps/web/"),
+    );
+    const drillRepoJson = (await drillRepoRes.json()) as {
+      files: Array<{ path: string; kind: string }>;
+    };
+    expect(drillRepoJson.files.slice(0, 2)).toEqual([
+      { path: "apps/web/src/", kind: "dir" },
+      { path: "apps/web/package.json", kind: "file" },
+    ]);
 
     const allFilesRes = await server.app.request(
       new Request("http://127.0.0.1/api/spaces/kiln/files?limit=50"),
@@ -1955,20 +2026,52 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     expect(allPaths).toContain("apps/web/src/UntrackedGuide.md");
     expect(allPaths.some((x) => x.includes("secret.ts") || x.includes("debug.log"))).toBe(false);
 
-    const localFilesRes = await server.app.request(
-      new Request("http://127.0.0.1/api/spaces/local/files?q=foo"),
+    const localRootRes = await server.app.request(
+      new Request("http://127.0.0.1/api/spaces/local/files?limit=30"),
     );
-    expect(localFilesRes.status).toBe(200);
-    expect(((await localFilesRes.json()) as { files: unknown[] }).files).toEqual([]);
+    expect(localRootRes.status).toBe(200);
+    const localRootJson = (await localRootRes.json()) as {
+      rootLabel?: string;
+      files: Array<{ path: string; kind: string }>;
+    };
+    expect(localRootJson.rootLabel).toBe("~");
+    expect(localRootJson.files).toEqual([{ path: "~/AI/", kind: "dir" }]);
 
-    // 3. Create draft and test slash preservation + @task:/@ledger: expansion across turns
+    const localDrillRes = await server.app.request(
+      new Request("http://127.0.0.1/api/spaces/local/files?q=AI/Kiln/"),
+    );
+    const localDrillJson = (await localDrillRes.json()) as {
+      rootLabel?: string;
+      files: Array<{ path: string; kind: string }>;
+    };
+    expect(localDrillJson.rootLabel).toBe("~/AI/Kiln");
+    expect(localDrillJson.files).toEqual([{ path: "~/AI/Kiln/README.md", kind: "file" }]);
+
+    const localHiddenRes = await server.app.request(
+      new Request("http://127.0.0.1/api/spaces/local/files?q=.hidden"),
+    );
+    expect(((await localHiddenRes.json()) as { files: Array<{ path: string }> }).files).toEqual([
+      { path: "~/.hidden_dir/", kind: "dir" },
+    ]);
+
+    const localBlockedRes = await server.app.request(
+      new Request("http://127.0.0.1/api/spaces/local/files?q=.ssh/"),
+    );
+    expect(((await localBlockedRes.json()) as { files: unknown[] }).files).toEqual([]);
+
+    const localEscapeRes = await server.app.request(
+      new Request("http://127.0.0.1/api/spaces/local/files?q=../"),
+    );
+    expect(((await localEscapeRes.json()) as { files: unknown[] }).files).toEqual([]);
+
+    // 3. Create draft and verify Skill SKILL.md injection + @task:/@ledger:/@mcp: expansion
     await server.app.request(
       new Request("http://127.0.0.1/api/drafts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           id: "d-slash-1",
-          title: "测试斜杠与引用",
+          title: "测试技能与 MCP 引用",
           space: "kiln",
           workspace_mode: "git_worktree",
         }),
@@ -1987,18 +2090,18 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
       });
     }
 
-    // Turn 1 (session start): @task: + @ledger: injects context cleanly before normal message
+    // Turn 1 (session start): @task: + @ledger: + @mcp: injects context cleanly
     await server.app.request(
       new Request("http://127.0.0.1/api/drafts/d-slash-1/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          message: "结合 @task:t-ref-1 与 @ledger:kiln 帮我看 @apps/web/src/ChatComposer.tsx",
+          message: "结合 @task:t-ref-1 与 @ledger:kiln 与 @mcp:context7 帮我看 @apps/web/src/components/ChatComposer.tsx",
         }),
       }),
     );
 
-    // Turn 2 (reuse non-MCP session): /compact stays pure without prepending draft snapshot!
+    // Turn 2: /compact stays bare
     await server.app.request(
       new Request("http://127.0.0.1/api/drafts/d-slash-1/chat", {
         method: "POST",
@@ -2007,7 +2110,7 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
       }),
     );
 
-    // Turn 3 (reuse non-MCP session): native skill /forge-dialogue keeps "/" at index 0 while snapshot moves to tail!
+    // Turn 3: skill /forge-dialogue keeps "/" at index 0 while attaching SKILL.md guidance + draft snapshot
     await server.app.request(
       new Request("http://127.0.0.1/api/drafts/d-slash-1/chat", {
         method: "POST",
@@ -2029,8 +2132,11 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     expect(receivedMessages[0]).toContain("[用户引用上下文:");
     expect(receivedMessages[0]).toContain("修复输入框快捷指令");
     expect(receivedMessages[0]).toContain("禁止新增 UI 组件库依赖");
+    expect(receivedMessages[0]).toContain("指定外部 MCP 服务 context7");
     expect(receivedMessages[1]).toBe("/compact");
     expect(receivedMessages[2]?.startsWith("/forge-dialogue 梳理输入交互")).toBe(true);
+    expect(receivedMessages[2]).toContain("[调用技能 forge-dialogue：请先只读读取技能说明文件");
+    expect(receivedMessages[2]).toContain("SKILL.md");
     expect(receivedMessages[2]).toContain("[当前右侧草稿最新字段:");
     expect(receivedMessages[3]).toContain("生成或更新完整的《产品方案 (BRIEF.md)》");
     expect(receivedMessages[3]).toContain("重点写清键盘交互");

@@ -95,6 +95,7 @@ import { syncModelPricing } from "./pricing-sync.js";
 import {
   discoverLocalGitRepos,
   inspectGitSpacePath,
+  listLocalDirectoryFiles,
   listSpaceFiles,
   pickLocalDirectory,
   revealLocalPath,
@@ -153,6 +154,7 @@ export interface HttpApiDependencies {
   pickDirectory?: () => Promise<PickDirectoryResponse>;
   revealPath?: (targetPath: string) => Promise<{ ok: true; path: string }>;
   syncPricing?: (input: SyncPricingRequest) => Promise<SyncPricingResponse>;
+  extensionsHomeDir?: string;
   onTaskQueued?: (taskId: string) => void;
   onTaskPaused?: (taskId: string) => Promise<void> | void;
   onTaskCancelled?: (taskId: string) => Promise<void> | void;
@@ -872,6 +874,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         agent: null,
         model: null,
         commands: getBuiltinChatCommands(role),
+        mcpServers: [],
       });
     }
 
@@ -889,25 +892,35 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     const query = c.req.query("q") ?? "";
     const rawLimit = c.req.query("limit");
     const parsedLimit = rawLimit !== undefined ? Number(rawLimit) : 24;
+    const safeLimit = Number.isFinite(parsedLimit) ? parsedLimit : 24;
     const spaceConfig = store.readSpace(spaceId);
-    if (!spaceConfig?.repo_path || spaceId === "local") {
+    if (spaceId === "local" || !spaceConfig?.repo_path) {
+      const localResult = listLocalDirectoryFiles(
+        query,
+        safeLimit,
+        deps.extensionsHomeDir !== undefined
+          ? { rootDir: deps.extensionsHomeDir }
+          : {},
+      );
       return c.json({
         ok: true,
         spaceId,
         query,
-        files: [],
-        truncated: false,
+        rootLabel: localResult.rootLabel,
+        files: localResult.files,
+        truncated: localResult.truncated,
       });
     }
     const result = await listSpaceFiles(
       spaceConfig.repo_path,
       query,
-      Number.isFinite(parsedLimit) ? parsedLimit : 24,
+      safeLimit,
     );
     return c.json({
       ok: true,
       spaceId,
       query,
+      rootLabel: spaceConfig.name || path.basename(spaceConfig.repo_path),
       files: result.files,
       truncated: result.truncated,
     });

@@ -69,22 +69,6 @@ export interface SessionProbeResult {
   detail?: string;
 }
 
-export interface BackendCommandDescriptor {
-  name: string;
-  description: string;
-  argumentHint: string;
-  kind: "command" | "skill";
-}
-
-export interface BackendListCommandsQuery {
-  agent: string;
-  cwd: string;
-  model?: string;
-  reasoningEffort?: ReasoningEffort;
-  allowFullAccessFallback?: boolean;
-  sessionRef?: SessionRef | null;
-}
-
 /**
  * Execution backend abstraction isolating Kiln kernel from underlying agent runners.
  */
@@ -92,7 +76,6 @@ export interface ExecutionBackend {
   readonly backendId: string;
   listAgents(): Promise<BackendAgentDescriptor[]>;
   listModels(agent: string): Promise<BackendModelDescriptor[]>;
-  listCommands?(query: BackendListCommandsQuery): Promise<BackendCommandDescriptor[]>;
   refreshProviders?(): Promise<void>;
   capabilities(agent: string): Promise<BackendCapabilities>;
   start(runSpec: BackendRunSpec): Promise<SessionRef>;

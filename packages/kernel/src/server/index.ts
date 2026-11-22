@@ -156,9 +156,19 @@ export {
   type TailscaleExecFileFn,
 } from "./remote-tailscale.js";
 export {
+  clearExtensionsCache,
+  discoverMcpServers,
+  discoverSkills,
+  type DiscoveredSkill,
+  type ExtensionsDiscoveryOptions,
+} from "./extensions.js";
+export {
   InvalidSpacePathError,
+  clearSpaceFilesCache,
   discoverLocalGitRepos,
   inspectGitSpacePath,
+  listLocalDirectoryFiles,
+  listSpaceFiles,
   pickLocalDirectory,
   revealLocalPath,
   validateCommitWorkspace,

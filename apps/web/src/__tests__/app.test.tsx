@@ -3773,8 +3773,8 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
         return jsonResponse({
           ok: true,
           role: "intake",
-          agent: "codex",
-          model: "gpt-5.4",
+          agent: "antigravity",
+          model: "gemini-pro-orchestrator-neon",
           commands: [
             {
               name: "brief",
@@ -3797,18 +3797,43 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
               description: "梳理复杂产品模型",
               argumentHint: "",
               kind: "skill",
-              source: "agent",
+              source: "skill",
+              scope: "project",
+            },
+          ],
+          mcpServers: [
+            {
+              name: "context7",
+              scope: "project",
+              origin: ".mcp.json",
             },
           ],
         });
       }
-      if (url.startsWith("/api/spaces/kiln/files")) {
+      if (url.includes("/files")) {
+        const u = new URL(url, "http://127.0.0.1");
+        const q = u.searchParams.get("q") ?? "";
+        if (q.startsWith("~/AI/")) {
+          return jsonResponse({
+            ok: true,
+            spaceId: "local",
+            query: q,
+            rootLabel: "~/AI",
+            files: [
+              { path: "~/AI/Kiln/", kind: "dir" },
+              { path: "~/AI/Kiln/README.md", kind: "file" },
+            ],
+            truncated: false,
+          });
+        }
         return jsonResponse({
           ok: true,
-          spaceId: "kiln",
-          query: "comp",
+          spaceId: "local",
+          query: q,
+          rootLabel: "~",
           files: [
-            { path: "apps/web/src/components/ChatComposer.tsx", kind: "file" },
+            { path: "~/AI/", kind: "dir" },
+            { path: "~/Desktop/", kind: "dir" },
           ],
           truncated: false,
         });
@@ -3824,10 +3849,10 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
             schema_version: 1,
             id: "d-comp-1",
             title: "新草稿",
-            space: "kiln",
+            space: "local",
             priority: "P2",
             track: "L2",
-            workspace_mode: "git_worktree",
+            workspace_mode: "scratch_dir",
             depends_on: [],
             contract: {},
             created_at: now,
@@ -3851,21 +3876,22 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       fireEvent.input(inputEl, { target: { value: text } });
     };
 
-    // Wait for remote command list to hydrate so agent skills appear alongside Kiln commands
+    // Wait for skills + MCP servers to hydrate under antigravity
     setTyped("/");
-    const listbox = await screen.findByRole("listbox", { name: "命令与技能补全" });
+    const listbox = await screen.findByRole("listbox", { name: "指令与技能补全" });
     await waitFor(() => {
       expect(within(listbox).getByText("/forge-dialogue")).toBeTruthy();
+      expect(within(listbox).getByText("项目技能")).toBeTruthy();
     });
 
     // Escape dismisses popup WITHOUT navigating back to board view
     fireEvent.keyDown(inputEl, { key: "Escape" });
-    expect(screen.queryByRole("listbox", { name: "命令与技能补全" })).toBeNull();
+    expect(screen.queryByRole("listbox", { name: "指令与技能补全" })).toBeNull();
     expect(document.getElementById("chatIn")).toBeTruthy();
 
     // Filter "/fo" -> Enter completes "/forge-dialogue " without firing POST chat request
     setTyped("/fo");
-    const filteredList = await screen.findByRole("listbox", { name: "命令与技能补全" });
+    const filteredList = await screen.findByRole("listbox", { name: "指令与技能补全" });
     expect(within(filteredList).getByText("/forge-dialogue")).toBeTruthy();
     fireEvent.keyDown(inputEl, { key: "Enter" });
     expect(inputEl.value).toBe("/forge-dialogue ");
@@ -3873,32 +3899,44 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
 
     // Selecting /new executes local draft reset
     setTyped("/ne");
-    await screen.findByRole("listbox", { name: "命令与技能补全" });
+    await screen.findByRole("listbox", { name: "指令与技能补全" });
     fireEvent.keyDown(inputEl, { key: "Enter" });
     await waitFor(() => {
       expect(inputEl.value).toBe("");
     });
     expect(sentChats).toHaveLength(0);
 
-    // Typing @ shows repository files (debounced) + tasks + ledgers
-    setTyped("看下 @comp");
+    // Typing @ immediately shows current directory listing + @mcp + @task, and Tab drills into directory without closing
+    setTyped("@");
     const mentionBox = await screen.findByRole("listbox", {
-      name: "引用文件、任务或账本",
+      name: "选择文件、MCP、任务或账本",
     });
     await waitFor(() => {
-      expect(
-        within(mentionBox).getByText("apps/web/src/components/ChatComposer.tsx"),
-      ).toBeTruthy();
+      expect(within(mentionBox).getByText("~/AI/")).toBeTruthy();
+      expect(within(mentionBox).getByText("@mcp:context7")).toBeTruthy();
+    });
+    fireEvent.keyDown(inputEl, { key: "Tab" });
+    expect(inputEl.value).toBe("@~/AI/");
+    inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+    await waitFor(() => {
+      expect(within(mentionBox).getByText("~/AI/Kiln/README.md")).toBeTruthy();
     });
     fireEvent.keyDown(inputEl, { key: "Enter" });
-    expect(inputEl.value).toBe(
-      "看下 @apps/web/src/components/ChatComposer.tsx ",
-    );
+    expect(inputEl.value).toBe("@~/AI/Kiln/ ");
 
-    // Also verify in-memory @task and @ledger mentions without debounce wait
+    // @mcp: mention selection
+    setTyped("参考 @mc");
+    const mcpBox = await screen.findByRole("listbox", {
+      name: "选择文件、MCP、任务或账本",
+    });
+    expect(within(mcpBox).getByText("@mcp:context7")).toBeTruthy();
+    fireEvent.keyDown(inputEl, { key: "Enter" });
+    expect(inputEl.value).toBe("参考 @mcp:context7 ");
+
+    // Also verify in-memory @task mentions without debounce wait
     setTyped("参考 @t-");
     const taskBox = await screen.findByRole("listbox", {
-      name: "引用文件、任务或账本",
+      name: "选择文件、MCP、任务或账本",
     });
     expect(within(taskBox).getByText("@task:t-ref-9")).toBeTruthy();
   });

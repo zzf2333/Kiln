@@ -980,13 +980,50 @@ async function collectRepoEntries(canonicalRepo: string): Promise<SpaceFileEntry
 }
 
 function scoreRepoEntry(entry: SpaceFileEntry, query: string): number | null {
-  const q = query.trim().toLowerCase().replace(/^[@./\\]+/, "");
+  const q = query
+    .trim()
+    .toLowerCase()
+    .replace(/\\/g, "/")
+    .replace(/^[@]+/, "")
+    .replace(/^(?:\.\/)+/, "");
+  const depth = entry.path.split("/").filter(Boolean).length;
+
   if (!q) {
-    const depth = entry.path.split("/").filter(Boolean).length;
-    return depth * 10 + (entry.kind === "dir" ? 0 : 2) + entry.path.length * 0.001;
+    return depth * 10 + (entry.kind === "dir" ? 0 : 2);
   }
 
   const p = entry.path.toLowerCase();
+  if (q.endsWith("/")) {
+    if (!p.startsWith(q) || p === q) {
+      return null;
+    }
+    const dirDepth = q.split("/").filter(Boolean).length;
+    if (depth === dirDepth + 1) {
+      return entry.kind === "dir" ? 0 : 2;
+    }
+    return 20 + depth * 5 + (entry.kind === "dir" ? 0 : 2);
+  }
+
+  const slashIdxInQ = q.lastIndexOf("/");
+  if (slashIdxInQ !== -1) {
+    const qDirPrefix = q.slice(0, slashIdxInQ + 1);
+    const qName = q.slice(slashIdxInQ + 1);
+    if (p.startsWith(qDirPrefix) && p !== qDirPrefix) {
+      const rest = p.slice(qDirPrefix.length);
+      const restTrimmed = rest.endsWith("/") ? rest.slice(0, -1) : rest;
+      const isDirectChild = !restTrimmed.includes("/");
+      if (isDirectChild) {
+        if (restTrimmed === qName) return 0;
+        if (restTrimmed.startsWith(qName)) return 2 + (entry.kind === "dir" ? 0 : 1);
+        const subIdx = restTrimmed.indexOf(qName);
+        if (subIdx !== -1) return 6 + subIdx * 0.01 + (entry.kind === "dir" ? 0 : 1);
+      }
+      if (rest.startsWith(qName)) return 15 + depth * 2;
+      const subRest = rest.indexOf(qName);
+      if (subRest !== -1) return 30 + depth * 2 + subRest * 0.01;
+    }
+  }
+
   const trimmed = p.endsWith("/") ? p.slice(0, -1) : p;
   const slashIdx = trimmed.lastIndexOf("/");
   const base = slashIdx >= 0 ? trimmed.slice(slashIdx + 1) : trimmed;
@@ -1011,6 +1048,165 @@ function scoreRepoEntry(entry: SpaceFileEntry, query: string): number | null {
     return 100 + gap + entry.path.length * 0.001;
   }
   return null;
+}
+
+const LOCAL_BLOCKED_NAMES = new Set([
+  ".ssh",
+  ".gnupg",
+  ".aws",
+  ".kube",
+  ".jianhe",
+  ".trash",
+  "keychains",
+  "node_modules",
+  ".git",
+]);
+
+function isPathInsideRoot(rootDir: string, candidateDir: string): boolean {
+  const rel = path.relative(rootDir, candidateDir);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+function scoreLocalName(name: string, filter: string): number | null {
+  if (!filter) return 0;
+  const n = name.toLowerCase();
+  const f = filter.toLowerCase();
+  if (n === f) return 0;
+  if (n.startsWith(f)) return 10;
+  const idx = n.indexOf(f);
+  if (idx !== -1) return 20 + idx * 0.01;
+  let fi = 0;
+  let gap = 0;
+  for (let i = 0; i < n.length && fi < f.length; i += 1) {
+    if (n[i] === f[fi]) {
+      fi += 1;
+    } else if (fi > 0) {
+      gap += 1;
+    }
+  }
+  return fi === f.length ? 100 + gap : null;
+}
+
+/**
+ * Lists files and directories under the user's local home directory (supporting `~/` drill-down)
+ * while excluding sensitive credential/system folders and blocking directory traversal.
+ */
+export function listLocalDirectoryFiles(
+  query = "",
+  limit = 24,
+  options: { rootDir?: string } = {},
+): { files: SpaceFileEntry[]; truncated: boolean; rootLabel: string } {
+  const safeLimit = Math.max(1, Math.min(80, Number.isFinite(limit) ? Math.floor(limit) : 24));
+  const rawRoot = options.rootDir ?? os.homedir();
+  let realRoot: string;
+  try {
+    const stat = fs.statSync(rawRoot);
+    if (!stat.isDirectory()) {
+      return { files: [], truncated: false, rootLabel: "~" };
+    }
+    realRoot = fs.realpathSync(rawRoot);
+  } catch {
+    return { files: [], truncated: false, rootLabel: "~" };
+  }
+
+  let normalized = query.trim().replace(/\\/g, "/").replace(/^[@]+/, "");
+  if (normalized === "~") {
+    normalized = "";
+  } else if (normalized.startsWith("~/")) {
+    normalized = normalized.slice(2);
+  } else if (normalized.startsWith("./")) {
+    normalized = normalized.slice(2);
+  }
+
+  if (normalized.startsWith("/")) {
+    return { files: [], truncated: false, rootLabel: "~" };
+  }
+  const segments = normalized.split("/").filter((seg) => seg.length > 0);
+  if (segments.some((seg) => seg === ".." || LOCAL_BLOCKED_NAMES.has(seg.toLowerCase()))) {
+    return { files: [], truncated: false, rootLabel: "~" };
+  }
+
+  let dirPrefix = "";
+  let nameFilter = normalized;
+  if (normalized.endsWith("/")) {
+    dirPrefix = normalized;
+    nameFilter = "";
+  } else {
+    const slashIdx = normalized.lastIndexOf("/");
+    if (slashIdx !== -1) {
+      dirPrefix = normalized.slice(0, slashIdx + 1);
+      nameFilter = normalized.slice(slashIdx + 1);
+    }
+  }
+
+  const targetDir = dirPrefix ? path.resolve(realRoot, dirPrefix) : realRoot;
+  let realTarget: string;
+  try {
+    const stat = fs.statSync(targetDir);
+    if (!stat.isDirectory()) {
+      return { files: [], truncated: false, rootLabel: "~" };
+    }
+    realTarget = fs.realpathSync(targetDir);
+  } catch {
+    return { files: [], truncated: false, rootLabel: "~" };
+  }
+  if (!isPathInsideRoot(realRoot, realTarget)) {
+    return { files: [], truncated: false, rootLabel: "~" };
+  }
+
+  let dirEntries: fs.Dirent[];
+  try {
+    dirEntries = fs.readdirSync(realTarget, { withFileTypes: true });
+  } catch {
+    return { files: [], truncated: false, rootLabel: "~" };
+  }
+
+  const showDotfiles = nameFilter.startsWith(".");
+  const scored: Array<{ score: number; entry: SpaceFileEntry }> = [];
+
+  for (const d of dirEntries) {
+    if (LOCAL_BLOCKED_NAMES.has(d.name.toLowerCase())) continue;
+    if (d.name.startsWith(".") && !showDotfiles) continue;
+
+    const score = scoreLocalName(d.name, nameFilter);
+    if (score === null) continue;
+
+    const fullPath = path.join(realTarget, d.name);
+    let isDir = false;
+    try {
+      const resolvedChild = fs.realpathSync(fullPath);
+      if (!isPathInsideRoot(realRoot, resolvedChild)) continue;
+      const st = fs.statSync(resolvedChild);
+      if (st.isDirectory()) {
+        isDir = true;
+      } else if (!st.isFile()) {
+        continue;
+      }
+    } catch {
+      continue;
+    }
+
+    scored.push({
+      score,
+      entry: {
+        path: `~/${dirPrefix}${d.name}${isDir ? "/" : ""}`,
+        kind: isDir ? "dir" : "file",
+      },
+    });
+  }
+
+  scored.sort((a, b) => {
+    if (a.score !== b.score) return a.score - b.score;
+    if (a.entry.kind !== b.entry.kind) return a.entry.kind === "dir" ? -1 : 1;
+    return a.entry.path.localeCompare(b.entry.path);
+  });
+
+  const truncated = scored.length > safeLimit;
+  return {
+    files: scored.slice(0, safeLimit).map((item) => item.entry),
+    truncated,
+    rootLabel: dirPrefix ? `~/${dirPrefix.replace(/\/+$/, "")}` : "~",
+  };
 }
 
 /**

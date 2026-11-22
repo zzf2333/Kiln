@@ -1286,7 +1286,8 @@ button { font-family: inherit; color: inherit; }
   border-color: rgba(90, 165, 124, 0.35);
   background: rgba(90, 165, 124, 0.1);
 }
-.composer-popup-badge.is-cmd {
+.composer-popup-badge.is-cmd,
+.composer-popup-badge.is-mcp {
   color: var(--ask-strong-fg);
   border-color: rgba(219, 161, 69, 0.35);
   background: rgba(219, 161, 69, 0.1);

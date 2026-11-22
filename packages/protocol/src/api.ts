@@ -176,7 +176,7 @@ export const SyncPricingResponseSchema = z.object({
 });
 export type SyncPricingResponse = z.infer<typeof SyncPricingResponseSchema>;
 
-export const ChatCommandSourceSchema = z.enum(["kiln", "agent"]);
+export const ChatCommandSourceSchema = z.enum(["kiln", "skill"]);
 export type ChatCommandSource = z.infer<typeof ChatCommandSourceSchema>;
 
 export const ChatCommandKindSchema = z.enum(["command", "skill"]);
@@ -196,9 +196,17 @@ export const ChatCommandItemSchema = z.object({
   argumentHint: z.string().default(""),
   kind: ChatCommandKindSchema.default("command"),
   source: ChatCommandSourceSchema,
+  scope: z.enum(["project", "user"]).optional(),
   action: ChatCommandActionSchema.optional(),
 });
 export type ChatCommandItem = z.infer<typeof ChatCommandItemSchema>;
+
+export const ChatMcpServerItemSchema = z.object({
+  name: z.string().min(1),
+  scope: z.enum(["project", "kiln", "agent"]),
+  origin: z.string().min(1),
+});
+export type ChatMcpServerItem = z.infer<typeof ChatMcpServerItemSchema>;
 
 export const ChatCommandsResponseSchema = z.object({
   ok: z.literal(true),
@@ -206,6 +214,7 @@ export const ChatCommandsResponseSchema = z.object({
   agent: z.string().nullable(),
   model: z.string().nullable(),
   commands: z.array(ChatCommandItemSchema),
+  mcpServers: z.array(ChatMcpServerItemSchema).default([]),
 });
 export type ChatCommandsResponse = z.infer<typeof ChatCommandsResponseSchema>;
 
@@ -219,6 +228,7 @@ export const SpaceFilesResponseSchema = z.object({
   ok: z.literal(true),
   spaceId: z.string().min(1),
   query: z.string(),
+  rootLabel: z.string().optional(),
   files: z.array(SpaceFileEntrySchema),
   truncated: z.boolean(),
 });

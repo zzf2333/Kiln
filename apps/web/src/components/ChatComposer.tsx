@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { fetchChatCommands, fetchSpaceFiles } from "../api/client";
-import type { ChatCommandAction, ChatCommandItem, SpaceFileEntry } from "../api/types";
+import type {
+  ChatCommandAction,
+  ChatCommandItem,
+  ChatMcpServerItem,
+  SpaceFileEntry,
+} from "../api/types";
 import { useKilnStore } from "../state/store";
 
 export interface ComposerTrigger {
@@ -103,7 +108,7 @@ interface MentionPopupItem {
   key: string;
   insertValue: string;
   displayLabel: string;
-  category: "file" | "dir" | "task" | "ledger";
+  category: "file" | "dir" | "mcp" | "task" | "ledger";
   meta: string;
   badge: string;
 }
@@ -158,11 +163,16 @@ export interface ChatComposerProps {
   onClientCommand?: (action: ChatCommandAction) => boolean;
 }
 
+interface CachedExtensionsPayload {
+  commands: ChatCommandItem[];
+  mcpServers: ChatMcpServerItem[];
+}
+
 export function ChatComposer({
   id = "chatIn",
   role,
   spaceId,
-  isProjectSpace,
+  isProjectSpace: _isProjectSpace,
   draftId,
   taskId,
   value,
@@ -175,7 +185,7 @@ export function ChatComposer({
   const { state } = useKilnStore();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const popupListRef = useRef<HTMLDivElement | null>(null);
-  const commandsCacheRef = useRef<Map<string, ChatCommandItem[]>>(new Map());
+  const commandsCacheRef = useRef<Map<string, CachedExtensionsPayload>>(new Map());
   const fileReqSeqRef = useRef(0);
   const composingRef = useRef(false);
 
@@ -190,30 +200,31 @@ export function ChatComposer({
   const [commands, setCommands] = useState<ChatCommandItem[]>(
     () => FALLBACK_KILN_COMMANDS[role],
   );
-  const [commandsAgent, setCommandsAgent] = useState<string | null>(
-    activeAgent || null,
-  );
+  const [mcpServers, setMcpServers] = useState<ChatMcpServerItem[]>([]);
   const [commandsLoading, setCommandsLoading] = useState(false);
 
   const [spaceFiles, setSpaceFiles] = useState<SpaceFileEntry[]>([]);
+  const [filesRootLabel, setFilesRootLabel] = useState<string | null>(null);
   const [filesLoading, setFilesLoading] = useState(false);
 
-  const commandCacheKey = `${role}|${spaceId}|${draftId ?? ""}|${taskId ?? ""}|${activeAgent}|${activeModel}`;
+  const effectiveSpaceId = spaceId || "local";
+  const commandCacheKey = `${role}|${effectiveSpaceId}|${draftId ?? ""}|${taskId ?? ""}|${activeAgent}|${activeModel}`;
 
   useEffect(() => {
     const cached = commandsCacheRef.current.get(commandCacheKey);
     if (cached) {
-      setCommands(cached);
-      setCommandsAgent(activeAgent || null);
+      setCommands(cached.commands);
+      setMcpServers(cached.mcpServers);
       return;
     }
 
     let cancelled = false;
     setCommands(FALLBACK_KILN_COMMANDS[role]);
+    setMcpServers([]);
     setCommandsLoading(true);
     void fetchChatCommands({
       role,
-      ...(spaceId ? { spaceId } : {}),
+      ...(effectiveSpaceId ? { spaceId: effectiveSpaceId } : {}),
       ...(draftId ? { draftId } : {}),
       ...(taskId ? { taskId } : {}),
     })
@@ -223,13 +234,15 @@ export function ChatComposer({
           Array.isArray(res.commands) && res.commands.length > 0
             ? res.commands
             : FALLBACK_KILN_COMMANDS[role];
-        commandsCacheRef.current.set(commandCacheKey, list);
+        const mcps = Array.isArray(res.mcpServers) ? res.mcpServers : [];
+        commandsCacheRef.current.set(commandCacheKey, { commands: list, mcpServers: mcps });
         setCommands(list);
-        setCommandsAgent(res.agent ?? (activeAgent || null));
+        setMcpServers(mcps);
       })
       .catch(() => {
         if (cancelled) return;
         setCommands(FALLBACK_KILN_COMMANDS[role]);
+        setMcpServers([]);
       })
       .finally(() => {
         if (!cancelled) {
@@ -240,7 +253,7 @@ export function ChatComposer({
     return () => {
       cancelled = true;
     };
-  }, [commandCacheKey, role, spaceId, draftId, taskId, activeAgent]);
+  }, [commandCacheKey, role, effectiveSpaceId, draftId, taskId]);
 
   const rawTrigger = useMemo(
     () => detectComposerTrigger(value, caretPos),
@@ -262,35 +275,39 @@ export function ChatComposer({
   const isMentionActive = trigger?.kind === "@";
 
   useEffect(() => {
-    if (!isMentionActive || !isProjectSpace || !spaceId || spaceId === "local") {
+    if (!isMentionActive) {
       setSpaceFiles([]);
+      setFilesRootLabel(null);
       setFilesLoading(false);
       return;
     }
 
     const seq = ++fileReqSeqRef.current;
     setFilesLoading(true);
+    const delayMs = mentionQuery.trim().length === 0 ? 0 : 100;
     const timer = setTimeout(() => {
-      void fetchSpaceFiles(spaceId, mentionQuery, 24)
+      void fetchSpaceFiles(effectiveSpaceId, mentionQuery, 30)
         .then((res) => {
           if (seq !== fileReqSeqRef.current) return;
           setSpaceFiles(Array.isArray(res.files) ? res.files : []);
+          setFilesRootLabel(res.rootLabel ?? null);
         })
         .catch(() => {
           if (seq !== fileReqSeqRef.current) return;
           setSpaceFiles([]);
+          setFilesRootLabel(null);
         })
         .finally(() => {
           if (seq === fileReqSeqRef.current) {
             setFilesLoading(false);
           }
         });
-    }, 120);
+    }, delayMs);
 
     return () => {
       clearTimeout(timer);
     };
-  }, [isMentionActive, isProjectSpace, spaceId, mentionQuery]);
+  }, [isMentionActive, effectiveSpaceId, mentionQuery]);
 
   const filteredCommands = useMemo<ChatCommandItem[]>(() => {
     if (!trigger || trigger.kind !== "/") return [];
@@ -298,7 +315,7 @@ export function ChatComposer({
     if (!q) {
       return [
         ...commands.filter((c) => c.source === "kiln"),
-        ...commands.filter((c) => c.source === "agent"),
+        ...commands.filter((c) => c.source === "skill"),
       ];
     }
     const scored: Array<{ score: number; cmd: ChatCommandItem }> = [];
@@ -334,8 +351,17 @@ export function ChatComposer({
       insertValue: f.path,
       displayLabel: f.path,
       category: f.kind,
-      meta: f.kind === "dir" ? "目录" : "文件",
+      meta: f.kind === "dir" ? "目录 · Tab 展开 / Enter 插入" : "文件",
       badge: f.kind === "dir" ? "DIR" : "FILE",
+    }));
+
+    const mcpEntries: MentionPopupItem[] = mcpServers.map((m) => ({
+      key: `mcp:${m.name}`,
+      insertValue: `mcp:${m.name}`,
+      displayLabel: `@mcp:${m.name}`,
+      category: "mcp",
+      meta: `${m.origin} · MCP 服务`,
+      badge: "MCP",
     }));
 
     const taskEntries: MentionPopupItem[] = state.tasks
@@ -351,34 +377,45 @@ export function ChatComposer({
       }));
 
     const ledgerEntries: MentionPopupItem[] = Object.entries(state.ledgers)
-      .filter(([, entries]) => entries.length > 0)
-      .map(([spId, entries]) => ({
+      .filter(([, list]) => list.length > 0)
+      .map(([spId, list]) => ({
         key: `ledger:${spId}`,
         insertValue: `ledger:${spId}`,
         displayLabel: `@ledger:${spId}`,
         category: "ledger",
-        meta: `${state.spaces[spId]?.name ?? spId} · ${entries.length} 条约束`,
+        meta: `${state.spaces[spId]?.name ?? spId} · ${list.length} 条约束`,
         badge: "RULE",
       }));
 
-    const combined = [...fileEntries, ...taskEntries, ...ledgerEntries];
     if (!q) {
-      return combined.slice(0, 28);
+      return [
+        ...fileEntries.slice(0, 18),
+        ...mcpEntries.slice(0, 8),
+        ...taskEntries.slice(0, 6),
+        ...ledgerEntries.slice(0, 4),
+      ];
     }
 
-    const scored: Array<{ score: number; item: MentionPopupItem }> = [];
-    for (const item of combined) {
+    // Preserve server-ranked directory/file entries while merging scored @mcp / @task / @ledger matches.
+    const scoredNonFile: Array<{ score: number; item: MentionPopupItem }> = [];
+    for (const item of [...mcpEntries, ...taskEntries, ...ledgerEntries]) {
       const s1 = scoreFuzzyMatch(item.insertValue, q);
       const s2 = scoreFuzzyMatch(item.meta, q);
       const best =
         s1 !== null ? s1 : s2 !== null ? s2 + 120 : null;
       if (best !== null) {
-        scored.push({ score: best, item });
+        scoredNonFile.push({ score: best, item });
       }
     }
-    scored.sort((a, b) => a.score - b.score);
-    return scored.slice(0, 28).map((s) => s.item);
-  }, [trigger, spaceFiles, state.tasks, state.ledgers, state.spaces]);
+    scoredNonFile.sort((a, b) => a.score - b.score);
+
+    const isExplicitMcpOrTaskQuery =
+      q.startsWith("mcp:") || q.startsWith("task:") || q.startsWith("ledger:");
+    if (isExplicitMcpOrTaskQuery) {
+      return [...scoredNonFile.map((s) => s.item), ...fileEntries].slice(0, 28);
+    }
+    return [...fileEntries.slice(0, 18), ...scoredNonFile.map((s) => s.item)].slice(0, 28);
+  }, [trigger, spaceFiles, mcpServers, state.tasks, state.ledgers, state.spaces]);
 
   const entries = useMemo<PopupEntry[]>(() => {
     if (!trigger) return [];
@@ -413,7 +450,10 @@ export function ChatComposer({
     setCaretPos(el.selectionStart ?? el.value.length);
   };
 
-  const applySelection = (entry: PopupEntry): void => {
+  const applySelection = (
+    entry: PopupEntry,
+    options?: { drillDir?: boolean },
+  ): void => {
     if (!trigger) return;
     if (entry.type === "command" && entry.item.action === "new_draft") {
       if (onClientCommand?.("new_draft")) {
@@ -424,13 +464,22 @@ export function ChatComposer({
       }
     }
 
+    const isDirDrill =
+      Boolean(options?.drillDir) &&
+      entry.type === "mention" &&
+      entry.item.category === "dir";
+
     const insertText =
       entry.type === "command"
         ? `/${entry.item.name} `
-        : `@${entry.item.insertValue} `;
+        : isDirDrill
+          ? `@${entry.item.insertValue}`
+          : `@${entry.item.insertValue} `;
 
     const before = value.slice(0, trigger.start);
-    const after = value.slice(trigger.end).replace(/^\s/, "");
+    const after = isDirDrill
+      ? value.slice(trigger.end)
+      : value.slice(trigger.end).replace(/^\s/, "");
     const nextValue = `${before}${insertText}${after}`;
     const nextCaret = before.length + insertText.length;
 
@@ -453,7 +502,7 @@ export function ChatComposer({
     !disabled &&
     trigger !== null &&
     (entries.length > 0 ||
-      (trigger.kind === "@" && (filesLoading || !isProjectSpace || trigger.query.length > 0)) ||
+      trigger.kind === "@" ||
       (trigger.kind === "/" && (commandsLoading || trigger.query.length > 0)));
 
   const kilnCommandEntries = useMemo(
@@ -463,11 +512,44 @@ export function ChatComposer({
         .filter((x) => x.e.type === "command" && x.e.item.source === "kiln"),
     [entries],
   );
-  const agentCommandEntries = useMemo(
+  const skillCommandEntries = useMemo(
     () =>
       entries
         .map((e, idx) => ({ e, idx }))
-        .filter((x) => x.e.type === "command" && x.e.item.source === "agent"),
+        .filter((x) => x.e.type === "command" && x.e.item.source === "skill"),
+    [entries],
+  );
+
+  const fileMentionEntries = useMemo(
+    () =>
+      entries
+        .map((e, idx) => ({ e, idx }))
+        .filter(
+          (x) =>
+            x.e.type === "mention" &&
+            (x.e.item.category === "dir" || x.e.item.category === "file"),
+        ),
+    [entries],
+  );
+  const mcpMentionEntries = useMemo(
+    () =>
+      entries
+        .map((e, idx) => ({ e, idx }))
+        .filter((x) => x.e.type === "mention" && x.e.item.category === "mcp"),
+    [entries],
+  );
+  const taskMentionEntries = useMemo(
+    () =>
+      entries
+        .map((e, idx) => ({ e, idx }))
+        .filter((x) => x.e.type === "mention" && x.e.item.category === "task"),
+    [entries],
+  );
+  const ledgerMentionEntries = useMemo(
+    () =>
+      entries
+        .map((e, idx) => ({ e, idx }))
+        .filter((x) => x.e.type === "mention" && x.e.item.category === "ledger"),
     [entries],
   );
 
@@ -476,15 +558,10 @@ export function ChatComposer({
     const badgeLabel =
       entry.item.source === "kiln"
         ? "Kiln"
-        : entry.item.kind === "skill"
-          ? "技能"
-          : "命令";
-    const badgeClass =
-      entry.item.source === "kiln"
-        ? "is-kiln"
-        : entry.item.kind === "skill"
-          ? "is-skill"
-          : "is-cmd";
+        : entry.item.scope === "project"
+          ? "项目技能"
+          : "技能";
+    const badgeClass = entry.item.source === "kiln" ? "is-kiln" : "is-skill";
     return (
       <button
         key={entry.key}
@@ -512,6 +589,33 @@ export function ChatComposer({
     );
   };
 
+  const renderMentionRow = (entry: PopupEntry & { type: "mention" }, idx: number) => {
+    const isSelected = idx === activeIndex;
+    const badgeClass = entry.item.category === "mcp" ? "is-mcp" : "is-ref";
+    return (
+      <button
+        key={entry.key}
+        type="button"
+        role="option"
+        aria-selected={isSelected}
+        data-popup-idx={idx}
+        class={`composer-popup-item ${isSelected ? "is-active" : ""}`}
+        title={`${entry.item.displayLabel} · ${entry.item.meta}`}
+        onMouseEnter={() => setActiveIndex(idx)}
+        onMouseDown={(e) => {
+          e.preventDefault();
+          applySelection(entry);
+        }}
+      >
+        <div class="composer-popup-main">
+          <span class={`composer-popup-badge ${badgeClass}`}>{entry.item.badge}</span>
+          <span class="composer-popup-name mono">{entry.item.displayLabel}</span>
+        </div>
+        <div class="composer-popup-desc">{entry.item.meta}</div>
+      </button>
+    );
+  };
+
   return (
     <div class="composer">
       <div class="composer-stack">
@@ -521,17 +625,19 @@ export function ChatComposer({
               class="composer-popup"
               role="listbox"
               aria-label={
-                trigger?.kind === "/" ? "命令与技能补全" : "引用文件、任务或账本"
+                trigger?.kind === "/" ? "指令与技能补全" : "选择文件、MCP、任务或账本"
               }
             >
               <div class="composer-popup-head">
                 <span>
                   {trigger?.kind === "/"
-                    ? `斜杠命令与技能${commandsAgent ? ` · ${commandsAgent}` : ""}`
-                    : "引用上下文 (@文件 / @task / @ledger)"}
+                    ? "指令与技能"
+                    : `引用上下文${filesRootLabel ? ` · ${filesRootLabel}` : ""}`}
                 </span>
                 <span class="mono muted">
-                  ↑↓ 选择 · Tab/Enter 插入 · Esc 关闭
+                  {trigger?.kind === "@"
+                    ? "↑↓ 选择 · Tab 进目录/插入 · Enter 插入 · Esc 关闭"
+                    : "↑↓ 选择 · Tab/Enter 插入 · Esc 关闭"}
                 </span>
               </div>
 
@@ -555,10 +661,10 @@ export function ChatComposer({
                             )}
                           </>
                         ) : null}
-                        {agentCommandEntries.length > 0 ? (
+                        {skillCommandEntries.length > 0 ? (
                           <>
-                            <div class="composer-popup-group">Agent 命令与技能</div>
-                            {agentCommandEntries.map(({ e, idx }) =>
+                            <div class="composer-popup-group">Skills 技能</div>
+                            {skillCommandEntries.map(({ e, idx }) =>
                               renderCommandRow(
                                 e as PopupEntry & { type: "command" },
                                 idx,
@@ -571,48 +677,70 @@ export function ChatComposer({
                   ) : (
                     <div class="composer-popup-empty">
                       {commandsLoading
-                        ? "正在读取可用命令与技能…"
-                        : "未找到匹配的斜杠命令，继续回车将原样发送"}
+                        ? "正在扫描可用指令与 Skills…"
+                        : "未找到匹配的指令或技能，继续回车将原样发送"}
                     </div>
                   )
                 ) : entries.length > 0 ? (
-                  entries.map((entry, idx) => {
-                    if (entry.type !== "mention") return null;
-                    const isSelected = idx === activeIndex;
-                    return (
-                      <button
-                        key={entry.key}
-                        type="button"
-                        role="option"
-                        aria-selected={isSelected}
-                        data-popup-idx={idx}
-                        class={`composer-popup-item ${isSelected ? "is-active" : ""}`}
-                        title={`${entry.item.displayLabel} · ${entry.item.meta}`}
-                        onMouseEnter={() => setActiveIndex(idx)}
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          applySelection(entry);
-                        }}
-                      >
-                        <div class="composer-popup-main">
-                          <span class="composer-popup-badge is-ref">
-                            {entry.item.badge}
-                          </span>
-                          <span class="composer-popup-name mono">
-                            {entry.item.displayLabel}
-                          </span>
-                        </div>
-                        <div class="composer-popup-desc">{entry.item.meta}</div>
-                      </button>
-                    );
-                  })
+                  trigger?.query.trim().length === 0 ? (
+                    <>
+                      {fileMentionEntries.length > 0 ? (
+                        <>
+                          <div class="composer-popup-group">
+                            {filesRootLabel ? `当前目录（${filesRootLabel}）` : "当前目录文件"}
+                          </div>
+                          {fileMentionEntries.map(({ e, idx }) =>
+                            renderMentionRow(
+                              e as PopupEntry & { type: "mention" },
+                              idx,
+                            ),
+                          )}
+                        </>
+                      ) : null}
+                      {mcpMentionEntries.length > 0 ? (
+                        <>
+                          <div class="composer-popup-group">MCP 服务</div>
+                          {mcpMentionEntries.map(({ e, idx }) =>
+                            renderMentionRow(
+                              e as PopupEntry & { type: "mention" },
+                              idx,
+                            ),
+                          )}
+                        </>
+                      ) : null}
+                      {taskMentionEntries.length > 0 ? (
+                        <>
+                          <div class="composer-popup-group">在途任务</div>
+                          {taskMentionEntries.map(({ e, idx }) =>
+                            renderMentionRow(
+                              e as PopupEntry & { type: "mention" },
+                              idx,
+                            ),
+                          )}
+                        </>
+                      ) : null}
+                      {ledgerMentionEntries.length > 0 ? (
+                        <>
+                          <div class="composer-popup-group">决策账本</div>
+                          {ledgerMentionEntries.map(({ e, idx }) =>
+                            renderMentionRow(
+                              e as PopupEntry & { type: "mention" },
+                              idx,
+                            ),
+                          )}
+                        </>
+                      ) : null}
+                    </>
+                  ) : (
+                    entries.map((entry, idx) =>
+                      entry.type === "mention" ? renderMentionRow(entry, idx) : null,
+                    )
+                  )
                 ) : (
                   <div class="composer-popup-empty">
                     {filesLoading
-                      ? "正在搜索项目文件…"
-                      : !isProjectSpace
-                        ? "本机模式无项目仓库文件索引，当前暂无可引用的在途任务或账本"
-                        : "未找到匹配的文件、任务或账本"}
+                      ? "正在读取当前目录文件…"
+                      : "未找到匹配的文件、MCP 服务、任务或账本"}
                   </div>
                 )}
               </div>
@@ -681,7 +809,7 @@ export function ChatComposer({
                   e.preventDefault();
                   const chosen = entries[activeIndex] ?? entries[0];
                   if (chosen) {
-                    applySelection(chosen);
+                    applySelection(chosen, { drillDir: e.key === "Tab" });
                   }
                   return;
                 }
@@ -703,8 +831,8 @@ export function ChatComposer({
           </button>
         </div>
         <div class="composer-hint">
-          输入 <span class="mono">/</span> 调用命令或技能 ·{" "}
-          <span class="mono">@</span> 引用文件、任务或账本 · Enter 发送，Shift+Enter 换行
+          输入 <span class="mono">/</span> 调用指令或技能 ·{" "}
+          <span class="mono">@</span> 选择当前目录文件、MCP 或任务 · Enter 发送，Shift+Enter 换行
         </div>
       </div>
     </div>

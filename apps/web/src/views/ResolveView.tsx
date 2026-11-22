@@ -156,7 +156,7 @@ export function ResolveView() {
             taskId={taskId}
             value={chatInput}
             disabled={state.resolveBusy}
-            placeholder="说说你的想法（/ 调用命令或技能，@ 引用文件或任务）"
+            placeholder="说说你的想法（/ 调用指令或技能，@ 选择文件、MCP 或任务）"
             onChange={setChatInput}
             onSend={() => void handleSend()}
           />
