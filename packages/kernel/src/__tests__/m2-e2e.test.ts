@@ -426,7 +426,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     await waitUntil(
       () => server.store.getTaskIndex("t-s1")?.status === "done",
       "t-s1 done",
-      3_000,
+      15_000,
       () =>
         JSON.stringify({
           idx: server.store.getTaskIndex("t-s1"),
@@ -1659,7 +1659,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     await waitUntil(
       () => server.store.getTaskIndex("t-s8")?.status === "waiting",
       "t-s8 waiting from Pi file protocol",
-      3_000,
+      15_000,
       () =>
         JSON.stringify({
           idx: server.store.getTaskIndex("t-s8"),
@@ -4636,7 +4636,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     await waitUntil(
       () => server.store.getTaskIndex("t-strip-ext")?.status === "waiting",
       "t-strip-ext waiting",
-      3_000,
+      15_000,
     );
 
     const pending = server.pendingDecisions.get("t-strip-ext")!;

@@ -193,8 +193,10 @@ describe("Native TUI launcher, run overview I/O summary & local-only open-tui en
     expect(macCalls[0]!.file).toBe("/usr/bin/open");
     const macScript = macCalls[0]!.args[0]!;
     expect(path.basename(macScript)).toMatch(/^kiln-tui-.*\.command$/);
-    const macStat = fs.statSync(macScript);
-    expect(macStat.mode & 0o777).toBe(0o700);
+    if (process.platform !== "win32") {
+      const macStat = fs.statSync(macScript);
+      expect(macStat.mode & 0o777).toBe(0o700);
+    }
     const macContent = fs.readFileSync(macScript, "utf8");
     expect(macContent).toContain(`cd -- '${path.resolve(quotedCwd).replace(/'/g, `'\\''`)}'`);
     expect(macContent).toContain("exec 'codex' 'resume' 'codex-mac-1'");
