@@ -36,7 +36,7 @@
 
 ## 安装方式
 
-> **发版前置说明**：当前预发布清单指向 **`0.0.3`**（**`0.1.0`** 预留给首个正式对外发布版本）。下方 GitHub Release 预编译二进制、桌面安装包与 Homebrew Tap 校验和将在对应 Release Tag 发布后激活（详见 [`packaging/README.md`](packaging/README.md)）；当前也可通过[源码构建与验证](#源码构建与验证)或 `pnpm build:binary` 本地编译单文件。
+> **发版前置说明**：当前预发布清单指向 **`0.0.4`**（**`0.1.0`** 预留给首个正式对外发布版本）。下方 GitHub Release 预编译二进制、桌面安装包与 Homebrew Tap 校验和将在对应 Release Tag 发布后激活（详见 [`packaging/README.md`](packaging/README.md)）；当前也可通过[源码构建与验证](#源码构建与验证)或 `pnpm build:binary` 本地编译单文件。
 
 ### 1. 一键安装脚本 — macOS / Linux（零 Node.js 依赖）
 
@@ -149,7 +149,7 @@ kiln uninstall                  # 停止守护进程、移除系统服务并巡�
 | `kiln doctor [--port <port>] [--host <host>] [--json]` | 检查 Node、Git、APFS 克隆能力、`kilnd` 连通性、Paseo Agent 发现（非必填项）与服务状态 |
 | `kiln service <install\|uninstall\|status> [--platform <darwin\|linux>] [--label <label>] [--service-name <name>]` | 显式安装、卸载或查询操作系统自启服务 |
 | `kiln uninstall [--purge-data] [--platform <darwin\|linux>]` | 停止守护进程、清理服务并检测残余 worktree（加 `--purge-data` 删除 `~/.kiln`） |
-| `kiln -h, --help` / `kiln -v, --version` / `kiln help` | 显示帮助或 CLI 版本号（`0.0.3`） |
+| `kiln -h, --help` / `kiln -v, --version` / `kiln help` | 显示帮助或 CLI 版本号（`0.0.4`） |
 
 ---
 
@@ -158,8 +158,8 @@ kiln uninstall                  # 停止守护进程、移除系统服务并巡�
 - [x] **M0 · 技术探针验证**：已完成底层 Agent 能力、权限策略与用量格式实测锁定。
 - [x] **M1 · 协议与无头内核**：完成 `packages/protocol`、`kernel`、`mcp`、`cli` 与并发竞态 / 删库重建测试集。
 - [x] **M2 · MVP 工作台闭环**：已通过基于真实 Paseo（`codex` + `pi`）、真实独立 `stdio kiln-mcp` 与 Playwright Chrome 桌面端（`1440×900`）/ 移动端（`390×844` `<= 820px`）的 `S1`–`S8` 全部 8 场景真机端到端复验收与删库重建 100% 一致校验。
-- [ ] **M3 / M3.5 · 桌面 Sidecar、零依赖分发与远程移动访问 V1（进行中）**：已完成零原生内置 SQLite（`bun:sqlite` / `node:sqlite`）、`kiln __mcp` 与内嵌 Web/PWA 的单文件分发、macOS `.dmg` / Windows NSIS `.exe` Tauri v2 Sidecar 打包、双端口 Fail-Closed 远程移动访问（`:4310` 本地 / `:4311` 认证）、Bark/ntfy/Webhook 推送与三端 CI/Release 流水线（预发布清单指向 `0.0.3`；`v0.0.4` 可组合蓝图引擎、两阶段 `host_op` 根治、Fail-Closed 顾问决策层与 `Agent + Session` 总览 + 本机直达 TUI 已落地本地 `main`；`0.1.0` 预留给签名公证后的首个正式对外版本）。
-- [ ] **M4 · Post-MVP 演进**：`v0.0.5`（`parallel` 节点内并行与失败升档路由）、`v0.0.6`（`subflow` 大需求拆片 DAG 与串行合并队列）、复盘模块、执行台泳道、Tailscale/Passkey 推送与大需求循环（Epic Loop）。
+- [ ] **M3 / M3.5 · 桌面 Sidecar、零依赖分发与远程移动访问 V1（进行中）**：已完成零原生内置 SQLite（`bun:sqlite` / `node:sqlite`）、`kiln __mcp` 与内嵌 Web/PWA 的单文件分发、macOS `.dmg` / Windows NSIS `.exe` Tauri v2 Sidecar 打包、双端口 Fail-Closed 远程移动访问（`:4310` 本地 / `:4311` 认证）、Bark/ntfy/Webhook 推送与三端 CI/Release 流水线（`0.0.4` 预发布新增可组合蓝图引擎、两阶段 `host_op` 根治、Fail-Closed 顾问决策层与 `Agent + Session` 总览 + 本机直达 TUI；`0.1.0` 预留给签名公证后的首个正式对外版本）。
+- [ ] **M4 · Post-MVP 演进**：`v0.0.5`（自有 ACP / CLI 直连执行适配层去 Paseo 强依赖、多订阅「编排阵容」中心与 `parallel` 节点内并行）、`v0.0.6`（`subflow` 大需求拆片 DAG 与串行合并队列）、复盘模块、执行台泳道、Tailscale/Passkey 推送与大需求循环（Epic Loop）。
 
 ---
 
