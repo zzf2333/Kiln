@@ -1443,4 +1443,81 @@ describe("TaskStateMachine integration with real KilnStore and SQLite disk rebui
     expect(secondResolve.state.status).toBe("queued");
     expect(store.readTaskCard("t-wait-down").depends_on).toEqual([]);
   });
+
+  it("supports resuming external tasks back to queued (with optional targetStage and upstream_cancelled check) and completing external tasks to done", () => {
+    sm.createTask(makeTaskCard({ id: "t-ext-up" }), "# Up");
+    sm.createTask(
+      makeTaskCard({ id: "t-ext-resume", track: "L2" }),
+      "# External resume",
+    );
+    const dec = makePendingDecision({
+      id: "dec-ext-1",
+      task_id: "t-ext-resume",
+    });
+    sm.requestDecision("t-ext-resume", dec, "2026-11-22T01:00:00.000Z");
+    const extState = sm.applyDecision({
+      taskId: "t-ext-resume",
+      decision: dec,
+      optionId: "opt-external",
+      now: "2026-11-22T01:01:00.000Z",
+    });
+    expect(extState.state.status).toBe("external");
+
+    const resumed = sm.resumeTask("t-ext-resume", "2026-11-22T01:02:00.000Z", "review");
+    expect(resumed.status).toBe("queued");
+    expect(resumed.stage).toBe("review");
+
+    // External task with cancelled prerequisite transitions to waiting(upstream_cancelled) on resume
+    sm.createTask(
+      makeTaskCard({ id: "t-ext-dep", depends_on: ["t-ext-up"] }),
+      "# Dependent external",
+    );
+    const depDec = makePendingDecision({
+      id: "dec-ext-dep",
+      task_id: "t-ext-dep",
+    });
+    sm.requestDecision("t-ext-dep", depDec, "2026-11-22T01:03:00.000Z");
+    sm.applyDecision({
+      taskId: "t-ext-dep",
+      decision: depDec,
+      optionId: "opt-external",
+      now: "2026-11-22T01:04:00.000Z",
+    });
+    sm.cancelTask("t-ext-up", "cancelled before resume", "2026-11-22T01:05:00.000Z");
+    const resumedBlocked = sm.resumeTask("t-ext-dep", "2026-11-22T01:06:00.000Z");
+    expect(resumedBlocked.status).toBe("waiting");
+    expect(store.readStateEvents("t-ext-dep").at(-1)).toMatchObject({
+      type: "waiting",
+      reason: "upstream_cancelled",
+    });
+
+    // completeExternalTask moves external -> done and rejects non-external tasks
+    sm.createTask(makeTaskCard({ id: "t-ext-done" }), "# Complete external");
+    const doneDec = makePendingDecision({
+      id: "dec-ext-done",
+      task_id: "t-ext-done",
+    });
+    sm.requestDecision("t-ext-done", doneDec, "2026-11-22T01:07:00.000Z");
+    sm.applyDecision({
+      taskId: "t-ext-done",
+      decision: doneDec,
+      optionId: "opt-external",
+      now: "2026-11-22T01:08:00.000Z",
+    });
+
+    const completed = sm.completeExternalTask(
+      "t-ext-done",
+      "pr#42-merged",
+      "2026-11-22T01:09:00.000Z",
+    );
+    expect(completed.status).toBe("done");
+    expect(store.readStateEvents("t-ext-done").at(-1)).toMatchObject({
+      type: "done",
+      deliver_ref: "pr#42-merged",
+    });
+
+    expect(() => sm.completeExternalTask("t-ext-resume")).toThrow(
+      InvalidStateTransitionError,
+    );
+  });
 });

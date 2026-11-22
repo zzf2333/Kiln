@@ -4515,4 +4515,127 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     await waitUntil(() => server.store.getTaskIndex("t-p1-6-roles")?.status === "done", "t-p1-6-roles done");
     expect(validatedRoles).toEqual(["triage", "advisor", "verifier"]);
   }, 20_000);
+
+  it("strips return_external options from non-MCP need_decision receipts and injects host_scoped guidance into HANDOFF", async () => {
+    const kilnHome = makeTempDir("kiln-m2-strip-ext-");
+    const hostTargetDir = makeTempDir("kiln-host-target-");
+    const fakeBackend = new FakeBackend();
+    const capturedHandoffs: string[] = [];
+
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: true,
+      tokenSecret: "m2-e2e-strip-ext-secret-0123456789",
+      approvalHandler: async (req, ctx) => {
+        if (req.action === "pi_bad_external") {
+          const runDir = fs
+            .readdirSync(server.store.paths.runsDir(ctx.taskId))
+            .filter((d) => d.endsWith("-implement"))
+            .sort()
+            .at(-1)!;
+          capturedHandoffs.push(
+            fs.readFileSync(server.store.paths.handoffMd(ctx.taskId, runDir), "utf8"),
+          );
+          writeFileAtomic(
+            server.store.paths.receiptMd(ctx.taskId, runDir),
+            makeWorkerReceiptMarkdown({
+              run_id: ctx.runId,
+              contract_version: ctx.card.contract_version,
+              outcome: "need_decision",
+              input_ref: "host_scoped",
+              output_ref: "staged",
+              changed_paths: [],
+              extraFrontmatter: {
+                question: "是否转交外部执行？",
+                options: [
+                  {
+                    id: "host-execute",
+                    label: "交由宿主机执行方落盘",
+                    action: "return_external",
+                    recommended: true,
+                  },
+                ],
+              },
+            }),
+          );
+          await ctx.backend.answer(req.id, true);
+        }
+      },
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "local",
+      name: "Local",
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    });
+    const baseRoles = defaultRoles();
+    server.store.writeConfig("roles", {
+      ...baseRoles,
+      roles: {
+        ...baseRoles.roles,
+        worker: { agent: "pi", model: "magpie/group/work", allow_full_access_fallback: false },
+      },
+    });
+    server.store.writeConfig("limits", defaultLimits());
+    server.store.writeConfig("pricing", defaultPricing());
+
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "pi_bad_external", detail: "ask" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-strip-ext", role: "worker" },
+    );
+
+    await server.start();
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-strip-ext",
+        title: "Strip return_external from Pi receipt",
+        space: "local",
+        priority: "P2",
+        track: "L1",
+        workspace_mode: "host_scoped",
+        parent: null,
+        depends_on: [],
+        contract_version: 1,
+        contract: {
+          goal: "Write host file",
+          end: "Applied",
+          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_files_hash: "sha256:stripext",
+          scope: [hostTargetDir],
+          deliver: { mode: "manual", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 1, review_rounds: 1, advisor_calls: 1, max_tokens: 5_000_000 },
+        created_at: "2026-11-22T02:00:00.000Z",
+        updated_at: "2026-11-22T02:00:00.000Z",
+      },
+      "# Host task",
+    );
+
+    await server.orchestrator.wake();
+    await waitUntil(
+      () => server.store.getTaskIndex("t-strip-ext")?.status === "waiting",
+      "t-strip-ext waiting",
+      3_000,
+    );
+
+    const pending = server.pendingDecisions.get("t-strip-ext")!;
+    expect(pending.options.some((o) => o.action === "return_external")).toBe(false);
+    expect(pending.options.some((o) => o.action === "resume")).toBe(true);
+    expect(pending.options.some((o) => o.action === "cancel")).toBe(true);
+    expect(pending.question).toContain("已由内核移除不合法的 return_external 选项");
+    expect(capturedHandoffs[0]).toContain("严禁使用或提出 action: return_external");
+  }, 15_000);
 });

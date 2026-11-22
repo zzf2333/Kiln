@@ -4,7 +4,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   HashMismatchErrorSchema,
   RoleForbiddenErrorSchema,
@@ -3102,5 +3102,242 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     );
     expect(remoteRes.status).toBe(403);
     expect((await readJson(remoteRes)).error).toBe("local_only_endpoint");
+  });
+
+  it("blocks return_external in wb_ask_decision, rejects drafts/ contract paths on commit, and supports resume/complete on external tasks", async () => {
+    const kilnHome = makeTempDir("kiln-ext-guard-");
+    tempDirs.push(kilnHome);
+
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      tokenSecret: "ext-guard-secret-0123456789abcdef",
+    });
+    servers.push(server);
+    await server.start();
+
+    const wakeSpy = vi.spyOn(server.orchestrator, "wake");
+    const publishedEvents: SseEvent[] = [];
+    const unsubscribeSse = server.sseHub.subscribe((ev) => {
+      publishedEvents.push(ev);
+    });
+
+    // 1. wb_ask_decision rejects agent-proposed return_external options
+    server.stateMachine.createTask(makeTaskCard({ id: "t-ask-guard" }), "# Guard");
+    const runMeta = makeRunMeta({
+      task_id: "t-ask-guard",
+      run_id: "run-ask-guard-1",
+      stage: "implement",
+      round: 1,
+      role: "worker",
+      contract_version: 1,
+    });
+    server.persistRunForDispatch(runMeta, "001-implement");
+    const workerToken = server.issueRunToken({
+      taskId: "t-ask-guard",
+      runId: "run-ask-guard-1",
+      role: "worker",
+      contractVersion: 1,
+    });
+    const askExt = await requestMcpRpc(server, {
+      method: "POST",
+      path: "/rpc/mcp/wb_ask_decision",
+      headers: { Authorization: `Bearer ${workerToken}` },
+      body: {
+        category: "worker_decision",
+        reason: "needs_host",
+        question: "Should we return external?",
+        options: [
+          {
+            id: "opt-ext",
+            label: "Hand over to external",
+            action: "return_external",
+            recommended: true,
+          },
+        ],
+      },
+    });
+    expect(askExt.status).toBe(400);
+    expect(askExt.json.error).toBe("invalid_decision_option");
+
+    // 2. Draft commit & wb_plan(commit_card) reject drafts/ paths while keeping draft intact and allowing repo-relative docs/drafts/...
+    const draftId = "d-drafts-guard";
+    const createDraftRes = await requestHttp(server, "/api/drafts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: draftId,
+        title: "Cleanup temp test",
+        space: "local",
+        workspace_mode: "host_scoped",
+      }),
+    });
+    expect(createDraftRes.status).toBe(201);
+
+    const draftSubdir = path.join(server.store.paths.draftDir(draftId), "cleanup.py");
+    const badScopeCommit = await requestHttp(server, `/api/drafts/${draftId}/commit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "t-bad-scope",
+        title: "Bad scope",
+        space: "local",
+        track: "L1",
+        workspace_mode: "host_scoped",
+        brief_markdown: "# Bad scope",
+        contract: {
+          goal: "Goal",
+          end: "Done",
+          accept_cmd: "echo ok",
+          accept_files_hash: "sha256:bad",
+          scope: [draftSubdir],
+          deliver: { mode: "manual", cmd: null },
+        },
+      }),
+    });
+    expect(badScopeCommit.status).toBe(400);
+    expect((await readJson(badScopeCommit)).error).toBe("invalid_contract_path");
+    expect(server.store.readDraft(draftId)).not.toBeNull();
+
+    const badAcceptCommit = await requestHttp(server, `/api/drafts/${draftId}/commit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "t-bad-accept",
+        title: "Bad accept",
+        space: "local",
+        track: "L1",
+        workspace_mode: "scratch_dir",
+        brief_markdown: "# Bad accept",
+        contract: {
+          goal: "Goal",
+          end: `产出到 ${server.store.paths.draftDir(draftId)}`,
+          accept_cmd: `test -f ${draftSubdir}`,
+          accept_files_hash: "sha256:bad",
+          scope: ["out.txt"],
+          deliver: { mode: "manual", cmd: null },
+        },
+      }),
+    });
+    expect(badAcceptCommit.status).toBe(400);
+    expect((await readJson(badAcceptCommit)).error).toBe("invalid_contract_path");
+    expect(server.store.readDraft(draftId)).not.toBeNull();
+
+    // wb_plan(commit_card) also rejects drafts/ references
+    server.stateMachine.createTask(makeTaskCard({ id: "t-intake-host" }), "# Intake host");
+    const intakeToken = server.issueRunToken({
+      taskId: "t-intake-host",
+      runId: "chat-intake-1",
+      role: "intake",
+      contractVersion: 1,
+    });
+    const badMcpCommit = await requestMcpRpc(server, {
+      method: "POST",
+      path: "/rpc/mcp/wb_plan",
+      headers: { Authorization: `Bearer ${intakeToken}` },
+      body: {
+        mode: "commit_card",
+        draft_id: draftId,
+        title: "Bad MCP commit",
+        space: "local",
+        priority: "P2",
+        track: "L1",
+        workspace_mode: "scratch_dir",
+        depends_on: [],
+        brief_markdown: "# Bad MCP",
+        contract: {
+          goal: "Goal",
+          end: `Generate inside ${server.store.paths.draftDir(draftId)}`,
+          accept_cmd: "echo ok",
+          accept_files_hash: "sha256:bad",
+          scope: ["out.txt"],
+          deliver: { mode: "manual", cmd: null },
+        },
+      },
+    });
+    expect(badMcpCommit.status).toBe(400);
+    expect(badMcpCommit.json.error).toBe("invalid_contract_path");
+    expect(server.store.readDraft(draftId)).not.toBeNull();
+
+    // Normal relative repo path like docs/drafts/spec.md is allowed
+    const allowedRelCommit = await requestHttp(server, `/api/drafts/${draftId}/commit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "t-good-rel",
+        title: "Good relative drafts path",
+        space: "local",
+        track: "L1",
+        workspace_mode: "scratch_dir",
+        brief_markdown: "# Good relative",
+        contract: {
+          goal: "Goal",
+          end: "Write docs/drafts/spec.md",
+          accept_cmd: "test -f docs/drafts/spec.md",
+          accept_files_hash: "sha256:good",
+          scope: ["docs/drafts/spec.md"],
+          deliver: { mode: "manual", cmd: null },
+        },
+      }),
+    });
+    expect(allowedRelCommit.status).toBe(201);
+
+    // 3. POST /api/tasks/:id/resume & POST /api/tasks/:id/complete handle external tasks + wake downstream
+    server.stateMachine.createTask(makeTaskCard({ id: "t-ext-api-1" }), "# Ext 1");
+    server.store.appendStateEvent("t-ext-api-1", {
+      type: "external",
+      at: "2026-11-22T02:00:00.000Z",
+      detail: "waiting upstream PR",
+    });
+    const resumeCallsBefore = wakeSpy.mock.calls.length;
+    const resumeExtRes = await requestHttp(server, "/api/tasks/t-ext-api-1/resume", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stage: "deliver" }),
+    });
+    expect(resumeExtRes.status).toBe(200);
+    const resumeExtJson = await readJson(resumeExtRes);
+    expect(resumeExtJson.state.status).toBe("queued");
+    expect(resumeExtJson.state.stage).toBe("deliver");
+    expect(wakeSpy.mock.calls.length).toBeGreaterThan(resumeCallsBefore);
+    expect(
+      publishedEvents.some(
+        (ev) =>
+          ev.type === "task.updated" &&
+          ev.taskId === "t-ext-api-1" &&
+          ev.patch.status === "queued" &&
+          ev.patch.stage === "deliver",
+      ),
+    ).toBe(true);
+
+    server.stateMachine.createTask(makeTaskCard({ id: "t-ext-api-2" }), "# Ext 2");
+    server.stateMachine.createTask(
+      makeTaskCard({ id: "t-ext-downstream", depends_on: ["t-ext-api-2"] }),
+      "# Downstream",
+    );
+    server.store.appendStateEvent("t-ext-api-2", {
+      type: "external",
+      at: "2026-11-22T02:05:00.000Z",
+      detail: "waiting external verify",
+    });
+    const completeCallsBefore = wakeSpy.mock.calls.length;
+    const completeExtRes = await requestHttp(server, "/api/tasks/t-ext-api-2/complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deliver_ref: "manual_ok" }),
+    });
+    expect(completeExtRes.status).toBe(200);
+    const completeExtJson = await readJson(completeExtRes);
+    expect(completeExtJson.state.status).toBe("done");
+    expect(wakeSpy.mock.calls.length).toBeGreaterThan(completeCallsBefore);
+    expect(
+      publishedEvents.some(
+        (ev) =>
+          ev.type === "task.updated" &&
+          ev.taskId === "t-ext-api-2" &&
+          ev.patch.status === "done",
+      ),
+    ).toBe(true);
+    unsubscribeSse();
   });
 });

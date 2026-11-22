@@ -11,6 +11,7 @@ import type {
   RolesConfig,
   SpaceConfig,
   SseEvent,
+  StageId,
   Track,
   WorkspaceMode,
 } from "@kiln/protocol/web";
@@ -18,6 +19,7 @@ import {
   ApiError,
   cancelTask as apiCancelTask,
   commitDraft as apiCommitDraft,
+  completeTask as apiCompleteTask,
   deleteDraft as apiDeleteDraft,
   deleteSpace as apiDeleteSpace,
   discoverSpaces as apiDiscoverSpaces,
@@ -1464,9 +1466,9 @@ export class KilnWebStore {
     }
   }
 
-  async resumeTask(taskId: string): Promise<void> {
+  async resumeTask(taskId: string, stage?: StageId): Promise<void> {
     try {
-      await apiResumeTask(taskId);
+      await apiResumeTask(taskId, stage);
       this.showToast("已恢复继续推进");
       await this.bootstrap();
       if (this.state.taskId === taskId) {
@@ -1474,6 +1476,19 @@ export class KilnWebStore {
       }
     } catch (err) {
       this.showToast(err instanceof Error ? err.message : "恢复失败");
+    }
+  }
+
+  async completeTask(taskId: string, deliverRef?: string): Promise<void> {
+    try {
+      await apiCompleteTask(taskId, deliverRef);
+      this.showToast("已标记任务完成");
+      await this.bootstrap();
+      if (this.state.taskId === taskId) {
+        await this.loadTaskDetail(taskId);
+      }
+    } catch (err) {
+      this.showToast(err instanceof Error ? err.message : "标记完成失败");
     }
   }
 

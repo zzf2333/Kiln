@@ -913,6 +913,140 @@ export function validateCommitWorkspace(
   }
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function collectForbiddenDraftsPrefixes(store: KilnStore): {
+  fsRoots: string[];
+  textPrefixes: string[];
+} {
+  const fsRootSet = new Set<string>();
+  const textSet = new Set<string>();
+
+  const addFsRoot = (candidate: string): void => {
+    const resolved = path.resolve(candidate);
+    fsRootSet.add(resolved);
+    textSet.add(resolved);
+    textSet.add(resolved.replace(/\\/g, "/"));
+  };
+
+  addFsRoot(store.paths.draftsDir);
+  if (fs.existsSync(store.paths.draftsDir)) {
+    try {
+      addFsRoot(realpathCanonical(store.paths.draftsDir));
+    } catch {
+      // Ignore transient filesystem errors during canonical lookup.
+    }
+  } else if (fs.existsSync(store.paths.home)) {
+    try {
+      addFsRoot(path.join(realpathCanonical(store.paths.home), "drafts"));
+    } catch {
+      // Ignore transient filesystem errors during canonical lookup.
+    }
+  }
+
+  const defaultKilnHome = path.resolve(path.join(os.homedir(), ".kiln"));
+  if (path.resolve(store.paths.home) === defaultKilnHome) {
+    textSet.add("~/.kiln/drafts");
+    textSet.add("~\\.kiln\\drafts");
+  }
+
+  return {
+    fsRoots: Array.from(fsRootSet),
+    textPrefixes: Array.from(textSet).filter((p) => p.length > 0),
+  };
+}
+
+function isInsideDraftsDir(candidatePath: string, fsRoots: readonly string[]): boolean {
+  const expanded = expandTildePath(candidatePath);
+  const withoutTrailingGlob = expanded.replace(/([/\\]\*\*?)+$/, "");
+  if (!path.isAbsolute(withoutTrailingGlob)) {
+    return false;
+  }
+
+  const candidates = new Set<string>([path.resolve(withoutTrailingGlob)]);
+  let probe = path.resolve(withoutTrailingGlob);
+  while (true) {
+    if (fs.existsSync(probe)) {
+      try {
+        const canonicalExisting = realpathCanonical(probe);
+        const rel = path.relative(probe, path.resolve(withoutTrailingGlob));
+        candidates.add(rel ? path.resolve(canonicalExisting, rel) : canonicalExisting);
+      } catch {
+        // Ignore unresolvable paths
+      }
+      break;
+    }
+    const parent = path.dirname(probe);
+    if (parent === probe) {
+      break;
+    }
+    probe = parent;
+  }
+
+  for (const cand of candidates) {
+    for (const root of fsRoots) {
+      const normalizedCand = process.platform === "win32" ? cand.toLowerCase() : cand;
+      const normalizedRoot = process.platform === "win32" ? root.toLowerCase() : root;
+      const prefix = normalizedRoot.endsWith(path.sep)
+        ? normalizedRoot
+        : normalizedRoot + path.sep;
+      if (normalizedCand === normalizedRoot || normalizedCand.startsWith(prefix)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function containsDraftsReference(text: string, textPrefixes: readonly string[]): boolean {
+  const flags = process.platform === "win32" ? "i" : "";
+  for (const prefix of textPrefixes) {
+    const escaped = escapeRegExp(prefix);
+    const pattern = new RegExp(
+      `(?:^|[\\s"'\`=:(;|&])${escaped}(?:$|[/\\\\\\s"'\`;|&)])`,
+      flags,
+    );
+    if (pattern.test(text)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Validates that a committed task contract never references ephemeral `drafts/` directories
+ * that are deleted immediately once a draft commits into a task.
+ */
+export function validateCommitContract(
+  store: KilnStore,
+  contract: { end: string; accept_cmd: string; scope: readonly string[] },
+): void {
+  const { fsRoots, textPrefixes } = collectForbiddenDraftsPrefixes(store);
+
+  const reject = (field: "scope" | "accept_cmd" | "end"): never => {
+    throw new ServerHttpError(400, {
+      error: "invalid_contract_path",
+      field,
+      message:
+        "任务契约禁止引用立项临时目录 drafts/（立项提交后会自动删除），请改用持久工作目录或目标白名单路径",
+    });
+  };
+
+  for (const entry of contract.scope) {
+    if (isInsideDraftsDir(entry, fsRoots) || containsDraftsReference(entry, textPrefixes)) {
+      reject("scope");
+    }
+  }
+  if (containsDraftsReference(contract.accept_cmd, textPrefixes)) {
+    reject("accept_cmd");
+  }
+  if (containsDraftsReference(contract.end, textPrefixes)) {
+    reject("end");
+  }
+}
+
 const SPACE_FILES_CACHE_TTL_MS = 15_000;
 const SPACE_FILES_CACHE_MAX_REPOS = 16;
 const spaceFilesCache = new Map<string, { at: number; entries: SpaceFileEntry[] }>();

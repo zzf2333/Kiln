@@ -3948,4 +3948,185 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     });
     expect(within(taskBox).getByText("@task:t-ref-9")).toBeTruthy();
   });
+
+  it("DecisionBox shows clear Chinese action consequence warnings and DetailView exposes resume/complete actions for external tasks", async () => {
+    const now = new Date().toISOString();
+    const bootstrap = makeBaseBootstrap({
+      tasks: [
+        {
+          id: "t-ext-ui",
+          space: "local",
+          parent_id: null,
+          title: "已停滞的外部等待任务",
+          priority: "P2",
+          effective_priority: "P2",
+          track: "L2",
+          workspace_mode: "host_scoped",
+          status: "external",
+          stage: "implement",
+          round: 1,
+          active_run_id: null,
+          contract_version: 1,
+          depends_on: [],
+          created_at: now,
+          updated_at: now,
+          tokens: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+          cost_usd: 0,
+        },
+        {
+          id: "t-warn-dec",
+          space: "kiln",
+          parent_id: null,
+          title: "外部警告决策测试",
+          priority: "P2",
+          effective_priority: "P2",
+          track: "L2",
+          workspace_mode: "git_worktree",
+          status: "waiting",
+          stage: "deliver",
+          round: 1,
+          active_run_id: null,
+          contract_version: 1,
+          depends_on: [],
+          created_at: now,
+          updated_at: now,
+          tokens: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+          cost_usd: 0,
+        },
+      ],
+      pendingDecisions: [
+        {
+          id: "dec-warn",
+          task_id: "t-warn-dec",
+          contract_version: 1,
+          reason: "external_action_approval",
+          category: "external_deliver_pr",
+          question: "是否转入外部等待？",
+          options: [
+            {
+              id: "opt-ext",
+              label: "已提交 PR 等上游回应",
+              action: "return_external",
+              recommended: true,
+            },
+            {
+              id: "opt-fin",
+              label: "直接完成",
+              action: "finish",
+              recommended: false,
+            },
+          ],
+          created_at: now,
+        },
+      ],
+    });
+
+    const extDetail: TaskDetailResponse = {
+      card: {
+        schema_version: 1,
+        id: "t-ext-ui",
+        title: "已停滞的外部等待任务",
+        space: "local",
+        priority: "P2",
+        track: "L2",
+        workspace_mode: "host_scoped",
+        parent: null,
+        depends_on: [],
+        contract_version: 1,
+        contract: {
+          goal: "清理缓存",
+          end: "完成",
+          accept_cmd: "echo ok",
+          accept_files_hash: "sha256:extui",
+          scope: ["~/tmp"],
+          deliver: { mode: "manual", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 250000 },
+        created_at: now,
+        updated_at: now,
+      },
+      state: {
+        status: "external",
+        stage: "implement",
+        round: 1,
+        activeRunId: null,
+        priority: "P2",
+        effectivePriority: "P2",
+        track: "L2",
+        contractVersion: 1,
+        updatedAt: now,
+      },
+      brief: "# 外部等待任务",
+      decisions: "",
+      pendingDecision: null,
+      ledgerProposals: [],
+      runs: [],
+      usageTurns: [],
+      usage: {
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        costUsd: 0,
+        byAgent: {},
+        byModel: {},
+      },
+      stateEvents: [
+        { type: "queued", at: now },
+        {
+          type: "decided",
+          at: now,
+          decision_id: "dec-old",
+          action: "return_external",
+        },
+      ],
+    };
+
+    const calledUrls: string[] = [];
+    fetchMock.mockImplementation(async (url) => {
+      calledUrls.push(String(url));
+      if (url === "/api/bootstrap") return jsonResponse(bootstrap);
+      if (url === "/api/tasks/t-ext-ui") return jsonResponse(extDetail);
+      if (url === "/api/tasks/t-ext-ui/resume") return jsonResponse({ ok: true });
+      if (url === "/api/tasks/t-ext-ui/complete") return jsonResponse({ ok: true });
+      return jsonResponse({});
+    });
+
+    // 1. Check DecisionBox displays Chinese consequence descriptions & warn styling
+    window.location.hash = "#view=inbox";
+    const rInbox = render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("是否转入外部等待？")).toBeTruthy();
+    });
+    expect(screen.getByText("return_external")).toBeTruthy();
+    expect(screen.getByText("挂起等待外部（不会自动执行）")).toBeTruthy();
+    expect(screen.getByText("直接标记完成")).toBeTruthy();
+    expect(rInbox.container.querySelector(".opt-act.is-warn")).toBeTruthy();
+    expect(rInbox.container.querySelector(".opt-act-desc.is-warn")).toBeTruthy();
+    rInbox.unmount();
+
+    // 2. Check DetailView external card and resume/complete buttons
+    window.location.hash = "#task=t-ext-ui";
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("外部等待中（当前不会自动继续推进）")).toBeTruthy();
+    });
+
+    const resumeButtons = screen.getAllByRole("button", { name: "继续推进" });
+    const completeButtons = screen.getAllByRole("button", { name: "标记已完成" });
+    expect(resumeButtons.length).toBeGreaterThanOrEqual(2);
+    expect(completeButtons.length).toBeGreaterThanOrEqual(2);
+
+    fireEvent.click(resumeButtons[0]!);
+    await waitFor(() => {
+      expect(calledUrls).toContain("/api/tasks/t-ext-ui/resume");
+    });
+
+    fireEvent.click(completeButtons[0]!);
+    await waitFor(() => {
+      expect(calledUrls).toContain("/api/tasks/t-ext-ui/complete");
+    });
+  });
 });

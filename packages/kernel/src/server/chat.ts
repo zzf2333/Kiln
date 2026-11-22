@@ -1439,6 +1439,7 @@ export class KilnChatEngine {
       : [
           `当前任务模式：本机 / 临时任务（非 Git 项目空间，cwd=${cwd}）`,
           `可用 workspace_mode 仅限 scratch_dir（独立临时沙盒）或 host_scoped（本机白名单文件两阶段暂存，严禁在立项阶段直接改动宿主机文件）。`,
+          `严禁将当前立项临时目录（${cwd} 或任何 ~/.kiln/drafts/ 路径）写入 contract.end、accept_cmd 或 scope：立项提交后草稿目录会被自动删除。scratch_dir 模式请使用相对工作区路径，host_scoped 模式请使用用户明确指定的宿主机持久化路径。`,
         ].join("\n");
 
     const draftSummary = [

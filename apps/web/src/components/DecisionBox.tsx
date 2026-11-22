@@ -6,9 +6,9 @@ import { WarnCircleIcon } from "./Icons";
 import { MarkdownContent } from "./MarkdownContent";
 
 const ACTION_DESC: Record<DecisionAction, string> = {
-  resume: "继续推进",
-  return_external: "回到外部等待",
-  finish: "直接结束",
+  resume: "确认后继续推进",
+  return_external: "挂起等待外部（不会自动执行）",
+  finish: "直接标记完成",
   cancel: "取消任务",
 };
 
@@ -97,8 +97,21 @@ export function DecisionBox({
                 <div class="opt-label">
                   {opt.recommended ? <span class="rec">推荐</span> : null}
                   <span>{opt.label}</span>
-                  <span class="opt-act" title={ACTION_DESC[opt.action]}>
+                  <span
+                    class={opt.action === "return_external" ? "opt-act is-warn" : "opt-act"}
+                    data-action={opt.action}
+                    title={ACTION_DESC[opt.action]}
+                  >
                     {opt.action}
+                  </span>
+                  <span
+                    class={
+                      opt.action === "return_external"
+                        ? "opt-act-desc is-warn"
+                        : "opt-act-desc"
+                    }
+                  >
+                    {ACTION_DESC[opt.action]}
                   </span>
                 </div>
                 {opt.cost_note ? (

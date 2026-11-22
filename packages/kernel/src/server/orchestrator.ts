@@ -612,7 +612,16 @@ function extractDecisionFromNeedDecisionReceipt(
     }
   }
 
-  if (!options) {
+  let strippedReturnExternal = false;
+  if (options) {
+    const filtered = options.filter((opt) => opt.action !== "return_external");
+    if (filtered.length !== options.length) {
+      strippedReturnExternal = true;
+      options = filtered;
+    }
+  }
+
+  if (!options || options.length === 0) {
     options = [
       DecisionOptionSchema.parse({
         id: "opt-resume",
@@ -628,7 +637,33 @@ function extractDecisionFromNeedDecisionReceipt(
         recommended: false,
       }),
     ];
+  } else if (strippedReturnExternal) {
+    if (!options.some((opt) => opt.action === "resume")) {
+      options.unshift(
+        DecisionOptionSchema.parse({
+          id: "opt-resume",
+          label: "确认澄清并继续推进当前阶段",
+          action: "resume",
+          target_stage: "implement",
+          recommended: !options.some((opt) => opt.recommended),
+        }),
+      );
+    }
+    if (!options.some((opt) => opt.action === "cancel")) {
+      options.push(
+        DecisionOptionSchema.parse({
+          id: "opt-cancel",
+          label: "取消任务",
+          action: "cancel",
+          recommended: false,
+        }),
+      );
+    }
   }
+
+  const effectiveQuestion = strippedReturnExternal
+    ? `${question}\n\n（注：执行阶段不支持自动转入外部等待，已由内核移除不合法的 return_external 选项）`
+    : question;
 
   return PendingDecisionSchema.parse({
     id: `dec-${randomUUID().slice(0, 8)}`,
@@ -637,7 +672,7 @@ function extractDecisionFromNeedDecisionReceipt(
     contract_version: contractVersion,
     reason,
     category,
-    question,
+    question: effectiveQuestion,
     options,
     created_at: new Date().toISOString(),
   });
@@ -1404,7 +1439,7 @@ export class KilnOrchestrator {
 
     const modeNote =
       card.workspace_mode === "host_scoped"
-        ? `当前为 host_scoped 模式：只能把待写文件写入沙盒暂存目录 ${this.store.paths.stagedDir(card.id)}，严禁直接修改宿主机目标文件！`
+        ? `当前为 host_scoped 模式：只能把待写文件写入沙盒暂存目录 ${this.store.paths.stagedDir(card.id)}，并在回执 changed_paths 中列出对应的宿主机目标绝对路径，严禁直接修改宿主机目标文件！提交 outcome: completed 后将由 Kiln 内核向用户发起落盘审批并原子写入，严禁使用或提出 action: return_external。`
         : card.workspace_mode === "git_worktree"
           ? `当前为 git_worktree 模式：工作区位于 ${cwd}。你只需编辑工作区内 scope 允许的文件并运行验收命令，严禁在受限沙箱里执行 git commit、git merge 或 git push；通过门禁后将由 kilnd 内核统一提交并合入。`
           : `当前为 scratch_dir 模式：独立目录位于 ${cwd}。`;

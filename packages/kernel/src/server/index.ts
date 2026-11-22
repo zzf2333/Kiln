@@ -172,6 +172,7 @@ export {
   listSpaceFiles,
   pickLocalDirectory,
   revealLocalPath,
+  validateCommitContract,
   validateCommitWorkspace,
   type DiscoverLocalGitReposOptions,
   type InspectedSpaceInfo,

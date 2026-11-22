@@ -379,6 +379,17 @@ export function DetailView() {
   const restoreErr =
     state.restoreResult && !state.restoreResult.ok ? state.restoreResult : null;
 
+  const latestExternalEvent =
+    taskState.status === "external" && detail.stateEvents
+      ? [...detail.stateEvents]
+          .reverse()
+          .find(
+            (ev) =>
+              ev.type === "external" ||
+              (ev.type === "decided" && ev.action === "return_external"),
+          )
+      : undefined;
+
   return (
     <ViewFrame
       left={
@@ -403,13 +414,22 @@ export function DetailView() {
               暂停
             </button>
           ) : null}
-          {taskState.status === "paused" ? (
+          {taskState.status === "paused" || taskState.status === "external" ? (
             <button
               type="button"
               class="btn btn-light"
               onClick={() => void store.resumeTask(card.id)}
             >
               继续推进
+            </button>
+          ) : null}
+          {taskState.status === "external" ? (
+            <button
+              type="button"
+              class="btn"
+              onClick={() => void store.completeTask(card.id)}
+            >
+              标记已完成
             </button>
           ) : null}
           {canShowRestore ? (
@@ -695,6 +715,41 @@ export function DetailView() {
                   onSubmit={(payload) => store.submitDecision(card.id, payload)}
                   onOpenResolve={() => store.openResolve(card.id)}
                 />
+              ) : null}
+
+              {taskState.status === "external" ? (
+                <section class="external-box" role="status">
+                  <div class="external-head">
+                    <span>外部等待中（当前不会自动继续推进）</span>
+                    {latestExternalEvent ? (
+                      <span class="muted mono">{fmtTime(latestExternalEvent.at)}</span>
+                    ) : null}
+                  </div>
+                  <p class="external-meta">
+                    {latestExternalEvent?.type === "external" && latestExternalEvent.detail
+                      ? `说明：${latestExternalEvent.detail}。`
+                      : latestExternalEvent?.type === "decided"
+                        ? `于 ${fmtTime(latestExternalEvent.at)} 经人工选择转入外部等待（decision ${latestExternalEvent.decision_id}）。`
+                        : "当前任务处于外部等待挂起状态。"}
+                    请确认外部前置条件已就绪后点「继续推进」，或直接点「标记已完成」结束任务。
+                  </p>
+                  <div class="external-actions">
+                    <button
+                      type="button"
+                      class="btn btn-light"
+                      onClick={() => void store.resumeTask(card.id)}
+                    >
+                      继续推进
+                    </button>
+                    <button
+                      type="button"
+                      class="btn"
+                      onClick={() => void store.completeTask(card.id)}
+                    >
+                      标记已完成
+                    </button>
+                  </div>
+                </section>
               ) : null}
 
               <HostStagedDiffSection detail={detail} />

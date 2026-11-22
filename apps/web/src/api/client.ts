@@ -6,6 +6,7 @@ import type {
   Priority,
   SpaceConfig,
   SseEvent,
+  StageId,
   TaskCard,
 } from "@kiln/protocol/web";
 import type {
@@ -269,10 +270,17 @@ export async function pauseTask(taskId: string, reason?: string): Promise<void> 
   });
 }
 
-export async function resumeTask(taskId: string): Promise<void> {
+export async function resumeTask(taskId: string, stage?: StageId): Promise<void> {
   await requestJson(`/api/tasks/${encodeURIComponent(taskId)}/resume`, {
     method: "POST",
-    body: JSON.stringify({}),
+    body: JSON.stringify(stage ? { stage } : {}),
+  });
+}
+
+export async function completeTask(taskId: string, deliverRef?: string): Promise<void> {
+  await requestJson(`/api/tasks/${encodeURIComponent(taskId)}/complete`, {
+    method: "POST",
+    body: JSON.stringify(deliverRef ? { deliver_ref: deliverRef } : {}),
   });
 }
 

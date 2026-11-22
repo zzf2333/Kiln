@@ -6,6 +6,7 @@ import {
   DecisionRecordSchema,
   PendingDecisionSchema,
   PrioritySchema,
+  StageIdSchema,
   TaskCardSchema,
   serializeFrontmatterMarkdown,
   type CardContract,
@@ -351,18 +352,21 @@ export class TaskStateMachine {
   }
 
   /**
-   * Resumes a `paused` task back to `queued` at its preserved stage,
-   * or enters `waiting(upstream_cancelled)` if a prerequisite was cancelled while paused.
+   * Resumes a `paused` or `external` task back to `queued` at its preserved (or explicit target) stage,
+   * or enters `waiting(upstream_cancelled)` if a prerequisite was cancelled while paused/external.
    */
-  resumeTask(taskId: string, now?: string): DerivedTaskState {
+  resumeTask(taskId: string, now?: string, targetStage?: StageId): DerivedTaskState {
     const { card, derived } = this.requireTaskState(taskId);
-    if (derived.status !== "paused") {
+    if (derived.status !== "paused" && derived.status !== "external") {
       throw new InvalidStateTransitionError(derived.status, "queued");
     }
     assertValidTransition(derived.status, "queued");
 
     const stages = getTrackStages(derived.track, card.contract.human_accept);
-    const stageToResume = derived.stage ?? stages[0];
+    const stageToResume =
+      targetStage !== undefined
+        ? StageIdSchema.parse(targetStage)
+        : (derived.stage ?? stages[0]);
     if (!stageToResume) {
       throw new Error(`No stage available to resume task "${taskId}"`);
     }
@@ -382,6 +386,35 @@ export class TaskStateMachine {
         reason: "upstream_cancelled",
       });
     }
+
+    this.syncAllEffectivePriorities();
+    return nextState;
+  }
+
+  /**
+   * Marks an `external` task as manually completed (`done`).
+   */
+  completeExternalTask(
+    taskId: string,
+    deliverRef?: string,
+    now?: string,
+  ): DerivedTaskState {
+    const { derived } = this.requireTaskState(taskId);
+    if (derived.status !== "external") {
+      throw new InvalidStateTransitionError(derived.status, "done");
+    }
+    assertValidTransition(derived.status, "done");
+
+    const timestamp = now ?? new Date().toISOString();
+    const trimmedDeliverRef = deliverRef?.trim();
+    const nextState = this.store.appendStateEvent(taskId, {
+      type: "done",
+      at: timestamp,
+      deliver_ref:
+        trimmedDeliverRef && trimmedDeliverRef.length > 0
+          ? trimmedDeliverRef
+          : "manual_external_completed",
+    });
 
     this.syncAllEffectivePriorities();
     return nextState;

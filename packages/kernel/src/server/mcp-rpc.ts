@@ -55,7 +55,7 @@ import {
   readTaskCardOptional,
   resolveCardLimits,
 } from "./pending-decisions.js";
-import { validateCommitWorkspace } from "./space-inspect.js";
+import { validateCommitContract, validateCommitWorkspace } from "./space-inspect.js";
 import type { SseHub } from "./sse.js";
 import { RunTokenAuthError, verifyRunToken } from "./token.js";
 
@@ -875,6 +875,7 @@ export class McpRpcServer {
           created_at: now,
           updated_at: now,
         });
+        validateCommitContract(this.store, card.contract);
 
         const created = this.stateMachine.createTask(card, input.brief_markdown);
         if (input.draft_id !== undefined) {
@@ -1002,6 +1003,13 @@ export class McpRpcServer {
     claims: RunTokenClaims,
   ): Record<string, unknown> {
     const input = WbAskDecisionInputSchema.parse(rawBody);
+    if (input.options.some((opt) => opt.action === "return_external")) {
+      throw new ServerHttpError(400, {
+        error: "invalid_decision_option",
+        message:
+          'Agent roles cannot propose "return_external" options; use "resume", "finish", or "cancel"',
+      });
+    }
     const card = this.requireCard(claims.taskId);
 
     if (card.contract_version !== claims.contractVersion) {

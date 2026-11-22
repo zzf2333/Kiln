@@ -99,6 +99,7 @@ import {
   listSpaceFiles,
   pickLocalDirectory,
   revealLocalPath,
+  validateCommitContract,
   validateCommitWorkspace,
 } from "./space-inspect.js";
 import type { SseHub } from "./sse.js";
@@ -194,6 +195,14 @@ const CommitDraftRequestSchema = z.object({
 
 const OptionalReasonBodySchema = z.object({
   reason: z.string().min(1).optional(),
+});
+
+const ResumeTaskBodySchema = z.object({
+  stage: StageIdSchema.optional(),
+});
+
+const CompleteTaskBodySchema = z.object({
+  deliver_ref: z.string().trim().min(1).optional(),
 });
 
 const ContractUpdatePayloadSchema = z.object({
@@ -1408,6 +1417,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       created_at: now,
       updated_at: now,
     });
+    validateCommitContract(store, card.contract);
 
     const created = stateMachine.createTask(card, effectiveBrief);
     store.deleteDraft(draftId);
@@ -1501,11 +1511,13 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
 
   app.post("/api/tasks/:id/resume", async (c) => {
     const taskId = requireExistingTask(c.req.param("id"));
-    await readJsonBodyOptional(c);
-    const nextState = stateMachine.resumeTask(taskId);
+    const body = ResumeTaskBodySchema.parse(await readJsonBodyOptional(c));
+    const nextState = stateMachine.resumeTask(taskId, undefined, body.stage);
     let waitingDecision: PendingDecision | null = null;
     if (nextState.status === "waiting") {
       waitingDecision = pendingDecisions.ensureUpstreamCancelledDecision(taskId);
+    } else {
+      pendingDecisions.remove(taskId);
     }
     caffeinate.syncRunningCount(countRunningLeafTasks(store));
     if (waitingDecision) {
@@ -1529,6 +1541,26 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     if (nextState.status === "queued") {
       onTaskQueued?.(taskId);
     }
+    return c.json({ ok: true, taskId, state: nextState });
+  });
+
+  app.post("/api/tasks/:id/complete", async (c) => {
+    const taskId = requireExistingTask(c.req.param("id"));
+    const body = CompleteTaskBodySchema.parse(await readJsonBodyOptional(c));
+    const nextState = stateMachine.completeExternalTask(taskId, body.deliver_ref);
+    pendingDecisions.remove(taskId);
+    caffeinate.syncRunningCount(countRunningLeafTasks(store));
+    sseHub.publish({
+      type: "task.updated",
+      taskId,
+      patch: {
+        status: nextState.status,
+        ...(nextState.stage !== null ? { stage: nextState.stage } : {}),
+        ...(nextState.round !== null ? { round: nextState.round } : {}),
+        contractVersion: nextState.contractVersion,
+      },
+    });
+    onTaskQueued?.(taskId);
     return c.json({ ok: true, taskId, state: nextState });
   });
 
