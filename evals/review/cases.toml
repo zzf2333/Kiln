@@ -63,3 +63,11 @@ fix = ["50d61a02c687e6cf058e785c257c7922fb3e37b6"]
 risk = "high"
 files = ["packages/kernel/src/server/space-inspect.ts"]
 defect = "resolveRevealTargetPath 对 file:// URL 未先校验 hostname 为空或 localhost 即直接调用 fileURLToPath，且未拦截 UNC 网络路径；在 Windows 下 file://evil.example.com/... 会被转为 \\\\evil.example.com\\... 并传入 fs.existsSync，既绕过 400 invalid_path 校验又可能触发对外 SMB 访问。"
+
+[[cases]]
+id = "R9"
+intro = "739bfcaf41d1d2aa92182f675bcfc32b09d1c178"
+fix = ["a7a0b8804ec47371dbd35e3a405b001fadd26427"]
+risk = "high"
+files = ["packages/kernel/src/server/mcp-rpc.ts"]
+defect = "handleAskDecision 未禁止执行阶段 Agent 提交 action='return_external' 的待决选项，导致用户误采纳后将未完成任务切入 external 且缺乏恢复/完结出口而永久停滞。"

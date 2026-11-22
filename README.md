@@ -10,11 +10,11 @@
 
 ## Core Design Principles
 
-1. **Deterministic Zero-Token Kernel (`kilnd`)**: Scheduling, SQLite lease acquisition, editable-scope validation, frozen-test hash checks, and acceptance-command reruns are executed deterministically in code—never by burning tokens on agent-to-agent chatter.
-2. **Verify, Never Trust**: Agent self-reports are never accepted as proof of completion. Every handoff must pass real `accept_cmd` execution in isolation plus heterogeneous-model review (the reviewer avoids the implementation model, and any frozen-test modification triggers escalation).
+1. **Deterministic Zero-Token Kernel (`kilnd`)**: Composable workflow blueprints (`quick`, `host_op`, `standard_dev`, `full_delivery`, plus custom `agent / gate / command / approval` nodes and bounded `loop` cycles), scheduling, SQLite lease acquisition, editable-scope validation, frozen-test hash checks, two-phase `host_op` (`staged_only` + `staged_sha256` rollback), and acceptance-command reruns execute deterministically in code—never by burning tokens on agent-to-agent chatter.
+2. **Verify, Never Trust**: Agent self-reports are never accepted as proof of completion. Every handoff must pass real `accept_cmd` execution in isolation plus heterogeneous-model review (the reviewer avoids the implementation model, and any frozen-test modification triggers escalation). Ambiguous technical tradeoffs and repeated `stuck_threshold` failures route to a fresh-context `advisor` with Fail-Closed authority guardrails (producing `PLAN.md`) while keeping human boundaries (`scope_clarification`, `frozen_test_escalation`, `external_action`) gated on explicit user approval.
 3. **Swappable Agents & Backends**: Execution engines sit behind a narrow `ExecutionBackend` interface (V1 uses the Paseo TS SDK to cover Codex, Pi, and `agy acp`). All 7 workflow roles can hot-swap agents and models in settings while workflows and the decision ledger stay locally in `~/.kiln/`.
 4. **Four Isolated Workspace Modes**: Native support for code repositories (`git_worktree` + APFS copy-on-write on macOS), host configuration changes (`host_scoped` two-phase staging + path locks + SHA256 rollback guards), standalone research (`scratch_dir`), and external follow-ups (`external_only`).
-5. **One Core, Multiple Surfaces**: A single zero-dependency daemon (`127.0.0.1:4310` local, optional authenticated `127.0.0.1:4311` remote) powers the `kiln` / `kl` single-binary CLI, the embedded desktop/mobile Web workbench (PWA), the internal stdio MCP tool bridge (`kiln __mcp`), and the macOS/Windows Tauri v2 Sidecar tray app—with token usage normalized transparently against official API pricing.
+5. **One Core, Multiple Surfaces**: A single zero-dependency daemon (`127.0.0.1:4310` local, optional authenticated `127.0.0.1:4311` remote) powers the `kiln` / `kl` single-binary CLI, the embedded desktop/mobile Web workbench (PWA) with `Agent · Session` I/O detail overviews and local-only native TUI handoff (`codex resume` / `pi --session` / `claude --resume` / `opencode --session`; `:4311` blocked with `403 local_only_endpoint`), the internal stdio MCP tool bridge (`kiln __mcp`), and the macOS/Windows Tauri v2 Sidecar tray app—with token usage normalized transparently against official API pricing.
 
 ---
 
@@ -22,8 +22,8 @@
 
 | Path | Description |
 | :--- | :--- |
-| [`packages/protocol`](packages/protocol/package.json) | **Pure Data Contracts**: End-to-end Zod schemas, `card.yaml` / receipt / config parsing, pricing formulas, and browser bundle (`@kiln/protocol/web`) |
-| [`packages/kernel`](packages/kernel/package.json) | **`kilnd` Daemon Core**: State machine, scheduler, verification gates, zero-native SQLite (`bun:sqlite` / `node:sqlite`) store, dual-port HTTP+SSE API, embedded static asset server, and `ExecutionBackend` adapters |
+| [`packages/protocol`](packages/protocol/package.json) | **Pure Data Contracts**: End-to-end Zod schemas, composable workflow blueprints (`workflow-core.ts`, `workflow.ts`), advisor decision contracts, `card.yaml` / receipt / config parsing, pricing formulas, and browser bundle (`@kiln/protocol/web`) |
+| [`packages/kernel`](packages/kernel/package.json) | **`kilnd` Daemon Core**: Composable blueprint orchestrator & state machine, scheduler, verification gates & two-phase `host_op` staging, zero-native SQLite (`bun:sqlite` / `node:sqlite`) store, dual-port HTTP+SSE API, `tui-launcher.ts`, embedded static asset server, and `ExecutionBackend` adapters |
 | [`packages/mcp`](packages/mcp/package.json) | **`kiln-mcp` Tool Server**: Restricted `stdio` MCP server (also embedded as `kiln __mcp`) communicating with `kilnd` over POSIX `0600` Unix socket or Windows Named Pipe + `KILN_RUN_TOKEN` |
 | [`packages/cli`](packages/cli/package.json) | **`kiln` / `kl` CLI**: Daemon lifecycle, status inspection, draft/decision/space/remote workflows, diagnostics, and opt-in OS startup services (macOS / Linux / Windows) |
 | [`apps/web`](apps/web/package.json) | **Web Workbench**: Preact adaptive UI for desktop and mobile (`<= 820px`), compiled into `packages/kernel/public/` and embedded into standalone binaries |
@@ -145,6 +145,7 @@ kiln uninstall                  # Stop daemon, remove service, inspect worktrees
 | `kiln space <list\|add [path]\|rm <id>> [--id <id>] [--name <name>] [--branch <branch>] [--accept-cmd <cmd>] [--copy-untracked <csv>] [--clone-deps <csv>] [--port <port>] [--host <host>] [--json]` | List, register/inspect a local Git repository (`add` defaults to current directory), or remove an idle project space |
 | `kiln draft "<idea>" [--id <id>] [--space <id>] [--priority <P0\|P1\|P2\|P3>] [--track <L1\|L2>] [--mode <git_worktree\|host_scoped\|scratch_dir>] [--port <port>] [--host <host>]` | Create a new draft card |
 | `kiln decide [task-id] [--option <id>] [--decision <id>] [--rationale <text>] [--apply-ledger] [--port <port>] [--host <host>]` | List or submit pending approval decisions |
+| `kiln remote <status\|enable\|disable\|pair\|devices\|revoke\|tailscale> [...]` | Manage `:4311` remote access config, one-time pairing codes/URLs, paired devices, revocation, and Tailscale status |
 | `kiln doctor [--port <port>] [--host <host>] [--json]` | Check Node, Git, APFS clone support, `kilnd` reachability, Paseo agent discovery (`required: false`), and startup service state |
 | `kiln service <install\|uninstall\|status> [--platform <darwin\|linux>] [--label <label>] [--service-name <name>]` | Explicitly install, remove, or inspect the OS background service |
 | `kiln uninstall [--purge-data] [--platform <darwin\|linux>]` | Stop daemon, remove startup service, inspect worktrees (add `--purge-data` to delete `~/.kiln`) |
@@ -157,8 +158,8 @@ kiln uninstall                  # Stop daemon, remove service, inspect worktrees
 - [x] **M0 · Technical Probe Verification**: Verified underlying agent capabilities, permission policies, and token/cost accounting formats.
 - [x] **M1 · Protocol & Headless Kernel**: Completed `packages/protocol`, `kernel`, `mcp`, `cli`, and concurrency race / store-rebuild test suites.
 - [x] **M2 · MVP Workbench Loop**: Passed all 8 real-machine E2E scenarios (`S1`–`S8`) against live Paseo (`codex` + `pi`), real `stdio` `kiln-mcp`, and Playwright Chrome acceptance across desktop (`1440×900`) and mobile (`390×844` `<= 820px`) viewports (with SQLite rebuild parity verified).
-- [ ] **M3 / M3.5 · Desktop Sidecar, Standalone Distribution & Remote Access V1 (In Progress)**: Zero-dependency single-binary CLI (`bun:sqlite`/`node:sqlite`, `kiln __mcp`, embedded Web UI + PWA), macOS `.dmg` & Windows NSIS `.exe` Tauri v2 Sidecar apps, dual-port fail-closed remote mobile access (`:4310` local / `:4311` authenticated), Bark/ntfy/Webhook push, and 3-OS CI/Release pipeline validated (`0.0.3` pre-release; `0.1.0` reserved for signed/notarized formal release).
-- [ ] **M4 · Post-MVP Evolution**: Retrospectives, serialized multi-slice merge queue, execution swimlanes, Tailscale/Passkey push notifications, and Epic Loop.
+- [ ] **M3 / M3.5 · Desktop Sidecar, Standalone Distribution & Remote Access V1 (In Progress)**: Zero-dependency single-binary CLI (`bun:sqlite`/`node:sqlite`, `kiln __mcp`, embedded Web UI + PWA), macOS `.dmg` & Windows NSIS `.exe` Tauri v2 Sidecar apps, dual-port fail-closed remote mobile access (`:4310` local / `:4311` authenticated), Bark/ntfy/Webhook push, and 3-OS CI/Release pipeline validated (`0.0.3` pre-release; `v0.0.4` composable workflow blueprints, two-phase `host_op`, Fail-Closed `advisor` decision layer, and `Agent + Session` I/O overview + local native TUI launch landed locally on `main`; `0.1.0` reserved for signed/notarized formal release).
+- [ ] **M4 · Post-MVP Evolution**: `v0.0.5` (`parallel` node concurrency & escalation routing), `v0.0.6` (`subflow` task sharding DAG & serialized merge queue), retrospectives, execution swimlanes, Tailscale/Passkey push notifications, and Epic Loop.
 
 ---
 
