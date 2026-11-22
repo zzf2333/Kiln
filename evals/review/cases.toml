@@ -55,3 +55,11 @@ fix = ["bbed1d6780185656680a5b8fae9ed9b2b46fb9c4"]
 risk = "medium"
 files = ["apps/web/src/state/pricing.ts"]
 defect = "computeTaskCostUsd 将整张任务卡跨阶段累计的全部 input/cached/output tokens 直接乘以最后阶段单个 task.model 的单价覆盖 task.cost_usd，导致开启异构审查或多模型执行时看板与用量页单卡费用失真并与总计/详情不一致。"
+
+[[cases]]
+id = "R8"
+intro = "031cf7acdae814329ac24b8d38d9b282df3ce41f"
+fix = ["50d61a02c687e6cf058e785c257c7922fb3e37b6"]
+risk = "high"
+files = ["packages/kernel/src/server/space-inspect.ts"]
+defect = "resolveRevealTargetPath 对 file:// URL 未先校验 hostname 为空或 localhost 即直接调用 fileURLToPath，且未拦截 UNC 网络路径；在 Windows 下 file://evil.example.com/... 会被转为 \\\\evil.example.com\\... 并传入 fs.existsSync，既绕过 400 invalid_path 校验又可能触发对外 SMB 访问。"
