@@ -28,6 +28,9 @@ import {
   canTransition,
   checkCircuitBreaker,
   computeEffectivePriorities,
+  computeGateFailureFingerprint,
+  computeReviewerFailureFingerprint,
+  evaluateAdvisorAuthorityGuard,
   evaluateReviewerStageOutcome,
   evaluateWorkerStageOutcome,
   findQueuedDownstreamTasks,
@@ -1617,5 +1620,228 @@ describe("TaskStateMachine integration with real KilnStore and SQLite disk rebui
       "review",
       "deliver",
     ]);
+  });
+
+  it("enforces advisor authority guardrails, computes failure fingerprints, and short-circuits stuck loops", () => {
+    expect(
+      evaluateAdvisorAuthorityGuard({
+        requires_contract_change: false,
+        requires_scope_expansion: false,
+        requires_human_approval: false,
+      }),
+    ).toEqual({ allowed: true });
+
+    const blockedMutation = evaluateAdvisorAuthorityGuard(
+      {
+        requires_contract_change: false,
+        requires_scope_expansion: false,
+        requires_human_approval: false,
+      },
+      { workspaceMutated: true },
+    );
+    expect(blockedMutation.allowed).toBe(false);
+    if (!blockedMutation.allowed) {
+      expect(blockedMutation.reason).toBe("advisor_workspace_mutation");
+    }
+
+    const blockedContract = evaluateAdvisorAuthorityGuard({
+      requires_contract_change: true,
+      requires_scope_expansion: false,
+      requires_human_approval: false,
+    });
+    expect(blockedContract.allowed).toBe(false);
+    if (!blockedContract.allowed) {
+      expect(blockedContract.reason).toBe("advisor_requires_contract_change");
+    }
+
+    const blockedScope = evaluateAdvisorAuthorityGuard({
+      requires_contract_change: false,
+      requires_scope_expansion: true,
+      requires_human_approval: false,
+    });
+    expect(blockedScope.allowed).toBe(false);
+    if (!blockedScope.allowed) {
+      expect(blockedScope.reason).toBe("advisor_requires_scope_expansion");
+    }
+
+    const blockedHuman = evaluateAdvisorAuthorityGuard({
+      requires_contract_change: false,
+      requires_scope_expansion: false,
+      requires_human_approval: true,
+    });
+    expect(blockedHuman.allowed).toBe(false);
+    if (!blockedHuman.allowed) {
+      expect(blockedHuman.reason).toBe("advisor_requires_human_approval");
+    }
+
+    expect(
+      computeGateFailureFingerprint({
+        schema_version: 1,
+        run_id: "r1",
+        contract_version: 1,
+        schema_ok: true,
+        scope_ok: true,
+        artifacts_ok: true,
+        out_of_scope_paths: [],
+        frozen_files_changed: [],
+        accept_exit_code: 0,
+        accept_duration_ms: 10,
+        escalated_to_l2: false,
+        checked_at: "2026-11-22T08:00:00.000Z",
+      }),
+    ).toBeNull();
+
+    const gateFp1 = computeGateFailureFingerprint({
+      schema_version: 1,
+      run_id: "r1",
+      contract_version: 1,
+      schema_ok: true,
+      scope_ok: false,
+      artifacts_ok: true,
+      out_of_scope_paths: ["b.ts", "a.ts"],
+      frozen_files_changed: [],
+      accept_exit_code: 2,
+      accept_duration_ms: 10,
+      escalated_to_l2: false,
+      checked_at: "2026-11-22T08:00:00.000Z",
+    });
+    expect(gateFp1).toBe("gate:scope:a.ts,b.ts|gate:accept:exit=2");
+
+    const revFp = computeReviewerFailureFingerprint(
+      {
+        run_id: "rev-1",
+        contract_version: 1,
+        reviewed_ref: "HEAD",
+        verdict: "changes_requested",
+        p0: 1,
+        p1: 1,
+        p2: 2,
+      },
+      `## 结论\n未通过\n\n## 缺陷清单\n- [P1] \`src/b.ts:20\` — missing null check\n- [P0] \`src/a.ts:5\` — race condition\n- [P2] style note\n\n## 测试真实性与复现核查\n已测\n`,
+    );
+    expect(revFp).toBe("review:P0:src/a.ts:5|P1:src/b.ts:20");
+
+    // Stuck threshold with card.workflow + advisorAvailable short-circuits retries
+    const wfCard = makeTaskCard({
+      id: "t-stuck",
+      track: "L2",
+      workflow: buildWorkflowPreset("standard_dev", { maxRounds: 3, stuckThreshold: 2 }),
+      limits: { retries_per_stage: 3, review_rounds: 3, advisor_calls: 1, max_tokens: 100_000 },
+    });
+    const stuckWorkerAdvise = evaluateWorkerStageOutcome(
+      wfCard,
+      {
+        run_id: "r-w2",
+        contract_version: 1,
+        outcome: "completed",
+        input_ref: "HEAD",
+        output_ref: "src/a.ts",
+        changed_paths: ["src/a.ts"],
+        accept_result: "fail",
+        is_bugfix: false,
+        complexity_escalate: false,
+      },
+      {
+        schema_version: 1,
+        run_id: "r-w2",
+        contract_version: 1,
+        schema_ok: true,
+        scope_ok: true,
+        artifacts_ok: true,
+        out_of_scope_paths: [],
+        frozen_files_changed: [],
+        accept_exit_code: 2,
+        accept_duration_ms: 10,
+        escalated_to_l2: false,
+        checked_at: "2026-11-22T08:00:00.000Z",
+      },
+      { stageRetries: 1, reviewRounds: 0, advisorCalls: 0, totalTokens: 500 },
+      { consecutiveSameFailureCount: 2, advisorAvailable: true },
+    );
+    expect(stuckWorkerAdvise.action).toBe("invoke_advisor");
+
+    // Exhausted advisor budget falls back to triage then human
+    const stuckWorkerTriage = evaluateWorkerStageOutcome(
+      wfCard,
+      {
+        run_id: "r-w3",
+        contract_version: 1,
+        outcome: "completed",
+        input_ref: "HEAD",
+        output_ref: "src/a.ts",
+        changed_paths: ["src/a.ts"],
+        accept_result: "fail",
+        is_bugfix: false,
+        complexity_escalate: false,
+      },
+      {
+        schema_version: 1,
+        run_id: "r-w3",
+        contract_version: 1,
+        schema_ok: true,
+        scope_ok: true,
+        artifacts_ok: true,
+        out_of_scope_paths: [],
+        frozen_files_changed: [],
+        accept_exit_code: 2,
+        accept_duration_ms: 10,
+        escalated_to_l2: false,
+        checked_at: "2026-11-22T08:00:00.000Z",
+      },
+      { stageRetries: 1, reviewRounds: 0, advisorCalls: 1, totalTokens: 500 },
+      { consecutiveSameFailureCount: 2, advisorAvailable: true, triageAttempted: false },
+    );
+    expect(stuckWorkerTriage.action).toBe("invoke_triage");
+
+    // Reviewer stuck threshold short-circuits review rework
+    const stuckReviewAdvise = evaluateReviewerStageOutcome(
+      wfCard,
+      {
+        run_id: "r-rev2",
+        contract_version: 1,
+        reviewed_ref: "HEAD",
+        verdict: "changes_requested",
+        p0: 1,
+        p1: 0,
+        p2: 0,
+      },
+      { stageRetries: 0, reviewRounds: 0, advisorCalls: 0, totalTokens: 500 },
+      { consecutiveSameFailureCount: 2, advisorAvailable: true },
+    );
+    expect(stuckReviewAdvise.action).toBe("invoke_advisor");
+
+    // Legacy card without card.workflow ignores consecutiveSameFailureCount
+    const legacyCard = makeTaskCard({ id: "t-legacy-stuck", track: "L2" });
+    const legacyRetry = evaluateWorkerStageOutcome(
+      legacyCard,
+      {
+        run_id: "r-w2",
+        contract_version: 1,
+        outcome: "completed",
+        input_ref: "HEAD",
+        output_ref: "src/a.ts",
+        changed_paths: ["src/a.ts"],
+        accept_result: "fail",
+        is_bugfix: false,
+        complexity_escalate: false,
+      },
+      {
+        schema_version: 1,
+        run_id: "r-w2",
+        contract_version: 1,
+        schema_ok: true,
+        scope_ok: true,
+        artifacts_ok: true,
+        out_of_scope_paths: [],
+        frozen_files_changed: [],
+        accept_exit_code: 2,
+        accept_duration_ms: 10,
+        escalated_to_l2: false,
+        checked_at: "2026-11-22T08:00:00.000Z",
+      },
+      { stageRetries: 0, reviewRounds: 0, advisorCalls: 0, totalTokens: 500 },
+      { consecutiveSameFailureCount: 5, advisorAvailable: true },
+    );
+    expect(legacyRetry.action).toBe("retry_stage");
   });
 });

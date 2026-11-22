@@ -430,6 +430,8 @@ export class KilndServer {
           await this.orchestrator.wake();
         })();
       },
+      onTechnicalDecisionForAdvisor: (params) =>
+        this.orchestrator.tryRouteTechnicalDecisionToAdvisor(params),
     });
   }
 

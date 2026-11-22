@@ -108,6 +108,28 @@ export function isRoleAllowedForTool(role: RoleId, tool: McpToolName): boolean {
   return MCP_ROLE_ALLOWLIST[tool].includes(role);
 }
 
+/**
+ * Decision categories that may be routed to the fresh-context `advisor` role before interrupting the user.
+ * Any category outside this allowlist (scope, frozen tests, contract changes, external actions, etc.) fails closed to human review.
+ */
+export const ADVISOR_ELIGIBLE_DECISION_CATEGORIES = [
+  "technical_ambiguity",
+  "design_tradeoff",
+  "layout_ambiguity",
+  "implementation_choice",
+  "architecture_choice",
+] as const;
+export type AdvisorEligibleDecisionCategory =
+  (typeof ADVISOR_ELIGIBLE_DECISION_CATEGORIES)[number];
+
+export function isAdvisorEligibleDecisionCategory(
+  category: string,
+): category is AdvisorEligibleDecisionCategory {
+  return (ADVISOR_ELIGIBLE_DECISION_CATEGORIES as readonly string[]).includes(
+    category.trim().toLowerCase(),
+  );
+}
+
 export const DEFAULT_LOCAL_PORT = 4310;
 export const DEFAULT_REMOTE_PORT = 4311;
 

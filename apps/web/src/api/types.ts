@@ -288,6 +288,7 @@ export interface TaskDetailResponse {
     updatedAt: string;
   };
   brief: string;
+  plan?: string;
   decisions: string;
   pendingDecision: PendingDecision | null;
   ledgerProposals: LedgerProposalItem[];

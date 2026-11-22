@@ -1,5 +1,6 @@
 import {
   getWorkflowLoopPolicy,
+  type AdvisorReceiptFrontmatter,
   type CardLimits,
   type GateReport,
   type ReceiptValidationResult,
@@ -11,6 +12,146 @@ import {
   type WorkerReceiptFrontmatter,
 } from "@kiln/protocol";
 import { getTaskPipelineStages, nextTaskStageAfter } from "./transitions.js";
+
+export type AdvisorAuthorityBlockReason =
+  | "advisor_workspace_mutation"
+  | "advisor_requires_contract_change"
+  | "advisor_requires_scope_expansion"
+  | "advisor_requires_human_approval";
+
+export type AdvisorAuthorityGuardResult =
+  | { allowed: true }
+  | {
+      allowed: false;
+      reason: AdvisorAuthorityBlockReason;
+      detail: string;
+    };
+
+/**
+ * Deterministic kernel guardrail blocking advisor resolutions that mutate workspaces,
+ * require contract/goal changes, expand `scope`, or require human boundary approval.
+ */
+export function evaluateAdvisorAuthorityGuard(
+  frontmatter: Pick<
+    AdvisorReceiptFrontmatter,
+    "requires_contract_change" | "requires_scope_expansion" | "requires_human_approval"
+  >,
+  opts?: { workspaceMutated?: boolean },
+): AdvisorAuthorityGuardResult {
+  if (opts?.workspaceMutated) {
+    return {
+      allowed: false,
+      reason: "advisor_workspace_mutation",
+      detail: "顾问仅限只读分析与方案裁决，禁止直接修改任务工作区文件",
+    };
+  }
+  if (frontmatter.requires_contract_change) {
+    return {
+      allowed: false,
+      reason: "advisor_requires_contract_change",
+      detail: "顾问判定该决策需修改产品目标、验收标准或交付契约，必须由本人批准",
+    };
+  }
+  if (frontmatter.requires_scope_expansion) {
+    return {
+      allowed: false,
+      reason: "advisor_requires_scope_expansion",
+      detail: "顾问判定该决策需扩大 contract.scope 范围，必须由本人批准",
+    };
+  }
+  if (frontmatter.requires_human_approval) {
+    return {
+      allowed: false,
+      reason: "advisor_requires_human_approval",
+      detail: "顾问显式标注触及人类审批红线（外部副作用/发布/删除等），必须由本人批准",
+    };
+  }
+  return { allowed: true };
+}
+
+/**
+ * Computes a deterministic failure fingerprint from `GATE.yaml` to detect stuck rework loops.
+ * Returns `null` when all gate checks passed.
+ */
+export function computeGateFailureFingerprint(report: GateReport): string | null {
+  const artifactsOk = report.artifacts_ok !== false;
+  if (
+    report.schema_ok &&
+    report.scope_ok &&
+    artifactsOk &&
+    report.accept_exit_code === 0
+  ) {
+    return null;
+  }
+
+  const parts: string[] = [];
+  if (!report.schema_ok) {
+    parts.push("gate:schema");
+  }
+  if (!report.scope_ok) {
+    parts.push(`gate:scope:${[...report.out_of_scope_paths].sort().join(",")}`);
+  }
+  if (!artifactsOk) {
+    parts.push("gate:artifacts");
+  }
+  if (report.accept_exit_code !== 0) {
+    parts.push(`gate:accept:exit=${report.accept_exit_code}`);
+  }
+  return parts.join("|");
+}
+
+function extractDefectListBody(markdownBody: string): string {
+  const headingMatch = /^#{1,3}[ \t]+缺陷清单(?:[ \t:(（][^\r\n]*)?(?=\r?\n|$)/m.exec(
+    markdownBody,
+  );
+  if (!headingMatch) {
+    return "";
+  }
+  const after = markdownBody.slice(headingMatch.index + headingMatch[0].length);
+  const nextHeading = /^#{1,3}[ \t]+/m.exec(after);
+  return (nextHeading ? after.slice(0, nextHeading.index) : after).trim();
+}
+
+/**
+ * Computes a deterministic failure fingerprint from a reviewer receipt's blocking P0/P1 findings.
+ * Returns `null` when review passed with zero P0/P1 findings.
+ */
+export function computeReviewerFailureFingerprint(
+  frontmatter: ReviewerReceiptFrontmatter,
+  body?: string,
+): string | null {
+  const hasBlocking = frontmatter.p0 > 0 || frontmatter.p1 > 0;
+  if (frontmatter.verdict === "pass" && !hasBlocking) {
+    return null;
+  }
+
+  if (body) {
+    const defectSection = extractDefectListBody(body);
+    const signatures: string[] = [];
+    for (const rawLine of defectSection.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      const levelMatch = /^[-*]?\s*\[(P[01])\]\s*(.+)$/i.exec(line);
+      if (!levelMatch) {
+        continue;
+      }
+      const level = levelMatch[1]!.toUpperCase();
+      const rest = levelMatch[2]!.trim();
+      const backtickMatch = /`([^`]+)`/.exec(rest);
+      const token = (backtickMatch?.[1] ?? rest.split(/\s+[—–-]\s+/)[0] ?? rest)
+        .trim()
+        .toLowerCase();
+      if (token.length > 0) {
+        signatures.push(`${level}:${token}`);
+      }
+    }
+    const uniqueSorted = Array.from(new Set(signatures)).sort().slice(0, 5);
+    if (uniqueSorted.length > 0) {
+      return `review:${uniqueSorted.join("|")}`;
+    }
+  }
+
+  return `review:p0=${frontmatter.p0}:p1=${frontmatter.p1}`;
+}
 
 export interface StageCounters {
   stageRetries: number;
@@ -290,6 +431,17 @@ export type WorkerStageDecision =
       breaker: CircuitBreakerResult;
     }
   | {
+      action: "invoke_advisor";
+      level: "L2";
+      gatePassed: boolean;
+      ignoredSelfReportedPass: boolean;
+      escalateToL2: boolean;
+      escalateReason?: WorkerStageEscalateReason;
+      effectiveTrack: Track;
+      reason: string;
+      breaker: CircuitBreakerResult;
+    }
+  | {
       action: "wait_human";
       level: "L3";
       gatePassed: boolean;
@@ -304,6 +456,8 @@ export type WorkerStageDecision =
 export interface EvaluateWorkerStageOptions {
   currentStage?: StageId;
   triageAttempted?: boolean;
+  consecutiveSameFailureCount?: number;
+  advisorAvailable?: boolean;
 }
 
 function mapFailureToWorkerDecision(
@@ -468,6 +622,54 @@ export function evaluateWorkerStageOutcome(
           ? "gate_artifacts_failed"
           : `gate_accept_cmd_failed (exit=${gateReport.accept_exit_code})`;
 
+    const loopPolicy = getWorkflowLoopPolicy(card);
+    if (
+      loopPolicy !== null &&
+      (options?.consecutiveSameFailureCount ?? 0) >= loopPolicy.stuckThreshold &&
+      counters.totalTokens < card.limits.max_tokens
+    ) {
+      const escalateMeta =
+        escalateReason !== undefined ? { escalateReason } : {};
+      const stuckReason = `stuck_same_failure (${gateFailureReason})`;
+      if (options?.advisorAvailable && counters.advisorCalls < card.limits.advisor_calls) {
+        return {
+          action: "invoke_advisor",
+          level: "L2",
+          gatePassed: false,
+          ignoredSelfReportedPass,
+          escalateToL2,
+          ...escalateMeta,
+          effectiveTrack,
+          reason: stuckReason,
+          breaker,
+        };
+      }
+      if (!options?.triageAttempted) {
+        return {
+          action: "invoke_triage",
+          level: "L2",
+          gatePassed: false,
+          ignoredSelfReportedPass,
+          escalateToL2,
+          ...escalateMeta,
+          effectiveTrack,
+          reason: stuckReason,
+          breaker,
+        };
+      }
+      return {
+        action: "wait_human",
+        level: "L3",
+        gatePassed: false,
+        ignoredSelfReportedPass,
+        escalateToL2,
+        ...escalateMeta,
+        effectiveTrack,
+        reason: stuckReason,
+        breaker,
+      };
+    }
+
     const failureDecision = handleExecutionFailure({
       stage: currentStage,
       failure: { kind: "runtime_error", message: gateFailureReason },
@@ -550,6 +752,14 @@ export type ReviewerStageDecision =
       breaker: CircuitBreakerResult;
     }
   | {
+      action: "invoke_advisor";
+      level: "L2";
+      passed: boolean;
+      forgedPassIgnored: boolean;
+      reason: string;
+      breaker: CircuitBreakerResult;
+    }
+  | {
       action: "wait_human";
       level: "L3";
       passed: boolean;
@@ -560,6 +770,8 @@ export type ReviewerStageDecision =
 
 export interface EvaluateReviewerStageOptions {
   triageAttempted?: boolean;
+  consecutiveSameFailureCount?: number;
+  advisorAvailable?: boolean;
 }
 
 /**
@@ -654,6 +866,41 @@ export function evaluateReviewerStageOutcome(
     : "reviewer_changes_requested";
 
   const loopPolicy = getWorkflowLoopPolicy(card);
+  if (
+    loopPolicy !== null &&
+    (options?.consecutiveSameFailureCount ?? 0) >= loopPolicy.stuckThreshold
+  ) {
+    const stuckReason = `stuck_same_review_feedback (${reworkReason})`;
+    if (options?.advisorAvailable && counters.advisorCalls < card.limits.advisor_calls) {
+      return {
+        action: "invoke_advisor",
+        level: "L2",
+        passed: false,
+        forgedPassIgnored,
+        reason: stuckReason,
+        breaker,
+      };
+    }
+    if (!options?.triageAttempted) {
+      return {
+        action: "invoke_triage",
+        level: "L2",
+        passed: false,
+        forgedPassIgnored,
+        reason: stuckReason,
+        breaker,
+      };
+    }
+    return {
+      action: "wait_human",
+      level: "L3",
+      passed: false,
+      forgedPassIgnored,
+      reason: stuckReason,
+      breaker,
+    };
+  }
+
   const maxReworkRounds = loopPolicy
     ? Math.max(0, loopPolicy.maxRounds - 1)
     : card.limits.review_rounds;

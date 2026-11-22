@@ -189,6 +189,10 @@ export class KilnPaths {
     return path.join(this.taskDir(taskId), "PLAN.md");
   }
 
+  advisorRequestYaml(taskId: string): string {
+    return path.join(this.taskDir(taskId), "advisor-request.yaml");
+  }
+
   decisionsMd(taskId: string): string {
     return path.join(this.taskDir(taskId), "decisions.md");
   }

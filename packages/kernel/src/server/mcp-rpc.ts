@@ -18,13 +18,17 @@ import {
   WbProposeLedgerInputSchema,
   WbReadLedgerInputSchema,
   WbSubmitReceiptInputSchema,
+  isAdvisorEligibleDecisionCategory,
   isRoleAllowedForTool,
   parseAndValidateReceipt,
+  type DecisionOption,
   type McpToolName,
   type ReceiptKind,
+  type RoleId,
   type RunMeta,
   type RunTokenClaims,
   type SpaceConfig,
+  type StageId,
   type TaskCard,
 } from "@kiln/protocol";
 import {
@@ -39,6 +43,7 @@ import {
   ensureDir,
   isWindowsNamedPipe,
   readYamlOptional,
+  type DerivedTaskState,
 } from "../store/index.js";
 import type { CaffeinateController } from "./caffeinate.js";
 import { ServerHttpError, mapDomainError } from "./errors.js";
@@ -65,6 +70,22 @@ function isReceiptKind(role: string): role is ReceiptKind {
   return (RECEIPT_KINDS as readonly string[]).includes(role);
 }
 
+export interface TechnicalDecisionAdvisorRouteInput {
+  taskId: string;
+  runId: string;
+  role: RoleId;
+  stage: StageId;
+  contractVersion: number;
+  category: string;
+  reason: string;
+  question: string;
+  options: DecisionOption[];
+}
+
+export type TechnicalDecisionAdvisorRouteResult =
+  | { routedToAdvisor: true; state: DerivedTaskState }
+  | { routedToAdvisor: false };
+
 export interface McpRpcServerOptions {
   store: KilnStore;
   stateMachine: TaskStateMachine;
@@ -80,6 +101,9 @@ export interface McpRpcServerOptions {
   onTaskQueued?: (taskId: string) => void;
   onContractUpdated?: (taskId: string) => void;
   onDecisionRequested?: (taskId: string) => void;
+  onTechnicalDecisionForAdvisor?: (
+    input: TechnicalDecisionAdvisorRouteInput,
+  ) => TechnicalDecisionAdvisorRouteResult;
 }
 
 export interface PrepareIpcSocketPathDeps {
@@ -297,6 +321,11 @@ export class McpRpcServer {
   private readonly onTaskQueued: ((taskId: string) => void) | undefined;
   private readonly onContractUpdated: ((taskId: string) => void) | undefined;
   private readonly onDecisionRequested: ((taskId: string) => void) | undefined;
+  private readonly onTechnicalDecisionForAdvisor:
+    | ((
+        input: TechnicalDecisionAdvisorRouteInput,
+      ) => TechnicalDecisionAdvisorRouteResult)
+    | undefined;
 
   private shutdownToken: string | undefined;
   private shutdownTriggered = false;
@@ -319,6 +348,7 @@ export class McpRpcServer {
     this.onTaskQueued = options.onTaskQueued;
     this.onContractUpdated = options.onContractUpdated;
     this.onDecisionRequested = options.onDecisionRequested;
+    this.onTechnicalDecisionForAdvisor = options.onTechnicalDecisionForAdvisor;
   }
 
   setShutdownToken(token: string | undefined): void {
@@ -710,6 +740,7 @@ export class McpRpcServer {
     WbGetContextInputSchema.parse(rawBody);
     const card = this.requireCard(claims.taskId);
     const brief = readOptionalText(this.store.paths.briefMd(claims.taskId)) ?? "";
+    const plan = readOptionalText(this.store.paths.planMd(claims.taskId)) ?? "";
     const stateEvents = this.store.readStateEvents(claims.taskId);
     const derived = deriveTaskStatus(card, stateEvents);
     const taskIndex = this.store.getTaskIndex(claims.taskId);
@@ -727,6 +758,7 @@ export class McpRpcServer {
       contract_version: card.contract_version,
       card,
       brief,
+      plan,
       state: {
         ...derived,
         effectivePriority: taskIndex?.effective_priority ?? derived.priority,
@@ -1096,6 +1128,32 @@ export class McpRpcServer {
 
     if (!canTransition(derived.status, "waiting")) {
       throw new InvalidStateTransitionError(derived.status, "waiting");
+    }
+
+    if (
+      (claims.role === "worker" || claims.role === "reviewer") &&
+      isAdvisorEligibleDecisionCategory(input.category) &&
+      this.onTechnicalDecisionForAdvisor
+    ) {
+      const advisorRoute = this.onTechnicalDecisionForAdvisor({
+        taskId: claims.taskId,
+        runId: claims.runId,
+        role: claims.role,
+        stage: matchedRun.runMeta.stage,
+        contractVersion: claims.contractVersion,
+        category: input.category,
+        reason: input.reason,
+        question: input.question,
+        options: input.options,
+      });
+      if (advisorRoute.routedToAdvisor) {
+        return {
+          ok: true,
+          routedToAdvisor: true,
+          stage: "advise",
+          state: advisorRoute.state,
+        };
+      }
     }
 
     const now = new Date().toISOString();

@@ -58,6 +58,13 @@ export const AdvisorReceiptFrontmatterSchema = z.object({
   contract_version: z.number().int().positive(),
   outcome: z.enum(["resolved", "need_decision"]),
   chosen_approach: z.string().min(1),
+  decision_kind: z
+    .enum(["plan", "technical_ambiguity", "review_deadlock", "stuck_recovery"])
+    .optional(),
+  requires_contract_change: z.boolean().default(false),
+  requires_scope_expansion: z.boolean().default(false),
+  requires_human_approval: z.boolean().default(false),
+  target_stage: z.enum(["implement", "review"]).optional(),
 });
 export type AdvisorReceiptFrontmatter = z.infer<typeof AdvisorReceiptFrontmatterSchema>;
 

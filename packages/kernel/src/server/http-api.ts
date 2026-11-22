@@ -1182,6 +1182,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     const pricing = store.readConfig("pricing");
 
     const brief = readOptionalText(store.paths.briefMd(taskId)) ?? "";
+    const plan = readOptionalText(store.paths.planMd(taskId)) ?? "";
     const decisions = readOptionalText(store.paths.decisionsMd(taskId)) ?? "";
     const pendingDecision = pendingDecisions.get(taskId);
     const ledgerProposals = readLedgerProposals(store, taskId);
@@ -1252,6 +1253,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         effectivePriority: taskIndex?.effective_priority ?? derived.priority,
       },
       brief,
+      plan,
       decisions,
       pendingDecision,
       ledgerProposals,

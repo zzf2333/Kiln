@@ -5087,4 +5087,653 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       "export const v = 999;\n",
     );
   }, 20_000);
+
+  it("Slice 3 (#10): routes technical ambiguity and stuck_threshold loops to fresh advisor with authority guardrails and exposes PLAN.md", async () => {
+    const kilnHome = makeTempDir("kiln-m2-advisor-v3-");
+    const { repoPath, baseCommit } = initGitRepo("adv3");
+    const fakeBackend = new FakeBackend();
+
+    let stuckAttempt = 0;
+    const capturedWorkerHandoffs = new Map<string, string[]>();
+    const capturedAdvisorHandoffs = new Map<string, string[]>();
+
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: true,
+      tokenSecret: "m2-e2e-advisor-v3-secret-0123456789",
+      approvalHandler: async (req, ctx) => {
+        const token = server.issueRunToken({
+          taskId: ctx.taskId,
+          runId: ctx.runId,
+          role: ctx.role,
+          contractVersion: ctx.card.contract_version,
+        });
+        const runDir = fs
+          .readdirSync(server.store.paths.runsDir(ctx.taskId))
+          .filter((d) => d.includes(ctx.runId) || fs.existsSync(server.store.paths.handoffMd(ctx.taskId, d)))
+          .filter((d) => {
+            const rawYaml = server.store.paths.runYaml(ctx.taskId, d);
+            return fs.existsSync(rawYaml) && fs.readFileSync(rawYaml, "utf8").includes(ctx.runId);
+          })[0]!;
+        const handoff = fs.readFileSync(server.store.paths.handoffMd(ctx.taskId, runDir), "utf8");
+
+        if (ctx.role === "worker") {
+          const list = capturedWorkerHandoffs.get(ctx.taskId) ?? [];
+          list.push(handoff);
+          capturedWorkerHandoffs.set(ctx.taskId, list);
+        }
+        if (ctx.role === "advisor") {
+          const list = capturedAdvisorHandoffs.get(ctx.taskId) ?? [];
+          list.push(handoff);
+          capturedAdvisorHandoffs.set(ctx.taskId, list);
+        }
+
+        const wtPath = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
+
+        // Scenario A: MCP technical_ambiguity routed to advisor -> full body persisted -> worker completes
+        if (req.action === "adv_a_worker_ask") {
+          const askRes = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_ask_decision",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              category: "technical_ambiguity",
+              reason: "adapter_choice",
+              question: "Should config cache use Map or WeakMap?",
+              options: [
+                { id: "opt-map", label: "Use Map", action: "resume", recommended: true },
+                { id: "opt-weak", label: "Use WeakMap", action: "resume", recommended: false },
+              ],
+            }),
+          });
+          expect(askRes.status).toBe(200);
+          expect((askRes.body as { routedToAdvisor?: boolean }).routedToAdvisor).toBe(true);
+          return;
+        }
+
+        if (req.action === "adv_a_advisor_resolve") {
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: serializeFrontmatterMarkdown(
+                {
+                  run_id: ctx.runId,
+                  contract_version: ctx.card.contract_version,
+                  outcome: "resolved",
+                  chosen_approach: "Use explicit Map with deterministic invalidation",
+                  decision_kind: "technical_ambiguity",
+                  target_stage: "implement",
+                },
+                [
+                  "## 技术取舍",
+                  "Map 支持按 key 精准淘汰且可枚举，避免 WeakMap 键约束。",
+                  "",
+                  "## 授权裁决",
+                  "worker 严格在 src/app.ts 内实现 Map 方案。",
+                  "",
+                ].join("\n"),
+              ),
+            }),
+          });
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "adv_a_worker_done") {
+          fs.writeFileSync(path.join(wtPath, "src", "app.ts"), "export const v = 801;\n");
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeWorkerReceiptMarkdown({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                input_ref: baseCommit,
+                output_ref: "src/app.ts",
+                changed_paths: ["src/app.ts"],
+              }),
+            }),
+          });
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "adv_a_reviewer_pass") {
+          const headCommit = git(["rev-parse", "HEAD"], wtPath).trim();
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeReviewerReceiptMarkdown({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                reviewed_ref: headCommit,
+                verdict: "pass",
+              }),
+            }),
+          });
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        // Scenario B: stuck_threshold=2 consecutive same accept failure short-circuits retries -> advisor
+        if (req.action === "adv_b_worker_fail_1" || req.action === "adv_b_worker_fail_2") {
+          stuckAttempt += 1;
+          fs.writeFileSync(path.join(wtPath, "src", "app.ts"), `export const v = ${stuckAttempt};\n`);
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeWorkerReceiptMarkdown({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                input_ref: baseCommit,
+                output_ref: "src/app.ts",
+                changed_paths: ["src/app.ts"],
+                accept_result: "fail",
+              }),
+            }),
+          });
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "adv_b_advisor_break") {
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: serializeFrontmatterMarkdown(
+                {
+                  run_id: ctx.runId,
+                  contract_version: ctx.card.contract_version,
+                  outcome: "resolved",
+                  chosen_approach: "Set export const v = 802 to satisfy accept_cmd",
+                  decision_kind: "stuck_recovery",
+                },
+                "## 技术取舍\n两次返回 exit 2 均因常量值不匹配。\n\n## 授权裁决\n将 src/app.ts 更新为 802。\n",
+              ),
+            }),
+          });
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "adv_b_worker_fix") {
+          fs.writeFileSync(path.join(wtPath, "src", "app.ts"), "export const v = 802;\n");
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeWorkerReceiptMarkdown({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                input_ref: baseCommit,
+                output_ref: "src/app.ts",
+                changed_paths: ["src/app.ts"],
+              }),
+            }),
+          });
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "adv_b_reviewer_pass") {
+          const headCommit = git(["rev-parse", "HEAD"], wtPath).trim();
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeReviewerReceiptMarkdown({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                reviewed_ref: headCommit,
+                verdict: "pass",
+              }),
+            }),
+          });
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        // Scenario C1: requires_scope_expansion=true guardrail blocks auto-resolution
+        if (req.action === "adv_c1_worker_ask") {
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_ask_decision",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              category: "architecture_choice",
+              reason: "shared_types",
+              question: "Need decision on modifying packages/shared vs local file",
+              options: [{ id: "opt-1", label: "Check shared", action: "resume", recommended: true }],
+            }),
+          });
+          return;
+        }
+
+        if (req.action === "adv_c1_advisor_overreach") {
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: serializeFrontmatterMarkdown(
+                {
+                  run_id: ctx.runId,
+                  contract_version: ctx.card.contract_version,
+                  outcome: "resolved",
+                  chosen_approach: "Expand scope into tests/**",
+                  requires_scope_expansion: true,
+                },
+                "## 技术取舍\n需要修改 tests 目录。\n\n## 授权裁决\n建议扩 scope。\n",
+              ),
+            }),
+          });
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        // Scenario C2: plan stage advisor mutates git_worktree -> advisor_workspace_mutation
+        if (req.action === "adv_c2_plan_mutate") {
+          fs.writeFileSync(path.join(wtPath, "src", "app.ts"), "export const v = 999999;\n");
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: serializeFrontmatterMarkdown(
+                {
+                  run_id: ctx.runId,
+                  contract_version: ctx.card.contract_version,
+                  outcome: "resolved",
+                  chosen_approach: "Direct code edit during plan",
+                  decision_kind: "plan",
+                },
+                "## 技术取舍\n试图越权直接改文件。\n\n## 授权裁决\n被内核拦下。\n",
+              ),
+            }),
+          });
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        // Scenario D: human boundary category scope_clarification bypasses advisor straight to waiting
+        if (req.action === "adv_d_worker_scope_human") {
+          const askRes = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_ask_decision",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              category: "scope_clarification",
+              reason: "need_new_file",
+              question: "Can we modify files outside scope?",
+              options: [{ id: "opt-ok", label: "Allow", action: "resume", recommended: true }],
+            }),
+          });
+          expect(askRes.status).toBe(200);
+          expect((askRes.body as { routedToAdvisor?: boolean }).routedToAdvisor).toBeUndefined();
+          return;
+        }
+
+        // Scenario E: clean plan -> PLAN.md exposed via GET /api/tasks/:id
+        if (req.action === "adv_e_plan_ok") {
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: serializeFrontmatterMarkdown(
+                {
+                  run_id: ctx.runId,
+                  contract_version: ctx.card.contract_version,
+                  outcome: "resolved",
+                  chosen_approach: "Read-only architecture plan E",
+                  decision_kind: "plan",
+                },
+                "## 技术取舍\n保持单一数据源。\n\n## 授权裁决\n先写实现再跑验收。\n",
+              ),
+            }),
+          });
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "adv_e_worker_ask_halt") {
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_ask_decision",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              category: "external_action",
+              reason: "hold_for_detail",
+              question: "Hold here to verify GET /api/tasks/:id plan",
+              options: [{ id: "opt-c", label: "Cancel", action: "cancel", recommended: true }],
+            }),
+          });
+          return;
+        }
+
+        await ctx.backend.answer(req.id, true);
+      },
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "advproj",
+      name: "Advisor Proj",
+      repo_path: repoPath,
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    });
+
+    const baseRoles = defaultRoles();
+    server.store.writeConfig("roles", {
+      ...baseRoles,
+      roles: {
+        ...baseRoles.roles,
+        reviewer: { agent: "codex", model: "gpt-6-luna", allow_full_access_fallback: false },
+        advisor: { agent: "codex", model: "gpt-6-luna", allow_full_access_fallback: false },
+      },
+    });
+    server.store.writeConfig("limits", defaultLimits({ max_concurrent_slots: 1, retries_per_stage: 3 }));
+    server.store.writeConfig("pricing", defaultPricing());
+    await server.start();
+
+    // Run Scenario A
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "adv_a_worker_ask", detail: "ask technical ambiguity" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-adv-a", role: "worker" },
+    );
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "adv_a_advisor_resolve", detail: "advisor decide" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-adv-a", role: "advisor" },
+    );
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "adv_a_worker_done", detail: "worker finish" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-adv-a", role: "worker" },
+    );
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "adv_a_reviewer_pass", detail: "review pass" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-adv-a", role: "reviewer" },
+    );
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-adv-a",
+        title: "Scenario A technical ambiguity",
+        space: "advproj",
+        priority: "P0",
+        track: "L2",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        workflow: buildWorkflowPreset("standard_dev"),
+        contract_version: 1,
+        contract: {
+          goal: "Resolve technical ambiguity cleanly",
+          end: "Merged Map implementation",
+          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_files_hash: "sha256:adva",
+          scope: ["src/**"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 5_000_000 },
+        created_at: "2026-11-22T08:00:00.000Z",
+        updated_at: "2026-11-22T08:00:00.000Z",
+      },
+      "# Scenario A",
+    );
+    await server.orchestrator.wake();
+    await waitUntil(() => server.store.getTaskIndex("t-adv-a")?.status === "done", "t-adv-a done");
+    const decisionsA = fs.readFileSync(server.store.paths.decisionsMd("t-adv-a"), "utf8");
+    expect(decisionsA).toContain("Use explicit Map with deterministic invalidation");
+    expect(decisionsA).toContain("## 技术取舍");
+    expect(decisionsA).toContain("Map 支持按 key 精准淘汰");
+    expect(capturedAdvisorHandoffs.get("t-adv-a")?.[0]).toContain("Should config cache use Map or WeakMap?");
+    expect(capturedWorkerHandoffs.get("t-adv-a")?.[1]).toContain("## 历史裁决 (decisions)");
+    expect(fs.existsSync(server.store.paths.advisorRequestYaml("t-adv-a"))).toBe(false);
+    expect(server.pendingDecisions.get("t-adv-a")).toBeNull();
+
+    // Run Scenario B (stuck_threshold=2 short-circuits retries_per_stage=3)
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "adv_b_worker_fail_1", detail: "fail 1" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-adv-b", role: "worker" },
+    );
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "adv_b_worker_fail_2", detail: "fail 2" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-adv-b", role: "worker" },
+    );
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "adv_b_advisor_break", detail: "advisor break stuck" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-adv-b", role: "advisor" },
+    );
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "adv_b_worker_fix", detail: "worker fix" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-adv-b", role: "worker" },
+    );
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "adv_b_reviewer_pass", detail: "review pass" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-adv-b", role: "reviewer" },
+    );
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-adv-b",
+        title: "Scenario B stuck threshold",
+        space: "advproj",
+        priority: "P0",
+        track: "L2",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        workflow: buildWorkflowPreset("standard_dev", { maxRounds: 3, stuckThreshold: 2 }),
+        contract_version: 1,
+        contract: {
+          goal: "Unstick repeated exit=2",
+          end: "v=802 merged",
+          accept_cmd: `node -e "const fs=require('fs');if(!fs.readFileSync('src/app.ts','utf8').includes('802'))process.exit(2)"`,
+          accept_files_hash: "sha256:advb",
+          scope: ["src/**"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 4, review_rounds: 2, advisor_calls: 1, max_tokens: 5_000_000 },
+        created_at: "2026-11-22T08:05:00.000Z",
+        updated_at: "2026-11-22T08:05:00.000Z",
+      },
+      "# Scenario B",
+    );
+    await server.orchestrator.wake();
+    await waitUntil(() => server.store.getTaskIndex("t-adv-b")?.status === "done", "t-adv-b done");
+    const specsB = fakeBackend.getRecordedSpecs().filter((s) => s.taskId === "t-adv-b").map((s) => s.role);
+    expect(specsB).toEqual(["worker", "worker", "advisor", "worker", "reviewer"]);
+    expect(capturedAdvisorHandoffs.get("t-adv-b")?.[0]).toContain("gate:accept:exit=2");
+    expect(fs.readFileSync(path.join(repoPath, "src", "app.ts"), "utf8")).toBe("export const v = 802;\n");
+
+    // Run Scenario C1 (advisor requires_scope_expansion blocked -> waiting human)
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "adv_c1_worker_ask", detail: "ask arch choice" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-adv-c1", role: "worker" },
+    );
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "adv_c1_advisor_overreach", detail: "overreach scope" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-adv-c1", role: "advisor" },
+    );
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-adv-c1",
+        title: "Scenario C1 scope expansion blocked",
+        space: "advproj",
+        priority: "P1",
+        track: "L2",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        workflow: buildWorkflowPreset("standard_dev"),
+        contract_version: 1,
+        contract: {
+          goal: "Test scope guard",
+          end: "Done",
+          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_files_hash: "sha256:advc1",
+          scope: ["src/**"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 5_000_000 },
+        created_at: "2026-11-22T08:10:00.000Z",
+        updated_at: "2026-11-22T08:10:00.000Z",
+      },
+      "# Scenario C1",
+    );
+    await server.orchestrator.wake();
+    await waitUntil(() => server.store.getTaskIndex("t-adv-c1")?.status === "waiting", "t-adv-c1 waiting");
+    expect(server.pendingDecisions.get("t-adv-c1")?.reason).toBe("advisor_requires_scope_expansion");
+    server.stateMachine.cancelTask("t-adv-c1", "cleanup", "2026-11-22T08:10:30.000Z");
+
+    // Run Scenario C2 (plan advisor mutates worktree -> advisor_workspace_mutation)
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "adv_c2_plan_mutate", detail: "mutate repo during plan" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-adv-c2", role: "advisor" },
+    );
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-adv-c2",
+        title: "Scenario C2 mutation blocked",
+        space: "advproj",
+        priority: "P1",
+        track: "L2",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        workflow: buildWorkflowPreset("full_delivery"),
+        contract_version: 1,
+        contract: {
+          goal: "Test workspace read-only guard",
+          end: "Done",
+          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_files_hash: "sha256:advc2",
+          scope: ["src/**"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 5_000_000 },
+        created_at: "2026-11-22T08:11:00.000Z",
+        updated_at: "2026-11-22T08:11:00.000Z",
+      },
+      "# Scenario C2",
+    );
+    await server.orchestrator.wake();
+    await waitUntil(() => server.store.getTaskIndex("t-adv-c2")?.status === "waiting", "t-adv-c2 waiting");
+    expect(server.pendingDecisions.get("t-adv-c2")?.reason).toBe("advisor_workspace_mutation");
+    expect(fs.existsSync(server.store.paths.planMd("t-adv-c2"))).toBe(false);
+    server.stateMachine.cancelTask("t-adv-c2", "cleanup", "2026-11-22T08:11:30.000Z");
+
+    // Run Scenario D (scope_clarification goes straight to human waiting without waking advisor)
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "adv_d_worker_scope_human", detail: "ask scope" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-adv-d", role: "worker" },
+    );
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-adv-d",
+        title: "Scenario D human boundary bypass",
+        space: "advproj",
+        priority: "P1",
+        track: "L2",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        workflow: buildWorkflowPreset("standard_dev"),
+        contract_version: 1,
+        contract: {
+          goal: "Bypass advisor for scope clarification",
+          end: "Done",
+          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_files_hash: "sha256:advd",
+          scope: ["src/**"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 5_000_000 },
+        created_at: "2026-11-22T08:12:00.000Z",
+        updated_at: "2026-11-22T08:12:00.000Z",
+      },
+      "# Scenario D",
+    );
+    await server.orchestrator.wake();
+    await waitUntil(() => server.store.getTaskIndex("t-adv-d")?.status === "waiting", "t-adv-d waiting");
+    expect(server.pendingDecisions.get("t-adv-d")?.category).toBe("scope_clarification");
+    expect(fakeBackend.getRecordedSpecs().some((s) => s.taskId === "t-adv-d" && s.role === "advisor")).toBe(false);
+    server.stateMachine.cancelTask("t-adv-d", "cleanup", "2026-11-22T08:12:30.000Z");
+
+    // Run Scenario E (clean plan stage persists PLAN.md and GET /api/tasks/:id returns plan)
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "adv_e_plan_ok", detail: "clean plan" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-adv-e", role: "advisor" },
+    );
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "adv_e_worker_ask_halt", detail: "hold for detail" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-adv-e", role: "worker" },
+    );
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-adv-e",
+        title: "Scenario E plan endpoint",
+        space: "advproj",
+        priority: "P1",
+        track: "L2",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        workflow: buildWorkflowPreset("full_delivery"),
+        contract_version: 1,
+        contract: {
+          goal: "Expose plan in detail API",
+          end: "Done",
+          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_files_hash: "sha256:adve",
+          scope: ["src/**"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 5_000_000 },
+        created_at: "2026-11-22T08:13:00.000Z",
+        updated_at: "2026-11-22T08:13:00.000Z",
+      },
+      "# Scenario E",
+    );
+    await server.orchestrator.wake();
+    await waitUntil(() => server.store.getTaskIndex("t-adv-e")?.status === "waiting", "t-adv-e waiting");
+    const detailRes = await server.app.request(new Request("http://127.0.0.1/api/tasks/t-adv-e"));
+    expect(detailRes.status).toBe(200);
+    const detailBody = (await detailRes.json()) as { plan?: string };
+    expect(detailBody.plan).toContain("Read-only architecture plan E");
+    expect(detailBody.plan).toContain("## 技术取舍");
+  }, 25_000);
 });

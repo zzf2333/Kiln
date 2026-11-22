@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { RoleIdSchema } from "./config.js";
 import {
+  ADVISOR_ELIGIBLE_DECISION_CATEGORIES,
   DECISION_ACTIONS,
   PRIORITIES,
   PRIORITY_RANK,
@@ -9,6 +10,8 @@ import {
   TRACKS,
   WORKFLOW_PRESETS,
   WORKSPACE_MODES,
+  isAdvisorEligibleDecisionCategory,
+  type AdvisorEligibleDecisionCategory,
   type DecisionAction,
   type Priority,
   type StageId,
@@ -20,6 +23,7 @@ import {
 import { WorkflowBlueprintSchema } from "./workflow.js";
 
 export {
+  ADVISOR_ELIGIBLE_DECISION_CATEGORIES,
   DECISION_ACTIONS,
   PRIORITIES,
   PRIORITY_RANK,
@@ -28,6 +32,8 @@ export {
   TRACKS,
   WORKFLOW_PRESETS,
   WORKSPACE_MODES,
+  isAdvisorEligibleDecisionCategory,
+  type AdvisorEligibleDecisionCategory,
   type DecisionAction,
   type Priority,
   type StageId,
@@ -162,6 +168,32 @@ export const PendingDecisionSchema = z.object({
   created_at: z.string().min(1),
 });
 export type PendingDecision = z.infer<typeof PendingDecisionSchema>;
+
+/**
+ * Durable advisor escalation context written to `~/.kiln/tasks/<id>/advisor-request.yaml`
+ * so mid-flight technical ambiguity or stuck-loop handoffs survive daemon restarts.
+ */
+export const AdvisorRequestSchema = z.object({
+  schema_version: z.literal(1).default(1),
+  contract_version: z.number().int().positive(),
+  trigger: z.enum([
+    "technical_ambiguity",
+    "stuck_same_failure",
+    "review_deadlock",
+    "triage_escalation",
+  ]),
+  source_stage: StageIdSchema,
+  source_run_id: z.string().min(1),
+  source_role: RoleIdSchema.optional(),
+  category: z.string().min(1),
+  reason: z.string().min(1),
+  question: z.string().min(1),
+  options: z.array(DecisionOptionSchema).default([]),
+  failure_fingerprint: z.string().min(1).optional(),
+  consecutive_failures: z.number().int().positive().optional(),
+  created_at: z.string().min(1),
+});
+export type AdvisorRequest = z.infer<typeof AdvisorRequestSchema>;
 
 export const DecisionRecordSchema = z.object({
   schema_version: z.literal(1).default(1),

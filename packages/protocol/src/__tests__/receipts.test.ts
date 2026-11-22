@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  ADVISOR_ELIGIBLE_DECISION_CATEGORIES,
+  AdvisorReceiptFrontmatterSchema,
+  AdvisorRequestSchema,
+  isAdvisorEligibleDecisionCategory,
   parseAndValidateReceipt,
   parseFrontmatterMarkdown,
   serializeFrontmatterMarkdown,
-} from "../receipts.js";
+} from "../index.js";
 
 describe("receipts frontmatter and validation", () => {
   it("round-trips frontmatter markdown cleanly", () => {
@@ -167,5 +171,69 @@ verdict: maybe
     if (!res.ok) {
       expect(res.errors.length).toBeGreaterThanOrEqual(3);
     }
+  });
+
+  it("supports legacy and extended AdvisorReceiptFrontmatter fields, AdvisorRequestSchema, and advisor category allowlist", () => {
+    const legacy = AdvisorReceiptFrontmatterSchema.parse({
+      run_id: "r-adv-1",
+      contract_version: 1,
+      outcome: "resolved",
+      chosen_approach: "Plan A",
+    });
+    expect(legacy.requires_contract_change).toBe(false);
+    expect(legacy.requires_scope_expansion).toBe(false);
+    expect(legacy.requires_human_approval).toBe(false);
+    expect(legacy.decision_kind).toBeUndefined();
+    expect(legacy.target_stage).toBeUndefined();
+
+    const extendedMd = serializeFrontmatterMarkdown(
+      {
+        run_id: "r-adv-2",
+        contract_version: 2,
+        outcome: "resolved",
+        chosen_approach: "Use single SQLite transaction",
+        decision_kind: "technical_ambiguity",
+        requires_contract_change: false,
+        requires_scope_expansion: true,
+        requires_human_approval: false,
+        target_stage: "review",
+      },
+      `## 技术取舍
+对比事务粒度和锁争用。
+
+## 授权裁决
+需扩写另一目录，升级人类确认。
+`,
+    );
+    const parsedExtended = parseAndValidateReceipt("advisor", extendedMd);
+    expect(parsedExtended.ok).toBe(true);
+    if (parsedExtended.ok) {
+      expect(parsedExtended.frontmatter.decision_kind).toBe("technical_ambiguity");
+      expect(parsedExtended.frontmatter.requires_scope_expansion).toBe(true);
+      expect(parsedExtended.frontmatter.target_stage).toBe("review");
+    }
+
+    const req = AdvisorRequestSchema.parse({
+      schema_version: 1,
+      contract_version: 1,
+      trigger: "technical_ambiguity",
+      source_stage: "implement",
+      source_run_id: "run-1",
+      source_role: "worker",
+      category: "technical_ambiguity",
+      reason: "worker_ambiguity",
+      question: "Should state persist in YAML or SQLite?",
+      created_at: "2026-11-22T08:00:00.000Z",
+    });
+    expect(req.options).toEqual([]);
+
+    for (const cat of ADVISOR_ELIGIBLE_DECISION_CATEGORIES) {
+      expect(isAdvisorEligibleDecisionCategory(cat)).toBe(true);
+      expect(isAdvisorEligibleDecisionCategory(`  ${cat.toUpperCase()} `)).toBe(true);
+    }
+    expect(isAdvisorEligibleDecisionCategory("scope_clarification")).toBe(false);
+    expect(isAdvisorEligibleDecisionCategory("frozen_test_escalation")).toBe(false);
+    expect(isAdvisorEligibleDecisionCategory("external_action")).toBe(false);
+    expect(isAdvisorEligibleDecisionCategory("unknown_custom_reason")).toBe(false);
   });
 });

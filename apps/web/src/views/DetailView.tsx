@@ -959,6 +959,15 @@ export function DetailView() {
               </dl>
             </section>
 
+            {detail.plan && detail.plan.trim().length > 0 ? (
+              <section>
+                <h3>技术实施方案（PLAN.md）</h3>
+                <div style={{ maxHeight: "260px", overflowY: "auto" }}>
+                  <MarkdownContent text={detail.plan} />
+                </div>
+              </section>
+            ) : null}
+
             {decisions || (detail.stateEvents && detail.stateEvents.length > 0) ? (
               <section>
                 <h3>决定与流转记录</h3>

@@ -4243,4 +4243,127 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       cmd: "python3 ~/clean.py",
     });
   });
+
+  it("renders 技术实施方案（PLAN.md） in DetailView only when detail.plan is non-empty", async () => {
+    const now = "2026-11-22T08:00:00.000Z";
+    const card = {
+      schema_version: 1 as const,
+      id: "t-plan-ui",
+      title: "展示技术实施方案",
+      space: "kiln",
+      priority: "P1" as const,
+      track: "L2" as const,
+      workspace_mode: "git_worktree" as const,
+      parent: null,
+      depends_on: [],
+      contract_version: 1,
+      contract: {
+        goal: "在详情页展示 PLAN.md",
+        end: "前端可渲染",
+        accept_cmd: "pnpm test",
+        accept_files_hash: "sha256:planui",
+        scope: ["apps/web/**"],
+        deliver: { mode: "merge_main" as const, cmd: null },
+        human_accept: false,
+        external_actions: "ask" as const,
+      },
+      limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 200000 },
+      created_at: now,
+      updated_at: now,
+    };
+
+    const bootstrap = makeBaseBootstrap({
+      tasks: [
+        {
+          id: "t-plan-ui",
+          space: "kiln",
+          parent_id: null,
+          title: "展示技术实施方案",
+          priority: "P1",
+          effective_priority: "P1",
+          track: "L2",
+          workspace_mode: "git_worktree",
+          status: "running",
+          stage: "implement",
+          round: 1,
+          active_run_id: null,
+          contract_version: 1,
+          depends_on: [],
+          created_at: now,
+          updated_at: now,
+          tokens: {
+            input_tokens: 0,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+          },
+          cost_usd: 0,
+        },
+      ],
+    });
+
+    const baseDetail = {
+      card,
+      state: {
+        status: "running" as const,
+        stage: "implement" as const,
+        round: 1,
+        activeRunId: null,
+        priority: "P1" as const,
+        effectivePriority: "P1" as const,
+        track: "L2" as const,
+        contractVersion: 1,
+        updatedAt: now,
+      },
+      brief: "# 产品方案",
+      decisions: "",
+      pendingDecision: null,
+      ledgerProposals: [],
+      runs: [],
+      usageTurns: [],
+      usage: {
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        costUsd: 0,
+        byAgent: {},
+        byModel: {},
+      },
+    };
+
+    fetchMock.mockImplementation(async (url) => {
+      if (url === "/api/bootstrap") return jsonResponse(bootstrap);
+      if (url === "/api/tasks/t-plan-ui") {
+        return jsonResponse({
+          ...baseDetail,
+          plan: "# 技术实施方案\n\n- 选定方案: 单向数据流\n- 验证点: 保持向后兼容",
+        });
+      }
+      return jsonResponse({});
+    });
+
+    window.location.hash = "#task=t-plan-ui";
+    const firstRender = render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("技术实施方案（PLAN.md）")).toBeTruthy();
+    });
+    expect(screen.getByText(/单向数据流/)).toBeTruthy();
+    firstRender.unmount();
+
+    fetchMock.mockImplementation(async (url) => {
+      if (url === "/api/bootstrap") return jsonResponse(bootstrap);
+      if (url === "/api/tasks/t-plan-ui") {
+        return jsonResponse({ ...baseDetail, plan: "   " });
+      }
+      return jsonResponse({});
+    });
+
+    window.location.hash = "#task=t-plan-ui";
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("展示技术实施方案")).toBeTruthy();
+    });
+    expect(screen.queryByText("技术实施方案（PLAN.md）")).toBeNull();
+  });
 });

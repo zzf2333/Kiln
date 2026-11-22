@@ -1,21 +1,26 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
 import {
+  AdvisorRequestSchema,
   DecisionOptionSchema,
   DecisionRecordSchema,
+  GateReportSchema,
   PendingDecisionSchema,
   RunMetaSchema,
   TaskCardSchema,
   getDeliverCommandPolicy,
   getImplementAgentMode,
   getVerifyGateCheckMode,
+  isAdvisorEligibleDecisionCategory,
   parseAndValidateReceipt,
   parseFrontmatterMarkdown,
   serializeFrontmatterMarkdown,
+  type AdvisorReceiptFrontmatter,
+  type AdvisorRequest,
   type BackendCapabilities,
   type DecisionOption,
   type GateReport,
@@ -63,6 +68,9 @@ import {
 import {
   TaskStateMachine,
   assertCanInvokeAdvisor,
+  computeGateFailureFingerprint,
+  computeReviewerFailureFingerprint,
+  evaluateAdvisorAuthorityGuard,
   evaluateReviewerStageOutcome,
   evaluateWorkerStageOutcome,
   getTaskPipelineStages,
@@ -84,6 +92,10 @@ import {
   resolveMcpServerCommand,
   type McpCommandSpec,
 } from "./chat.js";
+import type {
+  TechnicalDecisionAdvisorRouteInput,
+  TechnicalDecisionAdvisorRouteResult,
+} from "./mcp-rpc.js";
 import {
   PendingDecisionStore,
   countRunningLeafTasks,
@@ -394,6 +406,8 @@ function buildReceiptTemplateSection(params: {
       fieldNotes = [
         "- `outcome`: 仅允许 `resolved` | `need_decision`",
         "- `chosen_approach`: 非空字符串",
+        "- `decision_kind` / `target_stage`: 可选；`target_stage` 仅限 `implement` | `review`",
+        "- `requires_contract_change` / `requires_scope_expansion` / `requires_human_approval`: 布尔值（默认 `false`；任一为 `true` 将触发内核护栏转交人类批准）",
       ];
       break;
     }
@@ -705,6 +719,7 @@ export class KilnOrchestrator {
   private readonly agentCapabilitiesMap = new Map<string, BackendCapabilities>();
   private readonly activeRuns = new Map<string, ActiveRunHandle>();
   private readonly inFlightOperations = new Map<string, InFlightStageOperation>();
+  private readonly advisorPreRunDirtySignatures = new Map<string, string>();
   private readonly approvalUnsubscribers: Array<() => void> = [];
   private readonly deferredApprovals: Array<{
     backend: ExecutionBackend;
@@ -1431,6 +1446,8 @@ export class KilnOrchestrator {
     const brief = readOptionalText(this.store.paths.briefMd(card.id)) ?? "";
     const planDoc =
       stage !== "plan" ? (readOptionalText(this.store.paths.planMd(card.id)) ?? "") : "";
+    const advisorReq =
+      stage === "advise" ? this.readAdvisorRequest(card.id, card.contract_version) : null;
     const decisions = readOptionalText(this.store.paths.decisionsMd(card.id)) ?? "";
     const ledger = this.store.readLedger(card.space);
     const ledgerText =
@@ -1438,12 +1455,21 @@ export class KilnOrchestrator {
         ? ledger.entries.map((e) => `- ${e.rule}`).join("\n")
         : "(无)";
 
+    const advisorRoutingHint =
+      role === "worker" || role === "reviewer"
+        ? `- 若遇到纯技术选型、架构/数据结构取舍或界面排版歧义（不改变产品目标、外部行为、\`contract.scope\` 与人类红线），请将 \`category\` 设为 \`technical_ambiguity\`（或 \`design_tradeoff\` / \`layout_ambiguity\`），内核将优先交由技术顾问决策；若涉及改需求目标、扩范围或高风险外部动作，请使用对应人类审批类别直接交由用户拍板。`
+        : "";
+
     const protocolNote = mcpEnabled
-      ? `请使用 kiln-mcp 工具（wb_get_context / wb_read_ledger / wb_submit_receipt / wb_ask_decision）提交阶段产物。`
+      ? [
+          `请使用 kiln-mcp 工具（wb_get_context / wb_read_ledger / wb_submit_receipt / wb_ask_decision）提交阶段产物。`,
+          ...(advisorRoutingHint ? [advisorRoutingHint] : []),
+        ].join("\n")
       : [
           `当前执行环境未注入 MCP，请严格遵守文件降级协议：`,
           `- 将阶段回执直接写入：${this.store.paths.receiptMd(card.id, runDirName)}`,
-          `- 若遇到阻塞需要人类裁决，请在回执 frontmatter 填写 outcome: need_decision、question 与 options，并在正文 "## 未完成或待决问题" 写明详情。`,
+          `- 若遇到阻塞需要裁决，请在回执 frontmatter 填写 outcome: need_decision、category、question 与 options，并在正文 "## 未完成或待决问题" 写明详情。`,
+          ...(advisorRoutingHint ? [advisorRoutingHint] : []),
         ].join("\n");
 
     const isHostTwoPhase =
@@ -1453,14 +1479,38 @@ export class KilnOrchestrator {
 
     const modeNote =
       stage === "plan"
-        ? `当前为前置方案阶段 (plan · advisor)：你正在只读分析目标工作区 ${cwd} 与《产品方案》(BRIEF.md)。请产出清晰、可落地且无歧义的技术实施方案（改动模块、接口/状态设计、边界与验证要点）写在回执正文中（严禁直接修改源码文件），完成后提交 advisor 角色回执（outcome: resolved）；遇到需要人类拍板的高风险/范围变更才提 outcome: need_decision。`
-        : isHostTwoPhase
-          ? `当前为 host_op 两阶段确定性执行（Phase 1 · dry_run_only）：只能把待写入/待执行的脚本、配置文件等产物放入沙盒暂存目录 ${this.store.paths.stagedDir(card.id)}，并在回执 changed_paths 中列出对应的宿主机目标绝对路径，严禁直接修改宿主机目标或运行直接改动宿主机的正式命令！Phase 1 门禁采用 staged_only（不会预先运行宿主机正式 accept_cmd），完成暂存与 dry-run 自检后请直接提交 outcome: completed（accept_result 可填 skipped 或 pass），严禁提出 action: return_external。后续落盘审批、交付命令执行与最终 accept_cmd 验真将由 Kiln 内核在 deliver 阶段原子完成。`
-          : card.workspace_mode === "host_scoped"
-            ? `当前为 host_scoped 模式：只能把待写文件写入沙盒暂存目录 ${this.store.paths.stagedDir(card.id)}，并在回执 changed_paths 中列出对应的宿主机目标绝对路径，严禁直接修改宿主机目标文件！提交 outcome: completed 后将由 Kiln 内核向用户发起落盘审批并原子写入，严禁使用或提出 action: return_external。`
-            : card.workspace_mode === "git_worktree"
-              ? `当前为 git_worktree 模式：工作区位于 ${cwd}。你只需编辑工作区内 scope 允许的文件并运行验收命令，严禁在受限沙箱里执行 git commit、git merge 或 git push；通过门禁后将由 kilnd 内核统一提交并合入。`
-              : `当前为 scratch_dir 模式：独立目录位于 ${cwd}。`;
+        ? `当前为前置方案阶段 (plan · advisor)：你正在只读分析目标工作区 ${cwd} 与《产品方案》(BRIEF.md)。请产出清晰、可落地且无歧义的技术实施方案（改动模块、接口/状态设计、边界与验证要点）写在回执正文中（严禁直接修改源码或暂存文件），完成后提交 advisor 角色回执（outcome: resolved）；若必须改契约/扩 scope/人类审批，请在 frontmatter 置位 requires_* 字段或提交 outcome: need_decision。`
+        : stage === "advise"
+          ? `当前为盘中技术顾问决策阶段 (advise · advisor)：你正在只读分析目标工作区 ${cwd}、产品方案、历史裁决与触发上下文。严禁直接修改源码或暂存文件；严禁擅自更改交付目标、扩大 contract.scope 或越过人类红线。请在已授权契约内给出明确可执行的单一选型建议并提交 outcome: resolved（可通过 target_stage 指定回到 implement 或 review）；若判定必须修改契约（requires_contract_change: true）、扩大 scope（requires_scope_expansion: true）或需人类批准红线副作用（requires_human_approval: true），请如实在 frontmatter 标明或提交 outcome: need_decision，由内核转交本人拍板。`
+          : isHostTwoPhase
+            ? `当前为 host_op 两阶段确定性执行（Phase 1 · dry_run_only）：只能把待写入/待执行的脚本、配置文件等产物放入沙盒暂存目录 ${this.store.paths.stagedDir(card.id)}，并在回执 changed_paths 中列出对应的宿主机目标绝对路径，严禁直接修改宿主机目标或运行直接改动宿主机的正式命令！Phase 1 门禁采用 staged_only（不会预先运行宿主机正式 accept_cmd），完成暂存与 dry-run 自检后请直接提交 outcome: completed（accept_result 可填 skipped 或 pass），严禁提出 action: return_external。后续落盘审批、交付命令执行与最终 accept_cmd 验真将由 Kiln 内核在 deliver 阶段原子完成。`
+            : card.workspace_mode === "host_scoped"
+              ? `当前为 host_scoped 模式：只能把待写文件写入沙盒暂存目录 ${this.store.paths.stagedDir(card.id)}，并在回执 changed_paths 中列出对应的宿主机目标绝对路径，严禁直接修改宿主机目标文件！提交 outcome: completed 后将由 Kiln 内核向用户发起落盘审批并原子写入，严禁使用或提出 action: return_external。`
+              : card.workspace_mode === "git_worktree"
+                ? `当前为 git_worktree 模式：工作区位于 ${cwd}。你只需编辑工作区内 scope 允许的文件并运行验收命令，严禁在受限沙箱里执行 git commit、git merge 或 git push；通过门禁后将由 kilnd 内核统一提交并合入。`
+                : `当前为 scratch_dir 模式：独立目录位于 ${cwd}。`;
+
+    const advisorContextSection = advisorReq
+      ? [
+          `## 触发顾问的待决与异常上下文`,
+          `- 触发原因: ${advisorReq.trigger} (${advisorReq.reason})`,
+          `- 来源阶段: ${advisorReq.source_stage}${advisorReq.source_role ? ` · ${advisorReq.source_role}` : ""} (${advisorReq.source_run_id})`,
+          `- 问题类别: ${advisorReq.category}`,
+          ...(advisorReq.failure_fingerprint
+            ? [
+                `- 连续同错指纹: ${advisorReq.failure_fingerprint}（连续 ${advisorReq.consecutive_failures ?? 1} 次）`,
+              ]
+            : []),
+          `- 问题描述: ${advisorReq.question}`,
+          ...(advisorReq.options.length > 0
+            ? [
+                `- 原候选选项:\n${advisorReq.options
+                  .map((o) => `  - [${o.id}] ${o.label} (action=${o.action})`)
+                  .join("\n")}`,
+              ]
+            : []),
+        ].join("\n")
+      : "";
 
     const receiptTemplateSection = buildReceiptTemplateSection({
       role,
@@ -1492,6 +1542,7 @@ export class KilnOrchestrator {
       protocolNote,
       ``,
       ...(receiptTemplateSection ? [receiptTemplateSection, ``] : []),
+      ...(advisorContextSection ? [advisorContextSection, ``] : []),
       `## 空间决策账本 (${card.space})`,
       ledgerText,
       ``,
@@ -1723,6 +1774,14 @@ export class KilnOrchestrator {
       ...(mcpServers !== undefined ? { mcpServers } : {}),
     };
 
+    if (
+      (plan.stage === "plan" || plan.stage === "advise") &&
+      plan.card.workspace_mode === "git_worktree"
+    ) {
+      const preDirtySig = await this.computeWorktreeDirtySignature(workspace.cwd);
+      this.advisorPreRunDirtySignatures.set(runId, preDirtySig);
+    }
+
     let sessionRef: SessionRef;
     this.startingBackendCount += 1;
     try {
@@ -1762,6 +1821,7 @@ export class KilnOrchestrator {
       (existingLease.state === "active" || existingLease.state === "completed");
 
     if (!runStillValid) {
+      this.advisorPreRunDirtySignatures.delete(runId);
       if (existingLease?.state === "active" && existingLease.run_id === runId) {
         this.store.sqlite.expireActiveLeaseByTask(
           plan.taskId,
@@ -2241,12 +2301,95 @@ export class KilnOrchestrator {
     return { ok: true, rawReceipt };
   }
 
-  private computeStageCounters(
+  private writeAdvisorRequest(taskId: string, request: AdvisorRequest): void {
+    const parsed = AdvisorRequestSchema.parse(request);
+    writeYamlAtomic(
+      this.store.paths.advisorRequestYaml(taskId),
+      parsed,
+      AdvisorRequestSchema,
+    );
+  }
+
+  private readAdvisorRequest(
+    taskId: string,
+    expectedContractVersion: number,
+  ): AdvisorRequest | null {
+    const parsed = readYamlOptional(
+      this.store.paths.advisorRequestYaml(taskId),
+      AdvisorRequestSchema,
+    );
+    if (!parsed || parsed.contract_version !== expectedContractVersion) {
+      return null;
+    }
+    return parsed;
+  }
+
+  private clearAdvisorRequest(taskId: string): void {
+    fs.rmSync(this.store.paths.advisorRequestYaml(taskId), { force: true });
+  }
+
+  private async computeWorktreeDirtySignature(worktreePath: string): Promise<string> {
+    if (!fs.existsSync(worktreePath)) {
+      return "missing";
+    }
+    try {
+      const raw = await runGitCommand([
+        "-C",
+        worktreePath,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "-uall",
+      ]);
+      if (raw.length === 0) {
+        return "clean";
+      }
+      const parsed = parseGitPorcelainStatusZ(raw);
+      const hash = createHash("sha256");
+      hash.update(raw);
+      for (const relPath of parsed.dirtyPaths) {
+        hash.update("\0");
+        hash.update(relPath);
+        hash.update("\0");
+        const absPath = path.join(worktreePath, relPath);
+        try {
+          const stat = fs.lstatSync(absPath);
+          if (stat.isSymbolicLink()) {
+            hash.update(`sym:${fs.readlinkSync(absPath)}`);
+          } else if (stat.isFile()) {
+            hash.update(fs.readFileSync(absPath));
+          } else {
+            hash.update("dir");
+          }
+        } catch {
+          hash.update("deleted");
+        }
+      }
+      return `dirty:${hash.digest("hex")}`;
+    } catch {
+      return "git_error";
+    }
+  }
+
+  private async detectAdvisorWorkspaceMutation(
+    card: TaskCard,
+    runId: string,
+  ): Promise<boolean> {
+    const preSig = this.advisorPreRunDirtySignatures.get(runId);
+    this.advisorPreRunDirtySignatures.delete(runId);
+    if (preSig === undefined || card.workspace_mode !== "git_worktree") {
+      return false;
+    }
+    const postSig = await this.computeWorktreeDirtySignature(
+      this.getGitWorktreeDir(card.id),
+    );
+    return postSig !== preSig;
+  }
+
+  private listCurrentWindowRuns(
     taskId: string,
     card: TaskCard,
-    currentStage: StageId,
-    currentRunId: string,
-  ): { counters: StageCounters; triageAttempted: boolean } {
+  ): Array<ScannedRunDir & { meta: RunMeta }> {
     const events = this.store.readStateEvents(taskId);
     let lastResetIso = card.created_at;
     for (const ev of events) {
@@ -2260,13 +2403,196 @@ export class KilnOrchestrator {
       }
     }
 
-    const runs = this.listTaskRunDirs(taskId).filter(
+    return this.listTaskRunDirs(taskId).filter(
       (r): r is ScannedRunDir & { meta: RunMeta } =>
         r.meta !== null &&
         !r.rateLimited &&
         r.meta.contract_version === card.contract_version &&
         r.meta.started_at >= lastResetIso,
     );
+  }
+
+  private canInvokeAdvisorForTask(
+    taskId: string,
+    card: TaskCard,
+    currentStage: StageId,
+    currentRunId: string,
+  ): boolean {
+    const roles = this.store.readConfig("roles");
+    if (!roles?.roles.advisor) {
+      return false;
+    }
+    const { counters } = this.computeStageCounters(
+      taskId,
+      card,
+      currentStage,
+      currentRunId,
+    );
+    return (
+      counters.advisorCalls < card.limits.advisor_calls &&
+      counters.totalTokens < card.limits.max_tokens
+    );
+  }
+
+  private computeConsecutiveSameGateFailureCount(
+    taskId: string,
+    card: TaskCard,
+    currentRunId: string,
+    currentReport: GateReport,
+  ): number {
+    const currentFp = computeGateFailureFingerprint(currentReport);
+    if (!currentFp) {
+      return 0;
+    }
+    const runs = this.listCurrentWindowRuns(taskId, card);
+    const currentIdx = runs.findIndex((r) => r.meta.run_id === currentRunId);
+    const slice = currentIdx >= 0 ? runs.slice(0, currentIdx + 1) : runs;
+
+    let count = 0;
+    for (let i = slice.length - 1; i >= 0; i--) {
+      const r = slice[i]!;
+      if (r.meta.run_id === currentRunId) {
+        count += 1;
+        continue;
+      }
+      if (r.meta.stage === "advise" || r.meta.stage === "triage") {
+        break;
+      }
+      if (r.meta.stage === "implement") {
+        const prevGate = readYamlOptional(
+          this.store.paths.gateYaml(taskId, r.dirName),
+          GateReportSchema,
+        );
+        const prevFp = prevGate ? computeGateFailureFingerprint(prevGate) : null;
+        if (prevFp === currentFp) {
+          count += 1;
+          continue;
+        }
+        break;
+      }
+      break;
+    }
+    return count;
+  }
+
+  private computeConsecutiveSameReviewerFailureCount(
+    taskId: string,
+    card: TaskCard,
+    currentRunId: string,
+    currentFrontmatter: Parameters<typeof computeReviewerFailureFingerprint>[0],
+    currentBody: string,
+  ): number {
+    const currentFp = computeReviewerFailureFingerprint(currentFrontmatter, currentBody);
+    if (!currentFp) {
+      return 0;
+    }
+    const runs = this.listCurrentWindowRuns(taskId, card);
+    const currentIdx = runs.findIndex((r) => r.meta.run_id === currentRunId);
+    const slice = currentIdx >= 0 ? runs.slice(0, currentIdx + 1) : runs;
+
+    let count = 0;
+    for (let i = slice.length - 1; i >= 0; i--) {
+      const r = slice[i]!;
+      if (r.meta.run_id === currentRunId) {
+        count += 1;
+        continue;
+      }
+      if (r.meta.stage === "advise" || r.meta.stage === "triage") {
+        break;
+      }
+      if (r.meta.stage === "implement") {
+        continue;
+      }
+      if (r.meta.stage === "review") {
+        const raw = readOptionalText(this.store.paths.receiptMd(taskId, r.dirName));
+        if (!raw) {
+          break;
+        }
+        const parsed = parseAndValidateReceipt("reviewer", raw);
+        if (!parsed.ok) {
+          break;
+        }
+        const prevFp = computeReviewerFailureFingerprint(
+          parsed.frontmatter,
+          parsed.body,
+        );
+        if (prevFp === currentFp) {
+          count += 1;
+          continue;
+        }
+        break;
+      }
+      break;
+    }
+    return count;
+  }
+
+  tryRouteTechnicalDecisionToAdvisor(
+    input: TechnicalDecisionAdvisorRouteInput,
+  ): TechnicalDecisionAdvisorRouteResult {
+    if (this.stopped) {
+      return { routedToAdvisor: false };
+    }
+    if (
+      (input.role !== "worker" && input.role !== "reviewer") ||
+      !isAdvisorEligibleDecisionCategory(input.category)
+    ) {
+      return { routedToAdvisor: false };
+    }
+    const card = readYamlOptional(
+      this.store.paths.cardYaml(input.taskId),
+      TaskCardSchema,
+    );
+    if (!card || card.contract_version !== input.contractVersion) {
+      return { routedToAdvisor: false };
+    }
+    if (!this.canInvokeAdvisorForTask(input.taskId, card, input.stage, input.runId)) {
+      return { routedToAdvisor: false };
+    }
+
+    assertCanInvokeAdvisor("kernel");
+    const now = new Date().toISOString();
+    this.writeAdvisorRequest(input.taskId, {
+      schema_version: 1,
+      contract_version: card.contract_version,
+      trigger: input.stage === "review" ? "review_deadlock" : "technical_ambiguity",
+      source_stage: input.stage,
+      source_run_id: input.runId,
+      source_role: input.role,
+      category: input.category,
+      reason: input.reason,
+      question: input.question,
+      options: input.options,
+      created_at: now,
+    });
+
+    const nextState = this.store.appendStateEvent(input.taskId, {
+      type: "resumed",
+      at: now,
+      stage: "advise",
+    });
+    this.syncCaffeinate();
+    this.publishTaskUpdated(input.taskId, {
+      status: nextState.status,
+      ...(nextState.stage !== null ? { stage: nextState.stage } : {}),
+      contractVersion: nextState.contractVersion,
+    });
+
+    void (async () => {
+      await this.abortActiveRun(input.taskId).catch(() => {});
+      await this.wake().catch(() => {});
+    })();
+
+    return { routedToAdvisor: true, state: nextState };
+  }
+
+  private computeStageCounters(
+    taskId: string,
+    card: TaskCard,
+    currentStage: StageId,
+    currentRunId: string,
+  ): { counters: StageCounters; triageAttempted: boolean } {
+    const runs = this.listCurrentWindowRuns(taskId, card);
 
     let advisorCalls = 0;
     let reviewRounds = 0;
@@ -2498,6 +2824,27 @@ export class KilnOrchestrator {
         card.contract_version,
         parsedReceipt.body,
       );
+      if (
+        isAdvisorEligibleDecisionCategory(pending.category) &&
+        this.canInvokeAdvisorForTask(taskId, card, "implement", runMeta.run_id)
+      ) {
+        assertCanInvokeAdvisor("kernel");
+        this.writeAdvisorRequest(taskId, {
+          schema_version: 1,
+          contract_version: card.contract_version,
+          trigger: "technical_ambiguity",
+          source_stage: "implement",
+          source_run_id: runMeta.run_id,
+          source_role: "worker",
+          category: pending.category,
+          reason: pending.reason,
+          question: pending.question,
+          options: pending.options,
+          created_at: new Date().toISOString(),
+        });
+        await this.advanceToNextStage(taskId, "advise", guard);
+        return;
+      }
       this.transitionTaskToWaiting(taskId, pending, guard);
       return;
     }
@@ -2631,13 +2978,26 @@ export class KilnOrchestrator {
       "implement",
       runMeta.run_id,
     );
+    const rolesForStuck = this.store.readConfig("roles");
+    const advisorAvailable = Boolean(rolesForStuck?.roles.advisor);
+    const consecutiveSameFailureCount = this.computeConsecutiveSameGateFailureCount(
+      taskId,
+      card,
+      runMeta.run_id,
+      gateResult.report,
+    );
 
     const stageDecision = evaluateWorkerStageOutcome(
       card,
       parsedReceipt,
       gateResult.report,
       counters,
-      { currentStage: "implement", triageAttempted },
+      {
+        currentStage: "implement",
+        triageAttempted,
+        consecutiveSameFailureCount,
+        advisorAvailable,
+      },
     );
 
     if (stageDecision.escalateToL2 && card.track === "L1") {
@@ -2701,6 +3061,29 @@ export class KilnOrchestrator {
         await this.advanceToNextStage(taskId, "review", guard);
         return;
       }
+    }
+
+    if (stageDecision.action === "invoke_advisor") {
+      assertCanInvokeAdvisor("kernel");
+      const failureFp =
+        computeGateFailureFingerprint(gateResult.report) ?? stageDecision.reason;
+      this.writeAdvisorRequest(taskId, {
+        schema_version: 1,
+        contract_version: latestCard.contract_version,
+        trigger: "stuck_same_failure",
+        source_stage: "implement",
+        source_run_id: runMeta.run_id,
+        source_role: "worker",
+        category: "stuck_loop",
+        reason: stageDecision.reason,
+        question: `任务 "${latestCard.title}" 连续 ${consecutiveSameFailureCount} 次在同一门禁失败点停滞（${stageDecision.reason}），请在不更改目标与 scope 的前提下给出突破方案。`,
+        options: [],
+        failure_fingerprint: failureFp,
+        consecutive_failures: consecutiveSameFailureCount,
+        created_at: new Date().toISOString(),
+      });
+      await this.advanceToNextStage(taskId, "advise", guard);
+      return;
     }
 
     if (stageDecision.action === "retry_stage") {
@@ -2895,9 +3278,25 @@ export class KilnOrchestrator {
       "review",
       runMeta.run_id,
     );
+    const rolesForStuck = this.store.readConfig("roles");
+    const advisorAvailable = Boolean(rolesForStuck?.roles.advisor);
+    const consecutiveSameFailureCount =
+      parsedReceipt.ok &&
+      parsedReceipt.frontmatter.run_id === runMeta.run_id &&
+      parsedReceipt.frontmatter.contract_version === card.contract_version
+        ? this.computeConsecutiveSameReviewerFailureCount(
+            taskId,
+            card,
+            runMeta.run_id,
+            parsedReceipt.frontmatter,
+            parsedReceipt.body,
+          )
+        : 0;
 
     const reviewDecision = evaluateReviewerStageOutcome(card, parsedReceipt, counters, {
       triageAttempted,
+      consecutiveSameFailureCount,
+      advisorAvailable,
     });
 
     if (reviewDecision.action === "advance_stage") {
@@ -2912,6 +3311,33 @@ export class KilnOrchestrator {
 
     if (reviewDecision.action === "retry_stage") {
       await this.advanceToNextStage(taskId, "review", guard);
+      return;
+    }
+
+    if (reviewDecision.action === "invoke_advisor") {
+      assertCanInvokeAdvisor("kernel");
+      const failureFp = parsedReceipt.ok
+        ? (computeReviewerFailureFingerprint(
+            parsedReceipt.frontmatter,
+            parsedReceipt.body,
+          ) ?? reviewDecision.reason)
+        : reviewDecision.reason;
+      this.writeAdvisorRequest(taskId, {
+        schema_version: 1,
+        contract_version: card.contract_version,
+        trigger: "review_deadlock",
+        source_stage: "review",
+        source_run_id: runMeta.run_id,
+        source_role: "reviewer",
+        category: "stuck_loop",
+        reason: reviewDecision.reason,
+        question: `任务 "${card.title}" 独立审查连续 ${consecutiveSameFailureCount} 次因同类缺陷未能放行（${reviewDecision.reason}），请在不更改目标与 scope 的前提下裁决破局方向。`,
+        options: [],
+        failure_fingerprint: failureFp,
+        consecutive_failures: consecutiveSameFailureCount,
+        created_at: new Date().toISOString(),
+      });
+      await this.advanceToNextStage(taskId, "advise", guard);
       return;
     }
 
@@ -3098,6 +3524,19 @@ export class KilnOrchestrator {
       );
       const roles = this.store.readConfig("roles");
       if (counters.advisorCalls < card.limits.advisor_calls && roles?.roles.advisor) {
+        this.writeAdvisorRequest(taskId, {
+          schema_version: 1,
+          contract_version: card.contract_version,
+          trigger: "triage_escalation",
+          source_stage: "triage",
+          source_run_id: runMeta.run_id,
+          source_role: "triage",
+          category: "triage_escalation",
+          reason: "triage_escalated_advisor",
+          question: parsed.frontmatter.summary,
+          options: [],
+          created_at: new Date().toISOString(),
+        });
         await this.advanceToNextStage(taskId, "advise", guard);
         return;
       }
@@ -3146,12 +3585,14 @@ export class KilnOrchestrator {
       contractVersion: runMeta.contract_version,
     };
     if (!this.isRunStillCurrent(taskId, runMeta.run_id, runMeta.contract_version)) {
+      this.advisorPreRunDirtySignatures.delete(runMeta.run_id);
       this.syncCaffeinate();
       return;
     }
 
     const receiptLoad = this.readReceiptAndCommitLease(taskId, runDirName, runMeta);
     if (!receiptLoad.ok) {
+      this.advisorPreRunDirtySignatures.delete(runMeta.run_id);
       if (receiptLoad.reason === "lease_expired") {
         this.syncCaffeinate();
         return;
@@ -3170,6 +3611,10 @@ export class KilnOrchestrator {
     }
 
     const card = this.store.readTaskCard(taskId);
+    const workspaceMutated = await this.detectAdvisorWorkspaceMutation(
+      card,
+      runMeta.run_id,
+    );
     const parsed = parseAndValidateReceipt("advisor", receiptLoad.rawReceipt);
     if (!parsed.ok) {
       await this.applyStageFailure(
@@ -3201,6 +3646,46 @@ export class KilnOrchestrator {
         },
         guard,
       );
+      return;
+    }
+
+    const authGuard = evaluateAdvisorAuthorityGuard(parsed.frontmatter, {
+      workspaceMutated,
+    });
+    if (!authGuard.allowed) {
+      const pending = PendingDecisionSchema.parse({
+        id: `dec-${randomUUID().slice(0, 8)}`,
+        task_id: taskId,
+        run_id: runMeta.run_id,
+        contract_version: card.contract_version,
+        reason: authGuard.reason,
+        category: "advisor_guardrail_escalation",
+        question: `技术顾问在方案阶段触发防越权护栏：${authGuard.detail}。\n- 顾问建议: ${parsed.frontmatter.chosen_approach}`,
+        options: [
+          {
+            id: "opt-retry-plan",
+            label: "重新生成方案（保持原边界）",
+            action: "resume",
+            target_stage: "plan",
+            recommended: true,
+          },
+          {
+            id: "opt-resume-implement",
+            label: "忽略越权部分，按当前讨论直接实施",
+            action: "resume",
+            target_stage: "implement",
+            recommended: false,
+          },
+          {
+            id: "opt-cancel",
+            label: "取消任务",
+            action: "cancel",
+            recommended: false,
+          },
+        ],
+        created_at: new Date().toISOString(),
+      });
+      this.transitionTaskToWaiting(taskId, pending, guard);
       return;
     }
 
@@ -3266,12 +3751,21 @@ export class KilnOrchestrator {
       contractVersion: runMeta.contract_version,
     };
     if (!this.isRunStillCurrent(taskId, runMeta.run_id, runMeta.contract_version)) {
+      this.advisorPreRunDirtySignatures.delete(runMeta.run_id);
       this.syncCaffeinate();
       return;
     }
 
     const receiptLoad = this.readReceiptAndCommitLease(taskId, runDirName, runMeta);
     const card = this.store.readTaskCard(taskId);
+    const workspaceMutated = await this.detectAdvisorWorkspaceMutation(
+      card,
+      runMeta.run_id,
+    );
+    const advisorReq = this.readAdvisorRequest(taskId, card.contract_version);
+    const resumeTargetStage: "implement" | "review" =
+      advisorReq?.source_stage === "review" ? "review" : "implement";
+
     const parsed = receiptLoad.ok
       ? parseAndValidateReceipt("advisor", receiptLoad.rawReceipt)
       : null;
@@ -3282,21 +3776,64 @@ export class KilnOrchestrator {
     );
 
     if (versionMatches && parsed?.ok && parsed.frontmatter.outcome === "resolved") {
+      const authGuard = evaluateAdvisorAuthorityGuard(parsed.frontmatter, {
+        workspaceMutated,
+      });
+      if (!authGuard.allowed) {
+        this.clearAdvisorRequest(taskId);
+        const contextSuffix = advisorReq
+          ? `\n- 原触发问题: ${advisorReq.question}`
+          : "";
+        const pending = PendingDecisionSchema.parse({
+          id: `dec-${randomUUID().slice(0, 8)}`,
+          task_id: taskId,
+          run_id: runMeta.run_id,
+          contract_version: card.contract_version,
+          reason: authGuard.reason,
+          category: "advisor_guardrail_escalation",
+          question: `技术顾问裁决触发防越权护栏：${authGuard.detail}。\n- 顾问建议: ${parsed.frontmatter.chosen_approach}${contextSuffix}`,
+          options: [
+            {
+              id: "opt-resume-target",
+              label:
+                resumeTargetStage === "review"
+                  ? "按讨论方向继续审查"
+                  : "按讨论方向继续实施",
+              action: "resume",
+              target_stage: resumeTargetStage,
+              recommended: true,
+            },
+            {
+              id: "opt-cancel",
+              label: "取消任务",
+              action: "cancel",
+              recommended: false,
+            },
+          ],
+          created_at: new Date().toISOString(),
+        });
+        this.transitionTaskToWaiting(taskId, pending, guard);
+        return;
+      }
+
+      const nextTargetStage: "implement" | "review" =
+        parsed.frontmatter.target_stage ?? resumeTargetStage;
       const now = new Date().toISOString();
       const record = DecisionRecordSchema.parse({
         schema_version: 1,
         id: `adv-${runMeta.run_id}`,
         task_id: taskId,
         contract_version: card.contract_version,
-        category: "advisor_resolution",
+        category: advisorReq?.category ?? "advisor_resolution",
         decider: "advisor",
         action: "resume",
-        affected_stages: ["implement"],
+        affected_stages: [nextTargetStage],
         rationale: parsed.frontmatter.chosen_approach,
         decided_at: now,
       });
       const decPath = this.store.paths.decisionsMd(taskId);
       const existing = readOptionalText(decPath) ?? "";
+      const bodyText = parsed.body.trim();
       const block = serializeFrontmatterMarkdown(
         {
           schema_version: 1,
@@ -3310,16 +3847,29 @@ export class KilnOrchestrator {
           rationale: record.rationale,
           decided_at: record.decided_at,
         },
-        `## 技术顾问裁决 (${record.id})\n\n- 选定方案: ${parsed.frontmatter.chosen_approach}\n`,
+        [
+          `## 技术顾问裁决 (${record.id})`,
+          ``,
+          `- 选定方案: ${parsed.frontmatter.chosen_approach}`,
+          `- 回到阶段: ${nextTargetStage}`,
+          ...(advisorReq ? [`- 触发原因: ${advisorReq.trigger} (${advisorReq.reason})`] : []),
+          ...(bodyText ? [``, bodyText] : []),
+          ``,
+        ].join("\n"),
       );
       writeFileAtomic(
         decPath,
         existing.trim().length > 0 ? `${existing.trimEnd()}\n\n${block}\n` : `${block}\n`,
       );
-      await this.advanceToNextStage(taskId, "implement", guard);
+      this.clearAdvisorRequest(taskId);
+      await this.advanceToNextStage(taskId, nextTargetStage, guard);
       return;
     }
 
+    this.clearAdvisorRequest(taskId);
+    const originalContext = advisorReq
+      ? `\n- 原触发问题: ${advisorReq.question}`
+      : "";
     const pending = PendingDecisionSchema.parse({
       id: `dec-${randomUUID().slice(0, 8)}`,
       task_id: taskId,
@@ -3329,15 +3879,16 @@ export class KilnOrchestrator {
       category: "advisor_escalation",
       question: parsed?.ok
         ? versionMatches
-          ? `技术顾问无法在当前授权内决断（${parsed.frontmatter.chosen_approach}），请拍板。`
+          ? `技术顾问无法在当前授权内决断（${parsed.frontmatter.chosen_approach}），请拍板。${originalContext}`
           : `技术顾问回执 run_id 或 contract_version 不匹配，请人工拍板任务 "${card.title}"。`
-        : `技术顾问未产出有效裁决，请人工拍板任务 "${card.title}"。`,
+        : `技术顾问未产出有效裁决，请人工拍板任务 "${card.title}"。${originalContext}`,
       options: [
         {
           id: "opt-resume-impl",
-          label: "按讨论方向继续实施",
+          label:
+            resumeTargetStage === "review" ? "按讨论方向继续审查" : "按讨论方向继续实施",
           action: "resume",
-          target_stage: "implement",
+          target_stage: resumeTargetStage,
           recommended: true,
         },
         {
