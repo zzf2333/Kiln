@@ -1,14 +1,20 @@
 import { useState } from "preact/hooks";
-import type { Priority, Track } from "@kiln/protocol/web";
+import {
+  extractWorkflowToggles,
+  type Priority,
+  type Track,
+  type WorkflowPreset,
+} from "@kiln/protocol/web";
 import { ChatComposer } from "../components/ChatComposer";
 import { ChatTimeline } from "../components/ChatTimeline";
 import { CheckIcon } from "../components/Icons";
 import { MarkdownContent } from "../components/MarkdownContent";
 import { ViewFrame } from "../components/ViewFrame";
-import { fmtTime } from "../state/format";
+import { WORKFLOW_PRESET_LABEL, fmtTime } from "../state/format";
 import {
   getProjectSpaces,
   isProjectSpace,
+  resolveFormEffectiveWorkflow,
   useKilnStore,
   type IntakeFormState,
 } from "../state/store";
@@ -24,6 +30,15 @@ const TRACK_TABS: Array<[Exclude<Track, "L3">, string]> = [
   ["L1", "L1 快车道"],
   ["L2", "L2 标准交付"],
 ];
+
+const WORKFLOW_PRESET_TABS: Array<[Exclude<WorkflowPreset, "custom">, string]> = [
+  ["quick", WORKFLOW_PRESET_LABEL.quick],
+  ["host_op", WORKFLOW_PRESET_LABEL.host_op],
+  ["standard_dev", WORKFLOW_PRESET_LABEL.standard_dev],
+  ["full_delivery", WORKFLOW_PRESET_LABEL.full_delivery],
+];
+
+const LOOP_ROUNDS_OPTIONS = [1, 2, 3, 5] as const;
 
 export function IntakeView() {
   const { store, state } = useKilnStore();
@@ -90,6 +105,36 @@ export function IntakeView() {
 
   const hasBrief = intakeForm.brief_markdown.trim().length > 0;
   const openQuestions = intakeForm.open_questions;
+  const effectiveWorkflow = resolveFormEffectiveWorkflow(intakeForm);
+  const wfToggles = extractWorkflowToggles(effectiveWorkflow);
+  const workflowPreviewParts: string[] = ["立项"];
+  if (wfToggles.includePlan) {
+    workflowPreviewParts.push("方案(顾问)");
+  }
+  if (wfToggles.includeReview) {
+    workflowPreviewParts.push(
+      `实施${wfToggles.hostTwoPhase ? "·暂存" : ""} → 验真${
+        wfToggles.hostTwoPhase ? "·仅暂存" : ""
+      } ⇄ 审查(≤${wfToggles.maxRounds ?? 3}轮)`,
+    );
+  } else {
+    workflowPreviewParts.push(
+      `实施${wfToggles.hostTwoPhase ? "·暂存" : ""}`,
+      wfToggles.hostTwoPhase ? "验真(仅暂存)" : "验真",
+    );
+  }
+  if (wfToggles.includeAccept) {
+    workflowPreviewParts.push(
+      wfToggles.acceptMode === "approval" ? "人工验收" : "独立验收",
+    );
+  }
+  if (wfToggles.deliverApproval) {
+    workflowPreviewParts.push("交付审批");
+  }
+  workflowPreviewParts.push(
+    wfToggles.hostTwoPhase ? "交付(落盘+终验)" : "交付",
+  );
+  const workflowPreview = workflowPreviewParts.join(" → ");
   const targetSummary = isProjectMode
     ? selectedProject
       ? `${selectedProject.name} (${selectedProject.id}) · 代码工作树 git_worktree`
@@ -271,30 +316,26 @@ export function IntakeView() {
               <div class="intake-target">
                 <span class="chip">本机与临时 (local)</span>
                 <div class="seg" role="radiogroup" aria-label="本机工作区模式">
-                  <button
-                    type="button"
-                    role="radio"
-                    aria-checked={intakeForm.workspace_mode !== "host_scoped"}
-                    data-workspace-mode="scratch_dir"
-                    class={intakeForm.workspace_mode !== "host_scoped" ? "on" : ""}
-                    onClick={() =>
-                      store.updateIntakeForm({ workspace_mode: "scratch_dir" })
-                    }
-                  >
-                    临时沙盒
-                  </button>
-                  <button
-                    type="button"
-                    role="radio"
-                    aria-checked={intakeForm.workspace_mode === "host_scoped"}
-                    data-workspace-mode="host_scoped"
-                    class={intakeForm.workspace_mode === "host_scoped" ? "on" : ""}
-                    onClick={() =>
-                      store.updateIntakeForm({ workspace_mode: "host_scoped" })
-                    }
-                  >
-                    本机配置修改
-                  </button>
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={intakeForm.workspace_mode !== "host_scoped"}
+                      data-workspace-mode="scratch_dir"
+                      class={intakeForm.workspace_mode !== "host_scoped" ? "on" : ""}
+                      onClick={() => store.selectIntakeWorkspaceMode("scratch_dir")}
+                    >
+                      临时沙盒
+                    </button>
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={intakeForm.workspace_mode === "host_scoped"}
+                      data-workspace-mode="host_scoped"
+                      class={intakeForm.workspace_mode === "host_scoped" ? "on" : ""}
+                      onClick={() => store.selectIntakeWorkspaceMode("host_scoped")}
+                    >
+                      本机配置修改
+                    </button>
                 </div>
               </div>
             )}
@@ -551,7 +592,7 @@ export function IntakeView() {
                               aria-checked={intakeForm.track === val}
                               data-track={val}
                               class={intakeForm.track === val ? "on" : ""}
-                              onClick={() => store.updateIntakeForm({ track: val })}
+                              onClick={() => store.selectIntakeTrack(val)}
                             >
                               {label}
                             </button>
@@ -561,6 +602,119 @@ export function IntakeView() {
                     </div>
                     <span class="field-mark">
                       {requiredChecks[3]![1] ? <CheckIcon /> : null}
+                    </span>
+                  </div>
+
+                  <div class="field">
+                    <div>
+                      <dt>流程蓝图 · {WORKFLOW_PRESET_LABEL[effectiveWorkflow.preset]}</dt>
+                      <dd class="bp-box">
+                        <div class="seg seg-wrap" role="radiogroup" aria-label="流程预设">
+                          {WORKFLOW_PRESET_TABS.map(([val, label]) => (
+                            <button
+                              key={val}
+                              type="button"
+                              role="radio"
+                              aria-checked={effectiveWorkflow.preset === val}
+                              data-workflow-preset={val}
+                              class={effectiveWorkflow.preset === val ? "on" : ""}
+                              onClick={() => store.selectIntakeWorkflowPreset(val)}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+
+                        <div class="bp-toggles" role="group" aria-label="流程步骤开关">
+                          <button
+                            type="button"
+                            class={`chip-tab ${wfToggles.includePlan ? "on" : ""}`}
+                            aria-pressed={wfToggles.includePlan}
+                            onClick={() =>
+                              store.updateIntakeWorkflowToggles({
+                                includePlan: !wfToggles.includePlan,
+                              })
+                            }
+                          >
+                            顾问方案
+                          </button>
+                          <button
+                            type="button"
+                            class={`chip-tab ${wfToggles.includeReview ? "on" : ""}`}
+                            aria-pressed={wfToggles.includeReview}
+                            onClick={() =>
+                              store.updateIntakeWorkflowToggles({
+                                includeReview: !wfToggles.includeReview,
+                              })
+                            }
+                          >
+                            独立审查
+                          </button>
+                          <button
+                            type="button"
+                            class={`chip-tab ${wfToggles.includeAccept ? "on" : ""}`}
+                            aria-pressed={wfToggles.includeAccept}
+                            onClick={() =>
+                              store.updateIntakeWorkflowToggles({
+                                includeAccept: !wfToggles.includeAccept,
+                                acceptMode: wfToggles.acceptMode ?? "verifier",
+                              })
+                            }
+                          >
+                            独立验收
+                          </button>
+                          <button
+                            type="button"
+                            class={`chip-tab ${wfToggles.deliverApproval ? "on" : ""}`}
+                            aria-pressed={wfToggles.deliverApproval}
+                            disabled={
+                              wfToggles.hostTwoPhase ||
+                              intakeForm.deliver_cmd.trim().length > 0
+                            }
+                            onClick={() =>
+                              store.updateIntakeWorkflowToggles({
+                                deliverApproval: !wfToggles.deliverApproval,
+                              })
+                            }
+                          >
+                            交付审批
+                          </button>
+                        </div>
+
+                        {wfToggles.includeReview ? (
+                          <div class="bp-rounds">
+                            <span class="bp-rounds-label">审查上限</span>
+                            <div
+                              class="seg seg-wrap"
+                              role="radiogroup"
+                              aria-label="最大循环轮数"
+                            >
+                              {LOOP_ROUNDS_OPTIONS.map((n) => (
+                                <button
+                                  key={n}
+                                  type="button"
+                                  role="radio"
+                                  aria-checked={(wfToggles.maxRounds ?? 3) === n}
+                                  data-loop-rounds={n}
+                                  class={(wfToggles.maxRounds ?? 3) === n ? "on" : ""}
+                                  onClick={() =>
+                                    store.updateIntakeWorkflowToggles({ maxRounds: n })
+                                  }
+                                >
+                                  {n} 轮
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+
+                        <div class="bp-preview mono" aria-label="流程预览">
+                          {workflowPreview}
+                        </div>
+                      </dd>
+                    </div>
+                    <span class="field-mark">
+                      <CheckIcon />
                     </span>
                   </div>
 
@@ -635,6 +789,12 @@ export function IntakeView() {
                           )}
                         </dd>
                       </div>
+                      {intakeForm.deliver_cmd.trim() ? (
+                        <div class="cs-row">
+                          <dt>交付命令</dt>
+                          <dd class="mono">{intakeForm.deliver_cmd.trim()}</dd>
+                        </div>
+                      ) : null}
                       {intakeForm.depends_on.trim() ? (
                         <div class="cs-row">
                           <dt>前置任务</dt>
@@ -707,6 +867,28 @@ export function IntakeView() {
                         </div>
                         <span class="field-mark">
                           {requiredChecks[7]![1] ? <CheckIcon /> : null}
+                        </span>
+                      </div>
+
+                      <div class="field">
+                        <div>
+                          <dt>交付命令（可选）</dt>
+                          <dd>
+                            <input
+                              aria-label="交付命令"
+                              class="draft-edit mono"
+                              placeholder="可选，如审批落盘后执行的命令"
+                              value={intakeForm.deliver_cmd}
+                              onInput={(e) =>
+                                store.updateIntakeForm({
+                                  deliver_cmd: (e.currentTarget as HTMLInputElement).value,
+                                })
+                              }
+                            />
+                          </dd>
+                        </div>
+                        <span class="field-mark">
+                          {intakeForm.deliver_cmd.trim() ? <CheckIcon /> : null}
                         </span>
                       </div>
 

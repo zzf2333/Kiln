@@ -1,9 +1,10 @@
-import type { StageId, TaskStatus, Track } from "@kiln/protocol/web";
+import type { StageId, TaskStatus, Track, WorkflowBlueprint } from "@kiln/protocol/web";
 import { getPipelineStages, heatOf, stageMeta } from "../state/format";
 import { FlameCanvas } from "./FlameCanvas";
 
 export interface MiniRailProps {
   track: Track;
+  workflow?: WorkflowBlueprint;
   status: TaskStatus;
   activeStage: StageId | null;
   rate?: number;
@@ -11,16 +12,17 @@ export interface MiniRailProps {
 
 const STAGE_RANK: Partial<Record<StageId, number>> = {
   intake: 0,
-  implement: 1,
-  verify: 2,
-  review: 3,
-  accept: 4,
-  deliver: 5,
+  plan: 1,
+  implement: 2,
+  verify: 3,
+  review: 4,
+  accept: 5,
+  deliver: 6,
 };
 
-export function MiniRail({ track, status, activeStage, rate }: MiniRailProps) {
-  const stages = getPipelineStages(track);
-  const activeRank = activeStage ? (STAGE_RANK[activeStage] ?? 1) : 0;
+export function MiniRail({ track, workflow, status, activeStage, rate }: MiniRailProps) {
+  const stages = getPipelineStages(track, false, workflow);
+  const activeRank = activeStage ? (STAGE_RANK[activeStage] ?? 2) : 0;
 
   return (
     <div class="rail">

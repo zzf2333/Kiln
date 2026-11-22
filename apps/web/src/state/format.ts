@@ -1,4 +1,13 @@
-import type { Priority, StageId, TaskStatus, Track, WorkspaceMode } from "@kiln/protocol/web";
+import type {
+  Priority,
+  StageId,
+  TaskStatus,
+  Track,
+  WorkflowBlueprint,
+  WorkflowPreset,
+  WorkspaceMode,
+} from "@kiln/protocol/web";
+import { getWorkflowStages } from "@kiln/protocol/web";
 
 export interface StageMeta {
   label: string;
@@ -7,6 +16,7 @@ export interface StageMeta {
 
 export const STAGE_META: Record<StageId, StageMeta> = {
   intake: { label: "立项", colorVar: "--s-intake" },
+  plan: { label: "方案", colorVar: "--s-advise" },
   implement: { label: "实施", colorVar: "--s-impl" },
   research: { label: "调研", colorVar: "--s-research" },
   verify: { label: "验真", colorVar: "--s-verify" },
@@ -15,6 +25,14 @@ export const STAGE_META: Record<StageId, StageMeta> = {
   triage: { label: "异常研判", colorVar: "--s-advise" },
   advise: { label: "顾问裁决", colorVar: "--s-advise" },
   deliver: { label: "交付", colorVar: "--s-deliver" },
+};
+
+export const WORKFLOW_PRESET_LABEL: Record<WorkflowPreset, string> = {
+  quick: "快速通道",
+  host_op: "本机操作",
+  standard_dev: "标准开发",
+  full_delivery: "完整交付",
+  custom: "自定义蓝图",
 };
 
 export function stageMeta(stage: StageId | string | null | undefined): StageMeta {
@@ -54,7 +72,25 @@ export const STATUS_CHIP: Record<TaskStatus, [string, string]> = {
   cancelled: ["已取消", "chip-bad"],
 };
 
-export function getPipelineStages(track: Track, humanAccept = false): StageId[] {
+export function getPipelineStages(
+  track: Track,
+  humanAccept = false,
+  workflow?: WorkflowBlueprint,
+): StageId[] {
+  if (workflow) {
+    return [
+      "intake",
+      ...getWorkflowStages(
+        {
+          track,
+          workspace_mode: "git_worktree",
+          contract: { human_accept: humanAccept },
+          workflow,
+        },
+        track,
+      ),
+    ];
+  }
   if (track === "L1") {
     return humanAccept
       ? ["intake", "implement", "verify", "accept", "deliver"]

@@ -1,15 +1,16 @@
-import type {
-  CardLimits,
-  GateReport,
-  ReceiptValidationResult,
-  ReviewerReceiptFrontmatter,
-  RoleId,
-  StageId,
-  TaskCard,
-  Track,
-  WorkerReceiptFrontmatter,
+import {
+  getWorkflowLoopPolicy,
+  type CardLimits,
+  type GateReport,
+  type ReceiptValidationResult,
+  type ReviewerReceiptFrontmatter,
+  type RoleId,
+  type StageId,
+  type TaskCard,
+  type Track,
+  type WorkerReceiptFrontmatter,
 } from "@kiln/protocol";
-import { getTrackStages, nextStageAfter } from "./transitions.js";
+import { getTaskPipelineStages, nextTaskStageAfter } from "./transitions.js";
 
 export interface StageCounters {
   stageRetries: number;
@@ -372,8 +373,8 @@ export function evaluateWorkerStageOutcome(
   counters: StageCounters,
   options?: EvaluateWorkerStageOptions,
 ): WorkerStageDecision {
-  // Reject L3 Post-MVP track upfront.
-  getTrackStages(card.track, card.contract.human_accept);
+  // Reject L3 Post-MVP track upfront and validate blueprint pipeline.
+  getTaskPipelineStages(card, card.track);
 
   const currentStage = options?.currentStage ?? "implement";
   const frozenChanged = gateReport.frozen_files_changed.length > 0;
@@ -500,11 +501,7 @@ export function evaluateWorkerStageOutcome(
     };
   }
 
-  const nextStage = nextStageAfter(
-    effectiveTrack,
-    currentStage,
-    card.contract.human_accept,
-  );
+  const nextStage = nextTaskStageAfter(card, currentStage, effectiveTrack);
 
   return {
     action: "advance_stage",
@@ -576,7 +573,9 @@ export function evaluateReviewerStageOutcome(
   counters: StageCounters,
   options?: EvaluateReviewerStageOptions,
 ): ReviewerStageDecision {
-  getTrackStages(card.track, card.contract.human_accept);
+  const pipeline = getTaskPipelineStages(card, card.track);
+  const reviewTrack: Track =
+    card.track === "L1" && !pipeline.includes("review") ? "L2" : card.track;
   const breaker = checkCircuitBreaker(counters, card.limits);
 
   if (isValidationResult(receiptResult) && !receiptResult.ok) {
@@ -646,7 +645,7 @@ export function evaluateReviewerStageOutcome(
       level: "none",
       passed: true,
       forgedPassIgnored: false,
-      nextStage: nextStageAfter(card.track, "review", card.contract.human_accept),
+      nextStage: nextTaskStageAfter(card, "review", reviewTrack),
     };
   }
 
@@ -654,7 +653,12 @@ export function evaluateReviewerStageOutcome(
     ? `reviewer_pass_rejected_due_to_blocking_issues (p0=${receipt.p0}, p1=${receipt.p1})`
     : "reviewer_changes_requested";
 
-  if (counters.reviewRounds < card.limits.review_rounds) {
+  const loopPolicy = getWorkflowLoopPolicy(card);
+  const maxReworkRounds = loopPolicy
+    ? Math.max(0, loopPolicy.maxRounds - 1)
+    : card.limits.review_rounds;
+
+  if (counters.reviewRounds < maxReworkRounds) {
     return {
       action: "rework_implement",
       level: "L1",

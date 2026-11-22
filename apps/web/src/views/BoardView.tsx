@@ -221,7 +221,7 @@ export function BoardView() {
               <div class="ask-q">{t.waiting_reason ?? "等待人工裁决"}</div>
             </div>
           )}
-          <MiniRail track={t.track} status={t.status} activeStage={t.stage} />
+          <MiniRail track={t.track} workflow={t.workflow} status={t.status} activeStage={t.stage} />
           <div class="card-actions">
             {dec && recOpt ? (
               <button
@@ -300,6 +300,7 @@ export function BoardView() {
           </div>
           <MiniRail
             track={t.track}
+            workflow={t.workflow}
             status={t.status}
             activeStage={t.stage}
             rate={rate}
@@ -337,7 +338,7 @@ export function BoardView() {
           </div>
           <h3 class="card-title">{t.title}</h3>
           {t.summary ? <p class="card-desc">{t.summary}</p> : null}
-          <MiniRail track={t.track} status={t.status} activeStage={t.stage} />
+          <MiniRail track={t.track} workflow={t.workflow} status={t.status} activeStage={t.stage} />
           <div
             class="card-actions"
             style={{ justifyContent: "space-between", alignItems: "center" }}
@@ -382,7 +383,7 @@ export function BoardView() {
           </div>
           <h3 class="card-title">{t.title}</h3>
           {t.summary ? <p class="card-desc">{t.summary}</p> : null}
-          <MiniRail track={t.track} status={t.status} activeStage={t.stage} />
+          <MiniRail track={t.track} workflow={t.workflow} status={t.status} activeStage={t.stage} />
           <div class="card-foot">
             <span>
               {t.depends_on.length > 0
@@ -413,7 +414,7 @@ export function BoardView() {
           </div>
           <h3 class="card-title">{t.title}</h3>
           <p class="card-desc">{t.summary ?? "等待外部回应"}</p>
-          <MiniRail track={t.track} status={t.status} activeStage={t.stage} />
+          <MiniRail track={t.track} workflow={t.workflow} status={t.status} activeStage={t.stage} />
           <div class="card-foot">
             <span class="mono">{t.id}</span>
             <span>外部等待</span>

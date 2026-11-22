@@ -2106,4 +2106,141 @@ describe("runVerificationGate end-to-end", () => {
       store.close();
     }
   });
+
+  it("supports host_op staged_only verification gate, staged_sha256 anti-tamper guard, and postApplyCmd rollback", async () => {
+    const kilnHome = makeTempDir("kiln-gate-hostop-");
+    const hostRoot = makeTempDir("kiln-host-op-target-");
+    const targetScript = path.join(hostRoot, "apply.cjs");
+    const markerFile = path.join(hostRoot, "applied.txt");
+    fs.writeFileSync(targetScript, "original-script\n");
+    const canonicalScript = realpathCanonical(targetScript);
+
+    const store = new KilnStore({ kilnHome });
+    try {
+      const card = makeTaskCard({
+        id: "t-host-op-gate",
+        track: "L1",
+        workspace_mode: "host_scoped",
+        contract: {
+          goal: "Two-phase host script",
+          end: "Host script applied and verified",
+          accept_cmd: `node -e "const fs=require('fs');if(!fs.existsSync(process.argv[1]))process.exit(2)" ${JSON.stringify(markerFile)}`,
+          accept_files_hash: "sha256:hostop",
+          scope: [`${hostRoot}/**`],
+          deliver: { mode: "manual", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+      });
+      store.createTask(card, "# Host op");
+
+      const stagedScript = path.join(store.paths.stagedDir(card.id), "apply.cjs");
+      writeFileAtomic(
+        stagedScript,
+        `require("node:fs").writeFileSync(${JSON.stringify(markerFile)}, "ok\\n");\n`,
+      );
+      const stageRes = stageHostScopedChanges(store, {
+        taskId: card.id,
+        contractScope: card.contract.scope,
+        stagedFiles: [{ stagedRelativePath: "apply.cjs", targetPath: canonicalScript }],
+      });
+      expect(stageRes.ok).toBe(true);
+      if (!stageRes.ok) throw new Error("Expected stage ok");
+      expect(stageRes.manifest.files[0]?.staged_sha256).toMatch(/^sha256:[a-f0-9]{64}$/);
+      const diffs = buildHostStagedDiffs(store, card.id);
+      expect(diffs[0]?.stagedSha256).toBe(stageRes.manifest.files[0]?.staged_sha256);
+
+      store.persistRunBeforeDispatch(
+        makeRunMeta({ task_id: card.id, run_id: "run-hostop-1" }),
+        "001-implement",
+      );
+      store.submitReceipt({
+        taskId: card.id,
+        runId: "run-hostop-1",
+        contractVersion: 1,
+        runDirName: "001-implement",
+        markdown: makeWorkerReceiptMarkdown({
+          run_id: "run-hostop-1",
+          changed_paths: [canonicalScript],
+          accept_result: "skipped",
+        }),
+      });
+
+      // Full mode fails (markerFile not yet created); staged_only passes Phase 1 without running accept_cmd
+      const fullGate = await runVerificationGate(store, {
+        taskId: card.id,
+        runDirName: "001-implement",
+        gateCheckMode: "full",
+      });
+      expect(fullGate.passed).toBe(false);
+      expect(fullGate.report.accept_exit_code).toBe(2);
+
+      const stagedOnlyGate = await runVerificationGate(store, {
+        taskId: card.id,
+        runDirName: "001-implement",
+        gateCheckMode: "staged_only",
+      });
+      expect(stagedOnlyGate.passed).toBe(true);
+      expect(stagedOnlyGate.report.scope_ok).toBe(true);
+      expect(stagedOnlyGate.report.accept_exit_code).toBe(0);
+
+      // Tampering staged/ triggers staged_hash_mismatch with zero writes to host
+      fs.writeFileSync(stagedScript, "tampered();\n");
+      const tamperRes = await applyApprovedHostScopedChanges(store, {
+        taskId: card.id,
+        approved: true,
+        verifyCmd: card.contract.accept_cmd,
+      });
+      expect(tamperRes.ok).toBe(false);
+      if (tamperRes.ok) throw new Error("Expected staged_hash_mismatch");
+      expect(tamperRes.reason).toBe("staged_hash_mismatch");
+      expect(fs.readFileSync(canonicalScript, "utf8")).toBe("original-script\n");
+
+      // Re-stage valid script, then fail postApplyCmd -> full host rollback
+      writeFileAtomic(
+        stagedScript,
+        `require("node:fs").writeFileSync(${JSON.stringify(markerFile)}, "ok\\n");\n`,
+      );
+      const restaged = stageHostScopedChanges(store, {
+        taskId: card.id,
+        contractScope: card.contract.scope,
+        stagedFiles: [{ stagedRelativePath: "apply.cjs", targetPath: canonicalScript }],
+      });
+      expect(restaged.ok).toBe(true);
+
+      const badCmdRes = await applyApprovedHostScopedChanges(store, {
+        taskId: card.id,
+        approved: true,
+        postApplyCmd: "node -e \"process.exit(3)\"",
+        verifyCmd: card.contract.accept_cmd,
+      });
+      expect(badCmdRes.ok).toBe(false);
+      if (badCmdRes.ok) throw new Error("Expected deliver_cmd_failed_rolled_back");
+      expect(badCmdRes.reason).toBe("deliver_cmd_failed_rolled_back");
+      expect(fs.readFileSync(canonicalScript, "utf8")).toBe("original-script\n");
+      expect(store.listHostPathLocks(card.id)).toHaveLength(0);
+
+      // Re-stage & succeed with postApplyCmd running the newly written host script, then passing verifyCmd
+      const stageFinal = stageHostScopedChanges(store, {
+        taskId: card.id,
+        contractScope: card.contract.scope,
+        stagedFiles: [{ stagedRelativePath: "apply.cjs", targetPath: canonicalScript }],
+      });
+      expect(stageFinal.ok).toBe(true);
+
+      const goodApply = await applyApprovedHostScopedChanges(store, {
+        taskId: card.id,
+        approved: true,
+        postApplyCmd: `node ${JSON.stringify(canonicalScript)}`,
+        verifyCmd: card.contract.accept_cmd,
+      });
+      expect(goodApply.ok).toBe(true);
+      if (!goodApply.ok) throw new Error("Expected goodApply ok");
+      expect(goodApply.postApplyResult?.exitCode).toBe(0);
+      expect(goodApply.verifyResult?.exitCode).toBe(0);
+      expect(fs.readFileSync(markerFile, "utf8")).toBe("ok\n");
+    } finally {
+      store.close();
+    }
+  });
 });

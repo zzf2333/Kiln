@@ -8,6 +8,7 @@ import {
   PrioritySchema,
   StageIdSchema,
   TaskCardSchema,
+  ensureWorkflowIncludesReview,
   serializeFrontmatterMarkdown,
   type CardContract,
   type DecisionAction,
@@ -39,6 +40,7 @@ import {
   InvalidStateTransitionError,
   UnsupportedTrackError,
   assertValidTransition,
+  getTaskPipelineStages,
   getTrackStages,
 } from "./transitions.js";
 
@@ -117,14 +119,15 @@ const ACTION_TO_STATUS: Readonly<Record<DecisionAction, TaskStatus>> = {
 
 const STAGE_ORDER: Readonly<Record<StageId, number>> = {
   intake: 0,
-  research: 1,
-  implement: 2,
-  verify: 3,
-  review: 4,
-  accept: 5,
-  triage: 6,
-  advise: 7,
-  deliver: 8,
+  plan: 1,
+  research: 2,
+  implement: 3,
+  verify: 4,
+  review: 5,
+  accept: 6,
+  triage: 7,
+  advise: 8,
+  deliver: 9,
 };
 
 function readFileOptionalUtf8(filePath: string): string {
@@ -302,6 +305,7 @@ export class TaskStateMachine {
   createTask(card: TaskCard, briefMarkdown: string): CreateTaskResult {
     const parsed = TaskCardSchema.parse(card);
     getTrackStages(parsed.track, parsed.contract.human_accept);
+    getTaskPipelineStages(parsed);
 
     if (this.store.getTaskIndex(parsed.id) !== null) {
       throw new Error(`Task "${parsed.id}" already exists`);
@@ -362,7 +366,7 @@ export class TaskStateMachine {
     }
     assertValidTransition(derived.status, "queued");
 
-    const stages = getTrackStages(derived.track, card.contract.human_accept);
+    const stages = getTaskPipelineStages(card, derived.track);
     const stageToResume =
       targetStage !== undefined
         ? StageIdSchema.parse(targetStage)
@@ -810,6 +814,9 @@ export class TaskStateMachine {
     const updatedCard = TaskCardSchema.parse({
       ...card,
       track: "L2",
+      ...(card.workflow !== undefined
+        ? { workflow: ensureWorkflowIncludesReview(card.workflow) }
+        : {}),
       updated_at: timestamp,
     });
     writeYamlAtomic(this.store.paths.cardYaml(taskId), updatedCard, TaskCardSchema);

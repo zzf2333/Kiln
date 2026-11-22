@@ -4129,4 +4129,118 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       expect(calledUrls).toContain("/api/tasks/t-ext-ui/complete");
     });
   });
+
+  it("supports composable workflow preset selection, step toggles, live preview, and deliver_cmd in IntakeView without introducing <select>", async () => {
+    const now = "2026-11-22T04:00:00.000Z";
+    const bootstrap = makeBaseBootstrap({
+      spaces: {
+        local: {
+          schema_version: 1,
+          id: "local",
+          name: "本机与临时",
+          default_branch: "main",
+          copy_untracked: [],
+          clone_deps: [],
+          freeze_patterns: [],
+        },
+        proj: {
+          schema_version: 1,
+          id: "proj",
+          name: "Proj",
+          repo_path: "/repos/proj",
+          default_branch: "main",
+          copy_untracked: [],
+          clone_deps: [],
+          default_accept_cmd: "pnpm test",
+          freeze_patterns: [],
+        },
+      },
+    });
+
+    let commitPayload: Record<string, unknown> | null = null;
+    fetchMock.mockImplementation(async (url, init) => {
+      if (url === "/api/bootstrap") return jsonResponse(bootstrap);
+      if (url === "/api/drafts" && init?.method === "POST") {
+        return jsonResponse(
+          {
+            ok: true,
+            draft: {
+              schema_version: 1,
+              id: "d-bp-1",
+              title: "本机蓝图测试",
+              space: "local",
+              priority: "P2",
+              track: "L1",
+              workspace_mode: "host_scoped",
+              depends_on: [],
+              contract: {},
+              created_at: now,
+              updated_at: now,
+            },
+          },
+          201,
+        );
+      }
+      if (url === "/api/drafts/d-bp-1/commit" && init?.method === "POST") {
+        commitPayload = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return jsonResponse({ ok: true, card: { id: commitPayload.id }, state: {} }, 201);
+      }
+      return jsonResponse({});
+    });
+
+    window.location.hash = "#view=intake";
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: /立项设置/ })).toBeTruthy();
+    });
+
+    expect(document.body.querySelectorAll(".converse select")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("tab", { name: /立项设置/ }));
+
+    // 1. Pick full_delivery preset -> updates preview & track=L2
+    const presetGroup = screen.getByRole("radiogroup", { name: "流程预设" });
+    fireEvent.click(within(presetGroup).getByRole("radio", { name: "完整交付" }));
+    expect(screen.getByLabelText("流程预览").textContent).toContain("方案(顾问)");
+    expect(screen.getByLabelText("流程预览").textContent).toContain("独立验收");
+
+    // 2. Toggle 独立审查 off via composable toggle -> preset becomes custom
+    const togglesGroup = screen.getByRole("group", { name: "流程步骤开关" });
+    fireEvent.click(within(togglesGroup).getByRole("button", { name: "独立审查" }));
+    expect(screen.getByText(/自定义蓝图/)).toBeTruthy();
+    expect(document.body.querySelectorAll(".converse select")).toHaveLength(0);
+
+    // 3. Pick host_op preset -> automatically sets host_scoped + L1 + two-phase preview
+    fireEvent.click(within(presetGroup).getByRole("radio", { name: "本机操作" }));
+    expect(screen.getByLabelText("流程预览").textContent).toContain("验真(仅暂存)");
+    expect(screen.getByLabelText("流程预览").textContent).toContain("交付(落盘+终验)");
+
+    // 4. Fill fields + deliver_cmd & commit
+    fireEvent.input(screen.getByLabelText("标题"), {
+      target: { value: "清理本机临时缓存" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "手动编辑" }));
+    fireEvent.input(screen.getByLabelText("交付终点"), {
+      target: { value: "清理完毕" },
+    });
+    fireEvent.input(screen.getByLabelText("验收命令"), {
+      target: { value: "test -f ~/cache.flag" },
+    });
+    fireEvent.input(screen.getByLabelText("可改范围"), {
+      target: { value: "~/clean.py" },
+    });
+    fireEvent.input(screen.getByLabelText("交付命令"), {
+      target: { value: "python3 ~/clean.py" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始推进" }));
+
+    await waitFor(() => {
+      expect(commitPayload).not.toBeNull();
+    });
+    expect(commitPayload!.workspace_mode).toBe("host_scoped");
+    expect((commitPayload!.workflow as { preset: string }).preset).toBe("host_op");
+    expect((commitPayload!.contract as { deliver: unknown }).deliver).toEqual({
+      mode: "run_cmd",
+      cmd: "python3 ~/clean.py",
+    });
+  });
 });

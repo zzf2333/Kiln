@@ -7,14 +7,17 @@ import {
   STAGE_IDS,
   TASK_STATUSES,
   TRACKS,
+  WORKFLOW_PRESETS,
   WORKSPACE_MODES,
   type DecisionAction,
   type Priority,
   type StageId,
   type TaskStatus,
   type Track,
+  type WorkflowPreset,
   type WorkspaceMode,
 } from "./constants.js";
+import { WorkflowBlueprintSchema } from "./workflow.js";
 
 export {
   DECISION_ACTIONS,
@@ -23,12 +26,14 @@ export {
   STAGE_IDS,
   TASK_STATUSES,
   TRACKS,
+  WORKFLOW_PRESETS,
   WORKSPACE_MODES,
   type DecisionAction,
   type Priority,
   type StageId,
   type TaskStatus,
   type Track,
+  type WorkflowPreset,
   type WorkspaceMode,
 };
 
@@ -80,6 +85,7 @@ export const TaskCardSchema = z.object({
   workspace_mode: WorkspaceModeSchema,
   parent: z.string().min(1).nullable().default(null),
   depends_on: z.array(z.string().min(1)).default([]),
+  workflow: WorkflowBlueprintSchema.optional(),
   contract_version: z.number().int().positive(),
   contract: CardContractSchema,
   limits: CardLimitsSchema,
@@ -105,6 +111,7 @@ export const DraftCardSchema = z.object({
   workspace_mode: WorkspaceModeSchema.default("git_worktree"),
   depends_on: z.array(z.string().min(1)).default([]),
   open_questions: z.array(z.string().min(1)).optional(),
+  workflow: WorkflowBlueprintSchema.optional(),
   contract: CardContractSchema.partial().default({}),
   session_ref: SessionRefSchema.nullable().optional(),
   intake_open: z.boolean().optional(),

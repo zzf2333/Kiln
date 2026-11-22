@@ -28,6 +28,7 @@ import {
   TaskCardSchema,
   TrackSchema,
   UpsertSpaceRequestSchema,
+  WorkflowBlueprintSchema,
   WorkspaceModeSchema,
   type DiscoverSpacesResponse,
   type LedgerFile,
@@ -173,6 +174,7 @@ const UpsertDraftRequestSchema = z.object({
   workspace_mode: WorkspaceModeSchema.optional(),
   depends_on: z.array(z.string().min(1)).optional(),
   open_questions: z.array(z.string().min(1)).optional(),
+  workflow: WorkflowBlueprintSchema.optional(),
   contract: CardContractSchema.partial().optional(),
   brief_markdown: z.string().optional(),
   session_ref: SessionRefSchema.nullable().optional(),
@@ -188,6 +190,7 @@ const CommitDraftRequestSchema = z.object({
   workspace_mode: WorkspaceModeSchema.optional(),
   parent: z.string().min(1).nullable().optional(),
   depends_on: z.array(z.string().min(1)).optional(),
+  workflow: WorkflowBlueprintSchema.optional(),
   contract: CardContractSchema.partial().optional(),
   limits: CardLimitsSchema.optional(),
   brief_markdown: z.string().optional(),
@@ -1103,6 +1106,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         effective_priority: row.effective_priority,
         track: row.track,
         workspace_mode: row.workspace_mode,
+        ...(card.workflow !== undefined ? { workflow: card.workflow } : {}),
         status: row.status,
         stage: derived.stage,
         round: derived.round,
@@ -1339,6 +1343,9 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       ...((input.open_questions ?? existing?.open_questions) !== undefined
         ? { open_questions: input.open_questions ?? existing?.open_questions }
         : {}),
+      ...((input.workflow ?? existing?.workflow) !== undefined
+        ? { workflow: input.workflow ?? existing?.workflow }
+        : {}),
       contract: {
         ...(existing?.contract ?? {}),
         ...(input.contract ?? {}),
@@ -1408,6 +1415,9 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       workspace_mode: workspaceMode,
       parent: input.parent ?? null,
       depends_on: input.depends_on ?? existingDraft.depends_on,
+      ...((input.workflow ?? existingDraft.workflow) !== undefined
+        ? { workflow: input.workflow ?? existingDraft.workflow }
+        : {}),
       contract_version: 1,
       contract: {
         ...existingDraft.contract,

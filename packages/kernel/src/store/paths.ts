@@ -185,6 +185,10 @@ export class KilnPaths {
     return path.join(this.taskDir(taskId), "BRIEF.md");
   }
 
+  planMd(taskId: string): string {
+    return path.join(this.taskDir(taskId), "PLAN.md");
+  }
+
   decisionsMd(taskId: string): string {
     return path.join(this.taskDir(taskId), "decisions.md");
   }

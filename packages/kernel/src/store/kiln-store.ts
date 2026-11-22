@@ -63,14 +63,15 @@ import {
 
 const STAGE_ORDER: Record<StageId, number> = {
   intake: 0,
-  research: 1,
-  implement: 2,
-  verify: 3,
-  review: 4,
-  accept: 5,
-  triage: 6,
-  advise: 7,
-  deliver: 8,
+  plan: 1,
+  research: 2,
+  implement: 3,
+  verify: 4,
+  review: 5,
+  accept: 6,
+  triage: 7,
+  advise: 8,
+  deliver: 9,
 };
 
 const CONFIG_SCHEMAS = {

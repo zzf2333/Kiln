@@ -10,6 +10,7 @@ import {
   WorkspaceModeSchema,
 } from "./card.js";
 import { RoleIdSchema } from "./config.js";
+import { WorkflowBlueprintSchema } from "./workflow.js";
 import {
   MCP_ROLE_ALLOWLIST,
   MCP_TOOL_NAMES,
@@ -53,6 +54,7 @@ export const WbPlanInputSchema = z.discriminatedUnion("mode", [
     workspace_mode: WorkspaceModeSchema.optional(),
     depends_on: z.array(z.string().min(1)).optional(),
     open_questions: z.array(z.string().min(1)).optional(),
+    workflow: WorkflowBlueprintSchema.optional(),
     contract: CardContractSchema.partial().optional(),
     brief_markdown: z.string().optional(),
   }),
@@ -66,6 +68,7 @@ export const WbPlanInputSchema = z.discriminatedUnion("mode", [
     workspace_mode: WorkspaceModeSchema,
     parent: z.string().min(1).nullable().default(null),
     depends_on: z.array(z.string().min(1)).default([]),
+    workflow: WorkflowBlueprintSchema.optional(),
     contract: CardContractSchema,
     limits: CardLimitsSchema.optional(),
     brief_markdown: z.string().min(1),

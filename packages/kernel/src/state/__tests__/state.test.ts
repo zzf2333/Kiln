@@ -4,6 +4,8 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   TASK_STATUSES,
+  buildCustomWorkflow,
+  buildWorkflowPreset,
   parseAndValidateReceipt,
   type GateReport,
   type PendingDecision,
@@ -29,9 +31,11 @@ import {
   evaluateReviewerStageOutcome,
   evaluateWorkerStageOutcome,
   findQueuedDownstreamTasks,
+  getTaskPipelineStages,
   getTrackStages,
   handleExecutionFailure,
   nextStageAfter,
+  nextTaskStageAfter,
   resolveExternalSideEffectRetry,
   validateDependsOnGraph,
   type StageCounters,
@@ -1519,5 +1523,99 @@ describe("TaskStateMachine integration with real KilnStore and SQLite disk rebui
     expect(() => sm.completeExternalTask("t-ext-resume")).toThrow(
       InvalidStateTransitionError,
     );
+  });
+
+  it("drives task pipeline stages via composable workflow blueprints, honors loop max_rounds, and injects review on L1->L2 escalation", () => {
+    const quickCard = makeTaskCard({
+      id: "t-wf-quick",
+      track: "L1",
+      workflow: buildWorkflowPreset("quick"),
+    });
+    expect(getTaskPipelineStages(quickCard)).toEqual(["implement", "verify", "deliver"]);
+    expect(nextTaskStageAfter(quickCard, "implement")).toBe("verify");
+    expect(nextTaskStageAfter(quickCard, "verify")).toBe("deliver");
+
+    const hostOpCard = makeTaskCard({
+      id: "t-wf-host",
+      track: "L1",
+      workspace_mode: "host_scoped",
+      workflow: buildWorkflowPreset("host_op", { hasDeliverCmd: true }),
+    });
+    expect(getTaskPipelineStages(hostOpCard)).toEqual(["implement", "verify", "deliver"]);
+
+    const fullCard = makeTaskCard({
+      id: "t-wf-full",
+      track: "L2",
+      workflow: buildWorkflowPreset("full_delivery"),
+    });
+    expect(getTaskPipelineStages(fullCard)).toEqual([
+      "plan",
+      "implement",
+      "verify",
+      "review",
+      "accept",
+      "deliver",
+    ]);
+    expect(nextTaskStageAfter(fullCard, "plan")).toBe("implement");
+    expect(nextTaskStageAfter(fullCard, "review")).toBe("accept");
+
+    // Loop policy max_rounds=4 permits 3 rework rounds even when limits.review_rounds=1
+    const loopCard = makeTaskCard({
+      id: "t-wf-loop",
+      track: "L2",
+      workflow: buildCustomWorkflow({
+        preset: "custom",
+        includePlan: false,
+        includeReview: true,
+        includeAccept: false,
+        deliverApproval: false,
+        hostTwoPhase: false,
+        hasDeliverCmd: false,
+        maxRounds: 4,
+        stuckThreshold: 2,
+      }),
+      limits: { retries_per_stage: 2, review_rounds: 1, advisor_calls: 1, max_tokens: 100_000 },
+    });
+    const revRetry = evaluateReviewerStageOutcome(
+      loopCard,
+      {
+        run_id: "run-rev-2",
+        contract_version: 1,
+        reviewed_ref: "HEAD",
+        verdict: "changes_requested",
+        p0: 0,
+        p1: 1,
+        p2: 0,
+      },
+      { stageRetries: 0, reviewRounds: 2, advisorCalls: 0, totalTokens: 500 },
+    );
+    expect(revRetry.action).toBe("rework_implement");
+
+    const revEscalate = evaluateReviewerStageOutcome(
+      loopCard,
+      {
+        run_id: "run-rev-4",
+        contract_version: 1,
+        reviewed_ref: "HEAD",
+        verdict: "changes_requested",
+        p0: 0,
+        p1: 1,
+        p2: 0,
+      },
+      { stageRetries: 0, reviewRounds: 3, advisorCalls: 0, totalTokens: 500 },
+    );
+    expect(revEscalate.action).toBe("invoke_triage");
+
+    // Escalating a quick L1 blueprint card to L2 injects independent review into card.workflow
+    sm.createTask(quickCard, "# Quick L1");
+    sm.escalateTrackToL2("t-wf-quick", "frozen_files_changed");
+    const escalatedCard = store.readTaskCard("t-wf-quick");
+    expect(escalatedCard.track).toBe("L2");
+    expect(getTaskPipelineStages(escalatedCard)).toEqual([
+      "implement",
+      "verify",
+      "review",
+      "deliver",
+    ]);
   });
 });

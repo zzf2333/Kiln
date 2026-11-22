@@ -523,6 +523,20 @@ export function resolvePlaceholdersForCommit(
               ),
             }
           : {}),
+        ...(payload.contract.deliver !== undefined
+          ? {
+              deliver:
+                payload.contract.deliver.mode === "run_cmd"
+                  ? {
+                      mode: "run_cmd" as const,
+                      cmd: replaceNewTaskPlaceholder(
+                        payload.contract.deliver.cmd,
+                        resolvedTaskId,
+                      ),
+                    }
+                  : payload.contract.deliver,
+            }
+          : {}),
       }
     : undefined;
 

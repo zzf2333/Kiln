@@ -11,6 +11,7 @@ import { HostStagedDiffSection } from "./ResolveView";
 import {
   STATUS_CHIP,
   TRACK_LABEL,
+  WORKFLOW_PRESET_LABEL,
   WORKSPACE_LABEL,
   fmtDurationMs,
   fmtTime,
@@ -43,6 +44,7 @@ function parseStageFromDir(dirName: string): StageId {
   const candidate = parts.length > 1 ? parts.slice(1).join("-") : dirName;
   const known: StageId[] = [
     "intake",
+    "plan",
     "implement",
     "research",
     "verify",
@@ -244,6 +246,7 @@ export function DetailView() {
   const pipelineStages = getPipelineStages(
     taskState.track,
     card.contract.human_accept,
+    card.workflow,
   );
   if (
     taskState.stage &&
@@ -485,6 +488,9 @@ export function DetailView() {
               onChange={(next) => void store.updatePriority(card.id, next)}
             />
             <span>
+              {card.workflow
+                ? `${WORKFLOW_PRESET_LABEL[card.workflow.preset]} · `
+                : ""}
               {TRACK_LABEL[taskState.track]} ·{" "}
               {WORKSPACE_LABEL[card.workspace_mode]} · 契约 v
               {taskState.contractVersion}

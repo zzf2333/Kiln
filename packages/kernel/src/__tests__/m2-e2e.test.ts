@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   HashMismatchErrorSchema,
   SseEventSchema,
+  buildWorkflowPreset,
   parseAndValidateReceipt,
   serializeFrontmatterMarkdown,
   type LimitsConfig,
@@ -4638,4 +4639,452 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     expect(pending.question).toContain("已由内核移除不合法的 return_external 选项");
     expect(capturedHandoffs[0]).toContain("严禁使用或提出 action: return_external");
   }, 15_000);
+
+  it("executes composable workflow presets end-to-end: quick, host_op two-phase single-approval (#7), and full_delivery with plan/PLAN.md (#9)", async () => {
+    const kilnHome = makeTempDir("kiln-m2-wf-");
+    const hostRoot = makeTempDir("kiln-m2-wf-host-");
+    const { repoPath, baseCommit } = initGitRepo("wf");
+    const fakeBackend = new FakeBackend();
+
+    const targetHostScript = path.join(hostRoot, "clean-cache.cjs");
+    const targetCleanedFlag = path.join(hostRoot, "cache.cleaned");
+    fs.writeFileSync(targetHostScript, "// old placeholder\n");
+    const canonicalHostScript = realpathCanonical(targetHostScript);
+    const canonicalCleanedFlag = path.join(realpathCanonical(hostRoot), "cache.cleaned");
+
+    const capturedWorkerHandoffs = new Map<string, string>();
+
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: true,
+      tokenSecret: "m2-e2e-wf-blueprints-secret-012345",
+      approvalHandler: async (req, ctx) => {
+        const token =
+          fakeBackend
+            .getRecordedSpecs()
+            .find((s) => s.runId === ctx.runId)
+            ?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+
+        if (req.action === "wf_quick_worker") {
+          const wtPath = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
+          fs.writeFileSync(path.join(wtPath, "src", "app.ts"), "export const v = 777;\n");
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeWorkerReceiptMarkdown({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                input_ref: baseCommit,
+                output_ref: "src/app.ts",
+                changed_paths: ["src/app.ts"],
+              }),
+            }),
+          });
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "wf_hostop_worker") {
+          const runDir = fs
+            .readdirSync(server.store.paths.runsDir(ctx.taskId))
+            .filter((d) => d.endsWith("-implement"))
+            .sort()
+            .at(-1)!;
+          capturedWorkerHandoffs.set(
+            ctx.taskId,
+            fs.readFileSync(server.store.paths.handoffMd(ctx.taskId, runDir), "utf8"),
+          );
+
+          const stagedFile = path.join(server.store.paths.stagedDir(ctx.taskId), "clean-cache.cjs");
+          writeFileAtomic(
+            stagedFile,
+            `require("node:fs").writeFileSync(${JSON.stringify(canonicalCleanedFlag)}, "cleaned-ok\\n");\n`,
+          );
+
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeWorkerReceiptMarkdown({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                input_ref: "host_scoped",
+                output_ref: "staged/clean-cache.cjs",
+                changed_paths: [canonicalHostScript],
+                accept_result: "skipped",
+              }),
+            }),
+          });
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "wf_full_advisor") {
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: serializeFrontmatterMarkdown(
+                {
+                  run_id: ctx.runId,
+                  contract_version: ctx.card.contract_version,
+                  outcome: "resolved",
+                  chosen_approach: "Plan A: update src/app.ts constant to 999",
+                },
+                [
+                  "## 技术取舍",
+                  "直接修改 src/app.ts，保持兼容导出。",
+                  "",
+                  "## 授权裁决",
+                  "允许修改 src/app.ts 并运行验收。",
+                  "",
+                ].join("\n"),
+              ),
+            }),
+          });
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "wf_full_worker") {
+          const runDir = fs
+            .readdirSync(server.store.paths.runsDir(ctx.taskId))
+            .filter((d) => d.endsWith("-implement"))
+            .sort()
+            .at(-1)!;
+          capturedWorkerHandoffs.set(
+            ctx.taskId,
+            fs.readFileSync(server.store.paths.handoffMd(ctx.taskId, runDir), "utf8"),
+          );
+
+          const wtPath = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
+          fs.writeFileSync(path.join(wtPath, "src", "app.ts"), "export const v = 999;\n");
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeWorkerReceiptMarkdown({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                input_ref: baseCommit,
+                output_ref: "src/app.ts",
+                changed_paths: ["src/app.ts"],
+              }),
+            }),
+          });
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "wf_full_reviewer") {
+          const wtPath = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
+          const headCommit = git(["rev-parse", "HEAD"], wtPath).trim();
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeReviewerReceiptMarkdown({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                reviewed_ref: headCommit,
+                verdict: "pass",
+              }),
+            }),
+          });
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "wf_full_verifier") {
+          const wtPath = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
+          const headCommit = git(["rev-parse", "HEAD"], wtPath).trim();
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: serializeFrontmatterMarkdown(
+                {
+                  run_id: ctx.runId,
+                  contract_version: ctx.card.contract_version,
+                  verified_ref: headCommit,
+                  verdict: "pass",
+                  passed_scenarios: 1,
+                  failed_scenarios: 0,
+                },
+                "## 验收场景明细\n- 场景 1：export const v = 999 已生效\n",
+              ),
+            }),
+          });
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        await ctx.backend.answer(req.id, true);
+      },
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "wfproj",
+      name: "Workflow Proj",
+      repo_path: repoPath,
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    });
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "local",
+      name: "Local",
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    });
+
+    const baseRoles = defaultRoles();
+    server.store.writeConfig("roles", {
+      ...baseRoles,
+      roles: {
+        ...baseRoles.roles,
+        reviewer: { agent: "codex", model: "gpt-6-luna", allow_full_access_fallback: false },
+        advisor: { agent: "codex", model: "gpt-6-luna", allow_full_access_fallback: false },
+        verifier: { agent: "codex", model: "gpt-6-luna", allow_full_access_fallback: false },
+      },
+    });
+    server.store.writeConfig("limits", defaultLimits({ max_concurrent_slots: 1 }));
+    server.store.writeConfig("pricing", defaultPricing());
+    await server.start();
+
+    // Case 1: quick preset (implement -> verify -> deliver) completes with zero reviewer runs
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "wf_quick_worker", detail: "quick implement" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-wf-quick", role: "worker" },
+    );
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-wf-quick",
+        title: "Quick preset task",
+        space: "wfproj",
+        priority: "P1",
+        track: "L1",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        workflow: buildWorkflowPreset("quick"),
+        contract_version: 1,
+        contract: {
+          goal: "Quick update",
+          end: "Merged without review",
+          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_files_hash: "sha256:quick",
+          scope: ["src/**"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 5_000_000 },
+        created_at: "2026-11-22T03:00:00.000Z",
+        updated_at: "2026-11-22T03:00:00.000Z",
+      },
+      "# Quick Task",
+    );
+    await server.orchestrator.wake();
+    await waitUntil(
+      () => server.store.getTaskIndex("t-wf-quick")?.status === "done",
+      "t-wf-quick done",
+    );
+    expect(
+      fakeBackend
+        .getRecordedSpecs()
+        .some((s) => s.taskId === "t-wf-quick" && s.role === "reviewer"),
+    ).toBe(false);
+    expect(fs.readFileSync(path.join(repoPath, "src", "app.ts"), "utf8")).toBe(
+      "export const v = 777;\n",
+    );
+
+    // Case 2: host_op two-phase deterministic execution (#7 permanent fix)
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "wf_hostop_worker", detail: "stage host cleanup script" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-wf-hostop", role: "worker" },
+    );
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-wf-hostop",
+        title: "Host op cleanup caches",
+        space: "local",
+        priority: "P0",
+        track: "L1",
+        workspace_mode: "host_scoped",
+        parent: null,
+        depends_on: [],
+        workflow: buildWorkflowPreset("host_op", { hasDeliverCmd: true }),
+        contract_version: 1,
+        contract: {
+          goal: "Clean caches safely",
+          end: "Host flag written via two-phase script execution",
+          accept_cmd: `node -e "const fs=require('fs');if(fs.readFileSync(process.argv[1],'utf8').trim()!=='cleaned-ok')process.exit(5)" ${JSON.stringify(canonicalCleanedFlag)}`,
+          accept_files_hash: "sha256:hostop",
+          scope: [`${hostRoot}/**`],
+          deliver: {
+            mode: "run_cmd",
+            cmd: `node ${JSON.stringify(canonicalHostScript)}`,
+          },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 5_000_000 },
+        created_at: "2026-11-22T03:05:00.000Z",
+        updated_at: "2026-11-22T03:05:00.000Z",
+      },
+      "# Host Op Task",
+    );
+    await server.orchestrator.wake();
+    await waitUntil(
+      () => server.store.getTaskIndex("t-wf-hostop")?.status === "waiting",
+      "t-wf-hostop waiting approval",
+    );
+    expect(capturedWorkerHandoffs.get("t-wf-hostop")).toContain("host_op 两阶段确定性执行");
+    expect(fs.existsSync(targetCleanedFlag)).toBe(false);
+    const hostOpDec = server.pendingDecisions.get("t-wf-hostop")!;
+    expect(hostOpDec.reason).toBe("host_scoped_approval");
+    expect(hostOpDec.question).toContain("sha256:");
+    expect(hostOpDec.question).toContain(canonicalHostScript);
+
+    const approveHostRes = await server.app.request(
+      new Request("http://127.0.0.1/api/tasks/t-wf-hostop/decide", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          decision_id: hostOpDec.id,
+          option_id: "opt-apply-host",
+          action: "resume",
+          apply_ledger_rule: false,
+        }),
+      }),
+    );
+    expect(approveHostRes.status).toBe(200);
+    await waitUntil(
+      () => server.store.getTaskIndex("t-wf-hostop")?.status === "done",
+      "t-wf-hostop done in single approval",
+    );
+    expect(fs.readFileSync(canonicalCleanedFlag, "utf8").trim()).toBe("cleaned-ok");
+    expect(server.pendingDecisions.get("t-wf-hostop")).toBeNull();
+
+    // Case 3: full_delivery preset runs plan(advisor) -> PLAN.md -> implement -> review -> accept(verifier) -> deliver_approval -> merge_main
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "wf_full_advisor", detail: "advisor plan" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-wf-full", role: "advisor" },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "wf_full_worker", detail: "full implement" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-wf-full", role: "worker" },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "wf_full_reviewer", detail: "full review" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-wf-full", role: "reviewer" },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "wf_full_verifier", detail: "full verify" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-wf-full", role: "verifier" },
+    );
+
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-wf-full",
+        title: "Full delivery preset task",
+        space: "wfproj",
+        priority: "P1",
+        track: "L2",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        workflow: buildWorkflowPreset("full_delivery"),
+        contract_version: 1,
+        contract: {
+          goal: "Deliver with plan + review + verifier + approval",
+          end: "v = 999 merged after full pipeline",
+          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_files_hash: "sha256:full",
+          scope: ["src/**"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 5_000_000 },
+        created_at: "2026-11-22T03:10:00.000Z",
+        updated_at: "2026-11-22T03:10:00.000Z",
+      },
+      "# Full Delivery Task",
+    );
+    await server.orchestrator.wake();
+    await waitUntil(
+      () => server.store.getTaskIndex("t-wf-full")?.status === "waiting",
+      "t-wf-full waiting deliver_approval",
+    );
+
+    expect(fs.readFileSync(server.store.paths.planMd("t-wf-full"), "utf8")).toContain(
+      "Plan A: update src/app.ts constant to 999",
+    );
+    expect(capturedWorkerHandoffs.get("t-wf-full")).toContain("技术实施方案 (PLAN.md)");
+    const fullRolesExecuted = fakeBackend
+      .getRecordedSpecs()
+      .filter((s) => s.taskId === "t-wf-full")
+      .map((s) => s.role);
+    expect(fullRolesExecuted).toEqual(["advisor", "worker", "reviewer", "verifier"]);
+
+    const fullDeliverDec = server.pendingDecisions.get("t-wf-full")!;
+    expect(fullDeliverDec.reason).toBe("deliver_approval");
+    await server.app.request(
+      new Request("http://127.0.0.1/api/tasks/t-wf-full/decide", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          decision_id: fullDeliverDec.id,
+          option_id: "opt-approve-deliver",
+          action: "resume",
+          apply_ledger_rule: false,
+        }),
+      }),
+    );
+    await waitUntil(
+      () => server.store.getTaskIndex("t-wf-full")?.status === "done",
+      "t-wf-full done",
+    );
+    expect(fs.readFileSync(path.join(repoPath, "src", "app.ts"), "utf8")).toBe(
+      "export const v = 999;\n",
+    );
+  }, 20_000);
 });

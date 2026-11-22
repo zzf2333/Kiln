@@ -38,6 +38,7 @@ export interface RunVerificationGateInput {
   expectedArtifacts?: readonly string[];
   hostChangedPaths?: readonly string[];
   acceptCwd?: string;
+  gateCheckMode?: "full" | "staged_only";
   timeoutMs?: number;
   maxOutputBytes?: number;
   env?: NodeJS.ProcessEnv;
@@ -341,6 +342,7 @@ export async function runVerificationGate(
   let frozenFilesChanged: string[] = [];
   let commandResult: IsolatedCommandResult | null = null;
   let scratchResult: VerifyScratchWorkspaceResult | undefined;
+  let stagedOnlySkipped = false;
 
   if (card.workspace_mode === "git_worktree") {
     if (!input.worktreePath) {
@@ -408,14 +410,19 @@ export async function runVerificationGate(
       frozenFilesChanged = frozenCheck.frozenFilesChanged;
     }
 
-    commandResult = await runIsolatedCommand(card.contract.accept_cmd, {
-      cwd: acceptCwd,
-      timeoutMs: input.timeoutMs,
-      maxOutputBytes: input.maxOutputBytes,
-      env: input.env,
-      extraSafeEnv: input.extraSafeEnv,
-      signal: input.signal,
-    });
+    if (input.gateCheckMode === "staged_only") {
+      // Phase 1 of host_op skips formal host accept_cmd; deliverable approval + final_accept_gate run it post-apply.
+      stagedOnlySkipped = true;
+    } else {
+      commandResult = await runIsolatedCommand(card.contract.accept_cmd, {
+        cwd: acceptCwd,
+        timeoutMs: input.timeoutMs,
+        maxOutputBytes: input.maxOutputBytes,
+        env: input.env,
+        extraSafeEnv: input.extraSafeEnv,
+        signal: input.signal,
+      });
+    }
   } else if (card.workspace_mode === "scratch_dir") {
     const workspaceDir = store.paths.workspaceDir(taskId);
     const scratchScan = collectWorkspaceEntries(workspaceDir);
@@ -474,8 +481,16 @@ export async function runVerificationGate(
   }
 
   const escalatedToL2 = card.track === "L1" && frozenFilesChanged.length > 0;
-  const acceptExitCode = commandResult ? commandResult.exitCode : -1;
-  const acceptDurationMs = commandResult ? commandResult.durationMs : 0;
+  const acceptExitCode = stagedOnlySkipped
+    ? 0
+    : commandResult
+      ? commandResult.exitCode
+      : -1;
+  const acceptDurationMs = stagedOnlySkipped
+    ? 0
+    : commandResult
+      ? commandResult.durationMs
+      : 0;
   const scratchArtifactsOk =
     scratchResult === undefined ||
     (scratchResult.missingArtifacts.length === 0 &&
@@ -501,7 +516,8 @@ export async function runVerificationGate(
   writeYamlAtomic(gatePath, report, GateReportSchema);
 
   const acceptPassed =
-    commandResult !== null && commandResult.exitCode === 0 && !commandResult.timedOut;
+    stagedOnlySkipped ||
+    (commandResult !== null && commandResult.exitCode === 0 && !commandResult.timedOut);
   const passed =
     report.schema_ok &&
     report.scope_ok &&

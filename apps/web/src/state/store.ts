@@ -1,19 +1,25 @@
 import { createContext } from "preact";
 import { useContext, useEffect, useState } from "preact/hooks";
-import type {
-  DraftCard,
-  LedgerEntry,
-  LedgerFile,
-  LimitsConfig,
-  PendingDecision,
-  PricingConfig,
-  Priority,
-  RolesConfig,
-  SpaceConfig,
-  SseEvent,
-  StageId,
-  Track,
-  WorkspaceMode,
+import {
+  buildCustomWorkflow,
+  buildWorkflowPreset,
+  extractWorkflowToggles,
+  type ComposableWorkflowOptions,
+  type DraftCard,
+  type LedgerEntry,
+  type LedgerFile,
+  type LimitsConfig,
+  type PendingDecision,
+  type PricingConfig,
+  type Priority,
+  type RolesConfig,
+  type SpaceConfig,
+  type SseEvent,
+  type StageId,
+  type Track,
+  type WorkflowBlueprint,
+  type WorkflowPreset,
+  type WorkspaceMode,
 } from "@kiln/protocol/web";
 import {
   ApiError,
@@ -117,12 +123,35 @@ export interface IntakeFormState {
   space: string;
   track: Exclude<Track, "L3"> | "";
   workspace_mode: Exclude<WorkspaceMode, "external_only"> | "";
+  workflow?: WorkflowBlueprint;
   end: string;
   accept_cmd: string;
+  deliver_cmd: string;
   scope: string;
   depends_on: string;
   open_questions: string[];
   brief_markdown: string;
+}
+
+export function resolveFormEffectiveWorkflow(form: IntakeFormState): WorkflowBlueprint {
+  const hasDeliverCmd = form.deliver_cmd.trim().length > 0;
+  const base: WorkflowBlueprint = form.workflow
+    ? form.workflow
+    : form.workspace_mode === "host_scoped"
+      ? buildWorkflowPreset("host_op", { hasDeliverCmd })
+      : form.track === "L1"
+        ? buildWorkflowPreset("quick", { hasDeliverCmd })
+        : buildWorkflowPreset("standard_dev", { hasDeliverCmd });
+
+  const toggles = extractWorkflowToggles(base);
+  if (toggles.hasDeliverCmd === hasDeliverCmd) {
+    return base;
+  }
+  return buildCustomWorkflow({
+    ...toggles,
+    preset: base.preset,
+    hasDeliverCmd,
+  });
 }
 
 export interface KilnStoreState {
@@ -283,8 +312,10 @@ export function createDefaultIntakeForm(
       space: "local",
       track: "L1",
       workspace_mode: "scratch_dir",
+      workflow: buildWorkflowPreset("quick"),
       end: "",
       accept_cmd: "",
+      deliver_cmd: "",
       scope: "",
       depends_on: "",
       open_questions: [],
@@ -304,8 +335,10 @@ export function createDefaultIntakeForm(
     space: chosen?.id ?? "",
     track: "L2",
     workspace_mode: "git_worktree",
+    workflow: buildWorkflowPreset("standard_dev"),
     end: "",
     accept_cmd: chosen?.default_accept_cmd ?? "",
+    deliver_cmd: "",
     scope: "",
     depends_on: "",
     open_questions: [],
@@ -366,6 +399,7 @@ function removeStorageItem(key: string): void {
 function normalizeIntakeForm(form: IntakeFormState): IntakeFormState {
   return {
     ...form,
+    deliver_cmd: typeof form.deliver_cmd === "string" ? form.deliver_cmd : "",
     open_questions: Array.isArray(form.open_questions) ? form.open_questions : [],
     brief_markdown: typeof form.brief_markdown === "string" ? form.brief_markdown : "",
   };
@@ -416,8 +450,11 @@ function draftToIntakeForm(draft: DraftCardWithBrief): IntakeFormState {
     workspace_mode: isLocal
       ? (draft.workspace_mode === "host_scoped" ? "host_scoped" : "scratch_dir")
       : "git_worktree",
+    ...(draft.workflow !== undefined ? { workflow: draft.workflow } : {}),
     end: draft.contract.end ?? "",
     accept_cmd: draft.contract.accept_cmd ?? "",
+    deliver_cmd:
+      draft.contract.deliver?.mode === "run_cmd" ? draft.contract.deliver.cmd : "",
     scope: (draft.contract.scope ?? []).join("\n"),
     depends_on: draft.depends_on.join(", "),
     open_questions: Array.isArray(draft.open_questions) ? draft.open_questions : [],
@@ -1591,12 +1628,22 @@ export class KilnWebStore {
       const prevDefault = this.state.spaces[cur.space]?.default_accept_cmd ?? "";
       const shouldFillAccept =
         cur.accept_cmd.trim() === "" || cur.accept_cmd === prevDefault;
+      const hasDeliverCmd = cur.deliver_cmd.trim().length > 0;
+      const nextTrack = cur.track || "L2";
+      const currentWorkflow = resolveFormEffectiveWorkflow(cur);
+      const nextWorkflow =
+        currentWorkflow.preset === "host_op"
+          ? buildWorkflowPreset(nextTrack === "L1" ? "quick" : "standard_dev", {
+              hasDeliverCmd,
+            })
+          : currentWorkflow;
       const nextForm: IntakeFormState = {
         ...cur,
         mode: "project",
         space: chosen?.id ?? "",
         workspace_mode: "git_worktree",
-        track: cur.track || "L2",
+        track: nextTrack,
+        workflow: nextWorkflow,
         accept_cmd:
           shouldFillAccept && chosen?.default_accept_cmd
             ? chosen.default_accept_cmd
@@ -1610,13 +1657,154 @@ export class KilnWebStore {
     }
 
     const prevDefault = this.state.spaces[cur.space]?.default_accept_cmd ?? "";
+    const nextWs =
+      cur.workspace_mode === "host_scoped" ? "host_scoped" : "scratch_dir";
+    const hasDeliverCmd = cur.deliver_cmd.trim().length > 0;
+    const nextWorkflow =
+      nextWs === "host_scoped"
+        ? buildWorkflowPreset("host_op", { hasDeliverCmd })
+        : cur.workflow && cur.workflow.preset !== "host_op"
+          ? cur.workflow
+          : buildWorkflowPreset(cur.track === "L2" ? "standard_dev" : "quick", {
+              hasDeliverCmd,
+            });
     const nextForm: IntakeFormState = {
       ...cur,
       mode: "local",
       space: "local",
-      workspace_mode:
-        cur.workspace_mode === "host_scoped" ? "host_scoped" : "scratch_dir",
+      workspace_mode: nextWs,
+      workflow: nextWorkflow,
       ...(cur.accept_cmd === prevDefault ? { accept_cmd: "" } : {}),
+    };
+    this.setState({ intakeForm: nextForm });
+    if (this.state.intakeActiveOpen) {
+      writeLocalIntakeSnapshot(nextForm, this.state.intakeMessages);
+    }
+  }
+
+  selectIntakeTrack(track: Exclude<Track, "L3">): void {
+    const cur = this.state.intakeForm;
+    const hasDeliverCmd = cur.deliver_cmd.trim().length > 0;
+    const toggles = extractWorkflowToggles(resolveFormEffectiveWorkflow(cur));
+    const nextWorkflow =
+      track === "L1"
+        ? cur.workspace_mode === "host_scoped"
+          ? buildWorkflowPreset("host_op", {
+              includePlan: toggles.includePlan,
+              hasDeliverCmd,
+            })
+          : buildWorkflowPreset("quick", {
+              includePlan: toggles.includePlan,
+              humanAccept: toggles.includeAccept && toggles.acceptMode === "approval",
+              deliverApproval: toggles.deliverApproval,
+              hasDeliverCmd,
+            })
+        : buildCustomWorkflow({
+            ...toggles,
+            preset:
+              cur.workflow?.preset === "full_delivery"
+                ? "full_delivery"
+                : cur.workflow?.preset === "custom"
+                  ? "custom"
+                  : "standard_dev",
+            includeReview: true,
+            hostTwoPhase: false,
+            hasDeliverCmd,
+          });
+    const nextForm: IntakeFormState = {
+      ...cur,
+      track,
+      workflow: nextWorkflow,
+    };
+    this.setState({ intakeForm: nextForm });
+    if (this.state.intakeActiveOpen) {
+      writeLocalIntakeSnapshot(nextForm, this.state.intakeMessages);
+    }
+  }
+
+  selectIntakeWorkspaceMode(ws: "scratch_dir" | "host_scoped"): void {
+    const cur = this.state.intakeForm;
+    const hasDeliverCmd = cur.deliver_cmd.trim().length > 0;
+    const currentWorkflow = resolveFormEffectiveWorkflow(cur);
+    const toggles = extractWorkflowToggles(currentWorkflow);
+    const nextWorkflow =
+      ws === "host_scoped"
+        ? buildWorkflowPreset("host_op", {
+            includePlan: toggles.includePlan,
+            hasDeliverCmd,
+          })
+        : currentWorkflow.preset === "host_op"
+          ? buildWorkflowPreset("quick", {
+              includePlan: toggles.includePlan,
+              hasDeliverCmd,
+            })
+          : currentWorkflow;
+    const nextForm: IntakeFormState = {
+      ...cur,
+      workspace_mode: ws,
+      track: extractWorkflowToggles(nextWorkflow).includeReview ? "L2" : "L1",
+      workflow: nextWorkflow,
+    };
+    this.setState({ intakeForm: nextForm });
+    if (this.state.intakeActiveOpen) {
+      writeLocalIntakeSnapshot(nextForm, this.state.intakeMessages);
+    }
+  }
+
+  selectIntakeWorkflowPreset(preset: Exclude<WorkflowPreset, "custom">): void {
+    const cur = this.state.intakeForm;
+    const hasDeliverCmd = cur.deliver_cmd.trim().length > 0;
+    const nextWorkflow = buildWorkflowPreset(preset, { hasDeliverCmd });
+
+    if (preset === "host_op") {
+      const prevDefault = this.state.spaces[cur.space]?.default_accept_cmd ?? "";
+      const nextForm: IntakeFormState = {
+        ...cur,
+        mode: "local",
+        space: "local",
+        workspace_mode: "host_scoped",
+        track: "L1",
+        workflow: nextWorkflow,
+        ...(cur.mode === "project" && cur.accept_cmd === prevDefault ? { accept_cmd: "" } : {}),
+      };
+      this.setState({ intakeForm: nextForm });
+      if (this.state.intakeActiveOpen) {
+        writeLocalIntakeSnapshot(nextForm, this.state.intakeMessages);
+      }
+      return;
+    }
+
+    const nextWs: Exclude<WorkspaceMode, "external_only"> =
+      cur.mode === "project" ? "git_worktree" : "scratch_dir";
+    const nextForm: IntakeFormState = {
+      ...cur,
+      workspace_mode: nextWs,
+      track: preset === "quick" ? "L1" : "L2",
+      workflow: nextWorkflow,
+    };
+    this.setState({ intakeForm: nextForm });
+    if (this.state.intakeActiveOpen) {
+      writeLocalIntakeSnapshot(nextForm, this.state.intakeMessages);
+    }
+  }
+
+  updateIntakeWorkflowToggles(patch: Partial<ComposableWorkflowOptions>): void {
+    const cur = this.state.intakeForm;
+    const current = extractWorkflowToggles(resolveFormEffectiveWorkflow(cur));
+    const merged: ComposableWorkflowOptions = {
+      ...current,
+      ...patch,
+      preset: "custom",
+      hasDeliverCmd: cur.deliver_cmd.trim().length > 0,
+    };
+    if (merged.hostTwoPhase) {
+      merged.deliverApproval = true;
+    }
+    const nextWorkflow = buildCustomWorkflow(merged);
+    const nextForm: IntakeFormState = {
+      ...cur,
+      track: merged.includeReview ? "L2" : "L1",
+      workflow: nextWorkflow,
     };
     this.setState({ intakeForm: nextForm });
     if (this.state.intakeActiveOpen) {
@@ -1758,6 +1946,7 @@ export class KilnWebStore {
     try {
       const keepActiveOpen =
         this.state.intakeActiveOpen || this.state.intakeMessages.length > 1;
+      const effectiveWorkflow = resolveFormEffectiveWorkflow(f);
       const res = await apiUpsertDraft({
         ...(this.state.intakeDraftId ? { id: this.state.intakeDraftId } : {}),
         title: f.title.trim(),
@@ -1767,6 +1956,7 @@ export class KilnWebStore {
         workspace_mode: effectiveWorkspaceMode,
         depends_on,
         open_questions: f.open_questions,
+        workflow: effectiveWorkflow,
         brief_markdown: f.brief_markdown,
         ...(keepActiveOpen ? { intake_open: true } : {}),
         contract: {
@@ -1774,6 +1964,9 @@ export class KilnWebStore {
           ...(f.end.trim() ? { end: f.end.trim() } : {}),
           ...(f.accept_cmd.trim() ? { accept_cmd: f.accept_cmd.trim() } : {}),
           ...(scopeList.length > 0 ? { scope: scopeList } : {}),
+          ...(f.deliver_cmd.trim()
+            ? { deliver: { mode: "run_cmd" as const, cmd: f.deliver_cmd.trim() } }
+            : {}),
         },
       });
       if (keepActiveOpen) {
@@ -1844,6 +2037,9 @@ export class KilnWebStore {
 
     this.setState({ intakeBusy: true });
     try {
+      const effectiveWorkflow = resolveFormEffectiveWorkflow(f);
+      const workflowToggles = extractWorkflowToggles(effectiveWorkflow);
+      const deliverCmdTrimmed = f.deliver_cmd.trim();
       let draftId = this.state.intakeDraftId;
       if (!draftId) {
         const saved = await apiUpsertDraft({
@@ -1853,19 +2049,29 @@ export class KilnWebStore {
           track: f.track,
           workspace_mode: effectiveWorkspaceMode,
           depends_on,
+          workflow: effectiveWorkflow,
           contract: {
             goal: f.title.trim(),
             end: f.end.trim(),
             accept_cmd: f.accept_cmd.trim(),
             scope: scopeList,
+            ...(deliverCmdTrimmed
+              ? { deliver: { mode: "run_cmd" as const, cmd: deliverCmdTrimmed } }
+              : {}),
           },
         });
         draftId = saved.draft.id;
       }
 
       const taskId = this.generateNextTaskId();
-      const deliverMode =
-        effectiveWorkspaceMode === "git_worktree" ? "merge_main" : "manual";
+      const deliverConfig = deliverCmdTrimmed
+        ? { mode: "run_cmd" as const, cmd: deliverCmdTrimmed }
+        : {
+            mode: (effectiveWorkspaceMode === "git_worktree"
+              ? "merge_main"
+              : "manual") as "merge_main" | "manual",
+            cmd: null,
+          };
 
       const customBrief = f.brief_markdown.trim();
       const fallbackBrief = `# ${f.title.trim()}\n\n- 目标：${f.title.trim()}\n- 交付终点：${f.end.trim()}\n- 验收命令：\`${f.accept_cmd.trim()}\`\n- 可改范围：${scopeList.join(", ")}\n`;
@@ -1878,14 +2084,16 @@ export class KilnWebStore {
         track: f.track,
         workspace_mode: effectiveWorkspaceMode,
         depends_on,
+        workflow: effectiveWorkflow,
         contract: {
           goal: f.title.trim(),
           end: f.end.trim(),
           accept_cmd: f.accept_cmd.trim(),
           accept_files_hash: "pending",
           scope: scopeList,
-          deliver: { mode: deliverMode, cmd: null },
-          human_accept: false,
+          deliver: deliverConfig,
+          human_accept:
+            workflowToggles.includeAccept && workflowToggles.acceptMode === "approval",
           external_actions: "ask",
         },
         brief_markdown: customBrief.length > 0 ? f.brief_markdown : fallbackBrief,
@@ -1974,6 +2182,7 @@ export class KilnWebStore {
         workspace_mode: effectiveWorkspaceMode,
         depends_on,
         open_questions: f.open_questions,
+        workflow: resolveFormEffectiveWorkflow(f),
         ...(f.brief_markdown.trim() ? { brief_markdown: f.brief_markdown } : {}),
         intake_open: true,
         ...(Object.keys(contractPatch).length > 0 ? { contract: contractPatch } : {}),
@@ -2004,12 +2213,19 @@ export class KilnWebStore {
         if (res.draft.priority) nextForm.priority = res.draft.priority;
         if (res.draft.space) nextForm.space = res.draft.space;
         if (res.draft.track && res.draft.track !== "L3") nextForm.track = res.draft.track;
-        nextForm.workspace_mode = resIsLocal
-          ? (res.draft.workspace_mode === "host_scoped" ? "host_scoped" : "scratch_dir")
-          : "git_worktree";
+        if (res.draft.workspace_mode && resIsLocal) {
+          nextForm.workspace_mode =
+            res.draft.workspace_mode === "host_scoped" ? "host_scoped" : "scratch_dir";
+        } else {
+          nextForm.workspace_mode = resIsLocal ? "scratch_dir" : "git_worktree";
+        }
+        if (res.draft.workflow) nextForm.workflow = res.draft.workflow;
         if (res.draft.contract.end) nextForm.end = res.draft.contract.end;
         if (res.draft.contract.accept_cmd) {
           nextForm.accept_cmd = res.draft.contract.accept_cmd;
+        }
+        if (res.draft.contract.deliver?.mode === "run_cmd") {
+          nextForm.deliver_cmd = res.draft.contract.deliver.cmd;
         }
         if (res.draft.contract.scope?.length) {
           nextForm.scope = res.draft.contract.scope.join("\n");

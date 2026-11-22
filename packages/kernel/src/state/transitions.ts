@@ -1,4 +1,10 @@
-import type { StageId, TaskStatus, Track } from "@kiln/protocol";
+import {
+  getWorkflowStages,
+  type StageId,
+  type TaskStatus,
+  type Track,
+  type WorkflowCardLike,
+} from "@kiln/protocol";
 
 /**
  * Exhaustive transition table for the 6+1 task status model.
@@ -86,6 +92,41 @@ export function nextStageAfter(
   if (index === -1) {
     throw new Error(
       `Stage "${currentStage}" is not part of track "${track}" pipeline (${stages.join(" -> ")})`,
+    );
+  }
+  return stages[index + 1] ?? null;
+}
+
+/**
+ * Resolves the ordered execution stages for a task card:
+ * delegates to `card.workflow` when present, or falls back to legacy `L1`/`L2` track pipelines.
+ */
+export function getTaskPipelineStages(
+  card: WorkflowCardLike,
+  effectiveTrack: Track = card.track,
+): readonly StageId[] {
+  if (effectiveTrack === "L3") {
+    throw new UnsupportedTrackError("L3");
+  }
+  if (!card.workflow) {
+    return getTrackStages(effectiveTrack, Boolean(card.contract.human_accept));
+  }
+  return getWorkflowStages(card, effectiveTrack);
+}
+
+/**
+ * Computes the next stage in the task's effective blueprint/track pipeline after `currentStage`.
+ */
+export function nextTaskStageAfter(
+  card: WorkflowCardLike,
+  currentStage: StageId,
+  effectiveTrack: Track = card.track,
+): StageId | null {
+  const stages = getTaskPipelineStages(card, effectiveTrack);
+  const index = stages.indexOf(currentStage);
+  if (index === -1) {
+    throw new Error(
+      `Stage "${currentStage}" is not part of task pipeline (${stages.join(" -> ")})`,
     );
   }
   return stages[index + 1] ?? null;

@@ -13,6 +13,7 @@ export type HostBackupStatus = z.infer<typeof HostBackupStatusSchema>;
 export const HostBackupFileEntrySchema = z.object({
   target_canonical_path: z.string().min(1),
   staged_relative_path: z.string().min(1),
+  staged_sha256: z.string().min(1).optional(),
   backup_relative_path: z.string().min(1).nullable(),
   existed_before: z.boolean(),
   pre_sha256: z.string().min(1).nullable(),

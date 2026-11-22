@@ -32,6 +32,7 @@ export type WorkspaceMode = (typeof WORKSPACE_MODES)[number];
 
 export const STAGE_IDS = [
   "intake",
+  "plan",
   "implement",
   "research",
   "verify",
@@ -42,6 +43,15 @@ export const STAGE_IDS = [
   "deliver",
 ] as const;
 export type StageId = (typeof STAGE_IDS)[number];
+
+export const WORKFLOW_PRESETS = [
+  "quick",
+  "host_op",
+  "standard_dev",
+  "full_delivery",
+  "custom",
+] as const;
+export type WorkflowPreset = (typeof WORKFLOW_PRESETS)[number];
 
 export const DECISION_ACTIONS = [
   "resume",

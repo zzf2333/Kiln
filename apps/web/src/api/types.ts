@@ -47,6 +47,8 @@ import type {
   TaskStatus,
   Track,
   UpsertSpaceRequest,
+  WorkflowBlueprint,
+  WorkflowPreset,
   WorkspaceMode,
 } from "@kiln/protocol/web";
 
@@ -59,6 +61,7 @@ export interface BootstrapTask {
   effective_priority: Priority;
   track: Track;
   workspace_mode: WorkspaceMode;
+  workflow?: WorkflowBlueprint;
   status: TaskStatus;
   stage: StageId | null;
   round: number | null;
@@ -243,6 +246,7 @@ export interface HostStagedDiffEntry {
   targetPath: string;
   existedBefore: boolean;
   preSha256: string | null;
+  stagedSha256?: string | null;
   diff: string;
   truncated: boolean;
 }
@@ -340,6 +344,7 @@ export interface UpsertDraftPayload {
   workspace_mode?: WorkspaceMode;
   depends_on?: string[];
   open_questions?: string[];
+  workflow?: WorkflowBlueprint;
   contract?: Partial<CardContract>;
   brief_markdown?: string;
   intake_open?: boolean;
@@ -354,6 +359,7 @@ export interface CommitDraftPayload {
   workspace_mode?: WorkspaceMode;
   parent?: string | null;
   depends_on?: string[];
+  workflow?: WorkflowBlueprint;
   contract?: Partial<CardContract>;
   limits?: CardLimits;
   brief_markdown: string;
@@ -457,4 +463,6 @@ export type {
   SyncPricingRequest,
   SyncPricingResponse,
   TailscaleStatusResponse,
+  WorkflowBlueprint,
+  WorkflowPreset,
 };

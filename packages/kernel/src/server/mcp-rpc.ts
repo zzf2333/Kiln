@@ -816,6 +816,9 @@ export class McpRpcServer {
           ...((input.open_questions ?? existing?.open_questions) !== undefined
             ? { open_questions: input.open_questions ?? existing?.open_questions }
             : {}),
+          ...((input.workflow ?? existing?.workflow) !== undefined
+            ? { workflow: input.workflow ?? existing?.workflow }
+            : {}),
           contract: {
             ...(existing?.contract ?? {}),
             ...(input.contract ?? {}),
@@ -869,6 +872,7 @@ export class McpRpcServer {
           workspace_mode: input.workspace_mode,
           parent: input.parent,
           depends_on: input.depends_on,
+          ...(input.workflow !== undefined ? { workflow: input.workflow } : {}),
           contract_version: 1,
           contract: input.contract,
           limits: resolveCardLimits(this.store, input.limits),

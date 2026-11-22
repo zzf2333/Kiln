@@ -3,10 +3,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
+  DeliverConfigSchema,
   DraftCardSchema,
   PrioritySchema,
   SessionRefSchema,
   StageIdSchema,
+  WorkflowBlueprintSchema,
+  buildWorkflowPreset,
   type ChatCommandItem,
   type ChatCommandsResponse,
   type DraftCard,
@@ -17,6 +20,7 @@ import {
   type SessionRef,
   type SpaceConfig,
   type TaskCard,
+  type WorkflowBlueprint,
 } from "@kiln/protocol";
 import {
   assertRoleAgentEligible,
@@ -86,6 +90,8 @@ const NonMcpDraftPatchSchema = z.object({
   priority: PrioritySchema.optional(),
   track: z.enum(["L1", "L2"]).optional(),
   workspace_mode: z.enum(["git_worktree", "host_scoped", "scratch_dir"]).optional(),
+  workflow_preset: z.enum(["quick", "host_op", "standard_dev", "full_delivery"]).optional(),
+  workflow: WorkflowBlueprintSchema.optional(),
   depends_on: optionalStringList,
   open_questions: optionalStringList,
   brief_markdown: z.string().optional(),
@@ -95,6 +101,7 @@ const NonMcpDraftPatchSchema = z.object({
       end: optionalTrimmedString,
       accept_cmd: optionalTrimmedString,
       scope: optionalStringList,
+      deliver: DeliverConfigSchema.optional(),
     })
     .optional(),
 });
@@ -1217,6 +1224,9 @@ export class KilnChatEngine {
         if (patch.workspace_mode === "scratch_dir" || patch.workspace_mode === "host_scoped") {
           nextWorkspaceMode = patch.workspace_mode;
           updatedFields.push("workspace_mode");
+        } else if (patch.workflow_preset === "host_op" && nextWorkspaceMode !== "host_scoped") {
+          nextWorkspaceMode = "host_scoped";
+          updatedFields.push("workspace_mode");
         } else if (nextWorkspaceMode === "git_worktree") {
           nextWorkspaceMode = "scratch_dir";
         }
@@ -1242,11 +1252,34 @@ export class KilnChatEngine {
           nextContract.scope = patch.contract.scope;
           updatedFields.push("contract.scope");
         }
+        if (patch.contract.deliver !== undefined) {
+          nextContract.deliver = patch.contract.deliver;
+          updatedFields.push("contract.deliver");
+        }
+      }
+
+      let nextWorkflow: WorkflowBlueprint | undefined = latest.workflow;
+      if (patch.workflow !== undefined) {
+        nextWorkflow = patch.workflow;
+        updatedFields.push("workflow");
+      } else if (patch.workflow_preset !== undefined) {
+        nextWorkflow = buildWorkflowPreset(patch.workflow_preset, {
+          hasDeliverCmd: nextContract.deliver?.mode === "run_cmd",
+        });
+        updatedFields.push("workflow");
+      }
+
+      let nextTrack = patch.track ?? latest.track;
+      if (patch.track === undefined && patch.workflow_preset !== undefined) {
+        nextTrack =
+          patch.workflow_preset === "quick" || patch.workflow_preset === "host_op"
+            ? "L1"
+            : "L2";
       }
 
       if (patch.title !== undefined) updatedFields.push("title");
       if (patch.priority !== undefined) updatedFields.push("priority");
-      if (patch.track !== undefined) updatedFields.push("track");
+      if (patch.track !== undefined || nextTrack !== latest.track) updatedFields.push("track");
       if (patch.depends_on !== undefined) updatedFields.push("depends_on");
       if (patch.open_questions !== undefined) updatedFields.push("open_questions");
 
@@ -1257,8 +1290,9 @@ export class KilnChatEngine {
         ...latest,
         ...(patch.title !== undefined ? { title: patch.title } : {}),
         ...(patch.priority !== undefined ? { priority: patch.priority } : {}),
-        ...(patch.track !== undefined ? { track: patch.track } : {}),
+        track: nextTrack,
         workspace_mode: nextWorkspaceMode,
+        ...(nextWorkflow !== undefined ? { workflow: nextWorkflow } : {}),
         ...(patch.depends_on !== undefined ? { depends_on: patch.depends_on } : {}),
         ...(nextOpenQuestions !== undefined ? { open_questions: nextOpenQuestions } : {}),
         contract: nextContract,
@@ -1477,14 +1511,15 @@ export class KilnChatEngine {
         ? `- 当前为 **L1 快车道**：保持 1–2 轮高效收敛，避免过度访谈；生成精简 4 段设计稿（目标与改动、边界约束、方案要点、验收命令）并尽快补齐全部契约字段。`
         : `- 当前为 **L2 标准交付**：确保业务规则、多状态流转、异常边界与人工兜底全部梳理清晰，直至 open_questions 清零；BRIEF.md 固定采用 5 段结构：\n  ## 1. 目标与用户场景\n  ## 2. 已确认规则与关键流程 / 边界\n  ## 3. 选定落地方案与关键取舍\n  ## 4. 范围边界（做什么 / 明确不做什么）\n  ## 5. 可观察验收场景`,
       `自动补全与安全边界：用户已在前端通过 Tab 选定了项目空间、优先级或轨道；请主动替用户推导并回填 title、end、accept_cmd、scope、depends_on、open_questions 与 brief_markdown，严禁私自调用 commit_card 直接建卡（必须由用户点击「开始推进」确认）。`,
+      `5. **可组合流程蓝图预设**：按任务复杂度优先选用 4 套配方之一：\`quick\`（快速通道：实施→验真→交付，适合简单脚本/小改）、\`host_op\`（本机两阶段操作：实施暂存 dry-run→staged_only 门禁→单一交付审批后由内核原子落盘+执行+终审）、\`standard_dev\`（标准开发：实施⇄审查循环→交付，默认项目开发）、\`full_delivery\`（完整交付：顾问出方案 PLAN.md→实施⇄审查→独立验收→交付审批）。若为 \`host_op\` 涉及本机实际执行命令，应把待执行命令放入 \`contract.deliver: { mode: "run_cmd", cmd: "..." }\`、把最终校验命令放入 \`contract.accept_cmd\`，Phase 1 只生成暂存脚本与校验报告，切勿让正式宿主验收命令在审批落盘前执行。`,
     ].join("\n");
 
     const priorSummary = this.formatPriorChatSummary(priorHistory);
     const protocolInstruction = mcpEnabled
-      ? `你拥有 kiln-mcp 工具权限（wb_list_tasks, wb_read_ledger, wb_plan），请每轮及时调用 wb_plan(mode: "upsert_draft") 将已确定的 title、contract（goal/end/accept_cmd/scope）、depends_on、open_questions 与完整 brief_markdown 同步写入草稿与 BRIEF.md。`
+      ? `你拥有 kiln-mcp 工具权限（wb_list_tasks, wb_read_ledger, wb_plan），请每轮及时调用 wb_plan(mode: "upsert_draft") 将已确定的 title、workflow、contract（goal/end/accept_cmd/scope/deliver）、depends_on、open_questions 与完整 brief_markdown 同步写入草稿与 BRIEF.md。`
       : [
           `当前对话运行在无 MCP 模式：已将项目空间、在途任务、长期账本、当前方案与草稿字段注入上下文，无需调用 kiln-mcp 工具。`,
-          `如本次对话确认或变更了任何立项字段或产品方案，请在正常回复末尾附一个 \`\`\`kiln-draft-patch\\n{...}\\n\`\`\` JSON 代码块（可选字段：title (string)、priority ("P0"|"P1"|"P2"|"P3")、track ("L1"|"L2")、workspace_mode ("git_worktree"|"host_scoped"|"scratch_dir")、depends_on (string[])、open_questions (string[])、brief_markdown (string，完整 Markdown 设计方案)、contract: { goal (string), end (string), accept_cmd (string), scope (string[]) }；严禁更改 space 或直接建卡）。系统会自动剥离该代码块并同步到右侧「产品方案」与立项单。`,
+          `如本次对话确认或变更了任何立项字段或产品方案，请在正常回复末尾附一个 \`\`\`kiln-draft-patch\\n{...}\\n\`\`\` JSON 代码块（可选字段：title (string)、priority ("P0"|"P1"|"P2"|"P3")、track ("L1"|"L2")、workflow_preset ("quick"|"host_op"|"standard_dev"|"full_delivery")、workspace_mode ("git_worktree"|"host_scoped"|"scratch_dir")、depends_on (string[])、open_questions (string[])、brief_markdown (string，完整 Markdown 设计方案)、contract: { goal (string), end (string), accept_cmd (string), scope (string[]), deliver?: { mode: "merge_main"|"open_pr"|"manual" } | { mode: "run_cmd", cmd: string } }；严禁更改 space 或直接建卡）。系统会自动剥离该代码块并同步到右侧「产品方案」与立项单。`,
         ].join("\n");
 
     return [

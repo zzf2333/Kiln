@@ -55,6 +55,9 @@ export type StageHostScopedChangesResult =
 export interface ApplyApprovedHostScopedChangesInput {
   taskId: string;
   approved: boolean;
+  postApplyCmd?: string;
+  postApplyCwd?: string;
+  postApplyTimeoutMs?: number;
   verifyCmd?: string;
   verifyCwd?: string;
   verifyTimeoutMs?: number;
@@ -71,9 +74,17 @@ export interface HostPreHashConflict {
   actualSha256: string | null;
 }
 
+export interface HostStagedHashConflict {
+  stagedRelativePath: string;
+  targetCanonicalPath: string;
+  expectedStagedSha256: string;
+  actualStagedSha256: string;
+}
+
 export type ApplyApprovedHostScopedChangesResult =
   | {
       ok: true;
+      postApplyResult?: IsolatedCommandResult | null;
       verifyResult: IsolatedCommandResult | null;
       manifest: HostBackupManifest;
     }
@@ -89,8 +100,20 @@ export type ApplyApprovedHostScopedChangesResult =
     }
   | {
       ok: false;
+      reason: "staged_hash_mismatch";
+      conflicts: HostStagedHashConflict[];
+      manifest: HostBackupManifest;
+    }
+  | {
+      ok: false;
       reason: "pre_hash_mismatch";
       conflicts: HostPreHashConflict[];
+      manifest: HostBackupManifest;
+    }
+  | {
+      ok: false;
+      reason: "deliver_cmd_failed_rolled_back";
+      postApplyResult: IsolatedCommandResult;
       manifest: HostBackupManifest;
     }
   | {
@@ -137,6 +160,7 @@ export interface HostStagedDiffEntry {
   targetPath: string;
   existedBefore: boolean;
   preSha256: string | null;
+  stagedSha256?: string | null;
   diff: string;
   truncated: boolean;
 }
@@ -747,6 +771,7 @@ export function buildHostStagedDiffs(
         targetPath: entry.target_canonical_path,
         existedBefore: entry.existed_before,
         preSha256: entry.pre_sha256,
+        stagedSha256: entry.staged_sha256 ?? null,
         diff: "[binary file diff omitted]",
         truncated: false,
       };
@@ -757,6 +782,7 @@ export function buildHostStagedDiffs(
         targetPath: entry.target_canonical_path,
         existedBefore: entry.existed_before,
         preSha256: entry.pre_sha256,
+        stagedSha256: entry.staged_sha256 ?? null,
         diff: "[backup file unavailable]",
         truncated: false,
       };
@@ -767,6 +793,7 @@ export function buildHostStagedDiffs(
         targetPath: entry.target_canonical_path,
         existedBefore: entry.existed_before,
         preSha256: entry.pre_sha256,
+        stagedSha256: entry.staged_sha256 ?? null,
         diff: "[staged file unavailable]",
         truncated: false,
       };
@@ -785,6 +812,7 @@ export function buildHostStagedDiffs(
       targetPath: entry.target_canonical_path,
       existedBefore: entry.existed_before,
       preSha256: entry.pre_sha256,
+      stagedSha256: entry.staged_sha256 ?? null,
       diff: diffResult.diff,
       truncated:
         beforeRead.bytesTruncated || afterRead.bytesTruncated || diffResult.truncated,
@@ -818,12 +846,14 @@ export function stageHostScopedChanges(
   const resolvedItems: Array<{
     stagedRel: string;
     canonicalTarget: string;
+    stagedSha: string;
   }> = [];
   const seenTargets = new Set<string>();
 
   for (const spec of input.stagedFiles) {
     const stagedRel = normalizeRepoRelativePath(spec.stagedRelativePath);
-    resolveValidatedStagedFile(stagedDir, canonicalStagedDir, stagedRel);
+    const stagedFilePath = resolveValidatedStagedFile(stagedDir, canonicalStagedDir, stagedRel);
+    const stagedSha = sha256Buffer(fs.readFileSync(stagedFilePath));
 
     const canonicalTarget = resolveCanonicalHostTarget(spec.targetPath);
     if (!isHostTargetWithinScope(canonicalTarget, input.contractScope)) {
@@ -838,7 +868,7 @@ export function stageHostScopedChanges(
 
     // Ensure any pre-existing target is a regular file (not a directory or symlink).
     readHostFileIfRegular(canonicalTarget);
-    resolvedItems.push({ stagedRel, canonicalTarget });
+    resolvedItems.push({ stagedRel, canonicalTarget, stagedSha });
   }
 
   const canonicalTargets = resolvedItems.map((item) => item.canonicalTarget);
@@ -873,6 +903,7 @@ export function stageHostScopedChanges(
         manifestEntries.push({
           target_canonical_path: item.canonicalTarget,
           staged_relative_path: item.stagedRel,
+          staged_sha256: item.stagedSha,
           backup_relative_path: backupRelPath,
           existed_before: true,
           pre_sha256: preSha,
@@ -884,6 +915,7 @@ export function stageHostScopedChanges(
         manifestEntries.push({
           target_canonical_path: item.canonicalTarget,
           staged_relative_path: item.stagedRel,
+          staged_sha256: item.stagedSha,
           backup_relative_path: null,
           existed_before: false,
           pre_sha256: null,
@@ -970,7 +1002,8 @@ export async function applyApprovedHostScopedChanges(
   let shouldReleaseLocks = false;
 
   try {
-    // Verify pre-apply TOCTOU integrity and staged source readability before modifying any host file.
+    // Verify staged/ anti-tamper SHA-256 and pre-apply TOCTOU integrity before modifying any host file.
+    const stagedConflicts: HostStagedHashConflict[] = [];
     const preConflicts: HostPreHashConflict[] = [];
     const stagedPayload: Array<{ entry: HostBackupFileEntry; bytes: Buffer; postSha: string }> =
       [];
@@ -982,6 +1015,19 @@ export async function applyApprovedHostScopedChanges(
         entry.staged_relative_path,
       );
       const stagedBytes = fs.readFileSync(stagedPath);
+      const actualStagedSha = sha256Buffer(stagedBytes);
+      if (
+        entry.staged_sha256 !== undefined &&
+        actualStagedSha !== entry.staged_sha256
+      ) {
+        stagedConflicts.push({
+          stagedRelativePath: entry.staged_relative_path,
+          targetCanonicalPath: entry.target_canonical_path,
+          expectedStagedSha256: entry.staged_sha256,
+          actualStagedSha256: actualStagedSha,
+        });
+      }
+
       const currentBytes = readHostFileIfRegular(entry.target_canonical_path);
       const currentSha = currentBytes !== null ? sha256Buffer(currentBytes) : null;
 
@@ -1004,8 +1050,17 @@ export async function applyApprovedHostScopedChanges(
       stagedPayload.push({
         entry,
         bytes: stagedBytes,
-        postSha: sha256Buffer(stagedBytes),
+        postSha: actualStagedSha,
       });
+    }
+
+    if (stagedConflicts.length > 0) {
+      return {
+        ok: false,
+        reason: "staged_hash_mismatch",
+        conflicts: stagedConflicts,
+        manifest,
+      };
     }
 
     if (preConflicts.length > 0) {
@@ -1046,15 +1101,64 @@ export async function applyApprovedHostScopedChanges(
       throw writeErr;
     }
 
+    const defaultCmdCwd = fs.existsSync(store.paths.workspaceDir(taskId))
+      ? store.paths.workspaceDir(taskId)
+      : path.dirname(manifest.files[0]!.target_canonical_path);
+
+    let postApplyResult: IsolatedCommandResult | null = null;
+    if (input.postApplyCmd !== undefined && input.postApplyCmd.trim().length > 0) {
+      try {
+        postApplyResult = await runIsolatedCommand(input.postApplyCmd, {
+          cwd: input.postApplyCwd ?? defaultCmdCwd,
+          timeoutMs: input.postApplyTimeoutMs ?? input.verifyTimeoutMs,
+          maxOutputBytes: input.maxOutputBytes,
+          env: input.env,
+          extraSafeEnv: input.extraSafeEnv,
+          signal: input.signal,
+        });
+      } catch (execErr) {
+        rollbackFromBackupEntries(backupDir, manifest.files);
+        writeHostBackupManifest(store, {
+          ...manifest,
+          status: "rolled_back",
+          files: manifest.files.map((f) => ({
+            ...f,
+            post_sha256: null,
+            updated_at: timestamp,
+          })),
+          updated_at: timestamp,
+        });
+        shouldReleaseLocks = true;
+        throw execErr;
+      }
+
+      if (postApplyResult.exitCode !== 0 || postApplyResult.timedOut) {
+        rollbackFromBackupEntries(backupDir, manifest.files);
+        const rolledBackManifest = writeHostBackupManifest(store, {
+          ...manifest,
+          status: "rolled_back",
+          files: manifest.files.map((f) => ({
+            ...f,
+            post_sha256: null,
+            updated_at: timestamp,
+          })),
+          updated_at: timestamp,
+        });
+        shouldReleaseLocks = true;
+        return {
+          ok: false,
+          reason: "deliver_cmd_failed_rolled_back",
+          postApplyResult,
+          manifest: rolledBackManifest,
+        };
+      }
+    }
+
     let verifyResult: IsolatedCommandResult | null = null;
     if (input.verifyCmd !== undefined && input.verifyCmd.trim().length > 0) {
-      const defaultCwd = fs.existsSync(store.paths.workspaceDir(taskId))
-        ? store.paths.workspaceDir(taskId)
-        : path.dirname(manifest.files[0]!.target_canonical_path);
-
       try {
         verifyResult = await runIsolatedCommand(input.verifyCmd, {
-          cwd: input.verifyCwd ?? defaultCwd,
+          cwd: input.verifyCwd ?? defaultCmdCwd,
           timeoutMs: input.verifyTimeoutMs,
           maxOutputBytes: input.maxOutputBytes,
           env: input.env,
@@ -1099,16 +1203,29 @@ export async function applyApprovedHostScopedChanges(
       }
     }
 
+    const finalEntries: HostBackupFileEntry[] =
+      postApplyResult !== null
+        ? appliedEntries.map((entry) => {
+            const finalBytes = readHostFileIfRegular(entry.target_canonical_path);
+            return {
+              ...entry,
+              post_sha256: finalBytes !== null ? sha256Buffer(finalBytes) : null,
+              updated_at: timestamp,
+            };
+          })
+        : appliedEntries;
+
     const appliedManifest = writeHostBackupManifest(store, {
       ...manifest,
       status: "applied",
-      files: appliedEntries,
+      files: finalEntries,
       updated_at: timestamp,
     });
     shouldReleaseLocks = true;
 
     return {
       ok: true,
+      postApplyResult,
       verifyResult,
       manifest: appliedManifest,
     };

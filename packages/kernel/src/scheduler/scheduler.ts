@@ -1,6 +1,7 @@
 import {
   LimitsConfigSchema,
   PRIORITY_RANK,
+  getStageNodeKind,
   type BackendCapabilities,
   type LimitsConfig,
   type Priority,
@@ -14,7 +15,7 @@ import {
 import {
   UnsupportedTrackError,
   computeEffectivePriorities,
-  getTrackStages,
+  getTaskPipelineStages,
   type PriorityGraphNode,
   type TaskStateMachine,
 } from "../state/index.js";
@@ -120,6 +121,8 @@ function getRoleForStage(stage: StageId): RoleId | null {
   switch (stage) {
     case "intake":
       return "intake";
+    case "plan":
+      return "advisor";
     case "implement":
       return "worker";
     case "review":
@@ -186,7 +189,7 @@ function computeNextStageAndRound(
   derived: DerivedTaskState,
   events: readonly StateEvent[],
 ): { stage: StageId; round: number } {
-  const pipeline = getTrackStages(derived.track, card.contract.human_accept);
+  const pipeline = getTaskPipelineStages(card, derived.track);
   const stage: StageId = derived.stage ?? pipeline[0]!;
 
   let maxRound = 0;
@@ -606,11 +609,15 @@ export class KilnScheduler {
         );
         stage = resolvedStage.stage;
         round = resolvedStage.round;
-        role = getRoleForStage(stage);
+        role =
+          stage === "accept" && getStageNodeKind(snap.card, "accept") === "approval"
+            ? null
+            : getRoleForStage(stage);
 
         if (rolesConfig && role !== null) {
           const shouldResolveRole =
-            stage !== "accept" || rolesConfig.roles[role] !== undefined;
+            (stage !== "accept" && stage !== "plan") ||
+            rolesConfig.roles[role] !== undefined;
           if (shouldResolveRole) {
             roleAssignment = resolveRoleAssignment(rolesConfig, role, {
               ...(this.agentCapabilitiesMap !== undefined

@@ -10,6 +10,9 @@ import {
   PendingDecisionSchema,
   RunMetaSchema,
   TaskCardSchema,
+  getDeliverCommandPolicy,
+  getImplementAgentMode,
+  getVerifyGateCheckMode,
   parseAndValidateReceipt,
   parseFrontmatterMarkdown,
   serializeFrontmatterMarkdown,
@@ -62,8 +65,9 @@ import {
   assertCanInvokeAdvisor,
   evaluateReviewerStageOutcome,
   evaluateWorkerStageOutcome,
+  getTaskPipelineStages,
   handleExecutionFailure,
-  nextStageAfter,
+  nextTaskStageAfter,
   type StageCounters,
 } from "../state/index.js";
 import {
@@ -893,6 +897,9 @@ export class KilnOrchestrator {
       if (matchingRun.hasReceipt) {
         try {
           switch (runMeta.stage) {
+            case "plan":
+              await this.finalizePlanRun(taskId, matchingRun.dirName, runMeta);
+              break;
             case "implement":
               await this.finalizeWorkerRun(taskId, matchingRun.dirName, runMeta, null);
               break;
@@ -1422,6 +1429,8 @@ export class KilnOrchestrator {
   }): string {
     const { card, runId, runDirName, stage, round, role, cwd, inputRef, mcpEnabled } = params;
     const brief = readOptionalText(this.store.paths.briefMd(card.id)) ?? "";
+    const planDoc =
+      stage !== "plan" ? (readOptionalText(this.store.paths.planMd(card.id)) ?? "") : "";
     const decisions = readOptionalText(this.store.paths.decisionsMd(card.id)) ?? "";
     const ledger = this.store.readLedger(card.space);
     const ledgerText =
@@ -1437,12 +1446,21 @@ export class KilnOrchestrator {
           `- 若遇到阻塞需要人类裁决，请在回执 frontmatter 填写 outcome: need_decision、question 与 options，并在正文 "## 未完成或待决问题" 写明详情。`,
         ].join("\n");
 
+    const isHostTwoPhase =
+      card.workspace_mode === "host_scoped" &&
+      (getImplementAgentMode(card) === "dry_run_only" ||
+        getVerifyGateCheckMode(card) === "staged_only");
+
     const modeNote =
-      card.workspace_mode === "host_scoped"
-        ? `当前为 host_scoped 模式：只能把待写文件写入沙盒暂存目录 ${this.store.paths.stagedDir(card.id)}，并在回执 changed_paths 中列出对应的宿主机目标绝对路径，严禁直接修改宿主机目标文件！提交 outcome: completed 后将由 Kiln 内核向用户发起落盘审批并原子写入，严禁使用或提出 action: return_external。`
-        : card.workspace_mode === "git_worktree"
-          ? `当前为 git_worktree 模式：工作区位于 ${cwd}。你只需编辑工作区内 scope 允许的文件并运行验收命令，严禁在受限沙箱里执行 git commit、git merge 或 git push；通过门禁后将由 kilnd 内核统一提交并合入。`
-          : `当前为 scratch_dir 模式：独立目录位于 ${cwd}。`;
+      stage === "plan"
+        ? `当前为前置方案阶段 (plan · advisor)：你正在只读分析目标工作区 ${cwd} 与《产品方案》(BRIEF.md)。请产出清晰、可落地且无歧义的技术实施方案（改动模块、接口/状态设计、边界与验证要点）写在回执正文中（严禁直接修改源码文件），完成后提交 advisor 角色回执（outcome: resolved）；遇到需要人类拍板的高风险/范围变更才提 outcome: need_decision。`
+        : isHostTwoPhase
+          ? `当前为 host_op 两阶段确定性执行（Phase 1 · dry_run_only）：只能把待写入/待执行的脚本、配置文件等产物放入沙盒暂存目录 ${this.store.paths.stagedDir(card.id)}，并在回执 changed_paths 中列出对应的宿主机目标绝对路径，严禁直接修改宿主机目标或运行直接改动宿主机的正式命令！Phase 1 门禁采用 staged_only（不会预先运行宿主机正式 accept_cmd），完成暂存与 dry-run 自检后请直接提交 outcome: completed（accept_result 可填 skipped 或 pass），严禁提出 action: return_external。后续落盘审批、交付命令执行与最终 accept_cmd 验真将由 Kiln 内核在 deliver 阶段原子完成。`
+          : card.workspace_mode === "host_scoped"
+            ? `当前为 host_scoped 模式：只能把待写文件写入沙盒暂存目录 ${this.store.paths.stagedDir(card.id)}，并在回执 changed_paths 中列出对应的宿主机目标绝对路径，严禁直接修改宿主机目标文件！提交 outcome: completed 后将由 Kiln 内核向用户发起落盘审批并原子写入，严禁使用或提出 action: return_external。`
+            : card.workspace_mode === "git_worktree"
+              ? `当前为 git_worktree 模式：工作区位于 ${cwd}。你只需编辑工作区内 scope 允许的文件并运行验收命令，严禁在受限沙箱里执行 git commit、git merge 或 git push；通过门禁后将由 kilnd 内核统一提交并合入。`
+              : `当前为 scratch_dir 模式：独立目录位于 ${cwd}。`;
 
     const receiptTemplateSection = buildReceiptTemplateSection({
       role,
@@ -1478,6 +1496,7 @@ export class KilnOrchestrator {
       ledgerText,
       ``,
       ...(brief ? [`## 立项说明 (BRIEF)`, brief, ``] : []),
+      ...(planDoc ? [`## 技术实施方案 (PLAN.md)`, planDoc, ``] : []),
       ...(decisions ? [`## 历史裁决 (decisions)`, decisions, ``] : []),
     ].join("\n");
   }
@@ -1547,6 +1566,12 @@ export class KilnOrchestrator {
 
     if (plan.stage === "deliver") {
       await this.dispatchDeliverStage(plan);
+      return;
+    }
+
+    if (plan.stage === "plan" && plan.roleAssignment === null) {
+      const next = nextTaskStageAfter(plan.card, "plan", plan.card.track) ?? "implement";
+      await this.advanceToNextStage(plan.taskId, next);
       return;
     }
 
@@ -2147,6 +2172,9 @@ export class KilnOrchestrator {
     }
 
     switch (runMeta.stage) {
+      case "plan":
+        await this.finalizePlanRun(taskId, runDirName, runMeta);
+        break;
       case "implement":
         await this.finalizeWorkerRun(taskId, runDirName, runMeta, exitEvent, signal);
         break;
@@ -2576,6 +2604,7 @@ export class KilnOrchestrator {
     const gateResult = await runVerificationGate(this.store, {
       taskId,
       runDirName,
+      gateCheckMode: getVerifyGateCheckMode(card),
       ...(worktreePath !== undefined ? { worktreePath } : {}),
       ...(runMeta.input_ref !== undefined ? { inputRef: runMeta.input_ref } : {}),
       ...(baselineSnapshot !== undefined ? { baselineSnapshot } : {}),
@@ -2647,15 +2676,18 @@ export class KilnOrchestrator {
     if (stageDecision.action === "advance_stage") {
       const next =
         stageDecision.nextStage === "verify"
-          ? (nextStageAfter(
-              stageDecision.effectiveTrack,
+          ? (nextTaskStageAfter(
+              latestCard,
               "verify",
-              latestCard.contract.human_accept,
+              stageDecision.effectiveTrack,
             ) ?? "deliver")
           : (stageDecision.nextStage ?? "deliver");
       await this.advanceToNextStage(taskId, next, guard);
       return;
     }
+
+    const pipelineStages = getTaskPipelineStages(latestCard, latestCard.track);
+    const hasReviewInPipeline = pipelineStages.includes("review");
 
     // L1 frozen-file tampering that also tripped scope_ok=false: escalate directly to review
     // or request human scope confirmation rather than silently looping in implement.
@@ -2702,7 +2734,7 @@ export class KilnOrchestrator {
           target_stage: "implement",
           recommended: true,
         },
-        ...(latestCard.track === "L2"
+        ...(hasReviewInPipeline
           ? [
               {
                 id: "opt-send-review",
@@ -3104,6 +3136,126 @@ export class KilnOrchestrator {
     this.transitionTaskToWaiting(taskId, pending, guard);
   }
 
+  private async finalizePlanRun(
+    taskId: string,
+    runDirName: string,
+    runMeta: RunMeta,
+  ): Promise<void> {
+    const guard: ExpectedRunGuard = {
+      runId: runMeta.run_id,
+      contractVersion: runMeta.contract_version,
+    };
+    if (!this.isRunStillCurrent(taskId, runMeta.run_id, runMeta.contract_version)) {
+      this.syncCaffeinate();
+      return;
+    }
+
+    const receiptLoad = this.readReceiptAndCommitLease(taskId, runDirName, runMeta);
+    if (!receiptLoad.ok) {
+      if (receiptLoad.reason === "lease_expired") {
+        this.syncCaffeinate();
+        return;
+      }
+      await this.applyStageFailure(
+        taskId,
+        "plan",
+        runMeta,
+        {
+          kind: "schema_invalid",
+          errors: ["Missing advisor PLAN RECEIPT.md"],
+        },
+        guard,
+      );
+      return;
+    }
+
+    const card = this.store.readTaskCard(taskId);
+    const parsed = parseAndValidateReceipt("advisor", receiptLoad.rawReceipt);
+    if (!parsed.ok) {
+      await this.applyStageFailure(
+        taskId,
+        "plan",
+        runMeta,
+        {
+          kind: "schema_invalid",
+          errors: parsed.errors,
+        },
+        guard,
+      );
+      return;
+    }
+
+    if (
+      parsed.frontmatter.run_id !== runMeta.run_id ||
+      parsed.frontmatter.contract_version !== card.contract_version
+    ) {
+      await this.applyStageFailure(
+        taskId,
+        "plan",
+        runMeta,
+        {
+          kind: "schema_invalid",
+          errors: [
+            `Advisor plan receipt run_id/contract_version mismatch (${parsed.frontmatter.run_id}, v${parsed.frontmatter.contract_version})`,
+          ],
+        },
+        guard,
+      );
+      return;
+    }
+
+    if (parsed.frontmatter.outcome === "resolved") {
+      const planMarkdown = [
+        `# 技术实施方案 (${card.id})`,
+        ``,
+        `- 选定方案: ${parsed.frontmatter.chosen_approach}`,
+        `- 阶段轮次: ${runMeta.run_id}`,
+        ``,
+        parsed.body.trim(),
+        ``,
+      ].join("\n");
+      writeFileAtomic(this.store.paths.planMd(taskId), planMarkdown);
+      const derived = deriveTaskStatus(card, this.store.readStateEvents(taskId));
+      const next = nextTaskStageAfter(card, "plan", derived.track) ?? "implement";
+      await this.advanceToNextStage(taskId, next, guard);
+      return;
+    }
+
+    const pending = PendingDecisionSchema.parse({
+      id: `dec-${randomUUID().slice(0, 8)}`,
+      task_id: taskId,
+      run_id: runMeta.run_id,
+      contract_version: card.contract_version,
+      reason: "plan_need_decision",
+      category: "plan_decision",
+      question: `技术顾问在方案阶段提出需人工拍板事项（${parsed.frontmatter.chosen_approach}），请确认方案方向。`,
+      options: [
+        {
+          id: "opt-resume-implement",
+          label: "确认方向，进入实施阶段",
+          action: "resume",
+          target_stage: "implement",
+          recommended: true,
+        },
+        {
+          id: "opt-retry-plan",
+          label: "补充要求后重新生成方案",
+          action: "resume",
+          target_stage: "plan",
+          recommended: false,
+        },
+        {
+          id: "opt-cancel",
+          label: "取消任务",
+          action: "cancel",
+          recommended: false,
+        },
+      ],
+      created_at: new Date().toISOString(),
+    });
+    this.transitionTaskToWaiting(taskId, pending, guard);
+  }
+
   private async finalizeAdvisorRun(
     taskId: string,
     runDirName: string,
@@ -3317,47 +3469,174 @@ export class KilnOrchestrator {
       }
 
       const card = this.store.readTaskCard(plan.taskId);
+      const deliverPolicy = getDeliverCommandPolicy(card);
       const worktreePath =
         card.workspace_mode === "git_worktree"
           ? this.getGitWorktreeDir(plan.taskId)
           : null;
       let deliverRef = worktreePath ?? this.store.paths.workspaceDir(plan.taskId);
+      let hostAppliedWithVerify = false;
 
       if (card.workspace_mode === "host_scoped") {
         let hostDeliverRef = "host_scoped_completed";
         const manifestPath = this.store.paths.backupManifest(plan.taskId);
-        if (fs.existsSync(manifestPath)) {
-          const manifest = readHostBackupManifest(this.store, plan.taskId);
-          if (manifest.status === "staged_awaiting_approval") {
-            const events = this.store.readStateEvents(plan.taskId);
-            const approved = this.hasApprovedDeliverDecision(
-              events,
-              "host_scoped_approval",
-            );
+        const existingManifest = fs.existsSync(manifestPath)
+          ? readHostBackupManifest(this.store, plan.taskId)
+          : null;
 
+        if (existingManifest?.status === "staged_awaiting_approval") {
+          const events = this.store.readStateEvents(plan.taskId);
+          const approved =
+            this.hasApprovedDeliverDecision(events, "host_scoped_approval") ||
+            this.hasApprovedDeliverDecision(events, "deliver_approval");
+
+          if (!approved) {
+            const targetList = existingManifest.files
+              .map(
+                (f) =>
+                  `${f.target_canonical_path}${
+                    f.staged_sha256 ? ` (sha256:${f.staged_sha256.slice(7, 19)})` : ""
+                  }`,
+              )
+              .join(", ");
+            const deliverCmdNote =
+              card.contract.deliver.mode === "run_cmd" && card.contract.deliver.cmd
+                ? `\n- 落盘后执行交付命令: \`${card.contract.deliver.cmd}\``
+                : "";
+            const acceptGateNote = deliverPolicy.finalAcceptGate
+              ? `\n- 最终宿主机验收命令: \`${card.contract.accept_cmd}\``
+              : "";
+            const decision = PendingDecisionSchema.parse({
+              id: `dec-${randomUUID().slice(0, 8)}`,
+              task_id: plan.taskId,
+              contract_version: card.contract_version,
+              reason: "host_scoped_approval",
+              category: "host_scoped_apply",
+              question: `本机任务 "${card.title}" 已生成暂存修改并备份原文件，批准原子写入并执行吗？\n- 目标路径: ${targetList}${deliverCmdNote}${acceptGateNote}`,
+              options: [
+                {
+                  id: "opt-apply-host",
+                  label: "批准落盘写入宿主机并执行校验",
+                  action: "resume",
+                  target_stage: "deliver",
+                  recommended: true,
+                },
+                {
+                  id: "opt-finish-staged",
+                  label: "仅保留暂存补丁，不写本机直接完成",
+                  action: "finish",
+                  recommended: false,
+                },
+                {
+                  id: "opt-cancel",
+                  label: "取消任务",
+                  action: "cancel",
+                  recommended: false,
+                },
+              ],
+              created_at: new Date().toISOString(),
+            });
+            this.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
+            return;
+          }
+
+          const applyRes = await applyApprovedHostScopedChanges(this.store, {
+            taskId: plan.taskId,
+            approved: true,
+            ...(card.contract.deliver.mode === "run_cmd" && card.contract.deliver.cmd
+              ? { postApplyCmd: card.contract.deliver.cmd }
+              : {}),
+            verifyCmd: card.contract.accept_cmd,
+            signal,
+          });
+          if (
+            signal.aborted ||
+            !this.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
+          ) {
+            this.syncCaffeinate();
+            return;
+          }
+          if (!applyRes.ok) {
+            const failureDetail =
+              applyRes.reason === "staged_hash_mismatch"
+                ? "暂存区文件 SHA-256 校验与待批快照不一致，已拦截写入宿主机"
+                : applyRes.reason === "deliver_cmd_failed_rolled_back"
+                  ? `交付命令执行失败（exit=${applyRes.postApplyResult.exitCode}），已自动回滚宿主机文件`
+                  : applyRes.reason === "verify_failed_rolled_back"
+                    ? `最终验收失败（exit=${applyRes.verifyResult.exitCode}），已自动回滚宿主机文件`
+                    : `本机落盘未完成 (${applyRes.reason})，已安全保护或回滚`;
+            const decision = PendingDecisionSchema.parse({
+              id: `dec-${randomUUID().slice(0, 8)}`,
+              task_id: plan.taskId,
+              contract_version: card.contract_version,
+              reason: `host_apply_${applyRes.reason}`,
+              category: "host_scoped_apply_error",
+              question: `${failureDetail}，请选择下一步操作。`,
+              options: [
+                {
+                  id: "opt-reimplement",
+                  label: "退回实施重新生成暂存",
+                  action: "resume",
+                  target_stage: "implement",
+                  recommended: true,
+                },
+                {
+                  id: "opt-cancel",
+                  label: "取消任务",
+                  action: "cancel",
+                  recommended: false,
+                },
+              ],
+              created_at: new Date().toISOString(),
+            });
+            this.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
+            return;
+          }
+
+          hostAppliedWithVerify = true;
+          hostDeliverRef = applyRes.manifest.files
+            .map((f) => f.target_canonical_path)
+            .join(", ");
+          deliverRef = hostDeliverRef;
+          this.completeTaskDelivery(plan.taskId, deliverRef, deliverGuard);
+          return;
+        }
+
+        if (existingManifest?.status === "applied") {
+          hostDeliverRef = existingManifest.files
+            .map((f) => f.target_canonical_path)
+            .join(", ");
+          hostAppliedWithVerify = true;
+        }
+
+        deliverRef = hostDeliverRef;
+        if (card.contract.deliver.mode !== "run_cmd") {
+          if (deliverPolicy.finalAcceptGate && !hostAppliedWithVerify) {
+            const events = this.store.readStateEvents(plan.taskId);
+            const approved =
+              this.hasApprovedDeliverDecision(events, "deliver_approval") ||
+              this.hasApprovedDeliverDecision(events, "host_scoped_approval");
             if (!approved) {
-              const targetList = manifest.files
-                .map((f) => f.target_canonical_path)
-                .join(", ");
               const decision = PendingDecisionSchema.parse({
                 id: `dec-${randomUUID().slice(0, 8)}`,
                 task_id: plan.taskId,
                 contract_version: card.contract_version,
-                reason: "host_scoped_approval",
-                category: "host_scoped_apply",
-                question: `本机任务 "${card.title}" 已生成暂存修改并备份原文件，批准原子写入以下白名单路径吗？(${targetList})`,
+                reason: "deliver_approval",
+                category: "deliver_approval",
+                question: `本机任务 "${card.title}" 待执行最终宿主机验收命令 \`${card.contract.accept_cmd}\`，是否批准执行？`,
                 options: [
                   {
-                    id: "opt-apply-host",
-                    label: "批准落盘写入宿主机并执行校验",
+                    id: "opt-approve-deliver",
+                    label: "批准执行交付与宿主机验收",
                     action: "resume",
                     target_stage: "deliver",
                     recommended: true,
                   },
                   {
-                    id: "opt-finish-staged",
-                    label: "仅保留暂存补丁，不写本机直接完成",
-                    action: "finish",
+                    id: "opt-reimplement",
+                    label: "退回实施阶段修改",
+                    action: "resume",
+                    target_stage: "implement",
                     recommended: false,
                   },
                   {
@@ -3373,10 +3652,12 @@ export class KilnOrchestrator {
               return;
             }
 
-            const applyRes = await applyApprovedHostScopedChanges(this.store, {
-              taskId: plan.taskId,
-              approved: true,
-              verifyCmd: card.contract.accept_cmd,
+            const finalCwd = fs.existsSync(this.store.paths.workspaceDir(plan.taskId))
+              ? this.store.paths.workspaceDir(plan.taskId)
+              : this.store.paths.taskDir(plan.taskId);
+            const finalAccept = await runIsolatedCommand(card.contract.accept_cmd, {
+              cwd: finalCwd,
+              signal,
             });
             if (
               signal.aborted ||
@@ -3385,18 +3666,18 @@ export class KilnOrchestrator {
               this.syncCaffeinate();
               return;
             }
-            if (!applyRes.ok) {
+            if (finalAccept.exitCode !== 0 || finalAccept.timedOut) {
               const decision = PendingDecisionSchema.parse({
                 id: `dec-${randomUUID().slice(0, 8)}`,
                 task_id: plan.taskId,
                 contract_version: card.contract_version,
-                reason: `host_apply_${applyRes.reason}`,
-                category: "host_scoped_apply_error",
-                question: `本机落盘未完成 (${applyRes.reason})，已安全保护或回滚，请选择下一步操作。`,
+                reason: "deliver_final_accept_failed",
+                category: "deliver_approval",
+                question: `最终宿主机验收命令失败 (exit=${finalAccept.exitCode}, timedOut=${finalAccept.timedOut})，请选择处理方式。`,
                 options: [
                   {
                     id: "opt-reimplement",
-                    label: "退回实施重新生成暂存",
+                    label: "退回实施阶段修复",
                     action: "resume",
                     target_stage: "implement",
                     recommended: true,
@@ -3413,17 +3694,65 @@ export class KilnOrchestrator {
               this.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
               return;
             }
-
-            hostDeliverRef = applyRes.manifest.files
-              .map((f) => f.target_canonical_path)
-              .join(", ");
           }
-        }
-
-        deliverRef = hostDeliverRef;
-        if (card.contract.deliver.mode !== "run_cmd") {
           this.completeTaskDelivery(plan.taskId, deliverRef, deliverGuard);
           return;
+        }
+      }
+
+      if (
+        !this.deliverHandler &&
+        card.workspace_mode !== "host_scoped" &&
+        deliverPolicy.requiresDeliverApproval
+      ) {
+        const isOpenPrAsk =
+          card.workspace_mode === "git_worktree" &&
+          card.contract.deliver.mode === "open_pr" &&
+          card.contract.external_actions === "ask";
+        if (!isOpenPrAsk) {
+          const events = this.store.readStateEvents(plan.taskId);
+          const alreadyApproved =
+            this.hasApprovedDeliverDecision(events, "deliver_approval") ||
+            this.hasApprovedDeliverDecision(events, "external_action_approval");
+          if (!alreadyApproved) {
+            const cmdDesc =
+              card.contract.deliver.mode === "run_cmd" && card.contract.deliver.cmd
+                ? `\n- 交付命令: \`${card.contract.deliver.cmd}\``
+                : "";
+            const decision = PendingDecisionSchema.parse({
+              id: `dec-${randomUUID().slice(0, 8)}`,
+              task_id: plan.taskId,
+              contract_version: card.contract_version,
+              reason: "deliver_approval",
+              category: "deliver_approval",
+              question: `任务 "${card.title}" 已完成前置验证，准备进入交付（mode=${card.contract.deliver.mode}），是否批准交付？${cmdDesc}`,
+              options: [
+                {
+                  id: "opt-approve-deliver",
+                  label: "批准执行交付",
+                  action: "resume",
+                  target_stage: "deliver",
+                  recommended: true,
+                },
+                {
+                  id: "opt-rework",
+                  label: "退回实施阶段调整",
+                  action: "resume",
+                  target_stage: "implement",
+                  recommended: false,
+                },
+                {
+                  id: "opt-cancel",
+                  label: "取消任务",
+                  action: "cancel",
+                  recommended: false,
+                },
+              ],
+              created_at: new Date().toISOString(),
+            });
+            this.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
+            return;
+          }
         }
       }
 
@@ -3700,10 +4029,9 @@ export class KilnOrchestrator {
         }
 
         const events = this.store.readStateEvents(plan.taskId);
-        const approvedCmd = this.hasApprovedDeliverDecision(
-          events,
-          "external_action_approval",
-        );
+        const approvedCmd =
+          this.hasApprovedDeliverDecision(events, "external_action_approval") ||
+          this.hasApprovedDeliverDecision(events, "deliver_approval");
         if (!approvedCmd && card.contract.external_actions === "ask") {
           const decision = PendingDecisionSchema.parse({
             id: `dec-${randomUUID().slice(0, 8)}`,
@@ -3748,6 +4076,48 @@ export class KilnOrchestrator {
           throw new Error(
             `Delivery command failed (exit=${cmdRes.exitCode}, timedOut=${cmdRes.timedOut})`,
           );
+        }
+
+        if (deliverPolicy.finalAcceptGate && !hostAppliedWithVerify) {
+          const finalAccept = await runIsolatedCommand(card.contract.accept_cmd, {
+            cwd: cmdCwd,
+            signal,
+          });
+          if (
+            signal.aborted ||
+            !this.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
+          ) {
+            this.syncCaffeinate();
+            return;
+          }
+          if (finalAccept.exitCode !== 0 || finalAccept.timedOut) {
+            const decision = PendingDecisionSchema.parse({
+              id: `dec-${randomUUID().slice(0, 8)}`,
+              task_id: plan.taskId,
+              contract_version: card.contract_version,
+              reason: "deliver_final_accept_failed",
+              category: "deliver_approval",
+              question: `交付命令已执行，但最终验收命令失败 (exit=${finalAccept.exitCode}, timedOut=${finalAccept.timedOut})，请选择下一步处理。`,
+              options: [
+                {
+                  id: "opt-reimplement",
+                  label: "退回实施阶段修复",
+                  action: "resume",
+                  target_stage: "implement",
+                  recommended: true,
+                },
+                {
+                  id: "opt-cancel",
+                  label: "取消任务",
+                  action: "cancel",
+                  recommended: false,
+                },
+              ],
+              created_at: new Date().toISOString(),
+            });
+            this.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
+            return;
+          }
         }
       }
 
