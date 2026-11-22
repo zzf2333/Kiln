@@ -9,6 +9,7 @@ import {
   LITELLM_PRICING_URL,
   MODELS_DEV_PRICING_URL,
   isPricingSyncStale,
+  loadLocalAgentPricingCatalog,
   lookupModelPrice,
   parseLiteLlmCatalog,
   parseModelsDevCatalog,
@@ -100,6 +101,94 @@ describe("model pricing auto-sync (#4)", () => {
       out: 12,
     });
 
+    // Effort/thinking suffixes & Antigravity aliases resolve cleanly, preferring hyphenated official keys over dot reseller variants
+    const multiFamilyCatalog = parseModelsDevCatalog({
+      anthropic: {
+        models: {
+          "claude-opus-5-5": { cost: { input: 4, cache_read: 0.2, output: 20 } },
+        },
+      },
+      reseller: {
+        models: {
+          "claude-opus-5.5": { cost: { input: 1.6, cache_read: 0.2, output: 8 } },
+        },
+      },
+      google: {
+        models: {
+          "gemini-4-neon": { cost: { input: 3, cache_read: 0.15, output: 15 } },
+          "gemini-4-carbon": { cost: { input: 2, cache_read: 0.1, output: 10 } },
+          "gemini-3.8-flash": { cost: { input: 0.75, cache_read: 0.075, output: 3.75 } },
+        },
+      },
+      openai: {
+        models: {
+          "gpt-oss-120b": { cost: { input: 0.075, cache_read: 0.075, output: 0.3 } },
+        },
+      },
+    });
+
+    expect(lookupModelPrice("claude-opus-5-5-high", multiFamilyCatalog)).toEqual({
+      in: 4,
+      cached: 0.2,
+      out: 20,
+    });
+    expect(lookupModelPrice("gemini-4-neon-high", multiFamilyCatalog)).toEqual({
+      in: 3,
+      cached: 0.15,
+      out: 15,
+    });
+    expect(lookupModelPrice("gemini-4-carbon-high", multiFamilyCatalog)).toEqual({
+      in: 2,
+      cached: 0.1,
+      out: 10,
+    });
+    expect(lookupModelPrice("gemini-pro-orchestrator-neon", multiFamilyCatalog)).toEqual({
+      in: 3,
+      cached: 0.15,
+      out: 15,
+    });
+    expect(lookupModelPrice("gemini-3.8-flash-high", multiFamilyCatalog)).toEqual({
+      in: 0.75,
+      cached: 0.075,
+      out: 3.75,
+    });
+    expect(lookupModelPrice("gpt-oss-120b-medium", multiFamilyCatalog)).toEqual({
+      in: 0.075,
+      cached: 0.075,
+      out: 0.3,
+    });
+
+    // Reads ~/.pi/agent/models.json strictly read-only without exposing secrets
+    const homeDir = makeTempDir("kiln-pi-home-");
+    fs.mkdirSync(path.join(homeDir, ".pi", "agent"), { recursive: true });
+    fs.writeFileSync(
+      path.join(homeDir, ".pi", "agent", "models.json"),
+      JSON.stringify({
+        providers: {
+          magpie: {
+            apiKey: "secret-should-not-matter",
+            models: [
+              {
+                id: "group/work",
+                cost: { input: 2, cacheRead: 0.1, cacheWrite: 2.5, output: 10 },
+              },
+              {
+                id: "group/breach",
+              },
+            ],
+          },
+        },
+      }),
+      "utf8",
+    );
+    const localCat = loadLocalAgentPricingCatalog(homeDir);
+    expect(lookupModelPrice("magpie/group/work", localCat)).toEqual({
+      in: 2,
+      cached: 0.1,
+      out: 10,
+    });
+    expect(lookupModelPrice("magpie/group/breach", localCat)).toBeNull();
+
     // LiteLLM converts $/token -> $/1M tokens and ignores sample_spec
     const liteLlmCatalog = parseLiteLlmCatalog({
       sample_spec: { input_cost_per_token: 999, output_cost_per_token: 999 },
@@ -128,13 +217,29 @@ describe("model pricing auto-sync (#4)", () => {
     });
   });
 
-  it("syncs strictly discovered/historical/role models via models.dev -> litellm -> builtin fallback, reuses 24h cache, and protects custom overrides", async () => {
+  it("syncs strictly configured role, local agent, historical, and custom models, prunes unused entries, and protects custom overrides", async () => {
     const kilnHome = makeTempDir();
-    const server = new KilndServer({ kilnHome, port: 0 });
+    const homeDir = makeTempDir("kiln-sync-home-");
+    fs.mkdirSync(path.join(homeDir, ".pi", "agent"), { recursive: true });
+    fs.writeFileSync(
+      path.join(homeDir, ".pi", "agent", "models.json"),
+      JSON.stringify({
+        providers: {
+          magpie: {
+            models: [
+              { id: "group/work", cost: { input: 2, cacheRead: 0.1, output: 10 } },
+            ],
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    const server = new KilndServer({ kilnHome, extensionsHomeDir: homeDir, port: 0 });
     servers.push(server);
 
     const store = server.store;
-    // Register historical usage turn + role model + custom existing model
+    // Register historical usage turn + multi-family role models + custom override + stale unconfigured entry
     store.sqlite.upsertUsageTurn({
       run_id: "run-hist-1",
       turn_id: "turn-hist-1",
@@ -150,13 +255,23 @@ describe("model pricing auto-sync (#4)", () => {
       schema_version: 1,
       heterogeneous_review: true,
       roles: {
-        worker: { agent: "codex", model: "gpt-5.4", allow_full_access_fallback: false },
+        intake: { agent: "antigravity", model: "gemini-pro-orchestrator-neon", allow_full_access_fallback: true },
+        worker: { agent: "pi", model: "magpie/group/work", allow_full_access_fallback: true },
+        reviewer: { agent: "antigravity", model: "gemini-4-neon-high", allow_full_access_fallback: false },
+        verifier: { agent: "codex", model: "gpt-5.4", allow_full_access_fallback: false },
+        triage: {
+          agent: "antigravity",
+          model: "claude-opus-5-5-high",
+          fallback: { agent: "codex", model: "gpt-6.2-astra" },
+          allow_full_access_fallback: false,
+        },
       },
     });
     store.writeConfig("pricing", {
       schema_version: 1,
       models: {
         "gpt-5.4": { in: 9.9, cached: 0.9, out: 39 },
+        "stale-unused-gpt": { in: 1, cached: 0.1, out: 5 },
       },
       custom_models: ["gpt-5.4"],
     });
@@ -166,7 +281,10 @@ describe("model pricing auto-sync (#4)", () => {
       new FakeBackend({
         backendId: "fake",
         models: {
-          codex: [{ id: "gpt-5.4", label: "GPT-5.4", thinkingOptions: ["medium"] }],
+          codex: [
+            { id: "gpt-5.4", label: "GPT-5.4", thinkingOptions: ["medium"] },
+            { id: "unused-catalog-model", label: "Unused Catalog Model", thinkingOptions: [] },
+          ],
           pi: [{ id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", thinkingOptions: [] }],
         },
       }),
@@ -175,10 +293,11 @@ describe("model pricing auto-sync (#4)", () => {
     const fetchedUrls: string[] = [];
     let currentNow = Date.parse("2026-11-21T10:00:00.000Z");
 
-    // 1. Primary models.dev succeeds (with thousands of unrelated models that must NOT pollute pricing.yaml)
+    // 1. Primary models.dev succeeds (unused backend models & stale entries are NOT synced/kept)
     const r1 = await syncModelPricing({
       store,
       backendRegistry: registry,
+      homeDir,
       now: () => currentNow,
       fetchImpl: (async (url: string | URL | Request) => {
         const u = String(url);
@@ -187,18 +306,20 @@ describe("model pricing auto-sync (#4)", () => {
           openai: {
             models: {
               "gpt-5.4": { cost: { input: 2.5, cache_read: 0.25, output: 15 } },
+              "gpt-6.2-astra": { cost: { input: 8, cache_read: 0.4, output: 40 } },
+              "unused-catalog-model": { cost: { input: 77, output: 77 } },
               "unrelated-gpt-zero": { cost: { input: 99, output: 99 } },
             },
           },
           anthropic: {
             models: {
               "claude-sonnet-4-5": { cost: { input: 3, cache_read: 0.3, output: 15 } },
-              "unrelated-claude": { cost: { input: 88, output: 88 } },
+              "claude-opus-5-5": { cost: { input: 4, cache_read: 0.2, output: 20 } },
             },
           },
           google: {
             models: {
-              "gemini-2.5-flash": { cost: { input: 0.3, cache_read: 0.03, output: 2.5 } },
+              "gemini-4-neon": { cost: { input: 3, cache_read: 0.15, output: 15 } },
             },
           },
         });
@@ -209,20 +330,25 @@ describe("model pricing auto-sync (#4)", () => {
     expect(r1.source).toBe("models.dev");
     expect(r1.from_cache).toBe(false);
     expect(r1.preserved_overrides).toEqual(["gpt-5.4"]);
-    expect(r1.matched_models).toEqual([
+    expect(r1.unmatched_models).toEqual([]);
+    expect(Object.keys(r1.pricing.models).sort()).toEqual([
       "anthropic/claude-sonnet-4-5-20250929",
-      "gemini-2.5-flash",
-      "gemini-3-pro",
+      "claude-opus-5-5-high",
+      "gemini-4-neon-high",
+      "gemini-pro-orchestrator-neon",
+      "gpt-5.4",
+      "gpt-6.2-astra",
+      "magpie/group/work",
     ]);
-    // Custom override preserved; unrelated upstream models NOT added; discovered model missing upstream uses BUILTIN_MODEL_PRICING fallback
     expect(r1.pricing.models["gpt-5.4"]).toEqual({ in: 9.9, cached: 0.9, out: 39 });
-    expect(r1.pricing.models["gemini-2.5-flash"]).toEqual({ in: 0.3, cached: 0.03, out: 2.5 });
-    expect(r1.pricing.models["gemini-3-pro"]).toEqual(BUILTIN_MODEL_PRICING["gemini-3-pro"]);
-    expect(r1.pricing.models["anthropic/claude-sonnet-4-5-20250929"]).toEqual({
-      in: 3,
-      cached: 0.3,
-      out: 15,
-    });
+    expect(r1.pricing.models["claude-opus-5-5-high"]).toEqual({ in: 4, cached: 0.2, out: 20 });
+    expect(r1.pricing.models["gemini-4-neon-high"]).toEqual({ in: 3, cached: 0.15, out: 15 });
+    expect(r1.pricing.models["gemini-pro-orchestrator-neon"]).toEqual({ in: 3, cached: 0.15, out: 15 });
+    expect(r1.pricing.models["magpie/group/work"]).toEqual({ in: 2, cached: 0.1, out: 10 });
+    expect(r1.pricing.models["gpt-6.2-astra"]).toEqual({ in: 8, cached: 0.4, out: 40 });
+    expect(r1.pricing.models["stale-unused-gpt"]).toBeUndefined();
+    expect(r1.pricing.models["unused-catalog-model"]).toBeUndefined();
+    expect(r1.pricing.models["gemini-2.5-flash"]).toBeUndefined();
     expect(r1.pricing.models["unrelated-gpt-zero"]).toBeUndefined();
     expect(r1.pricing.custom_models).toEqual(["gpt-5.4"]);
     expect(isPricingSyncStale(r1.pricing, currentNow + 60_000)).toBe(false);
@@ -232,6 +358,7 @@ describe("model pricing auto-sync (#4)", () => {
     const r2 = await syncModelPricing({
       store,
       backendRegistry: registry,
+      homeDir,
       now: () => currentNow,
       request: { restore_model: "gpt-5.4" },
       fetchImpl: (async () => {
@@ -247,6 +374,7 @@ describe("model pricing auto-sync (#4)", () => {
     const r3 = await syncModelPricing({
       store,
       backendRegistry: registry,
+      homeDir,
       now: () => currentNow + 1_000,
       request: { force: true },
       fetchImpl: (async (url: string | URL | Request) => {
@@ -273,6 +401,7 @@ describe("model pricing auto-sync (#4)", () => {
     const r4 = await syncModelPricing({
       store,
       backendRegistry: registry,
+      homeDir,
       now: () => currentNow + 2_000,
       request: { force: true },
       fetchImpl: (async () => {
@@ -282,18 +411,27 @@ describe("model pricing auto-sync (#4)", () => {
     expect(r4.source).toBe("builtin");
     expect(r4.warning).toContain("内置离线基线");
     expect(r4.pricing.models["gpt-5.4"]).toEqual(BUILTIN_MODEL_PRICING["gpt-5.4"]);
+    expect(r4.pricing.models["claude-opus-5-5-high"]).toEqual(BUILTIN_MODEL_PRICING["claude-opus-5-5"]);
+    expect(r4.pricing.models["gemini-pro-orchestrator-neon"]).toEqual(BUILTIN_MODEL_PRICING["gemini-4-neon"]);
   });
 
-  it("handles POST /api/settings/pricing/sync HTTP endpoint on KilndServer", async () => {
+  it("handles POST /api/settings/pricing/sync HTTP endpoint and auto-syncs on PUT /api/settings/roles when cache exists", async () => {
     const kilnHome = makeTempDir();
+    const homeDir = makeTempDir("kiln-http-home-");
     const server = new KilndServer({
       kilnHome,
+      extensionsHomeDir: homeDir,
       port: 0,
       pricingFetchImpl: (async () =>
         jsonFetchRes({
           openai: {
             models: {
               "gpt-5.4": { cost: { input: 2.5, cache_read: 0.25, output: 15 } },
+            },
+          },
+          anthropic: {
+            models: {
+              "claude-opus-5-5": { cost: { input: 4, cache_read: 0.2, output: 20 } },
             },
           },
         })) as typeof fetch,
@@ -322,5 +460,23 @@ describe("model pricing auto-sync (#4)", () => {
     expect(body.ok).toBe(true);
     expect(body.source).toBe("models.dev");
     expect(body.pricing.models["gpt-5.4"]).toEqual({ in: 2.5, cached: 0.25, out: 15 });
+
+    // Saving roles with a newly selected model automatically refreshes pricing from the local cache
+    const updateRolesRes = await server.app.request("http://127.0.0.1:4310/api/settings/roles", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        schema_version: 1,
+        heterogeneous_review: true,
+        roles: {
+          worker: { agent: "antigravity", model: "claude-opus-5-5-high", allow_full_access_fallback: false },
+        },
+      }),
+    });
+    expect(updateRolesRes.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 30));
+    const refreshedPricing = server.store.readConfig("pricing");
+    expect(refreshedPricing?.models["claude-opus-5-5-high"]).toEqual({ in: 4, cached: 0.2, out: 20 });
+    expect(refreshedPricing?.models["gpt-5.4"]).toBeUndefined();
   });
 });

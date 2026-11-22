@@ -103,6 +103,7 @@ export {
   LITELLM_PRICING_URL,
   MODELS_DEV_PRICING_URL,
   isPricingSyncStale,
+  loadLocalAgentPricingCatalog,
   lookupModelPrice,
   parseLiteLlmCatalog,
   parseModelsDevCatalog,

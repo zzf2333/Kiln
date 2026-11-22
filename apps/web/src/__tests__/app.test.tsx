@@ -3043,6 +3043,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       schema_version: 1,
       models: {
         "gpt-5.4": { in: 1.25, cached: 0.125, out: 10 },
+        "unused-old-model": { in: 9, cached: 1, out: 20 },
       },
     };
     const syncCalls: Array<Record<string, unknown>> = [];
@@ -3122,6 +3123,13 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
 
     // Baseline cost before sync: (600k*1.25 + 400k*0.125 + 100k*10)/1e6 = $1.80
     expect(document.getElementById("upTotalCost")?.textContent).toBe("$1.80");
+    // Defaults to showing ONLY configured role models (with role tags & 未匹配 hints), hiding unconfigured entries
+    expect(screen.queryByText("unused-old-model")).toBeNull();
+    expect(screen.getAllByText("未匹配").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "显示其他已记录/历史模型 (1)" }));
+    expect(screen.getByText("unused-old-model")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "收起未配置模型" }));
+    expect(screen.queryByText("unused-old-model")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "立即同步单价" }));
     await waitFor(() => {

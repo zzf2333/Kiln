@@ -180,6 +180,7 @@ export class KilndServer {
   private readonly pricingFetchImpl: typeof fetch | undefined;
   private readonly pricingCacheTtlMs: number | undefined;
   private readonly pricingFetchTimeoutMs: number | undefined;
+  private readonly extensionsHomeDir: string | undefined;
 
   private activeShutdownToken: string | null = null;
   private httpServer: ServerType | null = null;
@@ -229,6 +230,7 @@ export class KilndServer {
     this.pricingFetchImpl = options.pricingFetchImpl;
     this.pricingCacheTtlMs = options.pricingCacheTtlMs;
     this.pricingFetchTimeoutMs = options.pricingFetchTimeoutMs;
+    this.extensionsHomeDir = options.extensionsHomeDir;
 
     this.unsubscribeNotify = this.sseHub.subscribe((event) => {
       if (event.type === "decision.requested") {
@@ -368,7 +370,15 @@ export class KilndServer {
         await this.orchestrator.abortActiveRun(taskId);
       },
       onSettingsUpdated: (section) => {
-        if (section === "roles" || section === "limits") {
+        if (section === "roles") {
+          void this.orchestrator.wake();
+          if (
+            fs.existsSync(this.store.paths.pricingCacheFile) ||
+            this.pricingFetchImpl !== undefined
+          ) {
+            void this.syncModelPricing({ force: false }).catch(() => undefined);
+          }
+        } else if (section === "limits") {
           void this.orchestrator.wake();
         } else if (
           section === "pricing" &&
@@ -864,6 +874,7 @@ export class KilndServer {
       store: this.store,
       backendRegistry: this.backendRegistry,
       request: input,
+      ...(this.extensionsHomeDir !== undefined ? { homeDir: this.extensionsHomeDir } : {}),
       ...(this.pricingFetchImpl !== undefined ? { fetchImpl: this.pricingFetchImpl } : {}),
       ...(this.pricingCacheTtlMs !== undefined ? { cacheTtlMs: this.pricingCacheTtlMs } : {}),
       ...(this.pricingFetchTimeoutMs !== undefined

@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { z } from "zod";
 import {
   ModelPricingSchema,
@@ -12,7 +15,6 @@ import {
 } from "@kiln/protocol";
 import type { BackendRegistry } from "../backend/index.js";
 import { KilnStore, writeFileAtomic } from "../store/index.js";
-import { snapshotBackends } from "./chat.js";
 import { readOptionalText } from "./pending-decisions.js";
 
 export const MODELS_DEV_PRICING_URL = "https://models.dev/api.json";
@@ -26,6 +28,16 @@ export const DEFAULT_PRICING_FETCH_TIMEOUT_MS = 6_000;
  * unreachable or missing a specific model. Kept strictly in kernel (never bundled to web).
  */
 export const BUILTIN_MODEL_PRICING: Record<string, ModelPricing> = {
+  "gpt-6.2-sol": { in: 2, cached: 0.1, out: 10 },
+  "gpt-6.2-astra": { in: 8, cached: 0.4, out: 40 },
+  "gpt-6.1-sol": { in: 2, cached: 0.1, out: 10 },
+  "gpt-6.1-terra": { in: 1, cached: 0.05, out: 5 },
+  "gpt-6-sol": { in: 2, cached: 0.2, out: 10 },
+  "gpt-6-astra": { in: 10, cached: 1, out: 50 },
+  "gpt-6-luna": { in: 0.1, cached: 0.01, out: 0.5 },
+  "gpt-5.6-sol": { in: 4, cached: 0.4, out: 20 },
+  "gpt-5.6-terra": { in: 2, cached: 0.2, out: 12 },
+  "gpt-5.6-luna": { in: 0.2, cached: 0.02, out: 1.2 },
   "gpt-5.4": { in: 2.5, cached: 0.25, out: 15 },
   "gpt-5.4-mini": { in: 0.75, cached: 0.075, out: 4.5 },
   "gpt-5.4-nano": { in: 0.2, cached: 0.02, out: 1.25 },
@@ -42,32 +54,53 @@ export const BUILTIN_MODEL_PRICING: Record<string, ModelPricing> = {
   "gpt-4.1-nano": { in: 0.1, cached: 0.025, out: 0.4 },
   "gpt-4o": { in: 2.5, cached: 1.25, out: 10 },
   "gpt-4o-mini": { in: 0.15, cached: 0.075, out: 0.6 },
+  "gpt-oss-120b": { in: 0.075, cached: 0.075, out: 0.3 },
+  "gpt-oss-20b": { in: 0.045, cached: 0.045, out: 0.167 },
   o3: { in: 2, cached: 0.5, out: 8 },
   "o3-mini": { in: 1.1, cached: 0.55, out: 4.4 },
   "o4-mini": { in: 1.1, cached: 0.275, out: 4.4 },
+  "claude-opus-5-5": { in: 4, cached: 0.2, out: 20 },
+  "claude-opus-5": { in: 5, cached: 0.5, out: 25 },
+  "claude-opus-4-8": { in: 5, cached: 0.5, out: 25 },
+  "claude-opus-4-7": { in: 5, cached: 0.5, out: 25 },
   "claude-opus-4-6": { in: 5, cached: 0.5, out: 25 },
   "claude-opus-4-5": { in: 5, cached: 0.5, out: 25 },
   "claude-opus-4-1": { in: 15, cached: 1.5, out: 75 },
   "claude-opus-4": { in: 15, cached: 1.5, out: 75 },
+  "claude-sonnet-5-5": { in: 2, cached: 0.1, out: 10 },
+  "claude-sonnet-5": { in: 2, cached: 0.2, out: 10 },
   "claude-sonnet-4-6": { in: 3, cached: 0.3, out: 15 },
   "claude-sonnet-4-5": { in: 3, cached: 0.3, out: 15 },
   "claude-sonnet-4": { in: 3, cached: 0.3, out: 15 },
   "claude-3-7-sonnet": { in: 3, cached: 0.3, out: 15 },
+  "claude-haiku-5-5": { in: 0.1, cached: 0.01, out: 0.5 },
   "claude-haiku-4-5": { in: 1, cached: 0.1, out: 5 },
   "claude-3-5-haiku": { in: 0.8, cached: 0.08, out: 4 },
+  "gemini-4-neon": { in: 3, cached: 0.15, out: 15 },
+  "gemini-4-carbon": { in: 2, cached: 0.1, out: 10 },
+  "gemini-4-argon": { in: 2, cached: 0.1, out: 10 },
+  "gemini-4-hydrogen": { in: 1.5, cached: 0.075, out: 7.5 },
+  "gemini-3.8-flash": { in: 0.75, cached: 0.075, out: 3.75 },
+  "gemini-3.1-pro": { in: 2, cached: 0.2, out: 12 },
+  "gemini-3.1-flash-lite": { in: 0.25, cached: 0.025, out: 1.5 },
   "gemini-3-pro": { in: 2, cached: 0.2, out: 12 },
   "gemini-3-flash": { in: 0.5, cached: 0.05, out: 3 },
   "gemini-2.5-pro": { in: 1.25, cached: 0.125, out: 10 },
   "gemini-2.5-flash": { in: 0.3, cached: 0.03, out: 2.5 },
   "gemini-2.5-flash-lite": { in: 0.1, cached: 0.01, out: 0.4 },
+  "deepseek-v3.2": { in: 0.29, cached: 0.29, out: 0.43 },
   "deepseek-chat": { in: 0.28, cached: 0.028, out: 0.42 },
   "deepseek-reasoner": { in: 0.55, cached: 0.14, out: 2.19 },
   "deepseek-v3": { in: 0.28, cached: 0.028, out: 0.42 },
   "deepseek-r1": { in: 0.55, cached: 0.14, out: 2.19 },
   "grok-4": { in: 3, cached: 0.75, out: 15 },
   "grok-3": { in: 3, cached: 0.75, out: 15 },
+  "qwen3.8-max": { in: 2, cached: 0.25, out: 6 },
   "qwen3-coder-plus": { in: 1, cached: 0.2, out: 5 },
   "qwen3-max": { in: 1.2, cached: 0.24, out: 6 },
+  "kimi-k2.5": { in: 0.627, cached: 0.627, out: 3.3 },
+  "glm-5": { in: 0.6, cached: 0.6, out: 2.6 },
+  "minimax-m2.5": { in: 0.3, cached: 0.3, out: 1.2 },
 };
 
 const OFFICIAL_PROVIDER_PRIORITY = [
@@ -79,6 +112,10 @@ const OFFICIAL_PROVIDER_PRIORITY = [
   "mistral",
   "alibaba",
   "qwen",
+  "zhipuai",
+  "zai",
+  "moonshotai",
+  "minimax",
 ] as const;
 
 const PricingCatalogCacheSchema = z.object({
@@ -218,46 +255,80 @@ export function parseLiteLlmCatalog(raw: unknown): Record<string, ModelPricing> 
   return catalog;
 }
 
+const TRAILING_VARIANT_SUFFIX_RE =
+  /-(?:20\d{2}-\d{2}-\d{2}|20\d{6}|exp-\d{4}|preview-\d{2}-\d{2}|latest|xhigh|high|medium|med|low|minimal|max|thinking|reasoning|think|nothinking|nothink)$/i;
+
 function buildLookupCandidates(rawModelId: string): string[] {
   const seen = new Set<string>();
-  const candidates: string[] = [];
-  const push = (val: string): void => {
+  const primary: string[] = [];
+  const pushPrimary = (val: string): void => {
     const cleaned = val.trim().toLowerCase();
     if (cleaned && !seen.has(cleaned)) {
       seen.add(cleaned);
-      candidates.push(cleaned);
+      primary.push(cleaned);
     }
   };
 
-  push(rawModelId);
+  pushPrimary(rawModelId);
 
   // Strip tag/version suffixes such as :free or @2025...
   const withoutTag = rawModelId.replace(/[:@][^/@:]+$/, "");
-  push(withoutTag);
+  pushPrimary(withoutTag);
 
   // Generate path segments by progressively stripping leading provider prefixes
-  const slashSeeds = [rawModelId, withoutTag];
   const bareNames: string[] = [];
-  for (const seed of slashSeeds) {
+  for (const seed of [rawModelId, withoutTag]) {
     let cursor = seed.trim();
+    bareNames.push(cursor);
     while (cursor.includes("/")) {
       const idx = cursor.indexOf("/");
       cursor = cursor.slice(idx + 1);
-      push(cursor);
+      pushPrimary(cursor);
       bareNames.push(cursor);
     }
-    bareNames.push(seed.trim());
   }
 
-  // Strip common date / preview / latest suffixes and toggle version separators (4.6 <-> 4-6)
+  // Iteratively strip trailing date / preview / latest / effort / thinking suffixes (max 2 passes),
+  // trying unmodified hyphen/dot forms first before applying Antigravity aliases.
+  const strippedForms: string[] = [];
   for (const base of bareNames) {
-    const noDate = base
-      .replace(/-(?:20\d{2}-\d{2}-\d{2}|20\d{6}|exp-\d{4}|preview-\d{2}-\d{2}|latest)$/i, "")
-      .replace(/-(?:thinking|reasoning)$/i, "");
-    push(noDate);
-    for (const variant of [base, noDate]) {
-      push(variant.replace(/(\d)\.(\d)/g, "$1-$2"));
-      push(variant.replace(/(\d)-(\d)/g, "$1.$2"));
+    let cur = base.trim();
+    for (let pass = 0; pass < 2; pass += 1) {
+      const next = cur.replace(TRAILING_VARIANT_SUFFIX_RE, "");
+      if (next === cur || !next) break;
+      pushPrimary(next);
+      strippedForms.push(next);
+      cur = next;
+    }
+  }
+
+  // Antigravity orchestrator aliases map to upstream Gemini tiers
+  for (const form of [...bareNames, ...strippedForms]) {
+    const trimmedLower = form.trim().toLowerCase();
+    if (trimmedLower === "gemini-pro-orchestrator") {
+      pushPrimary("gemini-4-neon");
+      pushPrimary("gemini-3.1-pro");
+      pushPrimary("gemini-3-pro");
+      continue;
+    }
+    const orchMatch = /^gemini-pro-orchestrator-([a-z0-9-]+)$/i.exec(trimmedLower);
+    if (orchMatch?.[1]) {
+      pushPrimary(`gemini-4-${orchMatch[1]}`);
+    }
+  }
+
+  // Keep `.` <-> `-` swaps strictly after unmodified candidates so hyphenated official IDs
+  // (e.g., `claude-opus-5-5`) always win over reseller dot variants (`claude-opus-5.5`).
+  const candidates = [...primary];
+  for (const base of primary) {
+    for (const swapped of [
+      base.replace(/(\d)\.(\d)/g, "$1-$2"),
+      base.replace(/(\d)-(\d)/g, "$1.$2"),
+    ]) {
+      if (swapped && !seen.has(swapped)) {
+        seen.add(swapped);
+        candidates.push(swapped);
+      }
     }
   }
 
@@ -266,7 +337,7 @@ function buildLookupCandidates(rawModelId: string): string[] {
 
 /**
  * Resolves pricing for `modelId` using:
- * exact match -> strip `provider/` prefix -> strip date/variant suffix -> `.` <-> `-` normalization.
+ * exact match -> strip `provider/` prefix -> strip date/effort suffix -> aliases -> `.` <-> `-` normalization.
  */
 export function lookupModelPrice(
   modelId: string,
@@ -283,6 +354,67 @@ export function lookupModelPrice(
     }
   }
   return null;
+}
+
+/**
+ * Reads local custom routing model prices from `~/.pi/agent/models.json` strictly read-only
+ * (never inspecting or exposing API keys, base URLs, or headers).
+ */
+export function loadLocalAgentPricingCatalog(homeDir = os.homedir()): Record<string, ModelPricing> {
+  const piModelsPath = path.join(homeDir, ".pi", "agent", "models.json");
+  const raw = readOptionalText(piModelsPath);
+  if (raw === null) {
+    return {};
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {};
+  }
+
+  const providers = (parsed as { providers?: unknown }).providers;
+  if (!providers || typeof providers !== "object" || Array.isArray(providers)) {
+    return {};
+  }
+
+  const catalog: Record<string, ModelPricing> = {};
+  for (const [providerId, providerVal] of Object.entries(providers as Record<string, unknown>)) {
+    if (!providerVal || typeof providerVal !== "object" || Array.isArray(providerVal)) continue;
+    const models = (providerVal as { models?: unknown }).models;
+    if (!Array.isArray(models)) continue;
+
+    for (const modelVal of models) {
+      if (!modelVal || typeof modelVal !== "object" || Array.isArray(modelVal)) continue;
+      const rec = modelVal as { id?: unknown; cost?: unknown };
+      const rawId = typeof rec.id === "string" ? rec.id.trim() : "";
+      if (!rawId) continue;
+      const cost = rec.cost;
+      if (!cost || typeof cost !== "object" || Array.isArray(cost)) continue;
+      const c = cost as Record<string, unknown>;
+      if (!isNonNegativeFinite(c.input) || !isNonNegativeFinite(c.output)) continue;
+
+      const cached = isNonNegativeFinite(c.cacheRead)
+        ? c.cacheRead
+        : isNonNegativeFinite(c.cache_read)
+          ? c.cache_read
+          : c.input;
+      const pricing: ModelPricing = {
+        in: roundPricePerMillion(c.input),
+        cached: roundPricePerMillion(cached),
+        out: roundPricePerMillion(c.output),
+      };
+
+      storeCatalogEntry(catalog, `${providerId}/${rawId}`, pricing, true);
+      storeCatalogEntry(catalog, rawId, pricing, false);
+    }
+  }
+
+  return catalog;
 }
 
 async function fetchJsonReadOnly(
@@ -341,12 +473,13 @@ export interface SyncModelPricingOptions {
   timeoutMs?: number;
   now?: () => number;
   discoveredModels?: readonly string[];
+  homeDir?: string;
 }
 
 /**
- * Synchronizes `config/pricing.yaml` strictly for locally discovered / configured / historically
- * billed models using `models.dev` -> `litellm` -> built-in offline baseline, preserving custom
- * user overrides unless explicitly restored via `restore_model`.
+ * Synchronizes `config/pricing.yaml` strictly for configured role models, historically billed
+ * turns, and user custom overrides using local agent catalogs -> `models.dev` -> `litellm` ->
+ * built-in offline baseline, pruning unused auto-synced entries cleanly.
  */
 export async function syncModelPricing(
   options: SyncModelPricingOptions,
@@ -422,30 +555,16 @@ export async function syncModelPricing(
     }
   }
 
-  // 2. Collect target model IDs strictly from local usage + discovered agents + configured roles + existing pricing
+  // 2. Collect target model IDs strictly from configured roles + historical turns + custom overrides (+ explicit callers)
   const targetModels = new Set<string>();
   const existingPricing = options.store.readConfig("pricing");
-  if (existingPricing) {
-    for (const modelId of Object.keys(existingPricing.models)) {
-      if (modelId.trim()) targetModels.add(modelId.trim());
-    }
-  }
-
-  if (options.discoveredModels) {
-    for (const modelId of options.discoveredModels) {
-      if (modelId.trim()) targetModels.add(modelId.trim());
-    }
-  }
-
-  if (options.backendRegistry) {
-    const snap = await snapshotBackends(options.backendRegistry, { timeoutMs: 3_000 }).catch(
-      () => ({ agents: [], backends: [], providerUsage: [] }),
-    );
-    for (const agent of snap.agents) {
-      for (const m of agent.models) {
-        if (m.id.trim()) targetModels.add(m.id.trim());
-      }
-    }
+  const customSet = new Set(
+    (existingPricing?.custom_models ?? [])
+      .map((m) => m.trim())
+      .filter((m) => m.length > 0 && m !== restoreModel),
+  );
+  for (const customModel of customSet) {
+    targetModels.add(customModel);
   }
 
   const rolesConfig = options.store.readConfig("roles");
@@ -466,31 +585,33 @@ export async function syncModelPricing(
     }
   }
 
+  if (options.discoveredModels) {
+    for (const modelId of options.discoveredModels) {
+      if (modelId.trim()) targetModels.add(modelId.trim());
+    }
+  }
+
   if (restoreModel) {
     targetModels.add(restoreModel);
   }
 
-  // 3. Merge into pricing.yaml while protecting custom overrides (unless restore_model === modelId)
-  const customSet = new Set(
-    (existingPricing?.custom_models ?? [])
-      .map((m) => m.trim())
-      .filter((m) => m.length > 0 && m !== restoreModel),
-  );
-
-  const nextModels: Record<string, ModelPricing> = {
-    ...(existingPricing?.models ?? {}),
-  };
+  // 3. Rebuild pricing.yaml cleanly (pruning stale unconfigured auto-synced entries) while protecting custom overrides
+  const localAgentCatalog = loadLocalAgentPricingCatalog(options.homeDir);
+  const nextModels: Record<string, ModelPricing> = {};
   const matchedModels: string[] = [];
   const unmatchedModels: string[] = [];
   const preservedOverrides: string[] = [];
 
   for (const modelId of Array.from(targetModels).sort()) {
-    if (customSet.has(modelId) && nextModels[modelId] !== undefined) {
+    const existingEntry = existingPricing?.models[modelId];
+    if (customSet.has(modelId) && existingEntry !== undefined) {
+      nextModels[modelId] = existingEntry;
       preservedOverrides.push(modelId);
       continue;
     }
 
     const syncedPrice =
+      lookupModelPrice(modelId, localAgentCatalog) ??
       lookupModelPrice(modelId, catalog) ??
       (source !== "builtin" ? lookupModelPrice(modelId, BUILTIN_MODEL_PRICING) : null);
 
@@ -499,6 +620,9 @@ export async function syncModelPricing(
       matchedModels.push(modelId);
       customSet.delete(modelId);
     } else {
+      if (existingEntry !== undefined) {
+        nextModels[modelId] = existingEntry;
+      }
       unmatchedModels.push(modelId);
     }
   }

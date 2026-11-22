@@ -119,6 +119,7 @@ export function SettingsView() {
     null,
   );
   const [newModelName, setNewModelName] = useState("");
+  const [showExtraPricingModels, setShowExtraPricingModels] = useState(false);
   const [refreshBusy, setRefreshBusy] = useState(false);
 
   useEffect(() => {
@@ -788,8 +789,51 @@ export function SettingsView() {
         : "内置离线基线";
 
   const renderPricingTab = () => {
-    const modelEntries = Object.entries(pricing.models);
+    const roleUsageByModel = new Map<string, string[]>();
+    const recordRoleModel = (rawModel: string | undefined, tag: string): void => {
+      const m = rawModel?.trim();
+      if (!m) return;
+      const list = roleUsageByModel.get(m) ?? [];
+      if (!list.includes(tag)) {
+        list.push(tag);
+      }
+      roleUsageByModel.set(m, list);
+    };
+    for (const roleId of ROLE_IDS) {
+      const assignment = roles.roles[roleId];
+      if (!assignment) continue;
+      recordRoleModel(assignment.model, ROLE_INFO[roleId].label);
+      if (assignment.fallback?.model) {
+        recordRoleModel(
+          assignment.fallback.model,
+          `${ROLE_INFO[roleId].label}·备选`,
+        );
+      }
+    }
+
     const customModels = new Set(pricing.custom_models ?? []);
+    const configuredModelIds = Array.from(roleUsageByModel.keys()).sort();
+    const usedModelIds = Object.keys(state.usage.byModel ?? {})
+      .map((m) => m.trim())
+      .filter((m) => m.length > 0 && !roleUsageByModel.has(m))
+      .sort();
+    const usedSet = new Set(usedModelIds);
+    const basePrimarySet = new Set([...configuredModelIds, ...usedModelIds]);
+    const customOnlyIds = Array.from(customModels)
+      .filter((m) => m.trim().length > 0 && !basePrimarySet.has(m))
+      .sort();
+    const primaryModelIds =
+      configuredModelIds.length > 0 || usedModelIds.length > 0
+        ? [...configuredModelIds, ...usedModelIds, ...customOnlyIds]
+        : Object.keys(pricing.models).sort();
+    const primarySet = new Set(primaryModelIds);
+    const extraModelIds = Object.keys(pricing.models)
+      .filter((m) => !primarySet.has(m))
+      .sort();
+    const visibleModelIds = showExtraPricingModels
+      ? [...primaryModelIds, ...extraModelIds]
+      : primaryModelIds;
+
     const addModel = (): void => {
       const m = newModelName.trim();
       if (!m) return;
@@ -797,11 +841,23 @@ export function SettingsView() {
       setNewModelName("");
     };
 
+    const handlePriceInput = (
+      modelId: string,
+      field: "in" | "cached" | "out",
+      rawStr: string,
+    ): void => {
+      if (rawStr.trim() === "") return;
+      const num = Number(rawStr);
+      if (Number.isFinite(num) && num >= 0) {
+        store.updatePricingLocal(modelId, field, num);
+      }
+    };
+
     return (
       <>
         <div class="sync-line">
           <span>
-            按公开官方目录（models.dev 主源 / LiteLLM 备源 / 离线基线）自动匹配当前与历史模型，支持手动覆盖微调（美元 / 百万 Token）。
+            仅展示当前角色已配置使用的模型单价（按 models.dev / LiteLLM / 本机模型目录与离线基线自动同步，支持手动覆盖微调，美元 / 百万 Token）。
             {pricing.sync ? (
               <>
                 {" "}
@@ -832,13 +888,27 @@ export function SettingsView() {
             </tr>
           </thead>
           <tbody>
-            {modelEntries.map(([m, p]) => {
+            {visibleModelIds.map((m) => {
+              const p = pricing.models[m];
               const isCustom = customModels.has(m);
+              const roleTags = roleUsageByModel.get(m) ?? [];
               return (
                 <tr key={m}>
                   <td>
                     <div class="pricing-model-cell">
                       <span class="mono">{m}</span>
+                      {roleTags.length > 0 ? (
+                        <span class="pricing-role-tags">
+                          {roleTags.map((tag) => (
+                            <span key={tag} class="chip">
+                              {tag}
+                            </span>
+                          ))}
+                        </span>
+                      ) : usedSet.has(m) ? (
+                        <span class="chip">已计费</span>
+                      ) : null}
+                      {!p ? <span class="chip chip-ask">未匹配</span> : null}
                       {isCustom ? (
                         <>
                           <span class="chip">自定义</span>
@@ -862,12 +932,13 @@ export function SettingsView() {
                       min="0"
                       class="input mono"
                       aria-label={`${m} 输入单价`}
-                      value={p.in}
+                      placeholder={p ? undefined : "待填"}
+                      value={p ? p.in : ""}
                       onInput={(e) =>
-                        store.updatePricingLocal(
+                        handlePriceInput(
                           m,
                           "in",
-                          Number((e.currentTarget as HTMLInputElement).value),
+                          (e.currentTarget as HTMLInputElement).value,
                         )
                       }
                     />
@@ -879,12 +950,13 @@ export function SettingsView() {
                       min="0"
                       class="input mono"
                       aria-label={`${m} 缓存命中`}
-                      value={p.cached}
+                      placeholder={p ? undefined : "待填"}
+                      value={p ? p.cached : ""}
                       onInput={(e) =>
-                        store.updatePricingLocal(
+                        handlePriceInput(
                           m,
                           "cached",
-                          Number((e.currentTarget as HTMLInputElement).value),
+                          (e.currentTarget as HTMLInputElement).value,
                         )
                       }
                     />
@@ -896,12 +968,13 @@ export function SettingsView() {
                       min="0"
                       class="input mono"
                       aria-label={`${m} 输出单价`}
-                      value={p.out}
+                      placeholder={p ? undefined : "待填"}
+                      value={p ? p.out : ""}
                       onInput={(e) =>
-                        store.updatePricingLocal(
+                        handlePriceInput(
                           m,
                           "out",
-                          Number((e.currentTarget as HTMLInputElement).value),
+                          (e.currentTarget as HTMLInputElement).value,
                         )
                       }
                     />
@@ -911,6 +984,21 @@ export function SettingsView() {
             })}
           </tbody>
         </table>
+
+        {extraModelIds.length > 0 ? (
+          <div class="pricing-extra-bar">
+            <span>已隐藏 {extraModelIds.length} 个未绑定到当前角色的模型价格</span>
+            <button
+              type="button"
+              class="btn btn-sm"
+              onClick={() => setShowExtraPricingModels((prev) => !prev)}
+            >
+              {showExtraPricingModels
+                ? "收起未配置模型"
+                : `显示其他已记录/历史模型 (${extraModelIds.length})`}
+            </button>
+          </div>
+        ) : null}
 
         <div
           style={{
