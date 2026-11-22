@@ -102,6 +102,7 @@ import {
   pickLocalDirectory,
   revealLocalPath,
   validateCommitContract,
+  validateCommitWorkflow,
   validateCommitWorkspace,
 } from "./space-inspect.js";
 import type { SseHub } from "./sse.js";
@@ -1453,6 +1454,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       updated_at: now,
     });
     validateCommitContract(store, card.contract);
+    validateCommitWorkflow(card.workspace_mode, card.workflow);
 
     const created = stateMachine.createTask(card, effectiveBrief);
     store.deleteDraft(draftId);

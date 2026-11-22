@@ -719,6 +719,7 @@ export class KilnOrchestrator {
   private readonly agentCapabilitiesMap = new Map<string, BackendCapabilities>();
   private readonly activeRuns = new Map<string, ActiveRunHandle>();
   private readonly inFlightOperations = new Map<string, InFlightStageOperation>();
+  private readonly abortingBeforeDispatch = new Set<string>();
   private readonly advisorPreRunDirtySignatures = new Map<string, string>();
   private readonly approvalUnsubscribers: Array<() => void> = [];
   private readonly deferredApprovals: Array<{
@@ -1041,6 +1042,7 @@ export class KilnOrchestrator {
     ]);
     this.activeRuns.clear();
     this.inFlightOperations.clear();
+    this.abortingBeforeDispatch.clear();
   }
 
   async wake(): Promise<void> {
@@ -1606,7 +1608,7 @@ export class KilnOrchestrator {
   }
 
   private async dispatchPlan(plan: DispatchPlan): Promise<void> {
-    if (this.stopped) {
+    if (this.stopped || this.abortingBeforeDispatch.has(plan.taskId)) {
       return;
     }
 
@@ -2367,6 +2369,12 @@ export class KilnOrchestrator {
       return "missing";
     }
     try {
+      let head = "no_head";
+      try {
+        head = (await runGitCommand(["-C", worktreePath, "rev-parse", "HEAD"])).trim();
+      } catch {
+        head = "no_head";
+      }
       const raw = await runGitCommand([
         "-C",
         worktreePath,
@@ -2376,10 +2384,12 @@ export class KilnOrchestrator {
         "-uall",
       ]);
       if (raw.length === 0) {
-        return "clean";
+        return `clean:${head}`;
       }
       const parsed = parseGitPorcelainStatusZ(raw);
       const hash = createHash("sha256");
+      hash.update(head);
+      hash.update("\0");
       hash.update(raw);
       for (const relPath of parsed.dirtyPaths) {
         hash.update("\0");
@@ -2600,24 +2610,40 @@ export class KilnOrchestrator {
       created_at: now,
     });
 
-    const nextState = this.store.appendStateEvent(input.taskId, {
-      type: "resumed",
-      at: now,
-      stage: "advise",
-    });
-    this.syncCaffeinate();
-    this.publishTaskUpdated(input.taskId, {
-      status: nextState.status,
-      ...(nextState.stage !== null ? { stage: nextState.stage } : {}),
-      contractVersion: nextState.contractVersion,
-    });
+    this.abortingBeforeDispatch.add(input.taskId);
+    const activeHandle = this.activeRuns.get(input.taskId);
+    if (activeHandle) {
+      activeHandle.cancelledByControl = true;
+      activeHandle.abortController.abort();
+    }
 
-    void (async () => {
-      await this.abortActiveRun(input.taskId).catch(() => {});
-      await this.wake().catch(() => {});
-    })();
+    try {
+      const nextState = this.store.appendStateEvent(input.taskId, {
+        type: "resumed",
+        at: now,
+        stage: "advise",
+      });
+      this.syncCaffeinate();
+      this.publishTaskUpdated(input.taskId, {
+        status: nextState.status,
+        ...(nextState.stage !== null ? { stage: nextState.stage } : {}),
+        contractVersion: nextState.contractVersion,
+      });
 
-    return { routedToAdvisor: true, state: nextState };
+      void (async () => {
+        try {
+          await this.abortActiveRun(input.taskId).catch(() => {});
+        } finally {
+          this.abortingBeforeDispatch.delete(input.taskId);
+        }
+        await this.wake().catch(() => {});
+      })();
+
+      return { routedToAdvisor: true, state: nextState };
+    } catch (err) {
+      this.abortingBeforeDispatch.delete(input.taskId);
+      throw err;
+    }
   }
 
   private computeStageCounters(
@@ -3791,14 +3817,24 @@ export class KilnOrchestrator {
     }
 
     const receiptLoad = this.readReceiptAndCommitLease(taskId, runDirName, runMeta);
+    if (!receiptLoad.ok && receiptLoad.reason === "lease_expired") {
+      this.advisorPreRunDirtySignatures.delete(runMeta.run_id);
+      this.syncCaffeinate();
+      return;
+    }
+
     const card = this.store.readTaskCard(taskId);
+    const derivedForPipeline = deriveTaskStatus(card, this.store.readStateEvents(taskId));
+    const pipelineStages = getTaskPipelineStages(card, derivedForPipeline.track);
     const workspaceMutated = await this.detectAdvisorWorkspaceMutation(
       card,
       runMeta.run_id,
     );
     const advisorReq = this.readAdvisorRequest(taskId, card.contract_version);
     const resumeTargetStage: "implement" | "review" =
-      advisorReq?.source_stage === "review" ? "review" : "implement";
+      advisorReq?.source_stage === "review" && pipelineStages.includes("review")
+        ? "review"
+        : "implement";
 
     const parsed = receiptLoad.ok
       ? parseAndValidateReceipt("advisor", receiptLoad.rawReceipt)
@@ -3850,8 +3886,46 @@ export class KilnOrchestrator {
         return;
       }
 
+      const requestedTargetStage = parsed.frontmatter.target_stage;
+      if (
+        requestedTargetStage !== undefined &&
+        !pipelineStages.includes(requestedTargetStage)
+      ) {
+        this.clearAdvisorRequest(taskId);
+        const pending = PendingDecisionSchema.parse({
+          id: `dec-${randomUUID().slice(0, 8)}`,
+          task_id: taskId,
+          run_id: runMeta.run_id,
+          contract_version: card.contract_version,
+          reason: "advisor_invalid_target_stage",
+          category: "advisor_guardrail_escalation",
+          question: `技术顾问建议跳转至阶段 "${requestedTargetStage}"，但当前任务流程蓝图仅包含 [${pipelineStages.join(" -> ")}]。请选择后续推进方式：\n- 顾问建议: ${parsed.frontmatter.chosen_approach}`,
+          options: [
+            {
+              id: "opt-resume-safe-stage",
+              label:
+                resumeTargetStage === "review"
+                  ? "留在流程内，继续审查"
+                  : "留在流程内，按建议继续实施",
+              action: "resume",
+              target_stage: resumeTargetStage,
+              recommended: true,
+            },
+            {
+              id: "opt-cancel",
+              label: "取消任务",
+              action: "cancel",
+              recommended: false,
+            },
+          ],
+          created_at: new Date().toISOString(),
+        });
+        this.transitionTaskToWaiting(taskId, pending, guard);
+        return;
+      }
+
       const nextTargetStage: "implement" | "review" =
-        parsed.frontmatter.target_stage ?? resumeTargetStage;
+        requestedTargetStage ?? resumeTargetStage;
       const now = new Date().toISOString();
       const record = DecisionRecordSchema.parse({
         schema_version: 1,

@@ -5933,4 +5933,429 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       runDir: "001-implement",
     });
   }, 25_000);
+
+  it("Round 1 Review Regressions: blocks concurrent advisor dispatch before abort completes, enforces lease_expired & pipeline target_stage, and detects advisor git commit", async () => {
+    const kilnHome = makeTempDir("kiln-m2-r1-fixes-");
+    const { repoPath, baseCommit } = initGitRepo("r1fix");
+    const fakeBackend = new FakeBackend();
+
+    let cancelGateResolve!: () => void;
+    let cancelGateEnteredResolve!: () => void;
+    const cancelGatePromise = new Promise<void>((r) => {
+      cancelGateResolve = r;
+    });
+    const cancelGateEntered = new Promise<void>((r) => {
+      cancelGateEnteredResolve = r;
+    });
+
+    let gateCancelForTask: string | null = null;
+    let activeWorkers = 0;
+    let maxConcurrentPerTask = 0;
+
+    const origStart = fakeBackend.start.bind(fakeBackend);
+    fakeBackend.start = async (spec) => {
+      if (spec.taskId === gateCancelForTask && spec.role === "worker") {
+        activeWorkers += 1;
+        maxConcurrentPerTask = Math.max(maxConcurrentPerTask, activeWorkers);
+      }
+      if (spec.taskId === gateCancelForTask && spec.role === "advisor") {
+        // When advisor starts, the old worker MUST already have exited cancel
+        maxConcurrentPerTask = Math.max(maxConcurrentPerTask, activeWorkers + 1);
+      }
+      return origStart(spec);
+    };
+
+    const origCancel = fakeBackend.cancel.bind(fakeBackend);
+    fakeBackend.cancel = async (ref) => {
+      if (gateCancelForTask !== null) {
+        cancelGateEnteredResolve();
+        await cancelGatePromise;
+        activeWorkers = Math.max(0, activeWorkers - 1);
+      }
+      return origCancel(ref);
+    };
+
+    let expireNextAdvisorLease = false;
+    let advisorCommittedWt = "";
+
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: true,
+      tokenSecret: "m2-r1-review-fixes-secret-01234567",
+      approvalHandler: async (req, ctx) => {
+        const token = server.issueRunToken({
+          taskId: ctx.taskId,
+          runId: ctx.runId,
+          role: ctx.role,
+          contractVersion: ctx.card.contract_version,
+        });
+        const wtPath = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
+
+        if (req.action === "r1_a_worker_ask") {
+          const askRes = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_ask_decision",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              category: "technical_ambiguity",
+              reason: "race_check",
+              question: "Check concurrent wake while cancelling",
+              options: [{ id: "opt-1", label: "Proceed", action: "resume", recommended: true }],
+            }),
+          });
+          expect(askRes.status).toBe(200);
+          return;
+        }
+
+        if (req.action === "r1_a_advisor_resolve") {
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: serializeFrontmatterMarkdown(
+                {
+                  run_id: ctx.runId,
+                  contract_version: ctx.card.contract_version,
+                  outcome: "resolved",
+                  chosen_approach: "Proceed sequentially",
+                  decision_kind: "technical_ambiguity",
+                  target_stage: "implement",
+                },
+                "## 技术取舍\n等待旧会话完全中止。\n\n## 授权裁决\n改 src/app.ts 为 910。\n",
+              ),
+            }),
+          });
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "r1_a_worker_done") {
+          fs.writeFileSync(path.join(wtPath, "src", "app.ts"), "export const v = 910;\n");
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeWorkerReceiptMarkdown({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                input_ref: baseCommit,
+                output_ref: "src/app.ts",
+                changed_paths: ["src/app.ts"],
+              }),
+            }),
+          });
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "r1_b_expire_advisor") {
+          const adviseDir = fs
+            .readdirSync(server.store.paths.runsDir(ctx.taskId))
+            .filter((d) => d.endsWith("-advise"))
+            .sort()
+            .at(-1);
+          expect(adviseDir).toBeDefined();
+          fs.writeFileSync(
+            server.store.paths.receiptMd(ctx.taskId, adviseDir!),
+            serializeFrontmatterMarkdown(
+              {
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                outcome: "resolved",
+                chosen_approach: "Should be ignored on expired lease",
+              },
+              "## 技术取舍\n已过期\n\n## 授权裁决\n不应推进\n",
+            ),
+          );
+          if (expireNextAdvisorLease) {
+            const expired = server.store.sqlite.expireActiveLeaseByTask(
+              ctx.taskId,
+              "2026-11-22T10:05:00.000Z",
+              "expired",
+            );
+            expect(expired.updated).toBe(true);
+          }
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "r1_c_invalid_stage") {
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: serializeFrontmatterMarkdown(
+                {
+                  run_id: ctx.runId,
+                  contract_version: ctx.card.contract_version,
+                  outcome: "resolved",
+                  chosen_approach: "Suggest unconfigured review stage",
+                  target_stage: "review",
+                },
+                "## 技术取舍\n建议审查\n\n## 授权裁决\n但当前流程为 quick\n",
+              ),
+            }),
+          });
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "r1_d_advisor_git_commit") {
+          advisorCommittedWt = wtPath;
+          fs.writeFileSync(path.join(wtPath, "src", "app.ts"), "export const v = 911;\n");
+          git(["add", "src/app.ts"], wtPath);
+          git(["commit", "-m", "advisor unauthorized commit"], wtPath);
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: serializeFrontmatterMarkdown(
+                {
+                  run_id: ctx.runId,
+                  contract_version: ctx.card.contract_version,
+                  outcome: "resolved",
+                  chosen_approach: "Committed in plan stage cleanly",
+                  decision_kind: "plan",
+                },
+                "## 技术取舍\n提交了 commit。\n\n## 授权裁决\n继续\n",
+              ),
+            }),
+          });
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        await ctx.backend.answer(req.id, true);
+      },
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "r1proj",
+      name: "R1 Proj",
+      repo_path: repoPath,
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    });
+    const baseRoles = defaultRoles();
+    server.store.writeConfig("roles", {
+      ...baseRoles,
+      roles: {
+        ...baseRoles.roles,
+        advisor: { agent: "codex", model: "gpt-6-luna", allow_full_access_fallback: false },
+      },
+    });
+    server.store.writeConfig("limits", defaultLimits({ max_concurrent_slots: 2 }));
+    server.store.writeConfig("pricing", defaultPricing());
+    await server.start();
+
+    // Case A (P0): Concurrent wake() during slow abortActiveRun must NOT launch advisor concurrently
+    gateCancelForTask = "t-r1-race";
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "r1_a_worker_ask", detail: "ask tech" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-r1-race", role: "worker" },
+    );
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "r1_a_advisor_resolve", detail: "adv" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-r1-race", role: "advisor" },
+    );
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "r1_a_worker_done", detail: "done" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-r1-race", role: "worker" },
+    );
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-r1-race",
+        title: "Case A abort/wake serialization",
+        space: "r1proj",
+        priority: "P1",
+        track: "L1",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        workflow: buildWorkflowPreset("quick"),
+        contract_version: 1,
+        contract: {
+          goal: "Serialize abort before advisor",
+          end: "v=910",
+          accept_cmd: `node -e "const fs=require('fs');if(!fs.readFileSync('src/app.ts','utf8').includes('910'))process.exit(2)"`,
+          accept_files_hash: "sha256:r1a",
+          scope: ["src/**"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 1_000_000 },
+        created_at: "2026-11-22T10:00:00.000Z",
+        updated_at: "2026-11-22T10:00:00.000Z",
+      },
+      "# Case A",
+    );
+    await server.orchestrator.wake();
+    await cancelGateEntered;
+    // Trigger multiple concurrent wakes while cancel() is blocked
+    await server.orchestrator.wake();
+    await server.orchestrator.wake();
+    expect(
+      fakeBackend.getRecordedSpecs().some((s) => s.taskId === "t-r1-race" && s.role === "advisor"),
+    ).toBe(false);
+    cancelGateResolve();
+    await waitUntil(() => server.store.getTaskIndex("t-r1-race")?.status === "done", "t-r1-race done");
+    expect(maxConcurrentPerTask).toBe(1);
+    gateCancelForTask = null;
+
+    // Case B (P1): finalizeAdvisorRun ignores expired lease without deleting advisor-request.yaml or advancing state
+    expireNextAdvisorLease = true;
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "r1_a_worker_ask", detail: "ask b" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-r1-lease", role: "worker" },
+    );
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "r1_b_expire_advisor", detail: "adv b" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-r1-lease", role: "advisor" },
+    );
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-r1-lease",
+        title: "Case B advisor lease_expired",
+        space: "r1proj",
+        priority: "P1",
+        track: "L1",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        workflow: buildWorkflowPreset("quick"),
+        contract_version: 1,
+        contract: {
+          goal: "Honor lease_expired in finalizeAdvisorRun",
+          end: "Done",
+          accept_cmd: "echo ok",
+          accept_files_hash: "sha256:r1b",
+          scope: ["src/**"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 1_000_000 },
+        created_at: "2026-11-22T10:02:00.000Z",
+        updated_at: "2026-11-22T10:02:00.000Z",
+      },
+      "# Case B",
+    );
+    await server.orchestrator.wake();
+    await waitUntil(
+      () => fakeBackend.getRecordedSpecs().some((s) => s.taskId === "t-r1-lease" && s.role === "advisor"),
+      "t-r1-lease advisor started",
+    );
+    const leaseAdviseDir = fs
+      .readdirSync(server.store.paths.runsDir("t-r1-lease"))
+      .filter((d) => d.endsWith("-advise"))
+      .sort()
+      .at(-1);
+    expect(leaseAdviseDir).toBeDefined();
+    await waitUntil(() => {
+      const historyDir = server.store.paths.runHistoryDir("t-r1-lease", leaseAdviseDir!);
+      return (
+        fs.existsSync(historyDir) &&
+        fs.readdirSync(historyDir).some((name) => name.includes("-stale-"))
+      );
+    }, "t-r1-lease stale receipt archived");
+    expect(server.store.getTaskIndex("t-r1-lease")?.status).toBe("running");
+    expect(fs.existsSync(server.store.paths.advisorRequestYaml("t-r1-lease"))).toBe(true);
+    expireNextAdvisorLease = false;
+    server.stateMachine.cancelTask("t-r1-lease", "cleanup", "2026-11-22T10:03:00.000Z");
+
+    // Case C (P1): target_stage outside quick workflow pipeline -> waiting(advisor_invalid_target_stage)
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "r1_a_worker_ask", detail: "ask c" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-r1-stage", role: "worker" },
+    );
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "r1_c_invalid_stage", detail: "adv invalid target_stage" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-r1-stage", role: "advisor" },
+    );
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-r1-stage",
+        title: "Case C invalid advisor target_stage",
+        space: "r1proj",
+        priority: "P1",
+        track: "L1",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        workflow: buildWorkflowPreset("quick"),
+        contract_version: 1,
+        contract: {
+          goal: "Guard target_stage against pipeline",
+          end: "Done",
+          accept_cmd: "echo ok",
+          accept_files_hash: "sha256:r1c",
+          scope: ["src/**"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 1_000_000 },
+        created_at: "2026-11-22T10:04:00.000Z",
+        updated_at: "2026-11-22T10:04:00.000Z",
+      },
+      "# Case C",
+    );
+    await server.orchestrator.wake();
+    await waitUntil(() => server.store.getTaskIndex("t-r1-stage")?.status === "waiting", "t-r1-stage waiting");
+    expect(server.pendingDecisions.get("t-r1-stage")?.reason).toBe("advisor_invalid_target_stage");
+    server.stateMachine.cancelTask("t-r1-stage", "cleanup", "2026-11-22T10:05:00.000Z");
+
+    // Case D (P2): advisor git commit inside plan stage detected via HEAD hash
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "r1_d_advisor_git_commit", detail: "advisor commits" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-r1-githead", role: "advisor" },
+    );
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-r1-githead",
+        title: "Case D advisor git commit detection",
+        space: "r1proj",
+        priority: "P1",
+        track: "L2",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        workflow: buildWorkflowPreset("full_delivery"),
+        contract_version: 1,
+        contract: {
+          goal: "Detect git commit mutation in plan",
+          end: "Done",
+          accept_cmd: "echo ok",
+          accept_files_hash: "sha256:r1d",
+          scope: ["src/**"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 1_000_000 },
+        created_at: "2026-11-22T10:06:00.000Z",
+        updated_at: "2026-11-22T10:06:00.000Z",
+      },
+      "# Case D",
+    );
+    await server.orchestrator.wake();
+    await waitUntil(() => server.store.getTaskIndex("t-r1-githead")?.status === "waiting", "t-r1-githead waiting");
+    expect(advisorCommittedWt).toBeTruthy();
+    expect(server.pendingDecisions.get("t-r1-githead")?.reason).toBe("advisor_workspace_mutation");
+  }, 25_000);
 });

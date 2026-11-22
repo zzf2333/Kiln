@@ -4244,6 +4244,102 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     });
   });
 
+  it("keeps hostTwoPhase when toggling L2/steps on host_scoped and strips host_op when switching to a project space", async () => {
+    let commitPayload: Record<string, unknown> | null = null;
+    const bootstrap = makeBaseBootstrap();
+
+    fetchMock.mockImplementation(async (url, init) => {
+      if (url === "/api/bootstrap") return jsonResponse(bootstrap);
+      if (url === "/api/drafts" && init?.method === "POST") {
+        const body = JSON.parse(String(init.body ?? "{}")) as Record<string, unknown>;
+        return jsonResponse(
+          {
+            ok: true,
+            draft: {
+              schema_version: 1,
+              id: body.id ?? "d-wf-switch",
+              title: "",
+              space: body.space ?? "local",
+              priority: "P2",
+              track: "L1",
+              workspace_mode: body.workspace_mode ?? "host_scoped",
+              depends_on: [],
+              contract: {},
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            },
+            messages: [],
+          },
+          201,
+        );
+      }
+      if (typeof url === "string" && url.endsWith("/commit") && init?.method === "POST") {
+        commitPayload = JSON.parse(String(init.body ?? "{}")) as Record<string, unknown>;
+        return jsonResponse({ ok: true, card: { id: "t-wf-sw", ...commitPayload }, state: {} }, 201);
+      }
+      return jsonResponse({});
+    });
+
+    window.location.hash = "#view=intake";
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: /立项设置/ })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("tab", { name: /立项设置/ }));
+
+    // 1. Switch to 本机操作 (host_scoped + host_op) then switch track to L2 -> MUST retain two-phase markers + review
+    const presetGroup = screen.getByRole("radiogroup", { name: "流程预设" });
+    fireEvent.click(within(presetGroup).getByRole("radio", { name: "本机操作" }));
+    fireEvent.click(screen.getByRole("radio", { name: "L2 标准交付" }));
+    const previewL2Host = screen.getByLabelText("流程预览").textContent ?? "";
+    expect(previewL2Host).toContain("验真·仅暂存");
+    expect(previewL2Host).toContain("交付(落盘+终验)");
+    expect(previewL2Host).toContain("审查");
+
+    // Toggle 顾问方案 while still in host_scoped -> must still keep two-phase staging
+    const togglesGroup = screen.getByRole("group", { name: "流程步骤开关" });
+    fireEvent.click(within(togglesGroup).getByRole("button", { name: "顾问方案" }));
+    const previewToggled = screen.getByLabelText("流程预览").textContent ?? "";
+    expect(previewToggled).toContain("方案(顾问)");
+    expect(previewToggled).toContain("验真·仅暂存");
+    expect(previewToggled).toContain("交付(落盘+终验)");
+
+    // 2. Switch back to project mode (git_worktree) even when custom hostTwoPhase is set -> MUST clear host_op markers
+    fireEvent.click(screen.getByRole("button", { name: "项目任务" }));
+    const previewProj = screen.getByLabelText("流程预览").textContent ?? "";
+    expect(previewProj).not.toContain("仅暂存");
+    expect(previewProj).not.toContain("落盘+终验");
+
+    // Clicking space chip explicitly preserves clean git_worktree workflow
+    fireEvent.click(screen.getByRole("radio", { name: "Kiln 本体" }));
+    const previewSpaceChip = screen.getByLabelText("流程预览").textContent ?? "";
+    expect(previewSpaceChip).not.toContain("仅暂存");
+    expect(previewSpaceChip).not.toContain("落盘+终验");
+
+    fireEvent.input(screen.getByLabelText("标题"), {
+      target: { value: "项目仓库正常任务" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "手动编辑" }));
+    fireEvent.input(screen.getByLabelText("交付终点"), {
+      target: { value: "合入主分支" },
+    });
+    fireEvent.input(screen.getByLabelText("验收命令"), {
+      target: { value: "pnpm test" },
+    });
+    fireEvent.input(screen.getByLabelText("可改范围"), {
+      target: { value: "src/**" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始推进" }));
+
+    await waitFor(() => {
+      expect(commitPayload).not.toBeNull();
+    });
+    expect(commitPayload!.workspace_mode).toBe("git_worktree");
+    const wf = commitPayload!.workflow as { preset: string; steps: Array<{ kind: string; check?: string; apply_staged?: boolean }> };
+    expect(wf.preset).not.toBe("host_op");
+    expect(wf.steps.some((s) => s.check === "staged_only" || s.apply_staged === true)).toBe(false);
+  });
+
   it("renders 技术实施方案（PLAN.md） in DetailView only when detail.plan is non-empty", async () => {
     const now = "2026-11-22T08:00:00.000Z";
     const card = {

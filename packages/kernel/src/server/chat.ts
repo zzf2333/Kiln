@@ -9,7 +9,9 @@ import {
   SessionRefSchema,
   StageIdSchema,
   WorkflowBlueprintSchema,
+  buildCustomWorkflow,
   buildWorkflowPreset,
+  extractWorkflowToggles,
   type ChatCommandItem,
   type ChatCommandsResponse,
   type DraftCard,
@@ -1269,12 +1271,40 @@ export class KilnChatEngine {
         updatedFields.push("workflow");
       }
 
+      const hasDeliverCmd = nextContract.deliver?.mode === "run_cmd";
+      if (nextWorkflow !== undefined) {
+        const toggles = extractWorkflowToggles(nextWorkflow);
+        if (nextWorkspaceMode === "host_scoped" && !toggles.hostTwoPhase) {
+          nextWorkflow = buildCustomWorkflow({
+            ...toggles,
+            preset: nextWorkflow.preset === "custom" ? "custom" : "host_op",
+            hostTwoPhase: true,
+            deliverApproval: true,
+            hasDeliverCmd,
+          });
+          if (!updatedFields.includes("workflow")) updatedFields.push("workflow");
+        } else if (nextWorkspaceMode !== "host_scoped" && toggles.hostTwoPhase) {
+          nextWorkflow = buildCustomWorkflow({
+            ...toggles,
+            preset: nextWorkflow.preset === "host_op" ? "standard_dev" : nextWorkflow.preset,
+            hostTwoPhase: false,
+            hasDeliverCmd,
+          });
+          if (!updatedFields.includes("workflow")) updatedFields.push("workflow");
+        }
+      }
+
       let nextTrack = patch.track ?? latest.track;
-      if (patch.track === undefined && patch.workflow_preset !== undefined) {
+      if (patch.track === undefined && (patch.workflow_preset !== undefined || nextWorkflow !== undefined)) {
+        const effectivePreset = nextWorkflow?.preset ?? patch.workflow_preset;
         nextTrack =
-          patch.workflow_preset === "quick" || patch.workflow_preset === "host_op"
+          effectivePreset === "quick" || effectivePreset === "host_op"
             ? "L1"
-            : "L2";
+            : nextWorkflow
+              ? extractWorkflowToggles(nextWorkflow).includeReview
+                ? "L2"
+                : "L1"
+              : nextTrack;
       }
 
       if (patch.title !== undefined) updatedFields.push("title");

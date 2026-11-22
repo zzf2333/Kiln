@@ -400,7 +400,7 @@ export function validateWorkflowBlueprint(
 
   const flat = flattenWorkflowSteps(blueprint);
   let hasImplement = false;
-  let seenApproval = false;
+  let seenDeliverApproval = false;
   let seenStagedOnlyGate = false;
   let seenFinalAcceptGateAfterStaged = false;
   let maxStageRankSeen = -1;
@@ -435,11 +435,13 @@ export function validateWorkflowBlueprint(
         seenStagedOnlyGate = true;
       }
     } else if (node.kind === "approval") {
-      seenApproval = true;
+      if (node.stage === "deliver") {
+        seenDeliverApproval = true;
+      }
     } else if (node.kind === "command") {
-      if ((node.apply_staged || node.run_deliver_cmd) && !seenApproval) {
+      if ((node.apply_staged || node.run_deliver_cmd) && !seenDeliverApproval) {
         errors.push(
-          "High-risk deliver command (apply_staged or run_deliver_cmd) requires a preceding approval node",
+          "High-risk deliver command (apply_staged or run_deliver_cmd) requires a preceding deliver approval node",
         );
       }
       if (seenStagedOnlyGate && node.final_accept_gate) {

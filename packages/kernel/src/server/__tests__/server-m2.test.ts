@@ -1329,6 +1329,64 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     ]);
     expect(server.store.readDraftBrief("d-nonmcp-1")).toContain("```sh\npython3 -m unittest\n```");
 
+    // Non-MCP draft patch strips host_op when targeting a project space (git_worktree)
+    await server.app.request(
+      new Request("http://127.0.0.1/api/drafts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: "d-nonmcp-proj",
+          title: "项目空间归一化测试",
+          space: "proj",
+          workspace_mode: "git_worktree",
+        }),
+      }),
+    );
+    fakeBackend.enqueueScript(
+      [
+        {
+          kind: "message",
+          text: [
+            "已更新方案：",
+            "```kiln-draft-patch",
+            JSON.stringify({
+              workflow_preset: "host_op",
+              contract: {
+                end: "项目构建通过",
+                accept_cmd: "echo ok",
+                scope: ["src/**"],
+              },
+            }),
+            "```",
+          ].join("\n"),
+          delta: false,
+        },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "intake" },
+    );
+    const nonMcpProjRes = await server.app.request(
+      new Request("http://127.0.0.1/api/drafts/d-nonmcp-proj/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "设置为标准流程" }),
+      }),
+    );
+    expect(nonMcpProjRes.status).toBe(200);
+    const nonMcpProjJson = (await nonMcpProjRes.json()) as {
+      draft: {
+        workspace_mode: string;
+        workflow?: { preset: string; steps: Array<{ check?: string; apply_staged?: boolean }> };
+      };
+    };
+    expect(nonMcpProjJson.draft.workspace_mode).toBe("git_worktree");
+    expect(nonMcpProjJson.draft.workflow?.preset).not.toBe("host_op");
+    expect(
+      nonMcpProjJson.draft.workflow?.steps.some(
+        (s) => s.check === "staged_only" || s.apply_staged === true,
+      ),
+    ).toBe(false);
+
     // 5. Pi non-MCP resolver applies kiln-contract-patch, bumps contract_version & rebinds PendingDecision
     server.stateMachine.createTask(
       {

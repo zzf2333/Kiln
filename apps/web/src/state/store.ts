@@ -1642,18 +1642,24 @@ export class KilnWebStore {
       const hasDeliverCmd = cur.deliver_cmd.trim().length > 0;
       const nextTrack = cur.track || "L2";
       const currentWorkflow = resolveFormEffectiveWorkflow(cur);
-      const nextWorkflow =
-        currentWorkflow.preset === "host_op"
-          ? buildWorkflowPreset(nextTrack === "L1" ? "quick" : "standard_dev", {
-              hasDeliverCmd,
-            })
-          : currentWorkflow;
+      const toggles = extractWorkflowToggles(currentWorkflow);
+      const nextWorkflow = toggles.hostTwoPhase
+        ? buildWorkflowPreset(toggles.includeReview ? "standard_dev" : "quick", {
+            includePlan: toggles.includePlan,
+            hasDeliverCmd,
+          })
+        : currentWorkflow;
+      const resolvedTrack = toggles.hostTwoPhase
+        ? toggles.includeReview
+          ? "L2"
+          : "L1"
+        : nextTrack;
       const nextForm: IntakeFormState = {
         ...cur,
         mode: "project",
         space: chosen?.id ?? "",
         workspace_mode: "git_worktree",
-        track: nextTrack,
+        track: resolvedTrack,
         workflow: nextWorkflow,
         accept_cmd:
           shouldFillAccept && chosen?.default_accept_cmd
@@ -1713,13 +1719,17 @@ export class KilnWebStore {
         : buildCustomWorkflow({
             ...toggles,
             preset:
-              cur.workflow?.preset === "full_delivery"
-                ? "full_delivery"
-                : cur.workflow?.preset === "custom"
-                  ? "custom"
-                  : "standard_dev",
+              cur.workspace_mode === "host_scoped"
+                ? "custom"
+                : cur.workflow?.preset === "full_delivery"
+                  ? "full_delivery"
+                  : cur.workflow?.preset === "custom"
+                    ? "custom"
+                    : "standard_dev",
             includeReview: true,
-            hostTwoPhase: false,
+            hostTwoPhase: cur.workspace_mode === "host_scoped",
+            deliverApproval:
+              cur.workspace_mode === "host_scoped" ? true : toggles.deliverApproval,
             hasDeliverCmd,
           });
     const nextForm: IntakeFormState = {
@@ -1806,6 +1816,7 @@ export class KilnWebStore {
       ...current,
       ...patch,
       preset: "custom",
+      hostTwoPhase: cur.workspace_mode === "host_scoped",
       hasDeliverCmd: cur.deliver_cmd.trim().length > 0,
     };
     if (merged.hostTwoPhase) {
@@ -1829,11 +1840,25 @@ export class KilnWebStore {
     const nextSpace = this.state.spaces[spaceId];
     const shouldUpdateAccept =
       cur.accept_cmd.trim() === "" || cur.accept_cmd === prevDefault;
+    const currentWorkflow = resolveFormEffectiveWorkflow(cur);
+    const toggles = extractWorkflowToggles(currentWorkflow);
+    const nextWorkflow = toggles.hostTwoPhase
+      ? buildWorkflowPreset(toggles.includeReview ? "standard_dev" : "quick", {
+          includePlan: toggles.includePlan,
+          hasDeliverCmd: cur.deliver_cmd.trim().length > 0,
+        })
+      : cur.workflow;
     const nextForm: IntakeFormState = {
       ...cur,
       mode: "project",
       space: spaceId,
       workspace_mode: "git_worktree",
+      ...(toggles.hostTwoPhase
+        ? {
+            track: toggles.includeReview ? "L2" : "L1",
+            workflow: nextWorkflow,
+          }
+        : {}),
       accept_cmd: shouldUpdateAccept
         ? (nextSpace?.default_accept_cmd ?? "")
         : cur.accept_cmd,

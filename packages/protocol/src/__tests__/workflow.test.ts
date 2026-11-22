@@ -277,5 +277,27 @@ describe("workflow composable blueprint schemas & helpers", () => {
       maxRounds: 4,
       stuckThreshold: 3,
     });
+
+    // accept-stage approval alone cannot authorize apply_staged / run_deliver_cmd
+    const acceptOnlyApproval = validateWorkflowBlueprint({
+      schema_version: 1,
+      preset: "custom",
+      steps: [
+        { kind: "agent", stage: "implement", role: "worker", fresh_context: false },
+        { kind: "approval", stage: "accept", show: ["report"] },
+        {
+          kind: "command",
+          stage: "deliver",
+          apply_staged: false,
+          run_deliver_cmd: true,
+          verify_sha256: false,
+          final_accept_gate: false,
+        },
+      ],
+    });
+    expect(acceptOnlyApproval.ok).toBe(false);
+    if (!acceptOnlyApproval.ok) {
+      expect(acceptOnlyApproval.errors.some((e) => e.includes("deliver approval"))).toBe(true);
+    }
   });
 });

@@ -60,7 +60,11 @@ import {
   readTaskCardOptional,
   resolveCardLimits,
 } from "./pending-decisions.js";
-import { validateCommitContract, validateCommitWorkspace } from "./space-inspect.js";
+import {
+  validateCommitContract,
+  validateCommitWorkflow,
+  validateCommitWorkspace,
+} from "./space-inspect.js";
 import type { SseHub } from "./sse.js";
 import { RunTokenAuthError, verifyRunToken } from "./token.js";
 
@@ -912,6 +916,7 @@ export class McpRpcServer {
           updated_at: now,
         });
         validateCommitContract(this.store, card.contract);
+        validateCommitWorkflow(card.workspace_mode, card.workflow);
 
         const created = this.stateMachine.createTask(card, input.brief_markdown);
         if (input.draft_id !== undefined) {

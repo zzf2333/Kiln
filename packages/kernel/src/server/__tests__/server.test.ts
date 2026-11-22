@@ -9,6 +9,7 @@ import {
   HashMismatchErrorSchema,
   RoleForbiddenErrorSchema,
   SseEventSchema,
+  buildWorkflowPreset,
   serializeFrontmatterMarkdown,
   type CardContract,
   type PricingConfig,
@@ -3338,6 +3339,143 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
           ev.patch.status === "done",
       ),
     ).toBe(true);
+
+    // 4. validateCommitContract rejects drafts/ in deliver.cmd & validateCommitWorkflow rejects workspace/workflow mismatches
+    const badDeliverDraft = await requestHttp(server, "/api/drafts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "d-bad-deliver-cmd", title: "Bad deliver cmd" }),
+    });
+    expect(badDeliverDraft.status).toBe(201);
+
+    const badDeliverCmdCommit = await requestHttp(
+      server,
+      "/api/drafts/d-bad-deliver-cmd/commit",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: "t-bad-deliver-cmd",
+          title: "Bad deliver cmd task",
+          space: "local",
+          track: "L1",
+          workspace_mode: "host_scoped",
+          workflow: buildWorkflowPreset("host_op", { hasDeliverCmd: true }),
+          brief_markdown: "# Bad deliver cmd",
+          contract: {
+            goal: "Run script",
+            end: "Done",
+            accept_cmd: "echo ok",
+            accept_files_hash: "sha256:bad-deliv",
+            scope: ["/tmp/target.txt"],
+            deliver: {
+              mode: "run_cmd",
+              cmd: `python3 ${path.join(server.store.paths.draftDir("d-bad-deliver-cmd"), "run.py")}`,
+            },
+          },
+        }),
+      },
+    );
+    expect(badDeliverCmdCommit.status).toBe(400);
+    const badDeliverBody = await readJson(badDeliverCmdCommit);
+    expect(badDeliverBody.error).toBe("invalid_contract_path");
+    expect(badDeliverBody.field).toBe("deliver.cmd");
+
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "proj-wf-check",
+      name: "Proj Wf Check",
+      repo_path: tempDirs[0]!,
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    });
+
+    const hostOpOnGitCommit = await requestHttp(
+      server,
+      "/api/drafts/d-bad-deliver-cmd/commit",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: "t-host-op-git",
+          title: "Host op on git worktree rejected",
+          space: "proj-wf-check",
+          track: "L1",
+          workspace_mode: "git_worktree",
+          workflow: buildWorkflowPreset("host_op"),
+          brief_markdown: "# Bad combination",
+          contract: {
+            goal: "Goal",
+            end: "End",
+            accept_cmd: "echo ok",
+            accept_files_hash: "sha256:bad-wf1",
+            scope: ["src/**"],
+            deliver: { mode: "merge_main", cmd: null },
+          },
+        }),
+      },
+    );
+    expect(hostOpOnGitCommit.status).toBe(400);
+    expect((await readJson(hostOpOnGitCommit)).error).toBe("invalid_workflow_workspace");
+
+    const quickOnHostCommit = await requestHttp(
+      server,
+      "/api/drafts/d-bad-deliver-cmd/commit",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: "t-quick-host",
+          title: "Non two-phase on host_scoped rejected",
+          space: "local",
+          track: "L1",
+          workspace_mode: "host_scoped",
+          workflow: buildWorkflowPreset("quick"),
+          brief_markdown: "# Bad combination 2",
+          contract: {
+            goal: "Goal",
+            end: "End",
+            accept_cmd: "echo ok",
+            accept_files_hash: "sha256:bad-wf2",
+            scope: ["/tmp/target.txt"],
+            deliver: { mode: "manual", cmd: null },
+          },
+        }),
+      },
+    );
+    expect(quickOnHostCommit.status).toBe(400);
+    expect((await readJson(quickOnHostCommit)).error).toBe("invalid_workflow_workspace");
+
+    const badMcpWorkflow = await requestMcpRpc(server, {
+      method: "POST",
+      path: "/rpc/mcp/wb_plan",
+      headers: { Authorization: `Bearer ${intakeToken}` },
+      body: {
+        mode: "commit_card",
+        draft_id: "d-bad-deliver-cmd",
+        title: "Bad MCP host_op on git_worktree",
+        space: "proj-wf-check",
+        priority: "P2",
+        track: "L1",
+        workspace_mode: "git_worktree",
+        depends_on: [],
+        workflow: buildWorkflowPreset("host_op"),
+        brief_markdown: "# Bad MCP wf",
+        contract: {
+          goal: "Goal",
+          end: "End",
+          accept_cmd: "echo ok",
+          accept_files_hash: "sha256:bad-wf3",
+          scope: ["src/**"],
+          deliver: { mode: "merge_main", cmd: null },
+        },
+      },
+    });
+    expect(badMcpWorkflow.status).toBe(400);
+    expect(badMcpWorkflow.json.error).toBe("invalid_workflow_workspace");
+
     unsubscribeSse();
   });
 });

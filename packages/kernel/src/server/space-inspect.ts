@@ -4,13 +4,17 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import type {
-  DiscoveredGitRepo,
-  DiscoverSpacesResponse,
-  PickDirectoryResponse,
-  SpaceConfig,
-  SpaceFileEntry,
-  WorkspaceMode,
+import {
+  extractWorkflowToggles,
+  flattenWorkflowSteps,
+  type DiscoveredGitRepo,
+  type DiscoverSpacesResponse,
+  type PickDirectoryResponse,
+  type SpaceConfig,
+  type SpaceFileEntry,
+  type WorkflowBlueprint,
+  type WorkflowCommandNode,
+  type WorkspaceMode,
 } from "@kiln/protocol";
 import { buildSanitizedEnv } from "../gate/command-runner.js";
 import { realpathCanonical } from "../store/fs-atomic.js";
@@ -1015,17 +1019,64 @@ function containsDraftsReference(text: string, textPrefixes: readonly string[]):
   return false;
 }
 
+export function validateCommitWorkflow(
+  workspaceMode: WorkspaceMode,
+  workflow: WorkflowBlueprint | undefined,
+): void {
+  if (!workflow) {
+    return;
+  }
+  const toggles = extractWorkflowToggles(workflow);
+  const flat = flattenWorkflowSteps(workflow);
+  const implNode = flat.find((n) => n.kind === "agent" && n.stage === "implement");
+  const gateNode = flat.find((n) => n.kind === "gate");
+  const cmdNode = flat.find(
+    (n): n is WorkflowCommandNode => n.kind === "command" && n.stage === "deliver",
+  );
+
+  if (workspaceMode !== "host_scoped" && toggles.hostTwoPhase) {
+    throw new ServerHttpError(400, {
+      error: "invalid_workflow_workspace",
+      workspaceMode,
+      message: 'Only "host_scoped" workspace_mode supports host_op two-phase staging workflows',
+    });
+  }
+
+  if (workspaceMode === "host_scoped") {
+    const hasFullTwoPhase =
+      implNode?.kind === "agent" &&
+      implNode.mode === "dry_run_only" &&
+      gateNode?.kind === "gate" &&
+      gateNode.check === "staged_only" &&
+      Boolean(cmdNode?.apply_staged) &&
+      Boolean(cmdNode?.final_accept_gate);
+    if (!hasFullTwoPhase) {
+      throw new ServerHttpError(400, {
+        error: "invalid_workflow_workspace",
+        workspaceMode,
+        message:
+          '"host_scoped" tasks with explicit workflow must keep dry_run_only + staged_only + apply_staged + final_accept_gate enabled',
+      });
+    }
+  }
+}
+
 /**
  * Validates that a committed task contract never references ephemeral `drafts/` directories
  * that are deleted immediately once a draft commits into a task.
  */
 export function validateCommitContract(
   store: KilnStore,
-  contract: { end: string; accept_cmd: string; scope: readonly string[] },
+  contract: {
+    end: string;
+    accept_cmd: string;
+    scope: readonly string[];
+    deliver?: { mode?: string; cmd?: string | null };
+  },
 ): void {
   const { fsRoots, textPrefixes } = collectForbiddenDraftsPrefixes(store);
 
-  const reject = (field: "scope" | "accept_cmd" | "end"): never => {
+  const reject = (field: "scope" | "accept_cmd" | "end" | "deliver.cmd"): never => {
     throw new ServerHttpError(400, {
       error: "invalid_contract_path",
       field,
@@ -1044,6 +1095,14 @@ export function validateCommitContract(
   }
   if (containsDraftsReference(contract.end, textPrefixes)) {
     reject("end");
+  }
+  if (
+    contract.deliver?.mode === "run_cmd" &&
+    typeof contract.deliver.cmd === "string" &&
+    contract.deliver.cmd.trim().length > 0 &&
+    containsDraftsReference(contract.deliver.cmd, textPrefixes)
+  ) {
+    reject("deliver.cmd");
   }
 }
 

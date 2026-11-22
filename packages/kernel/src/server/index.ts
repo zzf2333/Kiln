@@ -173,6 +173,7 @@ export {
   pickLocalDirectory,
   revealLocalPath,
   validateCommitContract,
+  validateCommitWorkflow,
   validateCommitWorkspace,
   type DiscoverLocalGitReposOptions,
   type InspectedSpaceInfo,
