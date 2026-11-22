@@ -3041,8 +3041,24 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
       args: [path.resolve(sampleDir)],
     });
 
+    const localhostUrl = `file://localhost${sampleFile.startsWith("/") ? sampleFile : `/${sampleFile.replace(/\\/g, "/")}`}`;
+    const resLocalhost = await revealLocalPath(localhostUrl, {
+      platform: "darwin",
+      execFileFn: fakeExec,
+    });
+    expect(resLocalhost).toEqual({ ok: true, path: path.resolve(sampleFile) });
+
     await expect(revealLocalPath("relative/path.txt")).rejects.toMatchObject({ statusCode: 400 });
     await expect(revealLocalPath("file://evil.example.com/etc/passwd")).rejects.toMatchObject({
+      statusCode: 400,
+    });
+    await expect(
+      revealLocalPath("file://evil.example.com/C:/Windows/win.ini"),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    await expect(revealLocalPath("\\\\evil.example.com\\share\\notes.txt")).rejects.toMatchObject({
+      statusCode: 400,
+    });
+    await expect(revealLocalPath("//evil.example.com/share/notes.txt")).rejects.toMatchObject({
       statusCode: 400,
     });
     await expect(

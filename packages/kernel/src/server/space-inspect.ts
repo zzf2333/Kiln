@@ -755,9 +755,29 @@ function resolveRevealTargetPath(rawPath: string, homedir: string): string {
   if (/^file:\/\//i.test(candidate)) {
     const hashIdx = candidate.indexOf("#");
     const noFrag = hashIdx >= 0 ? candidate.slice(0, hashIdx) : candidate;
-    const normalizedFileUrl = noFrag.replace(/^file:\/\/localhost\//i, "file:///");
+    let parsedUrl: URL;
     try {
-      candidate = fileURLToPath(normalizedFileUrl);
+      parsedUrl = new URL(noFrag);
+    } catch {
+      throw new ServerHttpError(400, {
+        error: "invalid_path",
+        message: "Invalid or non-local file:// URL",
+      });
+    }
+    const hostname = parsedUrl.hostname.toLowerCase();
+    if (
+      parsedUrl.protocol !== "file:" ||
+      parsedUrl.username !== "" ||
+      parsedUrl.password !== "" ||
+      (hostname !== "" && hostname !== "localhost")
+    ) {
+      throw new ServerHttpError(400, {
+        error: "invalid_path",
+        message: "Invalid or non-local file:// URL",
+      });
+    }
+    try {
+      candidate = fileURLToPath(parsedUrl);
     } catch {
       throw new ServerHttpError(400, {
         error: "invalid_path",
@@ -768,6 +788,13 @@ function resolveRevealTargetPath(rawPath: string, homedir: string): string {
     candidate = homedir;
   } else if (candidate.startsWith("~/") || candidate.startsWith("~\\")) {
     candidate = path.join(homedir, candidate.slice(2));
+  }
+
+  if (candidate.startsWith("\\\\") || /^\/\/[^/]/.test(candidate)) {
+    throw new ServerHttpError(400, {
+      error: "invalid_path",
+      message: "UNC network paths are not allowed",
+    });
   }
 
   if (!path.isAbsolute(candidate)) {
