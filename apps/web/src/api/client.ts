@@ -22,6 +22,7 @@ import type {
   HostRestoreConflictDetail,
   InspectSpaceResult,
   LogoutResponse,
+  OpenRunTuiResponse,
   PairAuthResponse,
   PairCompleteRequest,
   PickDirectoryResponse,
@@ -282,6 +283,19 @@ export async function completeTask(taskId: string, deliverRef?: string): Promise
     method: "POST",
     body: JSON.stringify(deliverRef ? { deliver_ref: deliverRef } : {}),
   });
+}
+
+export async function openRunTui(
+  taskId: string,
+  runDir: string,
+): Promise<OpenRunTuiResponse> {
+  return await requestJson<OpenRunTuiResponse>(
+    `/api/tasks/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runDir)}/open-tui`,
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+    },
+  );
 }
 
 export async function cancelTask(taskId: string, reason?: string): Promise<void> {

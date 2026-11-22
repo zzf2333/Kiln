@@ -2,9 +2,10 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   HashMismatchErrorSchema,
+  RunMetaSchema,
   SseEventSchema,
   buildWorkflowPreset,
   parseAndValidateReceipt,
@@ -18,7 +19,13 @@ import {
 import { FakeBackend } from "../backend/index.js";
 import { computeFrozenSnapshot } from "../gate/index.js";
 import { KilndServer } from "../server/index.js";
-import { realpathCanonical, resolveDefaultIpcPath, writeFileAtomic, writeYamlAtomic } from "../store/index.js";
+import {
+  readYamlOptional,
+  realpathCanonical,
+  resolveDefaultIpcPath,
+  writeFileAtomic,
+  writeYamlAtomic,
+} from "../store/index.js";
 
 function git(args: readonly string[], cwd?: string): string {
   return execFileSync("git", [...args], {
@@ -5735,5 +5742,195 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     const detailBody = (await detailRes.json()) as { plan?: string };
     expect(detailBody.plan).toContain("Read-only architecture plan E");
     expect(detailBody.plan).toContain("## 技术取舍");
+  }, 25_000);
+
+  it("Slice 4: session_bound binds RUN.yaml, exposes session & ioSummary, and invokes local open-tui", async () => {
+    const { repoPath, baseCommit } = initGitRepo("slice4");
+    const kilnHome = makeTempDir("kiln-home-slice4-");
+
+    const openSpy = vi.fn(async ({ taskId, runDir }) => ({
+      ok: true as const,
+      taskId,
+      runDir,
+      agent: "codex",
+      providerSessionId: "codex-e2e-9876543210",
+      cwd: repoPath,
+      cwdFallback: false,
+      commandPreview: "codex resume codex-e2e-9876543210",
+    }));
+
+    const fakeBackend = new FakeBackend();
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: true,
+      tokenSecret: "slice4-e2e-secret-0123456789abcd",
+      openRunTui: openSpy,
+      approvalHandler: async (req, ctx) => {
+        if (req.action === "slice4_worker_done") {
+          const token = server.issueRunToken({
+            taskId: ctx.taskId,
+            runId: ctx.runId,
+            role: ctx.role,
+            contractVersion: ctx.card.contract_version,
+          });
+          const wtPath = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
+          fs.writeFileSync(path.join(wtPath, "src", "app.ts"), "export const v = 904;\n");
+          fs.writeFileSync(path.join(wtPath, "src", "extra-1.ts"), "export const e1 = 1;\n");
+          fs.writeFileSync(path.join(wtPath, "src", "extra-2.ts"), "export const e2 = 2;\n");
+          fs.writeFileSync(path.join(wtPath, "src", "extra-3.ts"), "export const e3 = 3;\n");
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeWorkerReceiptMarkdown({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                input_ref: baseCommit,
+                output_ref: "src/app.ts",
+                changed_paths: ["src/app.ts", "src/extra-1.ts", "src/extra-2.ts", "src/extra-3.ts"],
+                extraFrontmatter: {
+                  summary: "完成 session 总览与 TUI 联动",
+                },
+              }),
+            }),
+          });
+        }
+        await ctx.backend.answer(req.id, true);
+      },
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "s4proj",
+      name: "Slice4 Proj",
+      repo_path: repoPath,
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    });
+
+    const roles = defaultRoles();
+    server.store.writeConfig("roles", {
+      ...roles,
+      roles: {
+        ...roles.roles,
+        worker: { agent: "codex", model: "gpt-6-luna", allow_full_access_fallback: false },
+      },
+    });
+    server.store.writeConfig("limits", defaultLimits());
+    server.store.writeConfig("pricing", defaultPricing());
+    await server.start();
+
+    fakeBackend.enqueueScript(
+      [
+        {
+          kind: "session_bound",
+          providerSessionId: "codex-e2e-9876543210",
+          providerSessionPath: "/tmp/codex-e2e.jsonl",
+        },
+        { kind: "tool", name: "shell", target: "pnpm test" },
+        { kind: "approval", action: "slice4_worker_done", detail: "submit s4 receipt" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-slice4-tui", role: "worker" },
+    );
+
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-slice4-tui",
+        title: "Slice 4 native session binding E2E",
+        space: "s4proj",
+        priority: "P1",
+        track: "L1",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        workflow: buildWorkflowPreset("quick"),
+        contract_version: 1,
+        contract: {
+          goal: "绑定原生 Session 并支持本地直达 TUI",
+          end: "v=904 merged",
+          accept_cmd: `node -e "const fs=require('fs');if(!fs.readFileSync('src/app.ts','utf8').includes('904'))process.exit(2)"`,
+          accept_files_hash: "sha256:s4",
+          scope: ["src/**"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 5_000_000 },
+        created_at: "2026-11-22T09:20:00.000Z",
+        updated_at: "2026-11-22T09:20:00.000Z",
+      },
+      "# Slice 4 Brief",
+    );
+
+    await server.orchestrator.wake();
+    await waitUntil(() => server.store.getTaskIndex("t-slice4-tui")?.status === "done", "t-slice4-tui done");
+
+    const meta = readYamlOptional(
+      server.store.paths.runYaml("t-slice4-tui", "001-implement"),
+      RunMetaSchema,
+    );
+    expect(meta?.cwd).toBeTruthy();
+    expect(meta?.session_ref.meta?.providerSessionId).toBe("codex-e2e-9876543210");
+    expect(meta?.session_ref.meta?.providerSessionPath).toBe("/tmp/codex-e2e.jsonl");
+
+    const detailRes = await server.app.request(new Request("http://127.0.0.1/api/tasks/t-slice4-tui"));
+    expect(detailRes.status).toBe(200);
+    const detail = (await detailRes.json()) as {
+      runs: Array<{
+        dirName: string;
+        session?: {
+          providerSessionId: string | null;
+          displaySessionId: string | null;
+          tuiSupported: boolean;
+          tuiCommandPreview: string | null;
+        };
+        ioSummary?: {
+          inputTitle: string;
+          outputVerdict: string;
+          outputSummary: string;
+          changedPaths: string[];
+          gatePassed: boolean | null;
+        };
+      }>;
+    };
+    expect(detail.runs).toHaveLength(1);
+    expect(detail.runs[0]?.session).toMatchObject({
+      providerSessionId: "codex-e2e-9876543210",
+      displaySessionId: "codex-e2e-98",
+      tuiSupported: true,
+      tuiCommandPreview: "codex resume codex-e2e-9876543210",
+    });
+    expect(detail.runs[0]?.ioSummary).toMatchObject({
+      inputTitle: "绑定原生 Session 并支持本地直达 TUI",
+      outputVerdict: "通过",
+      outputSummary: "完成 session 总览与 TUI 联动",
+      gatePassed: true,
+    });
+    expect(detail.runs[0]?.ioSummary?.changedPaths).toEqual([
+      "src/app.ts",
+      "src/extra-1.ts",
+      "src/extra-2.ts",
+      "src/extra-3.ts",
+    ]);
+
+    const openRes = await server.app.request(
+      new Request("http://127.0.0.1/api/tasks/t-slice4-tui/runs/001-implement/open-tui", {
+        method: "POST",
+      }),
+    );
+    expect(openRes.status).toBe(200);
+    expect(openSpy).toHaveBeenCalledWith({
+      taskId: "t-slice4-tui",
+      runDir: "001-implement",
+    });
   }, 25_000);
 });

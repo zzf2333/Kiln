@@ -138,6 +138,7 @@ export const RunMetaSchema = z.object({
   agent: z.string().min(1),
   model: z.string().min(1),
   session_ref: SessionRefSchema,
+  cwd: z.string().min(1).optional(),
   input_ref: z.string().min(1).optional(),
   started_at: z.string().min(1),
 });

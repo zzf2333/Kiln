@@ -29,6 +29,7 @@ import {
 import type {
   PaseoAgentCapabilityFlags,
   PaseoAgentModel,
+  PaseoAgentPersistenceHandle,
   PaseoAgentSnapshot,
   PaseoAgentStreamEvent,
   PaseoApiLike,
@@ -210,6 +211,37 @@ function toBackendModelDescriptor(model: PaseoAgentModel): BackendModelDescripto
     ...(model.description !== undefined ? { description: model.description } : {}),
     thinkingOptions,
     ...(parsedDefault?.success ? { defaultThinkingOptionId: parsedDefault.data } : {}),
+  };
+}
+
+interface NativeSessionBinding {
+  providerSessionId: string;
+  providerSessionPath?: string;
+}
+
+function extractNativeSessionMeta(
+  persistence?: PaseoAgentPersistenceHandle | null,
+): NativeSessionBinding | null {
+  if (!persistence) {
+    return null;
+  }
+  const nativeHandle =
+    typeof persistence.nativeHandle === "string" ? persistence.nativeHandle.trim() : "";
+  const sessionId =
+    typeof persistence.sessionId === "string" ? persistence.sessionId.trim() : "";
+  const metaFile =
+    persistence.metadata && typeof persistence.metadata.sessionFile === "string"
+      ? persistence.metadata.sessionFile.trim()
+      : persistence.metadata && typeof persistence.metadata.sessionPath === "string"
+        ? persistence.metadata.sessionPath.trim()
+        : "";
+  const providerSessionId = nativeHandle || sessionId;
+  if (!providerSessionId && !metaFile) {
+    return null;
+  }
+  return {
+    providerSessionId: providerSessionId || metaFile,
+    ...(metaFile ? { providerSessionPath: metaFile } : {}),
   };
 }
 
@@ -488,9 +520,18 @@ export class PaseoBackend implements ExecutionBackend {
       );
     }
 
+    const initialNativeBinding = extractNativeSessionMeta(agentSnapshot.persistence);
     const meta: Record<string, string> = {
       agent: canonicalProvider,
       ...(selectedModeId !== undefined ? { modeId: selectedModeId } : {}),
+      ...(initialNativeBinding
+        ? {
+            providerSessionId: initialNativeBinding.providerSessionId,
+            ...(initialNativeBinding.providerSessionPath !== undefined
+              ? { providerSessionPath: initialNativeBinding.providerSessionPath }
+              : {}),
+          }
+        : {}),
     };
 
     const sessionRef: SessionRef = {
@@ -512,6 +553,16 @@ export class PaseoBackend implements ExecutionBackend {
       usageState: createSessionUsageState(),
     };
     const turn = this.beginTurn(session);
+    if (initialNativeBinding) {
+      this.pushEvent(turn, {
+        kind: "session_bound",
+        at: new Date().toISOString(),
+        providerSessionId: initialNativeBinding.providerSessionId,
+        ...(initialNativeBinding.providerSessionPath !== undefined
+          ? { providerSessionPath: initialNativeBinding.providerSessionPath }
+          : {}),
+      });
+    }
     this.sessions.set(agentSnapshot.id, session);
 
     try {
@@ -1055,6 +1106,17 @@ export class PaseoBackend implements ExecutionBackend {
   ): void {
     turn.dispatched = true;
     switch (ev.type) {
+      case "thread_started": {
+        const sid = ev.sessionId.trim();
+        if (sid.length > 0) {
+          this.recordNativeSessionBinding(
+            session,
+            { providerSessionId: sid },
+            at,
+          );
+        }
+        break;
+      }
       case "turn_started": {
         if (ev.turnId) {
           turn.providerTurnId = ev.turnId;
@@ -1247,6 +1309,13 @@ export class PaseoBackend implements ExecutionBackend {
           fetched.agent.capabilities,
         );
       }
+      if (fetched?.agent.persistence) {
+        this.recordNativeSessionBinding(
+          session,
+          extractNativeSessionMeta(fetched.agent.persistence),
+          at,
+        );
+      }
       this.completeTurnWithUsage(
         session,
         turn,
@@ -1331,6 +1400,13 @@ export class PaseoBackend implements ExecutionBackend {
             this.agentCapabilitiesCache.set(
               this.normalizeProviderKey(session.canonicalProvider),
               agent.capabilities,
+            );
+          }
+          if (agent.persistence) {
+            this.recordNativeSessionBinding(
+              session,
+              extractNativeSessionMeta(agent.persistence),
+              new Date().toISOString(),
             );
           }
           if (agent.status === "closed") {
@@ -1651,6 +1727,40 @@ export class PaseoBackend implements ExecutionBackend {
       if (timer !== undefined) {
         clearTimeout(timer);
       }
+    }
+  }
+
+  private recordNativeSessionBinding(
+    session: SessionState,
+    binding: NativeSessionBinding | null,
+    at: string,
+  ): void {
+    if (!binding) {
+      return;
+    }
+    const existingId = session.sessionRef.meta?.providerSessionId;
+    const existingPath = session.sessionRef.meta?.providerSessionPath;
+    const nextPath = binding.providerSessionPath ?? existingPath;
+    const changed =
+      binding.providerSessionId !== existingId || nextPath !== existingPath;
+    if (!changed) {
+      return;
+    }
+
+    session.sessionRef.meta = {
+      ...(session.sessionRef.meta ?? {}),
+      providerSessionId: binding.providerSessionId,
+      ...(nextPath !== undefined ? { providerSessionPath: nextPath } : {}),
+    };
+
+    const turn = session.currentTurn;
+    if (turn && !turn.finished) {
+      this.pushEvent(turn, {
+        kind: "session_bound",
+        at,
+        providerSessionId: binding.providerSessionId,
+        ...(nextPath !== undefined ? { providerSessionPath: nextPath } : {}),
+      });
     }
   }
 

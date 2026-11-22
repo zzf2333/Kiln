@@ -203,3 +203,17 @@ export {
   verifyRunToken,
   type RunTokenAuthErrorReason,
 } from "./token.js";
+export {
+  NATIVE_TUI_SUPPORTED_AGENTS,
+  buildRunOverviewSummary,
+  launchNativeAgentTui,
+  resolveNativeTuiCommand,
+  type BuildRunOverviewInput,
+  type LaunchNativeAgentTuiOptions,
+  type NativeTuiResolveErrorCode,
+  type NativeTuiSupportedAgent,
+  type ResolveNativeTuiCommandInput,
+  type ResolveNativeTuiCommandResult,
+  type RunIoSummary,
+  type RunSessionInfo,
+} from "./tui-launcher.js";

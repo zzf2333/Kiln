@@ -56,6 +56,12 @@ const RunEventBaseUnionSchema = z.discriminatedUnion("kind", [
     action: z.string().min(1),
     detail: z.string(),
   }),
+  z.object({
+    kind: z.literal("session_bound"),
+    at: z.string().min(1),
+    providerSessionId: z.string().min(1),
+    providerSessionPath: z.string().min(1).optional(),
+  }),
   RunUsageObjectSchema.extend({
     kind: z.literal("usage"),
     at: z.string().min(1),

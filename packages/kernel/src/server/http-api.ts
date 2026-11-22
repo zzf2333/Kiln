@@ -32,6 +32,7 @@ import {
   WorkspaceModeSchema,
   type DiscoverSpacesResponse,
   type LedgerFile,
+  type OpenRunTuiResponse,
   type PendingDecision,
   type PickDirectoryResponse,
   type PublicPairedDevice,
@@ -109,6 +110,11 @@ import {
   resolveDefaultPublicDir,
   type EmbeddedStaticAssets,
 } from "./static-files.js";
+import {
+  buildRunOverviewSummary,
+  launchNativeAgentTui,
+  resolveNativeTuiCommand,
+} from "./tui-launcher.js";
 
 export type HttpApiListenerMode = "local" | "remote";
 
@@ -129,7 +135,8 @@ function isLocalOnlyRemoteAdminPath(rawPath: string): boolean {
     lower === "/api/remote" ||
     lower.startsWith("/api/remote/") ||
     lower === "/api/spaces/pick-directory" ||
-    lower === "/api/system/reveal-path"
+    lower === "/api/system/reveal-path" ||
+    /^\/api\/tasks\/[^/]+\/runs\/[^/]+\/open-tui$/.test(lower)
   );
 }
 
@@ -155,6 +162,7 @@ export interface HttpApiDependencies {
   discoverSpaces?: () => Promise<DiscoverSpacesResponse>;
   pickDirectory?: () => Promise<PickDirectoryResponse>;
   revealPath?: (targetPath: string) => Promise<{ ok: true; path: string }>;
+  openRunTui?: (input: { taskId: string; runDir: string }) => Promise<OpenRunTuiResponse>;
   syncPricing?: (input: SyncPricingRequest) => Promise<SyncPricingResponse>;
   extensionsHomeDir?: string;
   onTaskQueued?: (taskId: string) => void;
@@ -1186,6 +1194,8 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     const decisions = readOptionalText(store.paths.decisionsMd(taskId)) ?? "";
     const pendingDecision = pendingDecisions.get(taskId);
     const ledgerProposals = readLedgerProposals(store, taskId);
+    const spaceConfig = store.readSpace(card.space);
+    const usageTurns = store.listUsageTurns({ taskId });
 
     const runs: Array<Record<string, unknown>> = [];
     let latestMeta: RunMeta | null = null;
@@ -1210,6 +1220,19 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
           RunEventSchema,
         );
         const exitEv = [...events].reverse().find((e) => e.kind === "exit");
+        const overview = buildRunOverviewSummary({
+          card,
+          meta,
+          receipt,
+          gate,
+          events,
+          usageTurns,
+          pricing,
+          dirName: runDirName,
+          activeRunId: derived.activeRunId,
+          taskStatus: derived.status,
+          spaceRepoPath: spaceConfig?.repo_path,
+        });
 
         runs.push({
           dirName: runDirName,
@@ -1221,6 +1244,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
           eventsCount: events.length,
           ...(meta?.started_at ? { startedAt: meta.started_at } : {}),
           endedAt: exitEv ? exitEv.at : null,
+          ...overview,
         });
       }
     }
@@ -1243,7 +1267,6 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     const hostBackup = readHostBackupManifestOptional(store, taskId);
     const hostStagedDiffs = buildHostStagedDiffs(store, taskId);
     const chatMessages = readTaskChatFallback(taskId);
-    const usageTurns = store.listUsageTurns({ taskId });
     const usage = computeUsageSnapshot(usageTurns, pricing);
 
     return c.json({
@@ -1574,6 +1597,79 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     });
     onTaskQueued?.(taskId);
     return c.json({ ok: true, taskId, state: nextState });
+  });
+
+  app.post("/api/tasks/:id/runs/:runDir/open-tui", async (c) => {
+    if (listenerMode !== "local") {
+      throw new ServerHttpError(403, {
+        error: "local_only_endpoint",
+        path: c.req.path,
+        message: "Opening native agent TUI is restricted to the local Kiln port",
+      });
+    }
+    const taskId = requireExistingTask(c.req.param("id"));
+    const runDir = assertSafeSegment(c.req.param("runDir"), "runDir");
+    const runDirPath = path.join(store.paths.runsDir(taskId), runDir);
+    const meta = readYamlOptional(store.paths.runYaml(taskId, runDir), RunMetaSchema);
+    if (!fs.existsSync(runDirPath) || !fs.statSync(runDirPath).isDirectory() || !meta) {
+      throw new ServerHttpError(404, {
+        error: "run_not_found",
+        taskId,
+        runDir,
+        message: `Run "${runDir}" not found for task "${taskId}"`,
+      });
+    }
+
+    let providerSessionId = meta.session_ref.meta?.providerSessionId?.trim() || null;
+    let providerSessionPath = meta.session_ref.meta?.providerSessionPath?.trim() || null;
+    if (!providerSessionId || !providerSessionPath) {
+      const events = readNdjsonValidated(
+        store.paths.runEventsNdjson(taskId, runDir),
+        RunEventSchema,
+      );
+      for (let i = events.length - 1; i >= 0; i--) {
+        const ev = events[i]!;
+        if (ev.kind === "session_bound") {
+          if (!providerSessionId) {
+            providerSessionId = ev.providerSessionId;
+          }
+          if (!providerSessionPath && ev.providerSessionPath) {
+            providerSessionPath = ev.providerSessionPath;
+          }
+          break;
+        }
+      }
+    }
+
+    const resolvedCmd = resolveNativeTuiCommand({
+      agent: meta.agent,
+      providerSessionId,
+      providerSessionPath,
+    });
+    if (!resolvedCmd.ok) {
+      throw new ServerHttpError(resolvedCmd.status, {
+        error: resolvedCmd.code,
+        message: resolvedCmd.message,
+      });
+    }
+
+    if (deps.openRunTui) {
+      return c.json(await deps.openRunTui({ taskId, runDir }));
+    }
+
+    const card = store.readTaskCard(taskId);
+    const spaceConfig = store.readSpace(card.space);
+    const launched = await launchNativeAgentTui({
+      kilnHome: store.paths.home,
+      taskId,
+      runDir,
+      agent: meta.agent,
+      providerSessionId,
+      providerSessionPath,
+      cwd: meta.cwd ?? null,
+      fallbackCwd: spaceConfig?.repo_path ?? null,
+    });
+    return c.json(launched);
   });
 
   const registerUpstreamCancelledDownstreams = (downstreamIds: readonly string[]): void => {

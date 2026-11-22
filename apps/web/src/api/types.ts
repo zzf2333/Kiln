@@ -251,6 +251,29 @@ export interface HostStagedDiffEntry {
   truncated: boolean;
 }
 
+export interface RunSessionInfo {
+  backendId: string;
+  sessionId: string;
+  providerSessionId: string | null;
+  providerSessionPath: string | null;
+  displaySessionId: string | null;
+  cwd: string | null;
+  tuiSupported: boolean;
+  tuiCommandPreview: string | null;
+  tuiUnavailableReason: string | null;
+}
+
+export interface RunIoSummary {
+  inputTitle: string;
+  inputRef: string | null;
+  outputVerdict: string;
+  outputSummary: string;
+  changedPaths: string[];
+  gatePassed: boolean | null;
+  totalTokens: number;
+  costUsd: number;
+}
+
 export interface TaskRunDetail {
   dirName: string;
   meta: RunMeta | null;
@@ -262,6 +285,19 @@ export interface TaskRunDetail {
   startedAt?: string;
   endedAt?: string | null;
   status?: string;
+  session?: RunSessionInfo;
+  ioSummary?: RunIoSummary;
+}
+
+export interface OpenRunTuiResponse {
+  ok: true;
+  taskId: string;
+  runDir: string;
+  agent: string;
+  providerSessionId: string;
+  cwd: string;
+  cwdFallback: boolean;
+  commandPreview: string;
 }
 
 export interface ChatMessage {

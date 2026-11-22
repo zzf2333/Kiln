@@ -6,6 +6,7 @@ import { serve, type ServerType } from "@hono/node-server";
 import type { Hono } from "hono";
 import type {
   DiscoverSpacesResponse,
+  OpenRunTuiResponse,
   PickDirectoryResponse,
   RemoteConfig,
   RoleId,
@@ -101,6 +102,7 @@ export interface KilndServerOptions {
   discoverSpaces?: () => Promise<DiscoverSpacesResponse>;
   pickDirectory?: () => Promise<PickDirectoryResponse>;
   revealPath?: (targetPath: string) => Promise<{ ok: true; path: string }>;
+  openRunTui?: (input: { taskId: string; runDir: string }) => Promise<OpenRunTuiResponse>;
   pricingFetchImpl?: typeof fetch;
   pricingCacheTtlMs?: number;
   pricingFetchTimeoutMs?: number;
@@ -343,6 +345,9 @@ export class KilndServer {
         : {}),
       ...(options.revealPath !== undefined
         ? { revealPath: options.revealPath }
+        : {}),
+      ...(options.openRunTui !== undefined
+        ? { openRunTui: options.openRunTui }
         : {}),
       ...(options.extensionsHomeDir !== undefined
         ? { extensionsHomeDir: options.extensionsHomeDir }

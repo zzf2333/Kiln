@@ -310,6 +310,13 @@ export type PaseoTimelineSubscription = (() => void) & {
   release?: () => Promise<void>;
 };
 
+export interface PaseoAgentPersistenceHandle {
+  provider: string;
+  sessionId: string;
+  nativeHandle?: string;
+  metadata?: Record<string, unknown>;
+}
+
 export interface PaseoAgentSnapshot {
   id: string;
   provider: string;
@@ -319,6 +326,7 @@ export interface PaseoAgentSnapshot {
   availableModes: PaseoAgentMode[];
   currentModeId: string | null;
   pendingPermissions: PaseoPermissionRequest[];
+  persistence?: PaseoAgentPersistenceHandle | null;
   activeTurn?: {
     turnId: string;
     startedAt: string | null;

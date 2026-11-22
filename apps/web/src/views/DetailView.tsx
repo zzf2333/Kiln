@@ -84,6 +84,7 @@ function verdictMeta(vs: RunVisualState, stage: StageId): [string, string] {
 export function DetailView() {
   const { store, state } = useKilnStore();
   const [showHandoff, setShowHandoff] = useState(false);
+  const [showRawEvents, setShowRawEvents] = useState(false);
 
   const taskId = state.taskId;
   const detail = taskId ? state.taskDetails[taskId] : undefined;
@@ -653,7 +654,10 @@ export function DetailView() {
                         {r.endMs
                           ? `–${fmtTime(new Date(r.endMs).toISOString())}`
                           : " 起"}{" "}
-                        · {r.raw.meta?.role ?? "内核"}
+                        ·{" "}
+                        {r.raw.meta
+                          ? `${r.raw.meta.agent}${r.raw.session?.displaySessionId ? ` #${r.raw.session.displaySessionId}` : ""}${r.raw.meta.role ? ` (${r.raw.meta.role})` : ""}`
+                          : "内核"}
                       </span>
                     </span>
                   </button>
@@ -759,6 +763,143 @@ export function DetailView() {
               ) : null}
 
               <HostStagedDiffSection detail={detail} />
+
+              {normalizedRuns.length > 0 ? (
+                <section class="session-overview" aria-label="Agent Session 总览">
+                  <div class="session-overview-head">
+                    <h4>Agent · Session 执行总览（{normalizedRuns.length}）</h4>
+                    <span class="muted">
+                      {state.authMode === "remote"
+                        ? "远程浏览仅展示输入与输出，打开原生 TUI 需在本机桌面端操作"
+                        : "点击 Agent + Session 可直接拉起原生 TUI 查看完整执行过程"}
+                    </span>
+                  </div>
+                  <div class="session-cards">
+                    {normalizedRuns.map((r, i) => {
+                      const meta = stageMeta(r.stage);
+                      const [vText, vTone] = verdictMeta(r.visualState, r.stage);
+                      const s = r.raw.session;
+                      const io = r.raw.ioSummary;
+                      const agentName = r.raw.meta?.agent ?? "内核";
+                      const sessionBadge = s?.displaySessionId
+                        ? `#${s.displaySessionId}`
+                        : "无原生 Session";
+                      const isRemote = state.authMode === "remote";
+                      const canOpenTui = !isRemote && Boolean(s?.tuiSupported);
+                      const tuiTooltip = isRemote
+                        ? "仅本机端支持打开原生 Agent TUI"
+                        : s?.tuiCommandPreview ??
+                          s?.tuiUnavailableReason ??
+                          "该执行轮次暂不支持打开原生 TUI";
+                      const runDurMs = (r.endMs ?? nowMs) - r.startMs;
+
+                      return (
+                        <div
+                          key={r.raw.dirName}
+                          class={`session-card${i === selectedIdx ? " is-sel" : ""}`}
+                        >
+                          <div class="session-card-head">
+                            <div class="session-card-title">
+                              <span
+                                class={`v v-${vTone === "paused" ? "muted" : vTone}`}
+                              >
+                                {io?.outputVerdict ?? vText}
+                              </span>
+                              <strong>
+                                {meta.label}
+                                {r.round > 1 ? ` · 第 ${r.round} 轮` : ""}
+                              </strong>
+                              {r.raw.meta?.role ? (
+                                <span class="chip">{r.raw.meta.role}</span>
+                              ) : null}
+                              <button
+                                type="button"
+                                class="session-trigger"
+                                disabled={!canOpenTui}
+                                title={tuiTooltip}
+                                onClick={() =>
+                                  void store.openRunTui(card.id, r.raw.dirName)
+                                }
+                              >
+                                <span>{agentName}</span>
+                                <span class="mono">{sessionBadge}</span>
+                                {canOpenTui ? (
+                                  <span class="session-open-hint">打开 TUI</span>
+                                ) : null}
+                              </button>
+                            </div>
+                            <div class="session-card-meta">
+                              <span class="mono">{fmtDurationMs(runDurMs)}</span>
+                              {io && (io.costUsd > 0 || io.totalTokens > 0) ? (
+                                <span class="mono">
+                                  {fmtTokens(io.totalTokens)} tok ·{" "}
+                                  {fmtUsd(io.costUsd)}
+                                </span>
+                              ) : null}
+                            </div>
+                          </div>
+
+                          <div class="session-io">
+                            <div class="session-io-row">
+                              <span class="session-io-label">输入</span>
+                              <span class="session-io-val">
+                                {io?.inputTitle ?? card.contract.goal}
+                                {io?.inputRef ? (
+                                  <span class="mono muted"> · {io.inputRef}</span>
+                                ) : null}
+                              </span>
+                            </div>
+                            <div class="session-io-row">
+                              <span class="session-io-label">输出</span>
+                              <div class="session-io-val">
+                                <span>
+                                  {io?.outputSummary ?? "已完成本轮动作"}
+                                </span>
+                                {io && io.gatePassed !== null ? (
+                                  <span
+                                    class={`chip ${io.gatePassed ? "is-ok" : "is-bad"}`}
+                                  >
+                                    {io.gatePassed ? "门禁通过" : "门禁未过"}
+                                  </span>
+                                ) : null}
+                                {io && io.changedPaths.length > 0 ? (
+                                  <span class="session-paths">
+                                    {io.changedPaths.slice(0, 3).map((p) => (
+                                      <code key={p} class="session-path-chip">
+                                        {p}
+                                      </code>
+                                    ))}
+                                    {io.changedPaths.length > 3 ? (
+                                      <span class="muted">
+                                        +{io.changedPaths.length - 3}
+                                      </span>
+                                    ) : null}
+                                  </span>
+                                ) : null}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div class="session-card-foot">
+                            <button
+                              type="button"
+                              class="btn btn-sm"
+                              onClick={() => store.selectRun(i)}
+                            >
+                              {i === selectedIdx ? "正在查看产物" : "查看产物"}
+                            </button>
+                            {s?.cwd ? (
+                              <span class="session-cwd mono muted" title={s.cwd}>
+                                cwd: {s.cwd}
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              ) : null}
 
               {selectedRun ? (
                 <>
@@ -879,30 +1020,50 @@ export function DetailView() {
 
                         {selectedRun.raw.events.length > 0 ? (
                           <div class="block">
-                            <h4>执行事件流（{selectedRun.raw.events.length}）</h4>
-                            <div class="code">
-                              {selectedRun.raw.events
-                                .map((ev) => {
-                                  if (ev.kind === "message") return ev.text;
-                                  if (ev.kind === "tool") {
-                                    return `[tool] ${ev.name}${ev.target ? ` -> ${ev.target}` : ""}`;
-                                  }
-                                  if (ev.kind === "file_write") {
-                                    return `[write] ${ev.path}`;
-                                  }
-                                  if (ev.kind === "approval") {
-                                    return `[approval] ${ev.action}: ${ev.detail}`;
-                                  }
-                                  if (ev.kind === "usage") {
-                                    return `[usage] ${ev.agent}/${ev.model} in=${ev.inputTokens} cached=${ev.cachedInputTokens} out=${ev.outputTokens}`;
-                                  }
-                                  if (ev.kind === "exit") {
-                                    return `[exit] ${ev.reason}${ev.detail ? ` (${ev.detail})` : ""}`;
-                                  }
-                                  return "[thinking]";
-                                })
-                                .join("\n")}
+                            <div class="events-toggle-row">
+                              <h4>执行事件流（{selectedRun.raw.events.length}）</h4>
+                              <button
+                                type="button"
+                                class="btn btn-sm"
+                                onClick={() => setShowRawEvents((prev) => !prev)}
+                              >
+                                {showRawEvents
+                                  ? "收起原始执行事件"
+                                  : `展开原始执行事件（${selectedRun.raw.events.length}）`}
+                              </button>
                             </div>
+                            {!showRawEvents ? (
+                              <p class="muted events-collapsed-hint">
+                                完整步骤细节默认折叠；可点击上方「Agent + Session」直接打开原生 TUI，或按需展开原始事件流。
+                              </p>
+                            ) : (
+                              <div class="code">
+                                {selectedRun.raw.events
+                                  .map((ev) => {
+                                    if (ev.kind === "message") return ev.text;
+                                    if (ev.kind === "session_bound") {
+                                      return `[session] ${ev.providerSessionId}${ev.providerSessionPath ? ` (${ev.providerSessionPath})` : ""}`;
+                                    }
+                                    if (ev.kind === "tool") {
+                                      return `[tool] ${ev.name}${ev.target ? ` -> ${ev.target}` : ""}`;
+                                    }
+                                    if (ev.kind === "file_write") {
+                                      return `[write] ${ev.path}`;
+                                    }
+                                    if (ev.kind === "approval") {
+                                      return `[approval] ${ev.action}: ${ev.detail}`;
+                                    }
+                                    if (ev.kind === "usage") {
+                                      return `[usage] ${ev.agent}/${ev.model} in=${ev.inputTokens} cached=${ev.cachedInputTokens} out=${ev.outputTokens}`;
+                                    }
+                                    if (ev.kind === "exit") {
+                                      return `[exit] ${ev.reason}${ev.detail ? ` (${ev.detail})` : ""}`;
+                                    }
+                                    return "[thinking]";
+                                  })
+                                  .join("\n")}
+                              </div>
+                            )}
                           </div>
                         ) : null}
 

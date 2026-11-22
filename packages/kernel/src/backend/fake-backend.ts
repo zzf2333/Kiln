@@ -24,6 +24,12 @@ export type FakeScriptStep =
   | { kind: "tool"; name: string; target?: string; delayMs?: number }
   | { kind: "file_write"; path: string; delayMs?: number }
   | {
+      kind: "session_bound";
+      providerSessionId: string;
+      providerSessionPath?: string;
+      delayMs?: number;
+    }
+  | {
       kind: "approval";
       action: string;
       detail: string;
@@ -668,6 +674,25 @@ export class FakeBackend implements ExecutionBackend {
               kind: "file_write",
               at: new Date().toISOString(),
               path: step.path,
+            });
+            break;
+          }
+          case "session_bound": {
+            const nextMeta: Record<string, string> = {
+              ...(session.sessionRef.meta ?? {}),
+              providerSessionId: step.providerSessionId,
+              ...(step.providerSessionPath !== undefined
+                ? { providerSessionPath: step.providerSessionPath }
+                : {}),
+            };
+            session.sessionRef.meta = nextMeta;
+            this.pushEvent(turn, {
+              kind: "session_bound",
+              at: new Date().toISOString(),
+              providerSessionId: step.providerSessionId,
+              ...(step.providerSessionPath !== undefined
+                ? { providerSessionPath: step.providerSessionPath }
+                : {}),
             });
             break;
           }

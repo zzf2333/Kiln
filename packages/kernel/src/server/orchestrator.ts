@@ -1716,6 +1716,7 @@ export class KilnOrchestrator {
       agent: assignment.agent,
       model: assignment.model,
       session_ref: placeholderSessionRef,
+      cwd: workspace.cwd,
       ...(workspace.inputRef !== undefined ? { input_ref: workspace.inputRef } : {}),
       started_at: now,
     };
@@ -2048,6 +2049,39 @@ export class KilnOrchestrator {
         try {
           for await (const ev of backend.events(sessionRef)) {
             this.store.recordRunEvent(taskId, runDirName, ev);
+
+            if (ev.kind === "session_bound") {
+              const currentMeta = readYamlOptional(
+                this.store.paths.runYaml(taskId, runDirName),
+                RunMetaSchema,
+              );
+              const baseMeta = currentMeta ?? runMeta;
+              const nextMeta: RunMeta = {
+                ...baseMeta,
+                session_ref: {
+                  ...baseMeta.session_ref,
+                  meta: {
+                    ...(baseMeta.session_ref.meta ?? {}),
+                    providerSessionId: ev.providerSessionId,
+                    ...(ev.providerSessionPath !== undefined
+                      ? { providerSessionPath: ev.providerSessionPath }
+                      : {}),
+                  },
+                },
+              };
+              runMeta = nextMeta;
+              handle.sessionRef = nextMeta.session_ref;
+              writeYamlAtomic(
+                this.store.paths.runYaml(taskId, runDirName),
+                nextMeta,
+                RunMetaSchema,
+              );
+              this.publishTaskUpdated(taskId, {
+                stage: runMeta.stage,
+                round: runMeta.round,
+                contractVersion: runMeta.contract_version,
+              });
+            }
 
             if (ev.kind === "message" && ev.delta) {
               this.rateTracker.recordDelta({ taskId, text: ev.text });

@@ -38,6 +38,7 @@ import {
   fetchTaskDetail as apiFetchTaskDetail,
   inspectSpacePath as apiInspectSpacePath,
   logoutRemoteDevice as apiLogoutRemoteDevice,
+  openRunTui as apiOpenRunTui,
   pairRemoteDevice as apiPairRemoteDevice,
   pauseTask as apiPauseTask,
   pickSpaceDirectory as apiPickSpaceDirectory,
@@ -1526,6 +1527,16 @@ export class KilnWebStore {
       }
     } catch (err) {
       this.showToast(err instanceof Error ? err.message : "标记完成失败");
+    }
+  }
+
+  async openRunTui(taskId: string, runDir: string): Promise<void> {
+    try {
+      const res = await apiOpenRunTui(taskId, runDir);
+      const shortId = res.providerSessionId.slice(0, 12);
+      this.showToast(`已拉起 ${res.agent} 原生 TUI (${shortId})`);
+    } catch (err) {
+      this.showToast(err instanceof Error ? err.message : "打开原生 TUI 失败");
     }
   }
 

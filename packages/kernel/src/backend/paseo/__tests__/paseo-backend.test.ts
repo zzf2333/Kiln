@@ -162,6 +162,10 @@ class MockPaseoDaemon implements PaseoDaemonLike {
   emitCancelOnCancelAgent = true;
   refreshSnapshotCalls = 0;
   onRefreshSnapshot?: () => void;
+  createPersistenceHook?: (
+    options: PaseoCreateAgentOptions,
+    agentId: string,
+  ) => PaseoAgentSnapshot["persistence"];
 
   private agentSeq = 0;
   private readonly agents = new Map<string, MockAgentRuntime>();
@@ -312,6 +316,9 @@ class MockPaseoDaemon implements PaseoDaemonLike {
       availableModes: [],
       currentModeId: options.config.modeId ?? null,
       pendingPermissions: [],
+      ...(this.createPersistenceHook
+        ? { persistence: this.createPersistenceHook(options, id) }
+        : {}),
     };
     this.agents.set(id, { snapshot, turnCount: 0, lastPrompt: null });
     return structuredClone(snapshot);
@@ -2220,6 +2227,180 @@ describe("PaseoBackend Round 1 review fixes: isolation, observations, reconnect 
       "magpie/group/fast",
       "magpie/group/strong",
     ]);
+
+    await backend.dispose();
+  });
+
+  it("captures providerSessionId and providerSessionPath from createAgent, thread_started, agent_update, and fetchAgent fallback without duplicate session_bound events", async () => {
+    const daemon = new MockPaseoDaemon();
+    const backend = createPaseoBackendForTest({ daemonClient: daemon });
+
+    // Source 1: createAgent snapshot persistence (+ duplicate agent_update must stay idempotent)
+    daemon.createPersistenceHook = () => ({
+      provider: "pi",
+      sessionId: "pi-internal-01",
+      nativeHandle: "pi-native-01",
+      metadata: {
+        sessionFile: "/tmp/kiln-pi/pi-native-01.jsonl",
+      },
+    });
+    daemon.enqueueTurnBehavior(async ({ agentId, turnNumber, runtime }) => {
+      daemon.emitDaemonEvent({
+        type: "agent_update",
+        agentId,
+        payload: {
+          kind: "upsert",
+          agent: {
+            ...runtime.snapshot,
+            persistence: {
+              provider: "pi",
+              sessionId: "pi-internal-01",
+              nativeHandle: "pi-native-01",
+              metadata: { sessionFile: "/tmp/kiln-pi/pi-native-01.jsonl" },
+            },
+          },
+        },
+      });
+      daemon.emitTimeline(agentId, {
+        type: "agent_stream",
+        payload: {
+          agentId,
+          timestamp: "2026-11-22T09:00:02.000Z",
+          event: {
+            type: "turn_completed",
+            provider: "pi",
+            turnId: `pi-t${turnNumber}`,
+            usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 5 },
+          },
+        },
+      });
+    });
+
+    const piRef = await backend.start(
+      makeRunSpec({ agent: "pi", model: "magpie/group/fast" }),
+    );
+    expect(piRef.meta?.providerSessionId).toBe("pi-native-01");
+    expect(piRef.meta?.providerSessionPath).toBe("/tmp/kiln-pi/pi-native-01.jsonl");
+    const piEvents = await collectAll(backend.events(piRef));
+    expect(piEvents.filter((e) => e.kind === "session_bound")).toEqual([
+      expect.objectContaining({
+        kind: "session_bound",
+        providerSessionId: "pi-native-01",
+        providerSessionPath: "/tmp/kiln-pi/pi-native-01.jsonl",
+      }),
+    ]);
+
+    // Source 2: stream thread_started event
+    daemon.createPersistenceHook = undefined;
+    daemon.enqueueTurnBehavior(async ({ agentId, turnNumber }) => {
+      daemon.emitTimeline(agentId, {
+        type: "agent_stream",
+        payload: {
+          agentId,
+          timestamp: "2026-11-22T09:01:00.000Z",
+          event: {
+            type: "thread_started",
+            provider: "codex",
+            sessionId: "codex-thread-abc123",
+          },
+        },
+      });
+      daemon.emitTimeline(agentId, {
+        type: "agent_stream",
+        payload: {
+          agentId,
+          timestamp: "2026-11-22T09:01:02.000Z",
+          event: {
+            type: "turn_completed",
+            provider: "codex",
+            turnId: `codex-t${turnNumber}`,
+            usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 5 },
+          },
+        },
+      });
+    });
+    const threadRef = await backend.start(makeRunSpec({ agent: "codex" }));
+    const threadEvents = await collectAll(backend.events(threadRef));
+    expect(threadEvents.find((e) => e.kind === "session_bound")).toMatchObject({
+      kind: "session_bound",
+      providerSessionId: "codex-thread-abc123",
+    });
+
+    // Source 3: agent_update upsert
+    daemon.enqueueTurnBehavior(async ({ agentId, turnNumber, runtime }) => {
+      daemon.emitDaemonEvent({
+        type: "agent_update",
+        agentId,
+        payload: {
+          kind: "upsert",
+          agent: {
+            ...runtime.snapshot,
+            persistence: {
+              provider: "codex",
+              sessionId: "codex-upsert-raw",
+              nativeHandle: "codex-upsert-77",
+            },
+          },
+        },
+      });
+      daemon.emitTimeline(agentId, {
+        type: "agent_stream",
+        payload: {
+          agentId,
+          timestamp: "2026-11-22T09:02:02.000Z",
+          event: {
+            type: "turn_completed",
+            provider: "codex",
+            turnId: `codex-u${turnNumber}`,
+            usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 5 },
+          },
+        },
+      });
+    });
+    const upsertRef = await backend.start(makeRunSpec({ agent: "codex" }));
+    const upsertEvents = await collectAll(backend.events(upsertRef));
+    expect(upsertEvents.find((e) => e.kind === "session_bound")).toMatchObject({
+      kind: "session_bound",
+      providerSessionId: "codex-upsert-77",
+    });
+
+    // Source 4: completeTurnFromFetchedAgent fallback on turn_completed without usage
+    daemon.enqueueTurnBehavior(async ({ agentId, turnNumber }) => {
+      daemon.setAgentSnapshot(agentId, {
+        persistence: {
+          provider: "pi",
+          sessionId: "pi-fetch-9",
+          metadata: { sessionPath: "/tmp/kiln-pi/fetch-9.jsonl" },
+        },
+      });
+      daemon.setAgentLastUsage(agentId, {
+        inputTokens: 15,
+        cachedInputTokens: 3,
+        outputTokens: 5,
+      });
+      daemon.emitTimeline(agentId, {
+        type: "agent_stream",
+        payload: {
+          agentId,
+          timestamp: "2026-11-22T09:03:02.000Z",
+          event: {
+            type: "turn_completed",
+            provider: "pi",
+            turnId: `pi-fetch-${turnNumber}`,
+          },
+        },
+      });
+    });
+    const fetchRef = await backend.start(
+      makeRunSpec({ agent: "pi", model: "magpie/group/fast" }),
+    );
+    const fetchEvents = await collectAll(backend.events(fetchRef));
+    expect(fetchEvents.map((e) => e.kind)).toEqual(["session_bound", "usage", "exit"]);
+    expect(fetchEvents[0]).toMatchObject({
+      kind: "session_bound",
+      providerSessionId: "pi-fetch-9",
+      providerSessionPath: "/tmp/kiln-pi/fetch-9.jsonl",
+    });
 
     await backend.dispose();
   });

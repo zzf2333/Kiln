@@ -233,3 +233,15 @@ export const SpaceFilesResponseSchema = z.object({
   truncated: z.boolean(),
 });
 export type SpaceFilesResponse = z.infer<typeof SpaceFilesResponseSchema>;
+
+export const OpenRunTuiResponseSchema = z.object({
+  ok: z.literal(true),
+  taskId: z.string().min(1),
+  runDir: z.string().min(1),
+  agent: z.string().min(1),
+  providerSessionId: z.string().min(1),
+  cwd: z.string().min(1),
+  cwdFallback: z.boolean().default(false),
+  commandPreview: z.string().min(1),
+});
+export type OpenRunTuiResponse = z.infer<typeof OpenRunTuiResponseSchema>;

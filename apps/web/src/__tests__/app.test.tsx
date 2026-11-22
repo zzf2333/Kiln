@@ -4366,4 +4366,246 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     });
     expect(screen.queryByText("技术实施方案（PLAN.md）")).toBeNull();
   });
+
+  it("renders Agent + Session I/O overview cards, keeps raw events collapsed by default, triggers open-tui locally and disables it in remote mode", async () => {
+    const now = "2026-11-22T10:00:00.000Z";
+    const card: TaskDetailResponse["card"] = {
+      schema_version: 1,
+      id: "t-s4-ui",
+      title: "Agent Session 总览与 TUI",
+      space: "kiln",
+      priority: "P1",
+      track: "L2",
+      workspace_mode: "git_worktree",
+      parent: null,
+      depends_on: [],
+      contract_version: 1,
+      contract: {
+        goal: "核查 Session 总览并跳转原生 TUI",
+        end: "验收全过",
+        accept_cmd: "pnpm test",
+        accept_files_hash: "sha256:s4ui",
+        scope: ["apps/**"],
+        deliver: { mode: "merge_main", cmd: null },
+        human_accept: false,
+        external_actions: "ask",
+      },
+      limits: {
+        retries_per_stage: 2,
+        review_rounds: 2,
+        advisor_calls: 1,
+        max_tokens: 1_000_000,
+      },
+      created_at: now,
+      updated_at: now,
+    };
+
+    const bootstrap = makeBaseBootstrap({
+      tasks: [
+        {
+          id: "t-s4-ui",
+          space: "kiln",
+          parent_id: null,
+          title: "Agent Session 总览与 TUI",
+          priority: "P1",
+          effective_priority: "P1",
+          track: "L2",
+          workspace_mode: "git_worktree",
+          status: "done",
+          stage: "accept",
+          round: 1,
+          active_run_id: null,
+          contract_version: 1,
+          depends_on: [],
+          created_at: now,
+          updated_at: now,
+          tokens: {
+            input_tokens: 100,
+            cached_input_tokens: 20,
+            output_tokens: 50,
+            total_tokens: 150,
+          },
+          cost_usd: 0.012,
+        },
+      ],
+    });
+
+    const detailBody: TaskDetailResponse = {
+      card,
+      state: {
+        status: "done",
+        stage: "accept",
+        round: 1,
+        activeRunId: null,
+        priority: "P1",
+        effectivePriority: "P1",
+        track: "L2",
+        contractVersion: 1,
+        updatedAt: now,
+      },
+      brief: "# 需求方案",
+      decisions: "",
+      pendingDecision: null,
+      ledgerProposals: [],
+      runs: [
+        {
+          dirName: "001-implement",
+          meta: {
+            schema_version: 1,
+            run_id: "r-impl-1",
+            task_id: "t-s4-ui",
+            stage: "implement",
+            round: 1,
+            role: "worker",
+            agent: "codex",
+            model: "gpt-6-luna",
+            backend_id: "paseo",
+            cwd: "/repos/kiln/.worktrees/t-s4-ui",
+            input_ref: "brief:v1",
+            session_ref: {
+              backendId: "paseo",
+              sessionId: "paseo-uuid-1",
+              meta: {
+                agent: "codex",
+                providerSessionId: "0195a3f1-native-sess",
+              },
+            },
+            contract_version: 1,
+            started_at: now,
+          },
+          handoff: "# 交接说明",
+          receipt: "## 改动说明\n完成 Session 概览展示。\n",
+          gate: null,
+          events: [
+            {
+              kind: "session_bound",
+              at: now,
+              providerSessionId: "0195a3f1-native-sess",
+            },
+            {
+              kind: "tool",
+              at: now,
+              name: "shell",
+              target: "pnpm test",
+            },
+          ],
+          eventsCount: 2,
+          startedAt: now,
+          endedAt: "2026-11-22T10:02:00.000Z",
+          session: {
+            backendId: "paseo",
+            sessionId: "paseo-uuid-1",
+            providerSessionId: "0195a3f1-native-sess",
+            providerSessionPath: null,
+            displaySessionId: "0195a3f1-nat",
+            cwd: "/repos/kiln/.worktrees/t-s4-ui",
+            tuiSupported: true,
+            tuiCommandPreview: "codex resume 0195a3f1-native-sess",
+            tuiUnavailableReason: null,
+          },
+          ioSummary: {
+            inputTitle: "核查 Session 总览并跳转原生 TUI",
+            inputRef: "brief:v1",
+            outputVerdict: "通过",
+            outputSummary: "完成 Session 概览展示。",
+            changedPaths: ["apps/web/src/DetailView.tsx", "packages/kernel/src/tui.ts"],
+            gatePassed: true,
+            totalTokens: 150,
+            costUsd: 0.012,
+          },
+        },
+      ],
+      usageTurns: [],
+      usage: {
+        inputTokens: 100,
+        cachedInputTokens: 20,
+        outputTokens: 50,
+        totalTokens: 150,
+        costUsd: 0.012,
+        byAgent: {},
+        byModel: {},
+      },
+    };
+
+    const openTuiCalls: string[] = [];
+    fetchMock.mockImplementation(async (url, init) => {
+      if (url === "/api/bootstrap") return jsonResponse(bootstrap);
+      if (url === "/api/tasks/t-s4-ui") return jsonResponse(detailBody);
+      if (url === "/api/tasks/t-s4-ui/runs/001-implement/open-tui" && init?.method === "POST") {
+        openTuiCalls.push(url);
+        return jsonResponse({
+          ok: true,
+          taskId: "t-s4-ui",
+          runDir: "001-implement",
+          agent: "codex",
+          providerSessionId: "0195a3f1-native-sess",
+          cwd: "/repos/kiln/.worktrees/t-s4-ui",
+          cwdFallback: false,
+          commandPreview: "codex resume 0195a3f1-native-sess",
+        });
+      }
+      return jsonResponse({});
+    });
+
+    window.location.hash = "#task=t-s4-ui";
+    const first = render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Agent · Session 执行总览（1）")).toBeTruthy();
+    });
+
+    const overviewSection = screen.getByLabelText("Agent Session 总览");
+    expect(within(overviewSection).getByText("完成 Session 概览展示。")).toBeTruthy();
+    expect(within(overviewSection).getByText("apps/web/src/DetailView.tsx")).toBeTruthy();
+
+    // Raw events collapsed by default
+    expect(screen.queryByText(/\[tool\] shell/)).toBeNull();
+    const toggleBtn = screen.getByRole("button", { name: /展开原始执行事件/ });
+    fireEvent.click(toggleBtn);
+    await waitFor(() => {
+      expect(screen.getByText(/\[session\] 0195a3f1-native-sess/)).toBeTruthy();
+    });
+
+    // Clicking Agent + Session opens native TUI locally
+    const tuiBtn = within(overviewSection).getByRole("button", {
+      name: /codex.*#0195a3f1-nat/i,
+    });
+    expect((tuiBtn as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(tuiBtn);
+    await waitFor(() => {
+      expect(openTuiCalls).toEqual(["/api/tasks/t-s4-ui/runs/001-implement/open-tui"]);
+    });
+
+    first.unmount();
+
+    // Remote mode disables native TUI button
+    fetchMock.mockImplementation(async (url) => {
+      if (url === "/api/auth/status") {
+        return jsonResponse({
+          ok: true,
+          mode: "remote",
+          authenticated: true,
+          device: {
+            id: "dev-test",
+            label: "iPhone",
+            created_at: now,
+            last_used_at: now,
+          },
+        });
+      }
+      if (url === "/api/bootstrap") return jsonResponse(bootstrap);
+      if (url === "/api/tasks/t-s4-ui") return jsonResponse(detailBody);
+      return jsonResponse({});
+    });
+    window.location.hash = "#task=t-s4-ui";
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("Agent · Session 执行总览（1）")).toBeTruthy();
+    });
+    const remoteOverview = screen.getByLabelText("Agent Session 总览");
+    const remoteTuiBtn = within(remoteOverview).getByRole("button", {
+      name: /codex.*#0195a3f1-nat/i,
+    });
+    expect((remoteTuiBtn as HTMLButtonElement).disabled).toBe(true);
+  });
 });

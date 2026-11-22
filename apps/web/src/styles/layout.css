@@ -2169,6 +2169,163 @@ table.ut .live { color: var(--live-fg); }
   accent-color: var(--ask);
 }
 
+/* ---------- Agent · Session I/O 总览与原生 TUI ---------- */
+.session-overview {
+  margin-bottom: 24px;
+}
+.session-overview-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.session-overview-head h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--t1);
+}
+.session-overview-head .muted {
+  font-size: 12px;
+}
+.session-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.session-card {
+  border: 1px solid var(--line);
+  background: var(--rail);
+  border-radius: 10px;
+  padding: 12px 14px;
+  transition: border-color 0.12s var(--ease), background-color 0.12s var(--ease);
+}
+.session-card.is-sel {
+  border-color: var(--line-2);
+  background: var(--surface);
+}
+.session-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.session-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+.session-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--t3);
+  flex-wrap: wrap;
+}
+.session-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+  background: var(--surface);
+  color: var(--t1);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.12s var(--ease), background-color 0.12s var(--ease);
+}
+.session-trigger:hover:not(:disabled) {
+  border-color: var(--ask);
+  background: var(--raised);
+}
+.session-trigger:disabled {
+  opacity: 0.58;
+  cursor: not-allowed;
+}
+.session-open-hint {
+  color: var(--ask);
+  font-size: 11px;
+  font-weight: 500;
+}
+.session-io {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  font-size: 12.5px;
+}
+.session-io-row {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  gap: 8px;
+  align-items: baseline;
+}
+.session-io-label {
+  font-size: 11.5px;
+  color: var(--t3);
+  font-weight: 500;
+}
+.session-io-val {
+  color: var(--t2);
+  line-height: 1.5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  word-break: break-word;
+}
+.session-paths {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.session-path-chip {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--t2);
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 5px;
+}
+.session-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.session-cwd {
+  font-size: 11.5px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.events-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.events-collapsed-hint {
+  margin: 0;
+  font-size: 12.5px;
+}
+
 /* ---------- 移动端 ---------- */
 .menu-btn, .tabbar, .nav-mask { display: none; }
 .menu-btn { width: 36px; height: 36px; margin-left: -8px; border: none; background: transparent; color: var(--t2); border-radius: 6px; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
@@ -2245,6 +2402,11 @@ table.ut .live { color: var(--live-fg); }
   .decision-actions { flex-wrap: wrap; }
   .staged-diffs { padding: 12px; margin-bottom: 18px; }
   .staged-diff-pre { font-size: 11.5px; padding: 8px 10px; }
+  .session-overview-head { flex-direction: column; align-items: flex-start; gap: 4px; }
+  .session-card { padding: 10px 12px; }
+  .session-card-head { flex-direction: column; gap: 6px; }
+  .session-io-row { grid-template-columns: 1fr; gap: 2px; }
+  .events-toggle-row { flex-direction: column; align-items: flex-start; }
 
   /* 对话：对话在上，草稿折叠为底部抽屉条，防止软键盘挤压消息区 */
   .converse, .converse.is-panel-collapsed { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
