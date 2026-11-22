@@ -4704,4 +4704,117 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     });
     expect((remoteTuiBtn as HTMLButtonElement).disabled).toBe(true);
   });
+
+  it("strips custom hostTwoPhase workflow flags when switching back to scratch_dir before commit", async () => {
+    let commitPayload: Record<string, unknown> | null = null;
+    const bootstrap = makeBaseBootstrap();
+
+    fetchMock.mockImplementation(async (url, init) => {
+      if (url === "/api/bootstrap") return jsonResponse(bootstrap);
+      if (url === "/api/drafts" && init?.method === "POST") {
+        const body = JSON.parse(String(init.body ?? "{}")) as Record<string, unknown>;
+        return jsonResponse(
+          {
+            ok: true,
+            draft: {
+              schema_version: 1,
+              id: body.id ?? "d-wf-scratch",
+              title: "",
+              space: body.space ?? "local",
+              priority: "P2",
+              track: "L1",
+              workspace_mode: body.workspace_mode ?? "host_scoped",
+              depends_on: [],
+              contract: {},
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            },
+            messages: [],
+          },
+          201,
+        );
+      }
+      if (typeof url === "string" && url.endsWith("/commit") && init?.method === "POST") {
+        commitPayload = JSON.parse(String(init.body ?? "{}")) as Record<string, unknown>;
+        return jsonResponse({ ok: true, card: { id: "t-wf-scratch", ...commitPayload }, state: {} }, 201);
+      }
+      return jsonResponse({});
+    });
+
+    window.location.hash = "#view=intake";
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: /立项设置/ })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("tab", { name: /立项设置/ }));
+
+    // 1. Choose 本机操作 (host_scoped + host_op), customize via L2 + 顾问方案 (preset becomes "custom" with hostTwoPhase=true)
+    const presetGroup = screen.getByRole("radiogroup", { name: "流程预设" });
+    fireEvent.click(within(presetGroup).getByRole("radio", { name: "本机操作" }));
+    fireEvent.click(screen.getByRole("radio", { name: "L2 标准交付" }));
+    const togglesGroup = screen.getByRole("group", { name: "流程步骤开关" });
+    fireEvent.click(within(togglesGroup).getByRole("button", { name: "顾问方案" }));
+    expect(screen.getByLabelText("流程预览").textContent ?? "").toContain("验真·仅暂存");
+
+    // 2. Switch workspace back to 临时沙盒 (scratch_dir) -> MUST strip two-phase flags while retaining plan & review
+    const wsGroup = screen.getByRole("radiogroup", { name: "本机工作区模式" });
+    fireEvent.click(within(wsGroup).getByRole("radio", { name: "临时沙盒" }));
+    const previewScratch = screen.getByLabelText("流程预览").textContent ?? "";
+    expect(previewScratch).not.toContain("仅暂存");
+    expect(previewScratch).not.toContain("落盘+终验");
+    expect(previewScratch).toContain("方案(顾问)");
+    expect(previewScratch).toContain("审查");
+
+    fireEvent.input(screen.getByLabelText("标题"), {
+      target: { value: "定制流程切回沙盒" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "手动编辑" }));
+    fireEvent.input(screen.getByLabelText("交付终点"), {
+      target: { value: "沙盒脚本完成" },
+    });
+    fireEvent.input(screen.getByLabelText("验收命令"), {
+      target: { value: "echo ok" },
+    });
+    fireEvent.input(screen.getByLabelText("可改范围"), {
+      target: { value: "scripts/**" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始推进" }));
+
+    await waitFor(() => {
+      expect(commitPayload).not.toBeNull();
+    });
+    expect(commitPayload!.workspace_mode).toBe("scratch_dir");
+    const wf = commitPayload!.workflow as {
+      preset: string;
+      steps: Array<{
+        kind: string;
+        stage?: string;
+        mode?: string;
+        check?: string;
+        apply_staged?: boolean;
+        final_accept_gate?: boolean;
+        steps?: Array<{
+          kind: string;
+          stage?: string;
+          mode?: string;
+          check?: string;
+          apply_staged?: boolean;
+          final_accept_gate?: boolean;
+        }>;
+      }>;
+    };
+    expect(wf.preset).toBe("custom");
+    const flatSteps = wf.steps.flatMap((s) => (s.kind === "loop" ? (s.steps ?? []) : [s]));
+    expect(
+      flatSteps.some(
+        (s) =>
+          s.mode === "dry_run_only" ||
+          s.check === "staged_only" ||
+          s.apply_staged === true ||
+          s.final_accept_gate === true,
+      ),
+    ).toBe(false);
+    expect(flatSteps.some((s) => s.kind === "agent" && s.stage === "plan")).toBe(true);
+    expect(flatSteps.some((s) => s.kind === "agent" && s.stage === "review")).toBe(true);
+  });
 });

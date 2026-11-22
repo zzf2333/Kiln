@@ -604,6 +604,29 @@ function normalizeLedgers(
   return result;
 }
 
+function stripHostTwoPhaseWorkflow(
+  workflow: WorkflowBlueprint,
+  hasDeliverCmd: boolean,
+): WorkflowBlueprint {
+  const toggles = extractWorkflowToggles(workflow);
+  if (!toggles.hostTwoPhase) {
+    return workflow;
+  }
+  const nextPreset: WorkflowPreset =
+    toggles.preset === "host_op"
+      ? toggles.includeReview
+        ? "standard_dev"
+        : "quick"
+      : (toggles.preset ?? workflow.preset);
+  return buildCustomWorkflow({
+    ...toggles,
+    preset: nextPreset,
+    hostTwoPhase: false,
+    deliverApproval: hasDeliverCmd ? toggles.deliverApproval : false,
+    hasDeliverCmd,
+  });
+}
+
 export class KilnWebStore {
   private state: KilnStoreState;
   private readonly listeners = new Set<() => void>();
@@ -1643,12 +1666,7 @@ export class KilnWebStore {
       const nextTrack = cur.track || "L2";
       const currentWorkflow = resolveFormEffectiveWorkflow(cur);
       const toggles = extractWorkflowToggles(currentWorkflow);
-      const nextWorkflow = toggles.hostTwoPhase
-        ? buildWorkflowPreset(toggles.includeReview ? "standard_dev" : "quick", {
-            includePlan: toggles.includePlan,
-            hasDeliverCmd,
-          })
-        : currentWorkflow;
+      const nextWorkflow = stripHostTwoPhaseWorkflow(currentWorkflow, hasDeliverCmd);
       const resolvedTrack = toggles.hostTwoPhase
         ? toggles.includeReview
           ? "L2"
@@ -1677,14 +1695,17 @@ export class KilnWebStore {
     const nextWs =
       cur.workspace_mode === "host_scoped" ? "host_scoped" : "scratch_dir";
     const hasDeliverCmd = cur.deliver_cmd.trim().length > 0;
+    const currentWorkflow = resolveFormEffectiveWorkflow(cur);
+    const curToggles = extractWorkflowToggles(currentWorkflow);
     const nextWorkflow =
       nextWs === "host_scoped"
-        ? buildWorkflowPreset("host_op", { hasDeliverCmd })
-        : cur.workflow && cur.workflow.preset !== "host_op"
-          ? cur.workflow
-          : buildWorkflowPreset(cur.track === "L2" ? "standard_dev" : "quick", {
+        ? curToggles.hostTwoPhase
+          ? currentWorkflow
+          : buildWorkflowPreset("host_op", {
+              includePlan: curToggles.includePlan,
               hasDeliverCmd,
-            });
+            })
+        : stripHostTwoPhaseWorkflow(currentWorkflow, hasDeliverCmd);
     const nextForm: IntakeFormState = {
       ...cur,
       mode: "local",
@@ -1750,16 +1771,21 @@ export class KilnWebStore {
     const toggles = extractWorkflowToggles(currentWorkflow);
     const nextWorkflow =
       ws === "host_scoped"
-        ? buildWorkflowPreset("host_op", {
-            includePlan: toggles.includePlan,
-            hasDeliverCmd,
-          })
-        : currentWorkflow.preset === "host_op"
-          ? buildWorkflowPreset("quick", {
-              includePlan: toggles.includePlan,
-              hasDeliverCmd,
-            })
-          : currentWorkflow;
+        ? toggles.hostTwoPhase
+          ? currentWorkflow
+          : toggles.includeReview
+            ? buildCustomWorkflow({
+                ...toggles,
+                preset: "custom",
+                hostTwoPhase: true,
+                deliverApproval: true,
+                hasDeliverCmd,
+              })
+            : buildWorkflowPreset("host_op", {
+                includePlan: toggles.includePlan,
+                hasDeliverCmd,
+              })
+        : stripHostTwoPhaseWorkflow(currentWorkflow, hasDeliverCmd);
     const nextForm: IntakeFormState = {
       ...cur,
       workspace_mode: ws,
@@ -1842,12 +1868,10 @@ export class KilnWebStore {
       cur.accept_cmd.trim() === "" || cur.accept_cmd === prevDefault;
     const currentWorkflow = resolveFormEffectiveWorkflow(cur);
     const toggles = extractWorkflowToggles(currentWorkflow);
-    const nextWorkflow = toggles.hostTwoPhase
-      ? buildWorkflowPreset(toggles.includeReview ? "standard_dev" : "quick", {
-          includePlan: toggles.includePlan,
-          hasDeliverCmd: cur.deliver_cmd.trim().length > 0,
-        })
-      : cur.workflow;
+    const nextWorkflow = stripHostTwoPhaseWorkflow(
+      currentWorkflow,
+      cur.deliver_cmd.trim().length > 0,
+    );
     const nextForm: IntakeFormState = {
       ...cur,
       mode: "project",

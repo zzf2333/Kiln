@@ -3651,12 +3651,34 @@ export class KilnOrchestrator {
     }
 
     const receiptLoad = this.readReceiptAndCommitLease(taskId, runDirName, runMeta);
-    if (!receiptLoad.ok) {
+    if (!receiptLoad.ok && receiptLoad.reason === "lease_expired") {
       this.advisorPreRunDirtySignatures.delete(runMeta.run_id);
-      if (receiptLoad.reason === "lease_expired") {
-        this.syncCaffeinate();
-        return;
-      }
+      this.syncCaffeinate();
+      return;
+    }
+
+    const card = this.store.readTaskCard(taskId);
+    const workspaceMutated = await this.detectAdvisorWorkspaceMutation(
+      card,
+      runMeta.run_id,
+    );
+    const parsed = receiptLoad.ok
+      ? parseAndValidateReceipt("advisor", receiptLoad.rawReceipt)
+      : null;
+
+    if (workspaceMutated) {
+      this.escalateAdvisorWorkspaceMutation({
+        taskId,
+        stage: "plan",
+        card,
+        runMeta,
+        guard,
+        approach: parsed?.ok ? parsed.frontmatter.chosen_approach : undefined,
+      });
+      return;
+    }
+
+    if (!receiptLoad.ok) {
       await this.applyStageFailure(
         taskId,
         "plan",
@@ -3670,20 +3692,14 @@ export class KilnOrchestrator {
       return;
     }
 
-    const card = this.store.readTaskCard(taskId);
-    const workspaceMutated = await this.detectAdvisorWorkspaceMutation(
-      card,
-      runMeta.run_id,
-    );
-    const parsed = parseAndValidateReceipt("advisor", receiptLoad.rawReceipt);
-    if (!parsed.ok) {
+    if (!parsed || !parsed.ok) {
       await this.applyStageFailure(
         taskId,
         "plan",
         runMeta,
         {
           kind: "schema_invalid",
-          errors: parsed.errors,
+          errors: parsed ? parsed.errors : ["Missing advisor PLAN RECEIPT.md"],
         },
         guard,
       );
@@ -3801,6 +3817,80 @@ export class KilnOrchestrator {
     this.transitionTaskToWaiting(taskId, pending, guard);
   }
 
+  private escalateAdvisorWorkspaceMutation(input: {
+    taskId: string;
+    stage: "plan" | "advise";
+    card: TaskCard;
+    runMeta: RunMeta;
+    guard: ExpectedRunGuard;
+    advisorReq?: AdvisorRequest | null;
+    approach?: string;
+    safeMutationTarget?: "implement" | "review";
+  }): void {
+    const approachSuffix = input.approach ? `\n- 顾问建议: ${input.approach}` : "";
+    const contextSuffix = input.advisorReq
+      ? `\n- 原触发问题: ${input.advisorReq.question}`
+      : "";
+    const options =
+      input.stage === "plan"
+        ? [
+            {
+              id: "opt-retry-plan",
+              label: "重新生成方案（请先核查工作区改动并保持边界）",
+              action: "resume" as const,
+              target_stage: "plan" as const,
+              recommended: true,
+            },
+            {
+              id: "opt-resume-implement",
+              label: "忽略越权部分，转入实施阶段核查并重跑验证",
+              action: "resume" as const,
+              target_stage: "implement" as const,
+              recommended: false,
+            },
+            {
+              id: "opt-cancel",
+              label: "取消任务",
+              action: "cancel" as const,
+              recommended: false,
+            },
+          ]
+        : [
+            {
+              id: "opt-resume-implement",
+              label:
+                (input.safeMutationTarget ?? "implement") === "implement"
+                  ? "退回实施阶段核查并重跑验证"
+                  : "退回流程核查工作区后继续",
+              action: "resume" as const,
+              target_stage: input.safeMutationTarget ?? "implement",
+              recommended: true,
+            },
+            {
+              id: "opt-cancel",
+              label: "取消任务",
+              action: "cancel" as const,
+              recommended: false,
+            },
+          ];
+
+    const pending = PendingDecisionSchema.parse({
+      id: `dec-${randomUUID().slice(0, 8)}`,
+      task_id: input.taskId,
+      run_id: input.runMeta.run_id,
+      contract_version: input.card.contract_version,
+      reason: "advisor_workspace_mutation",
+      category: "advisor_guardrail_escalation",
+      question:
+        input.stage === "plan"
+          ? `技术顾问在方案阶段触发防越权护栏：顾问仅限只读分析与方案裁决，禁止直接修改任务工作区文件（已拦截）。${approachSuffix}`
+          : `技术顾问在只读决策阶段触发防越权护栏：顾问仅限只读分析与方案裁决，禁止直接修改或提交任务工作区文件（已拦截，请先核查或清理工作区改动）。${approachSuffix}${contextSuffix}`,
+      options,
+      created_at: new Date().toISOString(),
+    });
+    this.transitionTaskToWaiting(input.taskId, pending, input.guard);
+  }
+
   private async finalizeAdvisorRun(
     taskId: string,
     runDirName: string,
@@ -3844,6 +3934,24 @@ export class KilnOrchestrator {
         parsed.frontmatter.run_id === runMeta.run_id &&
         parsed.frontmatter.contract_version === card.contract_version,
     );
+
+    if (workspaceMutated) {
+      this.clearAdvisorRequest(taskId);
+      const safeMutationTarget: "implement" | "review" = pipelineStages.includes("implement")
+        ? "implement"
+        : resumeTargetStage;
+      this.escalateAdvisorWorkspaceMutation({
+        taskId,
+        stage: "advise",
+        card,
+        runMeta,
+        guard,
+        advisorReq,
+        approach: parsed?.ok ? parsed.frontmatter.chosen_approach : undefined,
+        safeMutationTarget,
+      });
+      return;
+    }
 
     if (versionMatches && parsed?.ok && parsed.frontmatter.outcome === "resolved") {
       const authGuard = evaluateAdvisorAuthorityGuard(parsed.frontmatter, {

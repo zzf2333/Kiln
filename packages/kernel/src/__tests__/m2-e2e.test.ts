@@ -6358,4 +6358,263 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     expect(advisorCommittedWt).toBeTruthy();
     expect(server.pendingDecisions.get("t-r1-githead")?.reason).toBe("advisor_workspace_mutation");
   }, 25_000);
+
+  it("Round 2 Review Regressions: detects advisor workspace mutation on review-triggered need_decision and missing receipt across advise/plan", async () => {
+    const kilnHome = makeTempDir("kiln-m2-r2-fixes-");
+    const { repoPath, baseCommit } = initGitRepo("r2fix");
+    const fakeBackend = new FakeBackend();
+
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: true,
+      tokenSecret: "m2-r2-review-fixes-secret-01234567",
+      approvalHandler: async (req, ctx) => {
+        const token = server.issueRunToken({
+          taskId: ctx.taskId,
+          runId: ctx.runId,
+          role: ctx.role,
+          contractVersion: ctx.card.contract_version,
+        });
+        const wtPath = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
+
+        if (req.action === "r2_worker_implement_ok") {
+          fs.writeFileSync(path.join(wtPath, "src", "app.ts"), "export const v = 920;\n");
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeWorkerReceiptMarkdown({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                input_ref: baseCommit,
+                output_ref: "src/app.ts",
+                changed_paths: ["src/app.ts"],
+              }),
+            }),
+          });
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "r2_reviewer_ask_tech") {
+          const askRes = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_ask_decision",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              category: "technical_ambiguity",
+              reason: "review_tradeoff",
+              question: "Check advisor mutation handling when triggered from review",
+              options: [{ id: "opt-1", label: "Proceed", action: "resume", recommended: true }],
+            }),
+          });
+          expect(askRes.status).toBe(200);
+          return;
+        }
+
+        if (req.action === "r2_advisor_mutate_need_decision") {
+          fs.writeFileSync(path.join(wtPath, "src", "app.ts"), "export const v = 999;\n");
+          await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: serializeFrontmatterMarkdown(
+                {
+                  run_id: ctx.runId,
+                  contract_version: ctx.card.contract_version,
+                  outcome: "need_decision",
+                  chosen_approach: "Mutated workspace while asking human",
+                },
+                "## 技术取舍\n尝试修改文件并请求确认\n\n## 授权裁决\n待确认\n",
+              ),
+            }),
+          });
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "r2_worker_ask_tech") {
+          const askRes = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_ask_decision",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              category: "technical_ambiguity",
+              reason: "worker_tradeoff",
+              question: "Check advisor mutation with missing receipt",
+              options: [{ id: "opt-1", label: "Proceed", action: "resume", recommended: true }],
+            }),
+          });
+          expect(askRes.status).toBe(200);
+          return;
+        }
+
+        if (req.action === "r2_advisor_mutate_no_receipt") {
+          fs.writeFileSync(path.join(wtPath, "src", "app.ts"), "export const v = 998;\n");
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        await ctx.backend.answer(req.id, true);
+      },
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "r2proj",
+      name: "R2 Proj",
+      repo_path: repoPath,
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    });
+    const baseRoles = defaultRoles();
+    server.store.writeConfig("roles", {
+      ...baseRoles,
+      roles: {
+        ...baseRoles.roles,
+        advisor: { agent: "codex", model: "gpt-6-luna", allow_full_access_fallback: false },
+      },
+    });
+    server.store.writeConfig("limits", defaultLimits({ max_concurrent_slots: 1 }));
+    server.store.writeConfig("pricing", defaultPricing());
+    await server.start();
+
+    // Case A: review-triggered advisor mutates worktree AND submits need_decision -> advisor_workspace_mutation & safe return to implement (NOT review)
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "r2_worker_implement_ok", detail: "impl ok" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-r2-rev-mut", role: "worker" },
+    );
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "r2_reviewer_ask_tech", detail: "rev ask" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-r2-rev-mut", role: "reviewer" },
+    );
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "r2_advisor_mutate_need_decision", detail: "adv mutate + need_decision" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-r2-rev-mut", role: "advisor" },
+    );
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-r2-rev-mut",
+        title: "Round 2 Case A review advisor need_decision mutation",
+        space: "r2proj",
+        priority: "P1",
+        track: "L2",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        workflow: buildWorkflowPreset("standard_dev"),
+        contract_version: 1,
+        contract: {
+          goal: "Detect workspace mutation even when advisor submits need_decision from review",
+          end: "Done",
+          accept_cmd: `node -e "process.exit(0)"`,
+          accept_files_hash: "sha256:r2a",
+          scope: ["src/**"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 1_000_000 },
+        created_at: "2026-11-22T11:00:00.000Z",
+        updated_at: "2026-11-22T11:00:00.000Z",
+      },
+      "# Case A",
+    );
+    await server.orchestrator.wake();
+    await waitUntil(() => server.store.getTaskIndex("t-r2-rev-mut")?.status === "waiting", "t-r2-rev-mut waiting");
+    const pendingA = server.pendingDecisions.get("t-r2-rev-mut");
+    expect(pendingA?.reason).toBe("advisor_workspace_mutation");
+    expect(pendingA?.category).toBe("advisor_guardrail_escalation");
+    expect(pendingA?.options.find((o) => o.recommended)?.target_stage).toBe("implement");
+    server.stateMachine.cancelTask("t-r2-rev-mut", "cleanup", "2026-11-22T11:01:00.000Z");
+
+    // Case B: advise advisor mutates worktree AND exits without RECEIPT.md -> advisor_workspace_mutation
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "r2_worker_ask_tech", detail: "worker ask" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-r2-adv-missing", role: "worker" },
+    );
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "r2_advisor_mutate_no_receipt", detail: "adv mutate missing receipt" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-r2-adv-missing", role: "advisor" },
+    );
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-r2-adv-missing",
+        title: "Round 2 Case B advise missing receipt mutation",
+        space: "r2proj",
+        priority: "P1",
+        track: "L1",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        workflow: buildWorkflowPreset("quick"),
+        contract_version: 1,
+        contract: {
+          goal: "Detect workspace mutation when advise exits without receipt",
+          end: "Done",
+          accept_cmd: `node -e "process.exit(0)"`,
+          accept_files_hash: "sha256:r2b",
+          scope: ["src/**"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 1_000_000 },
+        created_at: "2026-11-22T11:02:00.000Z",
+        updated_at: "2026-11-22T11:02:00.000Z",
+      },
+      "# Case B",
+    );
+    await server.orchestrator.wake();
+    await waitUntil(() => server.store.getTaskIndex("t-r2-adv-missing")?.status === "waiting", "t-r2-adv-missing waiting");
+    expect(server.pendingDecisions.get("t-r2-adv-missing")?.reason).toBe("advisor_workspace_mutation");
+    server.stateMachine.cancelTask("t-r2-adv-missing", "cleanup", "2026-11-22T11:03:00.000Z");
+
+    // Case C: plan advisor mutates worktree AND exits without RECEIPT.md -> advisor_workspace_mutation (no retry bypass)
+    fakeBackend.enqueueScript(
+      [{ kind: "approval", action: "r2_advisor_mutate_no_receipt", detail: "plan mutate missing receipt" }, { kind: "exit", reason: "completed" }],
+      { taskId: "t-r2-plan-missing", role: "advisor" },
+    );
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-r2-plan-missing",
+        title: "Round 2 Case C plan missing receipt mutation",
+        space: "r2proj",
+        priority: "P1",
+        track: "L2",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        workflow: buildWorkflowPreset("full_delivery"),
+        contract_version: 1,
+        contract: {
+          goal: "Detect workspace mutation when plan exits without receipt",
+          end: "Done",
+          accept_cmd: `node -e "process.exit(0)"`,
+          accept_files_hash: "sha256:r2c",
+          scope: ["src/**"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 1_000_000 },
+        created_at: "2026-11-22T11:04:00.000Z",
+        updated_at: "2026-11-22T11:04:00.000Z",
+      },
+      "# Case C",
+    );
+    await server.orchestrator.wake();
+    await waitUntil(() => server.store.getTaskIndex("t-r2-plan-missing")?.status === "waiting", "t-r2-plan-missing waiting");
+    expect(server.pendingDecisions.get("t-r2-plan-missing")?.reason).toBe("advisor_workspace_mutation");
+  }, 25_000);
 });
