@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { PrioritySchema, StageIdSchema, TaskStatusSchema } from "./card.js";
+import { COST_SOURCES, SPACE_SCRIPT_KEYS } from "./constants.js";
+import type { OrthogonalUsageCounters } from "./pricing.js";
 
 export const BackendCapabilitiesSchema = z.object({
   interactiveChat: z.boolean(),
@@ -7,8 +9,15 @@ export const BackendCapabilitiesSchema = z.object({
   mcpInjection: z.boolean(),
   usageCacheBreakdown: z.boolean(),
   interrupt: z.boolean(),
+  imageInput: z.boolean().optional(),
+  cacheWriteTelemetry: z.boolean().optional(),
+  contextWindowTelemetry: z.boolean().optional(),
+  nativeQuotaWindow: z.boolean().optional(),
+  readOnlySandbox: z.boolean().optional(),
 });
 export type BackendCapabilities = z.infer<typeof BackendCapabilitiesSchema>;
+
+export const CostSourceSchema = z.enum(COST_SOURCES);
 
 const RunUsageObjectSchema = z.object({
   turnId: z.string().min(1),
@@ -17,6 +26,13 @@ const RunUsageObjectSchema = z.object({
   inputTokens: z.number().int().nonnegative(),
   cachedInputTokens: z.number().int().nonnegative().default(0),
   outputTokens: z.number().int().nonnegative(),
+  uncachedInputTokens: z.number().int().nonnegative().optional(),
+  cacheReadTokens: z.number().int().nonnegative().optional(),
+  cacheWriteTokens: z.number().int().nonnegative().optional(),
+  reasoningTokens: z.number().int().nonnegative().optional(),
+  reasoningIncludedInOutput: z.boolean().optional(),
+  providerCostUsd: z.number().finite().nonnegative().optional(),
+  costSource: CostSourceSchema.optional(),
 });
 
 export const RunUsageSchema = RunUsageObjectSchema.superRefine((u, ctx) => {
@@ -29,6 +45,21 @@ export const RunUsageSchema = RunUsageObjectSchema.superRefine((u, ctx) => {
   }
 });
 export type RunUsage = z.infer<typeof RunUsageSchema>;
+
+/**
+ * Projects a V1 or V2 `RunUsage` record into orthogonal token buckets for 5-field billing.
+ */
+export function toOrthogonalUsage(usage: RunUsage): OrthogonalUsageCounters {
+  return {
+    uncachedInputTokens:
+      usage.uncachedInputTokens ?? Math.max(0, usage.inputTokens - usage.cachedInputTokens),
+    cacheReadTokens: usage.cacheReadTokens ?? usage.cachedInputTokens,
+    cacheWriteTokens: usage.cacheWriteTokens ?? 0,
+    outputTokens: usage.outputTokens,
+    ...(usage.reasoningTokens !== undefined ? { reasoningTokens: usage.reasoningTokens } : {}),
+    reasoningIncludedInOutput: usage.reasoningIncludedInOutput ?? true,
+  };
+}
 
 const RunEventBaseUnionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("thinking"), at: z.string().min(1) }),
@@ -61,6 +92,21 @@ const RunEventBaseUnionSchema = z.discriminatedUnion("kind", [
     at: z.string().min(1),
     providerSessionId: z.string().min(1),
     providerSessionPath: z.string().min(1).optional(),
+  }),
+  z.object({
+    kind: z.literal("context_window"),
+    at: z.string().min(1),
+    usedTokens: z.number().int().nonnegative(),
+    contextWindowTokens: z.number().int().positive(),
+    percent: z.number().finite().min(0).max(100).optional(),
+  }),
+  z.object({
+    kind: z.literal("rate_limited"),
+    at: z.string().min(1),
+    provider: z.string().min(1),
+    retryAfterSec: z.number().finite().nonnegative().optional(),
+    until: z.string().min(1).optional(),
+    detail: z.string().optional(),
   }),
   RunUsageObjectSchema.extend({
     kind: z.literal("usage"),
@@ -129,6 +175,28 @@ export const SseEventSchema = z.discriminatedUnion("type", [
     kind: z.enum(["thinking", "tool", "draft_updated"]),
     text: z.string().min(1),
     toolName: z.string().min(1).optional(),
+    at: z.string().min(1),
+  }),
+  z.object({
+    seq: z.number().int().positive(),
+    type: z.literal("script.output"),
+    spaceId: z.string().min(1),
+    taskId: z.string().min(1).optional(),
+    scriptRunId: z.string().min(1),
+    scriptKey: z.enum(SPACE_SCRIPT_KEYS),
+    stream: z.enum(["stdout", "stderr", "system"]),
+    chunk: z.string(),
+    done: z.boolean().optional(),
+    exitCode: z.number().int().nullable().optional(),
+    at: z.string().min(1),
+  }),
+  z.object({
+    seq: z.number().int().positive(),
+    type: z.literal("provider.status"),
+    providerId: z.string().min(1),
+    status: z.enum(["ready", "cooldown", "unavailable", "auth_required"]),
+    cooldownUntil: z.string().min(1).optional(),
+    detail: z.string().optional(),
     at: z.string().min(1),
   }),
 ]);

@@ -1,12 +1,14 @@
 import { z } from "zod";
-import { DecisionActionSchema, PrioritySchema } from "./card.js";
+import { DecisionActionSchema, PrioritySchema, SpaceScriptsSchema } from "./card.js";
 import {
   PricingConfigSchema,
   PricingSyncSourceSchema,
+  ProviderAdapterKindSchema,
   PublicPairedDeviceSchema,
   RemoteNotificationChannelSchema,
   RoleIdSchema,
 } from "./config.js";
+import { SPACE_SCRIPT_KEYS } from "./constants.js";
 import { McpToolNameSchema } from "./mcp.js";
 
 export const DecideRequestSchema = z.object({
@@ -92,6 +94,8 @@ export const UpsertSpaceRequestSchema = z.object({
   clone_deps: z.array(z.string().trim().min(1)).default([]),
   default_accept_cmd: z.string().trim().min(1).optional(),
   freeze_patterns: z.array(z.string().trim().min(1)).default([]),
+  pinned: z.boolean().optional(),
+  scripts: SpaceScriptsSchema.optional(),
 });
 export type UpsertSpaceRequest = z.infer<typeof UpsertSpaceRequestSchema>;
 
@@ -245,3 +249,64 @@ export const OpenRunTuiResponseSchema = z.object({
   commandPreview: z.string().min(1),
 });
 export type OpenRunTuiResponse = z.infer<typeof OpenRunTuiResponseSchema>;
+
+export const ProviderNativeQuotaSchema = z.object({
+  source: z.string().min(1),
+  used_percent: z.number().finite().min(0).max(100),
+  window_duration_mins: z.number().int().positive().nullable().optional(),
+  resets_at: z.string().min(1).nullable().optional(),
+  plan_type: z.string().min(1).nullable().optional(),
+});
+export type ProviderNativeQuota = z.infer<typeof ProviderNativeQuotaSchema>;
+
+export const ProviderRuntimeStatusSchema = z.object({
+  provider_id: z.string().min(1),
+  label: z.string().min(1),
+  adapter: ProviderAdapterKindSchema,
+  status: z.enum(["ready", "cooldown", "unavailable", "auth_required"]),
+  version: z.string().min(1).nullable().optional(),
+  cooldown_until: z.string().min(1).nullable().optional(),
+  detail: z.string().optional(),
+  native_quota: ProviderNativeQuotaSchema.nullable().optional(),
+  local_window_cost_usd: z.number().finite().nonnegative().optional(),
+  local_window_tokens: z.number().int().nonnegative().optional(),
+});
+export type ProviderRuntimeStatus = z.infer<typeof ProviderRuntimeStatusSchema>;
+
+export const RunSpaceScriptRequestSchema = z.object({
+  script: z.enum(SPACE_SCRIPT_KEYS),
+  taskId: z.string().min(1).optional(),
+});
+export type RunSpaceScriptRequest = z.infer<typeof RunSpaceScriptRequestSchema>;
+
+export const RunSpaceScriptResponseSchema = z.object({
+  ok: z.literal(true),
+  scriptRunId: z.string().min(1),
+  spaceId: z.string().min(1),
+  script: z.enum(SPACE_SCRIPT_KEYS),
+  command: z.string().min(1),
+  cwd: z.string().min(1),
+});
+export type RunSpaceScriptResponse = z.infer<typeof RunSpaceScriptResponseSchema>;
+
+export const RollbackCheckpointRequestSchema = z.object({
+  checkpoint_ref: z
+    .string()
+    .min(1)
+    .refine((r) => r.startsWith("refs/kiln/checkpoints/"), {
+      message: 'checkpoint_ref must start with "refs/kiln/checkpoints/"',
+    }),
+  confirm: z.literal(true),
+});
+export type RollbackCheckpointRequest = z.infer<typeof RollbackCheckpointRequestSchema>;
+
+export const CommitPrActionRequestSchema = z.object({
+  action: z.enum(["commit", "push", "open_pr"]),
+  commit_message: z.string().trim().min(1).optional(),
+  branch: z.string().trim().min(1).optional(),
+  base_branch: z.string().trim().min(1).optional(),
+  pr_title: z.string().trim().min(1).optional(),
+  pr_body: z.string().optional(),
+  confirm: z.literal(true),
+});
+export type CommitPrActionRequest = z.infer<typeof CommitPrActionRequestSchema>;

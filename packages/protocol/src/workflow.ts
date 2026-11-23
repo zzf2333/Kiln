@@ -23,6 +23,8 @@ export const WorkflowAgentNodeSchema = z.object({
   role: WorkflowAgentRoleSchema,
   fresh_context: z.boolean(),
   mode: z.enum(["normal", "dry_run_only"]).optional(),
+  roster_role: z.string().min(1).optional(),
+  rationale: z.string().min(1).optional(),
 });
 
 export const WorkflowGateNodeSchema = z.object({
@@ -73,6 +75,7 @@ export const WorkflowBlueprintSchema = z
     schema_version: z.literal(1),
     preset: WorkflowPresetSchema,
     steps: z.array(WorkflowStepSchema).min(1),
+    pm_rationale: z.string().min(1).optional(),
   })
   .superRefine((val, ctx) => {
     const check = validateWorkflowBlueprint(val);

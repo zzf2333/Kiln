@@ -2,9 +2,12 @@ import { z } from "zod";
 import { RoleIdSchema } from "./config.js";
 import {
   ADVISOR_ELIGIBLE_DECISION_CATEGORIES,
+  ATTACHMENT_MIME_TYPES,
   DECISION_ACTIONS,
+  MAX_ATTACHMENT_BYTES,
   PRIORITIES,
   PRIORITY_RANK,
+  SHA256_HEX_RE,
   STAGE_IDS,
   TASK_STATUSES,
   TRACKS,
@@ -12,6 +15,7 @@ import {
   WORKSPACE_MODES,
   isAdvisorEligibleDecisionCategory,
   type AdvisorEligibleDecisionCategory,
+  type AttachmentMimeType,
   type DecisionAction,
   type Priority,
   type StageId,
@@ -24,7 +28,9 @@ import { WorkflowBlueprintSchema } from "./workflow.js";
 
 export {
   ADVISOR_ELIGIBLE_DECISION_CATEGORIES,
+  ATTACHMENT_MIME_TYPES,
   DECISION_ACTIONS,
+  MAX_ATTACHMENT_BYTES,
   PRIORITIES,
   PRIORITY_RANK,
   STAGE_IDS,
@@ -34,6 +40,7 @@ export {
   WORKSPACE_MODES,
   isAdvisorEligibleDecisionCategory,
   type AdvisorEligibleDecisionCategory,
+  type AttachmentMimeType,
   type DecisionAction,
   type Priority,
   type StageId,
@@ -61,12 +68,24 @@ export const DeliverConfigSchema = z.discriminatedUnion("mode", [
 ]);
 export type DeliverConfig = z.infer<typeof DeliverConfigSchema>;
 
+export const TaskAttachmentSchema = z.object({
+  id: z.string().min(1),
+  filename: z.string().min(1),
+  mime_type: z.enum(ATTACHMENT_MIME_TYPES),
+  size_bytes: z.number().int().positive().max(MAX_ATTACHMENT_BYTES),
+  sha256: z.string().regex(SHA256_HEX_RE, "sha256 must be a 64-char lowercase hex digest"),
+  rel_path: z.string().min(1),
+  added_at: z.string().min(1),
+});
+export type TaskAttachment = z.infer<typeof TaskAttachmentSchema>;
+
 export const CardContractSchema = z.object({
   goal: z.string().min(1),
   end: z.string().min(1),
   accept_cmd: z.string().min(1),
   accept_files_hash: z.string().min(1),
   scope: z.array(z.string().min(1)),
+  non_goals: z.array(z.string().min(1)).optional(),
   deliver: DeliverConfigSchema,
   human_accept: z.boolean().default(false),
   external_actions: z.literal("ask").default("ask"),
@@ -92,6 +111,7 @@ export const TaskCardSchema = z.object({
   parent: z.string().min(1).nullable().default(null),
   depends_on: z.array(z.string().min(1)).default([]),
   workflow: WorkflowBlueprintSchema.optional(),
+  attachments: z.array(TaskAttachmentSchema).optional(),
   contract_version: z.number().int().positive(),
   contract: CardContractSchema,
   limits: CardLimitsSchema,
@@ -118,6 +138,7 @@ export const DraftCardSchema = z.object({
   depends_on: z.array(z.string().min(1)).default([]),
   open_questions: z.array(z.string().min(1)).optional(),
   workflow: WorkflowBlueprintSchema.optional(),
+  attachments: z.array(TaskAttachmentSchema).optional(),
   contract: CardContractSchema.partial().default({}),
   session_ref: SessionRefSchema.nullable().optional(),
   intake_open: z.boolean().optional(),
@@ -133,6 +154,7 @@ export const RunMetaSchema = z.object({
   stage: StageIdSchema,
   round: z.number().int().positive(),
   role: RoleIdSchema,
+  roster_role: z.string().min(1).optional(),
   contract_version: z.number().int().positive(),
   backend_id: z.string().min(1),
   agent: z.string().min(1),
@@ -140,6 +162,7 @@ export const RunMetaSchema = z.object({
   session_ref: SessionRefSchema,
   cwd: z.string().min(1).optional(),
   input_ref: z.string().min(1).optional(),
+  checkpoint_ref: z.string().min(1).optional(),
   started_at: z.string().min(1),
 });
 export type RunMeta = z.infer<typeof RunMetaSchema>;
@@ -299,6 +322,17 @@ export const GateReportSchema = z.object({
 });
 export type GateReport = z.infer<typeof GateReportSchema>;
 
+export const SpaceScriptsSchema = z
+  .object({
+    setup: z.string().trim().min(1).optional(),
+    dev: z.string().trim().min(1).optional(),
+    test: z.string().trim().min(1).optional(),
+    lint: z.string().trim().min(1).optional(),
+    deliver: z.string().trim().min(1).optional(),
+  })
+  .strict();
+export type SpaceScripts = z.infer<typeof SpaceScriptsSchema>;
+
 export const SpaceConfigSchema = z.object({
   schema_version: z.literal(1),
   id: z.string().min(1),
@@ -309,8 +343,40 @@ export const SpaceConfigSchema = z.object({
   clone_deps: z.array(z.string()).default([]),
   default_accept_cmd: z.string().min(1).optional(),
   freeze_patterns: z.array(z.string()).default([]),
+  pinned: z.boolean().optional(),
+  scripts: SpaceScriptsSchema.optional(),
 });
 export type SpaceConfig = z.infer<typeof SpaceConfigSchema>;
+
+export const CheckpointRecordSchema = z.object({
+  schema_version: z.literal(1).default(1),
+  run_id: z.string().min(1),
+  task_id: z.string().min(1),
+  stage: StageIdSchema,
+  round: z.number().int().positive(),
+  ref: z
+    .string()
+    .min(1)
+    .refine((r) => r.startsWith("refs/kiln/checkpoints/"), {
+      message: 'checkpoint ref must start with "refs/kiln/checkpoints/"',
+    }),
+  commit_sha: z.string().regex(/^[a-f0-9]{7,64}$/, "commit_sha must be a valid hex SHA"),
+  created_at: z.string().min(1),
+});
+export type CheckpointRecord = z.infer<typeof CheckpointRecordSchema>;
+
+export const RunAntiDriftSummarySchema = z.object({
+  input: z.string().min(1),
+  alignment_points: z.array(z.string().min(1)).max(5),
+  output: z.string().min(1),
+  gate_proof: z.object({
+    schema_ok: z.boolean(),
+    scope_ok: z.boolean(),
+    frozen_ok: z.boolean(),
+    accept_ok: z.boolean(),
+  }),
+});
+export type RunAntiDriftSummary = z.infer<typeof RunAntiDriftSummarySchema>;
 
 export const LedgerEntrySchema = z.object({
   id: z.string().min(1),

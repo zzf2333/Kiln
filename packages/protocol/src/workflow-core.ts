@@ -1,6 +1,19 @@
-import type { StageId, Track, WorkflowPreset, WorkspaceMode } from "./constants.js";
+import type {
+  RosterPermission,
+  StageId,
+  Track,
+  WorkflowPreset,
+  WorkspaceMode,
+} from "./constants.js";
+import { isReadOnlyRosterPermission } from "./constants.js";
 
-export const WORKFLOW_AGENT_STAGES = ["plan", "implement", "review", "accept"] as const;
+export const WORKFLOW_AGENT_STAGES = [
+  "plan",
+  "research",
+  "implement",
+  "review",
+  "accept",
+] as const;
 export type WorkflowAgentStage = (typeof WORKFLOW_AGENT_STAGES)[number];
 
 export const WORKFLOW_AGENT_ROLES = ["advisor", "worker", "reviewer", "verifier"] as const;
@@ -21,6 +34,8 @@ export interface WorkflowAgentNode {
   role: WorkflowAgentRole;
   fresh_context: boolean;
   mode?: "normal" | "dry_run_only";
+  roster_role?: string;
+  rationale?: string;
 }
 
 export interface WorkflowGateNode {
@@ -63,6 +78,14 @@ export interface WorkflowBlueprint {
   schema_version: 1;
   preset: WorkflowPreset;
   steps: WorkflowStep[];
+  pm_rationale?: string;
+}
+
+export interface RosterPermissionLike {
+  enabled: boolean;
+  stage: StageId;
+  secondary_stages?: readonly StageId[];
+  perm: RosterPermission;
 }
 
 export interface WorkflowCardLike {
@@ -102,6 +125,7 @@ export interface ComposableWorkflowOptions {
 
 const EXPECTED_ROLE_BY_STAGE: Readonly<Record<WorkflowAgentStage, WorkflowAgentRole>> = {
   plan: "advisor",
+  research: "advisor",
   implement: "worker",
   review: "reviewer",
   accept: "verifier",
@@ -670,4 +694,158 @@ export function getDeliverCommandPolicy(card: WorkflowCardLike): {
     finalAcceptGate: Boolean(cmdNode?.final_accept_gate),
     requiresDeliverApproval: hasDeliverApproval,
   };
+}
+
+/**
+ * Enforces blueprint structural invariants AND `D25` roster permission safety boundaries
+ * (preventing PM selection from routing read-only roles to write stages or bypassing staging).
+ */
+export function validateBlueprintAgainstRoster(
+  blueprint: WorkflowBlueprint,
+  roster: Readonly<Record<string, RosterPermissionLike>>,
+  options?: { workspaceMode?: WorkspaceMode },
+): { ok: true } | { ok: false; errors: string[] } {
+  const base = validateWorkflowBlueprint(blueprint);
+  const errors: string[] = base.ok ? [] : [...base.errors];
+
+  const flat = flattenWorkflowSteps(blueprint);
+  for (let i = 0; i < flat.length; i++) {
+    const node = flat[i]!;
+    if (node.kind !== "agent" || !node.roster_role) {
+      continue;
+    }
+
+    const entry = roster[node.roster_role];
+    if (!entry) {
+      errors.push(`Unknown roster_role "${node.roster_role}" at node[${i}]`);
+      continue;
+    }
+    if (!entry.enabled) {
+      errors.push(`Roster role "${node.roster_role}" at node[${i}] is disabled`);
+    }
+
+    const allowedStages = [entry.stage, ...(entry.secondary_stages ?? [])];
+    if (!allowedStages.includes(node.stage)) {
+      errors.push(
+        `Roster role "${node.roster_role}" does not support stage "${node.stage}" (allowed: ${allowedStages.join(", ")})`,
+      );
+    }
+
+    if (node.stage === "implement" && isReadOnlyRosterPermission(entry.perm)) {
+      errors.push(
+        `Read-only roster role "${node.roster_role}" (perm=${entry.perm}) cannot execute stage "implement"`,
+      );
+    }
+
+    if (
+      node.stage === "implement" &&
+      entry.perm === "host_staged" &&
+      options?.workspaceMode &&
+      options.workspaceMode !== "host_scoped" &&
+      node.mode !== "dry_run_only"
+    ) {
+      errors.push(
+        `Roster role "${node.roster_role}" (perm=host_staged) requires workspaceMode="host_scoped" or mode="dry_run_only"`,
+      );
+    }
+
+    if (node.stage === "review" && entry.perm === "workspace_write") {
+      errors.push(
+        `Write-capable roster role "${node.roster_role}" (perm=workspace_write) cannot execute read-only stage "review"`,
+      );
+    }
+  }
+
+  return errors.length === 0 ? { ok: true } : { ok: false, errors };
+}
+
+export interface SplitCardDagNode {
+  temp_id: string;
+  depends_on_temp_ids?: readonly string[];
+}
+
+/**
+ * Validates split-card dependency graphs (duplicate IDs, missing refs, self-loops, DAG cycles)
+ * and returns topological creation order (`order`).
+ */
+export function validateSplitCardsDag(
+  cards: readonly SplitCardDagNode[],
+): { ok: true; order: string[] } | { ok: false; errors: string[] } {
+  const errors: string[] = [];
+  const ids = new Set<string>();
+
+  for (const card of cards) {
+    const id = card.temp_id.trim();
+    if (!id) {
+      errors.push("Split card temp_id must be non-empty");
+      continue;
+    }
+    if (ids.has(id)) {
+      errors.push(`Duplicate split card temp_id "${id}"`);
+      continue;
+    }
+    ids.add(id);
+  }
+
+  const inDegree = new Map<string, number>();
+  const dependents = new Map<string, string[]>();
+  for (const id of ids) {
+    inDegree.set(id, 0);
+    dependents.set(id, []);
+  }
+
+  for (const card of cards) {
+    const id = card.temp_id.trim();
+    if (!ids.has(id)) continue;
+    const seenDeps = new Set<string>();
+    for (const rawDep of card.depends_on_temp_ids ?? []) {
+      const dep = rawDep.trim();
+      if (!dep) continue;
+      if (dep === id) {
+        errors.push(`Split card "${id}" cannot depend on itself`);
+        continue;
+      }
+      if (!ids.has(dep)) {
+        errors.push(`Split card "${id}" depends on unknown temp_id "${dep}"`);
+        continue;
+      }
+      if (seenDeps.has(dep)) continue;
+      seenDeps.add(dep);
+      inDegree.set(id, (inDegree.get(id) ?? 0) + 1);
+      dependents.get(dep)!.push(id);
+    }
+  }
+
+  if (errors.length > 0) {
+    return { ok: false, errors };
+  }
+
+  const queue: string[] = [];
+  for (const id of ids) {
+    if ((inDegree.get(id) ?? 0) === 0) {
+      queue.push(id);
+    }
+  }
+
+  const order: string[] = [];
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    order.push(cur);
+    for (const next of dependents.get(cur) ?? []) {
+      const remaining = (inDegree.get(next) ?? 0) - 1;
+      inDegree.set(next, remaining);
+      if (remaining === 0) {
+        queue.push(next);
+      }
+    }
+  }
+
+  if (order.length !== ids.size) {
+    return {
+      ok: false,
+      errors: ["Split cards dependency graph contains a cycle"],
+    };
+  }
+
+  return { ok: true, order };
 }

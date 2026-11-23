@@ -139,3 +139,84 @@ export type RemoteNotificationChannel = (typeof REMOTE_NOTIFICATION_CHANNELS)[nu
 export const DEFAULT_REMOTE_NOTIFICATION_PRIORITIES: readonly Priority[] = ["P0", "P1"];
 
 export const SHA256_HEX_RE = /^[a-f0-9]{64}$/;
+
+export const PROVIDER_ADAPTER_KINDS = [
+  "acp",
+  "codex_app_server",
+  "pi_rpc",
+  "claude_direct",
+  "paseo",
+] as const;
+export type ProviderAdapterKind = (typeof PROVIDER_ADAPTER_KINDS)[number];
+
+export const PROVIDER_USAGE_SCOPES = [
+  "per_turn",
+  "per_message",
+  "cumulative_thread",
+] as const;
+export type ProviderUsageScope = (typeof PROVIDER_USAGE_SCOPES)[number];
+
+export const COST_SOURCES = [
+  "custom",
+  "local_agent",
+  "catalog",
+  "provider_reported",
+  "unknown",
+] as const;
+export type CostSource = (typeof COST_SOURCES)[number];
+
+export const ROSTER_GROUPS = ["core", "specialist", "kernel", "custom"] as const;
+export type RosterGroup = (typeof ROSTER_GROUPS)[number];
+
+export const ROSTER_PERMISSIONS = [
+  "read_only",
+  "read_only_draft",
+  "workspace_write",
+  "host_staged",
+  "accept_entry",
+  "kernel_gate",
+] as const;
+export type RosterPermission = (typeof ROSTER_PERMISSIONS)[number];
+
+export const ROSTER_EXECUTION_MODES = ["agent", "kernel"] as const;
+export type RosterExecutionMode = (typeof ROSTER_EXECUTION_MODES)[number];
+
+export const BUILTIN_ROSTER_ROLE_IDS = [
+  "pm",
+  "researcher",
+  "architect",
+  "main_dev",
+  "fast_fix",
+  "reviewer",
+  "verifier",
+  "frontend_ui",
+  "debugger",
+  "ops_sec",
+  "doc_writer",
+  "tester",
+  "deliverer",
+  "triage",
+  "resolver",
+] as const;
+export type BuiltinRosterRoleId = (typeof BUILTIN_ROSTER_ROLE_IDS)[number];
+
+export const ATTACHMENT_MIME_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+] as const;
+export type AttachmentMimeType = (typeof ATTACHMENT_MIME_TYPES)[number];
+
+export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
+export const SPACE_SCRIPT_KEYS = ["setup", "dev", "test", "lint", "deliver"] as const;
+export type SpaceScriptKey = (typeof SPACE_SCRIPT_KEYS)[number];
+
+export function isReadOnlyRosterPermission(perm: RosterPermission): boolean {
+  return perm === "read_only" || perm === "read_only_draft";
+}
+
+export function isWriteCapableRosterPermission(perm: RosterPermission): boolean {
+  return perm === "workspace_write" || perm === "host_staged";
+}
