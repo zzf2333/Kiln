@@ -27,6 +27,8 @@ export const NATIVE_TUI_SUPPORTED_AGENTS = [
   "pi",
   "claude",
   "opencode",
+  "agy",
+  "gemini",
 ] as const;
 export type NativeTuiSupportedAgent = (typeof NATIVE_TUI_SUPPORTED_AGENTS)[number];
 
@@ -173,6 +175,12 @@ export function resolveNativeTuiCommand(
       break;
     case "opencode":
       args = ["--session", rawSessionId];
+      break;
+    case "agy":
+      args = ["--conversation", rawSessionId];
+      break;
+    case "gemini":
+      args = ["--resume", rawSessionId];
       break;
   }
 

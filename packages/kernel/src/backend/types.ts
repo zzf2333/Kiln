@@ -1,5 +1,6 @@
 import type {
   BackendCapabilities,
+  ProviderNativeQuota,
   ReasoningEffort,
   RoleId,
   RunEvent,
@@ -48,8 +49,41 @@ export interface BackendRunSpec {
   systemPrompt?: string;
   freshContext: boolean;
   allowFullAccessFallback?: boolean;
+  readOnly?: boolean;
+  allowedWriteRoots?: string[];
   mcpServers?: McpStdioMountSpec[];
   env?: Record<string, string>;
+}
+
+export const READ_ONLY_ROLES: ReadonlySet<RoleId> = new Set<RoleId>([
+  "intake",
+  "reviewer",
+  "triage",
+  "advisor",
+  "resolver",
+]);
+
+/**
+ * Returns true when `role` is restricted from mutating workspace or host files.
+ */
+export function isReadOnlyRole(role: RoleId): boolean {
+  return READ_ONLY_ROLES.has(role);
+}
+
+export interface ProviderProbeSnapshot {
+  available: boolean;
+  authRequired?: boolean;
+  version?: string | null;
+  detail?: string;
+  modelsCount?: number;
+  capabilities?: BackendCapabilities;
+  nativeQuota?: ProviderNativeQuota | null;
+}
+
+export interface ProviderTelemetryBackend extends ExecutionBackend {
+  probeProvider?(): Promise<ProviderProbeSnapshot>;
+  readNativeQuota?(): Promise<ProviderNativeQuota | null>;
+  listProviderUsage?(): Promise<unknown[]>;
 }
 
 export interface ApprovalRequestEvent {

@@ -28,6 +28,7 @@ import {
 } from "@kiln/protocol";
 import {
   BackendRegistry,
+  CompositeBackend,
   DEFAULT_KILND_HOST,
   DEFAULT_KILND_PORT,
   InvalidSpacePathError,
@@ -36,6 +37,7 @@ import {
   KilndServer,
   PaseoBackend,
   PendingDecisionStore,
+  ProviderHealthTracker,
   assertSafeSegment,
   buildSanitizedEnv,
   computeUsageSnapshot,
@@ -45,7 +47,9 @@ import {
   inspectGitSpacePath,
   isCompiledKilnBinary,
   isPricingSyncStale,
+  probeCliBinary,
   writeFileAtomic,
+  type CompositeBackendOptions,
   type EmbeddedStaticAssets,
   type ExecutionBackend,
   type UsageSnapshot,
@@ -136,8 +140,11 @@ export interface CliRuntimeOptions {
   onForegroundServer?: (server: KilndServer) => void;
   paseoUrl?: string;
   disablePaseo?: boolean;
+  enableNativeBackends?: boolean;
+  disableNativeBackends?: boolean;
   backendRegistry?: BackendRegistry;
   createPaseoBackend?: (opts: { url?: string; password?: string }) => ExecutionBackend;
+  createCompositeBackend?: (opts: CompositeBackendOptions) => ExecutionBackend;
   env?: NodeJS.ProcessEnv;
   mcpOptions?: RunStdioMcpServerOptions;
   embeddedPublicAssets?: EmbeddedStaticAssets | null;
@@ -182,7 +189,7 @@ export interface CliStatusSummary {
 }
 
 export interface DoctorCheckResult {
-  id: "node" | "git" | "apfs_clone" | "kilnd" | "paseo" | "service";
+  id: "node" | "git" | "apfs_clone" | "kilnd" | "paseo" | "providers" | "service";
   ok: boolean;
   required: boolean;
   status: "pass" | "warn" | "fail" | "skip";
@@ -905,10 +912,53 @@ async function handleUp(
 
     let server: KilndServer | null = null;
     try {
+      const providerHealth = new ProviderHealthTracker();
+      const shouldRegisterNativeComposite =
+        ownsRegistry &&
+        options.createPaseoBackend === undefined &&
+        !options.disableNativeBackends &&
+        (!process.env.VITEST ||
+          options.enableNativeBackends === true ||
+          fs.existsSync(new KilnPaths(kilnHome).configFile("providers")));
+
+      if (shouldRegisterNativeComposite && !backendRegistry.has("composite")) {
+        const tempStore = new KilnStore({ kilnHome });
+        let initialProviders;
+        try {
+          initialProviders = tempStore.readEffectiveProvidersConfig();
+        } finally {
+          tempStore.close();
+        }
+        const compositeOpts: CompositeBackendOptions = {
+          backendId: "composite",
+          initialConfig: initialProviders,
+          healthTracker: providerHealth,
+          onProviderStatusChanged: (status) => {
+            server?.sseHub.publish({
+              type: "provider.status",
+              providerId: status.provider_id,
+              status: status.status,
+              ...(status.cooldown_until ? { cooldownUntil: status.cooldown_until } : {}),
+              ...(status.detail ? { detail: status.detail } : {}),
+              at: new Date().toISOString(),
+            });
+          },
+          getUsageContext: () => ({
+            localTurns: server ? server.store.listUsageTurns() : [],
+            pricing: server ? server.store.readConfig("pricing") : null,
+          }),
+        };
+        const compositeBackend = options.createCompositeBackend
+          ? options.createCompositeBackend(compositeOpts)
+          : new CompositeBackend(compositeOpts);
+        backendRegistry.register(compositeBackend);
+      }
+
       if (
         (ownsRegistry || options.createPaseoBackend !== undefined) &&
         !disablePaseo &&
-        !backendRegistry.has("paseo")
+        !backendRegistry.has("paseo") &&
+        (!shouldRegisterNativeComposite || options.createPaseoBackend !== undefined || explicitCliOrOptionPaseoUrl !== undefined)
       ) {
         const paseoOpts: { url?: string; password?: string } = {
           ...(paseoUrl ? { url: paseoUrl } : {}),
@@ -935,6 +985,7 @@ async function handleUp(
         ...(embeddedPublicAssets !== null ? { embeddedPublicAssets } : {}),
         enableOrchestrator: true,
         backendRegistry,
+        providerHealth,
         ...(shutdownAc
           ? {
               onShutdownRequested: () => {
@@ -2408,6 +2459,89 @@ interface AgentsEndpointAgent {
   backendId?: unknown;
 }
 
+async function checkDoctorProviders(
+  fetchImpl: typeof fetch,
+  baseUrl: string,
+  kilndOnline: boolean,
+  kilnHome: string,
+): Promise<DoctorCheckResult> {
+  if (kilndOnline) {
+    try {
+      const res = await fetchWithTimeout(
+        fetchImpl,
+        `${baseUrl}/api/providers`,
+        { method: "GET" },
+        API_TIMEOUT_MS,
+      );
+      if (res.ok) {
+        const body = (await res.json()) as {
+          providers?: Array<{ provider_id?: string; status?: string; adapter?: string }>;
+        };
+        const list = Array.isArray(body.providers) ? body.providers : [];
+        const ready = list
+          .filter((p) => p.status === "ready" || p.status === "cooldown")
+          .map((p) => p.provider_id)
+          .filter((id): id is string => Boolean(id));
+        const unavail = list
+          .filter((p) => p.status !== "ready" && p.status !== "cooldown")
+          .map((p) => p.provider_id)
+          .filter((id): id is string => Boolean(id));
+        return {
+          id: "providers",
+          ok: ready.length > 0,
+          required: false,
+          status: ready.length > 0 ? "pass" : "warn",
+          detail:
+            ready.length > 0
+              ? `Ready: ${ready.join(", ")}${unavail.length > 0 ? ` | Unavailable: ${unavail.join(", ")}` : ""}`
+              : `No ready CLI/ACP providers configured${unavail.length > 0 ? ` (unavailable: ${unavail.join(", ")})` : ""}`,
+          meta: { providers: list },
+        };
+      }
+    } catch {
+      // Fallback to local binary probe below when /api/providers is unavailable
+    }
+  }
+
+  let enabledEntries: Array<{ id: string; adapter: string; command?: string; env: Record<string, string> }> = [];
+  const tempStore = new KilnStore({ kilnHome });
+  try {
+    enabledEntries = tempStore
+      .readEffectiveProvidersConfig()
+      .providers.filter((p) => p.enabled && p.adapter !== "paseo");
+  } finally {
+    tempStore.close();
+  }
+
+  const ready: string[] = [];
+  const missing: string[] = [];
+  await Promise.all(
+    enabledEntries.map(async (entry) => {
+      const cmd = entry.command?.trim() || entry.id;
+      const probe = await probeCliBinary(cmd, {
+        env: { ...process.env, ...entry.env },
+      });
+      if (probe.available) {
+        ready.push(probe.version ? `${entry.id}(${probe.version})` : entry.id);
+      } else {
+        missing.push(entry.id);
+      }
+    }),
+  );
+
+  return {
+    id: "providers",
+    ok: ready.length > 0,
+    required: false,
+    status: ready.length > 0 ? "pass" : "warn",
+    detail:
+      ready.length > 0
+        ? `Available CLIs: ${ready.sort().join(", ")}${missing.length > 0 ? ` | Missing: ${missing.sort().join(", ")}` : ""}`
+        : `No supported Agent CLI binaries detected on PATH (${missing.sort().join(", ")})`,
+    meta: { ready: ready.sort(), missing: missing.sort() },
+  };
+}
+
 async function checkDoctorPaseo(
   fetchImpl: typeof fetch,
   baseUrl: string,
@@ -2723,6 +2857,7 @@ async function handleDoctor(
   }
 
   checks.push(await checkDoctorPaseo(fetchImpl, baseUrl, kilndOnline));
+  checks.push(await checkDoctorProviders(fetchImpl, baseUrl, kilndOnline, resolveCliKilnHome(options)));
 
   if (platform === "darwin" || platform === "linux" || platform === "win32") {
     const svc = getServiceStatus(buildServiceOptions(options, platform));

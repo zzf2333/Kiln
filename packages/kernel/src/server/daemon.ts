@@ -16,7 +16,13 @@ import type {
   SyncPricingResponse,
   TailscaleStatusResponse,
 } from "@kiln/protocol";
-import { BackendRegistry } from "../backend/index.js";
+import {
+  BackendRegistry,
+  CompositeBackend,
+  ProviderHealthTracker,
+  probeCliBinary,
+  type TestProviderResult,
+} from "../backend/index.js";
 import { TaskStateMachine } from "../state/index.js";
 import { KilnStore, writeFileAtomic, type AcquireStageLeaseResult } from "../store/index.js";
 import { CaffeinateController } from "./caffeinate.js";
@@ -69,6 +75,7 @@ export interface KilndServerOptions {
   store?: KilnStore;
   stateMachine?: TaskStateMachine;
   backendRegistry?: BackendRegistry;
+  providerHealth?: ProviderHealthTracker;
   sseHub?: SseHub;
   caffeinate?: CaffeinateController;
   remoteAuth?: RemoteAuthManager;
@@ -154,6 +161,7 @@ export class KilndServer {
   readonly store: KilnStore;
   readonly stateMachine: TaskStateMachine;
   readonly backendRegistry: BackendRegistry;
+  readonly providerHealth: ProviderHealthTracker;
   readonly sseHub: SseHub;
   readonly caffeinate: CaffeinateController;
   readonly remoteAuth: RemoteAuthManager;
@@ -199,6 +207,7 @@ export class KilndServer {
     this.store = options.store ?? new KilnStore({ kilnHome: options.kilnHome });
     this.stateMachine = options.stateMachine ?? new TaskStateMachine(this.store);
     this.backendRegistry = options.backendRegistry ?? new BackendRegistry();
+    this.providerHealth = options.providerHealth ?? new ProviderHealthTracker();
     this.sseHub = options.sseHub ?? new SseHub();
     this.caffeinate = options.caffeinate ?? new CaffeinateController();
     this.remoteAuth =
@@ -312,6 +321,7 @@ export class KilndServer {
       ...(options.rateLimitCooldownMs !== undefined
         ? { rateLimitCooldownMs: options.rateLimitCooldownMs }
         : {}),
+      providerHealth: this.providerHealth,
     });
 
     const inspectTailscale = (remotePort: number): Promise<TailscaleStatusResponse> =>
@@ -329,6 +339,8 @@ export class KilndServer {
       pendingDecisions: this.pendingDecisions,
       caffeinate: this.caffeinate,
       backendRegistry: this.backendRegistry,
+      providerHealth: this.providerHealth,
+      testProvider: (providerId) => this.testProvider(providerId),
       rateTracker: this.rateTracker,
       chatEngine: this.chatEngine,
       remoteAuth: this.remoteAuth,
@@ -374,8 +386,22 @@ export class KilndServer {
       onBeforeDecisionApply: async (taskId) => {
         await this.orchestrator.abortActiveRun(taskId);
       },
-      onSettingsUpdated: (section) => {
-        if (section === "roles") {
+      onSettingsUpdated: async (section) => {
+        if (section === "roles" || section === "roster") {
+          void this.orchestrator.wake();
+          if (
+            fs.existsSync(this.store.paths.pricingCacheFile) ||
+            this.pricingFetchImpl !== undefined
+          ) {
+            void this.syncModelPricing({ force: false }).catch(() => undefined);
+          }
+        } else if (section === "providers") {
+          const nextProviders = this.store.readEffectiveProvidersConfig();
+          for (const backend of this.backendRegistry.list()) {
+            if (backend instanceof CompositeBackend) {
+              await backend.syncFromConfig(nextProviders);
+            }
+          }
           void this.orchestrator.wake();
           if (
             fs.existsSync(this.store.paths.pricingCacheFile) ||
@@ -867,6 +893,73 @@ export class KilndServer {
     const count = countRunningLeafTasks(this.store);
     this.caffeinate.syncRunningCount(count);
     return count;
+  }
+
+  /**
+   * Probes an agent provider (`POST /api/providers/:id/test`), updates `ProviderHealthTracker`,
+   * emits a `provider.status` SSE event, and returns sanitized runtime telemetry.
+   */
+  async testProvider(providerId: string): Promise<TestProviderResult> {
+    const providersConfig = this.store.readEffectiveProvidersConfig();
+    const entry = providersConfig.providers.find((p) => p.id === providerId);
+    if (!entry) {
+      throw new ServerHttpError(404, {
+        error: "provider_not_found",
+        providerId,
+        message: `Provider "${providerId}" is not configured`,
+      });
+    }
+
+    let result: TestProviderResult | null = null;
+    for (const backend of this.backendRegistry.list()) {
+      if (backend instanceof CompositeBackend) {
+        result = await backend.testProvider(providerId);
+        break;
+      }
+    }
+
+    if (!result) {
+      if (!entry.enabled) {
+        this.providerHealth.setAvailability(entry.id, {
+          available: false,
+          detail: "Provider is disabled",
+        });
+      } else if (entry.adapter === "paseo") {
+        const connected = this.backendRegistry.has(entry.id) || this.backendRegistry.has("paseo");
+        this.providerHealth.setAvailability(entry.id, {
+          available: connected,
+          ...(connected ? {} : { detail: "Paseo bridge backend not connected" }),
+        });
+      } else {
+        const command = entry.command?.trim() || entry.id;
+        const probed = await probeCliBinary(command, {
+          env: { ...process.env, ...entry.env },
+        });
+        this.providerHealth.setAvailability(entry.id, {
+          available: probed.available,
+          version: probed.version,
+          ...(probed.detail ? { detail: probed.detail } : {}),
+        });
+      }
+
+      const status = this.providerHealth.buildRuntimeStatus(
+        entry,
+        this.store.listUsageTurns(),
+        this.store.readConfig("pricing"),
+      );
+      result = { status, modelsCount: 0 };
+    }
+
+    this.sseHub.publish({
+      type: "provider.status",
+      providerId: result.status.provider_id,
+      status: result.status.status,
+      ...(result.status.cooldown_until ? { cooldownUntil: result.status.cooldown_until } : {}),
+      ...(result.status.detail ? { detail: result.status.detail } : {}),
+      at: new Date().toISOString(),
+    });
+
+    return result;
   }
 
   /**

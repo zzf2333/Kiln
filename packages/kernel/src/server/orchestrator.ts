@@ -36,7 +36,9 @@ import {
 import {
   FullAccessOnlyProviderError,
   IneligibleRoleAgentError,
+  ProviderHealthTracker,
   assertRoleAgentEligible,
+  isReadOnlyRole,
   type ApprovalRequestEvent,
   type BackendRegistry,
   type BackendRunSpec,
@@ -157,6 +159,7 @@ export interface KilnOrchestratorOptions {
   deliverHandler?: DeliverHandler;
   approvalHandler?: OrchestratorApprovalHandler;
   rateLimitCooldownMs?: number;
+  providerHealth?: ProviderHealthTracker;
 }
 
 interface ActiveRunHandle {
@@ -715,6 +718,7 @@ export class KilnOrchestrator {
   private readonly deliverHandler: DeliverHandler | undefined;
   private readonly approvalHandler: OrchestratorApprovalHandler | undefined;
   private readonly rateLimitCooldownMs: number;
+  private readonly providerHealth: ProviderHealthTracker | undefined;
 
   private readonly agentCapabilitiesMap = new Map<string, BackendCapabilities>();
   private readonly activeRuns = new Map<string, ActiveRunHandle>();
@@ -747,6 +751,7 @@ export class KilnOrchestrator {
     this.approvalHandler = options.approvalHandler;
     this.rateLimitCooldownMs =
       options.rateLimitCooldownMs ?? DEFAULT_RATE_LIMIT_COOLDOWN_MS;
+    this.providerHealth = options.providerHealth;
 
     this.scheduler = new KilnScheduler({
       store: this.store,
@@ -812,6 +817,18 @@ export class KilnOrchestrator {
         card,
         backend,
       });
+      return;
+    }
+
+    const mutatingActionRe = /write|edit|delete|remove|execute|command|shell|bash|patch|move/i;
+    if (isReadOnlyRole(matched.role) && mutatingActionRe.test(req.action)) {
+      await backend
+        .answer(
+          req.id,
+          false,
+          `Read-only role "${matched.role}" is denied mutating action "${req.action}"`,
+        )
+        .catch(() => {});
       return;
     }
 
@@ -1778,7 +1795,10 @@ export class KilnOrchestrator {
     };
 
     if (
-      (plan.stage === "plan" || plan.stage === "advise") &&
+      (plan.stage === "plan" ||
+        plan.stage === "advise" ||
+        ((plan.stage === "review" || plan.stage === "triage") &&
+          (!this.approvalHandler || caps.readOnlySandbox === false))) &&
       plan.card.workspace_mode === "git_worktree"
     ) {
       const preDirtySig = await this.computeWorktreeDirtySignature(workspace.cwd);
@@ -2087,6 +2107,35 @@ export class KilnOrchestrator {
 
             if (ev.kind === "message" && ev.delta) {
               this.rateTracker.recordDelta({ taskId, text: ev.text });
+            }
+
+            if (ev.kind === "rate_limited") {
+              const cooldownMs =
+                ev.retryAfterSec !== undefined
+                  ? Math.max(1_000, ev.retryAfterSec * 1_000)
+                  : this.rateLimitCooldownMs;
+              this.scheduler.markRateLimited(
+                {
+                  backendId: runMeta.backend_id,
+                  agent: runMeta.agent,
+                  model: runMeta.model,
+                },
+                cooldownMs,
+              );
+              const untilIso =
+                this.providerHealth?.recordRateLimit(ev.provider, {
+                  ...(ev.retryAfterSec !== undefined ? { retryAfterSec: ev.retryAfterSec } : {}),
+                  ...(ev.until !== undefined ? { until: ev.until } : {}),
+                  ...(ev.detail !== undefined ? { detail: ev.detail } : {}),
+                }) ?? ev.until;
+              this.sseHub.publish({
+                type: "provider.status",
+                providerId: ev.provider,
+                status: "cooldown",
+                ...(untilIso !== undefined ? { cooldownUntil: untilIso } : {}),
+                ...(ev.detail !== undefined ? { detail: ev.detail } : {}),
+                at: ev.at,
+              });
             }
 
             this.sseHub.publish({
@@ -3289,12 +3338,14 @@ export class KilnOrchestrator {
       contractVersion: runMeta.contract_version,
     };
     if (!this.isRunStillCurrent(taskId, runMeta.run_id, runMeta.contract_version)) {
+      this.advisorPreRunDirtySignatures.delete(runMeta.run_id);
       this.syncCaffeinate();
       return;
     }
 
     const receiptLoad = this.readReceiptAndCommitLease(taskId, runDirName, runMeta);
     if (!receiptLoad.ok) {
+      this.advisorPreRunDirtySignatures.delete(runMeta.run_id);
       if (receiptLoad.reason === "lease_expired") {
         this.syncCaffeinate();
         return;
@@ -3313,6 +3364,24 @@ export class KilnOrchestrator {
     }
 
     const card = this.store.readTaskCard(taskId);
+    const workspaceMutated = await this.detectAdvisorWorkspaceMutation(
+      card,
+      runMeta.run_id,
+    );
+    if (workspaceMutated) {
+      await this.applyStageFailure(
+        taskId,
+        "review",
+        runMeta,
+        {
+          kind: "runtime_error",
+          message:
+            "read_only_workspace_mutation: reviewer altered git worktree files in violation of read-only permission",
+        },
+        guard,
+      );
+      return;
+    }
     const parsedReceipt = parseAndValidateReceipt("reviewer", receiptLoad.rawReceipt);
     if (
       parsedReceipt.ok &&
@@ -3522,12 +3591,46 @@ export class KilnOrchestrator {
       contractVersion: runMeta.contract_version,
     };
     if (!this.isRunStillCurrent(taskId, runMeta.run_id, runMeta.contract_version)) {
+      this.advisorPreRunDirtySignatures.delete(runMeta.run_id);
       this.syncCaffeinate();
       return;
     }
 
     const receiptLoad = this.readReceiptAndCommitLease(taskId, runDirName, runMeta);
     const card = this.store.readTaskCard(taskId);
+    const workspaceMutated = await this.detectAdvisorWorkspaceMutation(
+      card,
+      runMeta.run_id,
+    );
+    if (workspaceMutated) {
+      const pending = PendingDecisionSchema.parse({
+        id: `dec-${randomUUID().slice(0, 8)}`,
+        task_id: taskId,
+        run_id: runMeta.run_id,
+        contract_version: card.contract_version,
+        reason: "read_only_workspace_mutation",
+        category: "read_only_guardrail_escalation",
+        question: `异常研判在只读阶段修改了任务工作区文件（已拦截），请核查工作区改动后决定退回实施或取消任务。`,
+        options: [
+          {
+            id: "opt-retry-impl",
+            label: "退回实施阶段",
+            action: "resume",
+            target_stage: "implement",
+            recommended: true,
+          },
+          {
+            id: "opt-cancel",
+            label: "取消任务",
+            action: "cancel",
+            recommended: false,
+          },
+        ],
+        created_at: new Date().toISOString(),
+      });
+      this.transitionTaskToWaiting(taskId, pending, guard);
+      return;
+    }
 
     if (!receiptLoad.ok) {
       if (receiptLoad.reason === "lease_expired") {

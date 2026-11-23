@@ -16,9 +16,11 @@ import {
   PricingConfigSchema,
   PrioritySchema,
   PriorityUpdateRequestSchema,
+  ProvidersConfigSchema,
   RemoteConfigSchema,
   RemoteNotificationTestRequestSchema,
   RolesConfigSchema,
+  RosterConfigSchema,
   RunEventSchema,
   RunMetaSchema,
   SessionRefSchema,
@@ -30,11 +32,13 @@ import {
   UpsertSpaceRequestSchema,
   WorkflowBlueprintSchema,
   WorkspaceModeSchema,
+  deriveLegacyRolesConfigFromRoster,
   type DiscoverSpacesResponse,
   type LedgerFile,
   type OpenRunTuiResponse,
   type PendingDecision,
   type PickDirectoryResponse,
+  type ProviderRuntimeStatus,
   type PublicPairedDevice,
   type RemoteConfig,
   type RunMeta,
@@ -44,7 +48,12 @@ import {
   type SyncPricingResponse,
   type TailscaleStatusResponse,
 } from "@kiln/protocol";
-import type { BackendRegistry } from "../backend/index.js";
+import {
+  ProviderHealthTracker,
+  probeCliBinary,
+  type BackendRegistry,
+  type TestProviderResult,
+} from "../backend/index.js";
 import {
   HostBackupManifestSchema,
   buildHostStagedDiffs,
@@ -133,6 +142,9 @@ function isLocalOnlyRemoteAdminPath(rawPath: string): boolean {
   return (
     lower === "/api/settings/remote" ||
     lower.startsWith("/api/settings/remote/") ||
+    lower === "/api/settings/providers" ||
+    lower.startsWith("/api/settings/providers/") ||
+    /^\/api\/providers\/[^/]+\/test$/.test(lower) ||
     lower === "/api/remote" ||
     lower.startsWith("/api/remote/") ||
     lower === "/api/spaces/pick-directory" ||
@@ -148,6 +160,8 @@ export interface HttpApiDependencies {
   pendingDecisions: PendingDecisionStore;
   caffeinate: CaffeinateController;
   backendRegistry?: BackendRegistry;
+  providerHealth?: ProviderHealthTracker;
+  testProvider?: (providerId: string) => Promise<TestProviderResult>;
   rateTracker?: LiveRateTracker;
   chatEngine?: KilnChatEngine;
   publicDir?: string | null;
@@ -170,7 +184,9 @@ export interface HttpApiDependencies {
   onTaskPaused?: (taskId: string) => Promise<void> | void;
   onTaskCancelled?: (taskId: string) => Promise<void> | void;
   onBeforeDecisionApply?: (taskId: string) => Promise<void> | void;
-  onSettingsUpdated?: (section: "roles" | "limits" | "pricing") => void;
+  onSettingsUpdated?: (
+    section: "roles" | "limits" | "pricing" | "providers" | "roster",
+  ) => Promise<void> | void;
   version?: string;
 }
 
@@ -860,6 +876,118 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     });
   });
 
+  const providerHealth = deps.providerHealth ?? new ProviderHealthTracker();
+
+  const buildSanitizedProviderStatuses = (): ProviderRuntimeStatus[] => {
+    const providersCfg = store.readEffectiveProvidersConfig();
+    const pricingCfg = store.readConfig("pricing");
+    const turns = store.listUsageTurns();
+    return providersCfg.providers.map((entry) =>
+      providerHealth.buildRuntimeStatus(entry, turns, pricingCfg),
+    );
+  };
+
+  app.get("/api/providers", (c) => {
+    return c.json({
+      ok: true,
+      providers: buildSanitizedProviderStatuses(),
+    });
+  });
+
+  app.post("/api/providers/:id/test", async (c) => {
+    if (listenerMode !== "local") {
+      throw new ServerHttpError(403, {
+        error: "local_only_endpoint",
+        path: c.req.path,
+        message: "Testing providers is restricted to the local Kiln port",
+      });
+    }
+    const providerId = assertSafeSegment(c.req.param("id"), "providerId");
+    const providersCfg = store.readEffectiveProvidersConfig();
+    const entry = providersCfg.providers.find((p) => p.id === providerId);
+    if (!entry) {
+      throw new ServerHttpError(404, {
+        error: "provider_not_found",
+        providerId,
+        message: `Provider "${providerId}" does not exist`,
+      });
+    }
+
+    if (deps.testProvider) {
+      const tested = await deps.testProvider(providerId);
+      return c.json({
+        ok: true,
+        ...tested,
+      });
+    }
+
+    if (!entry.enabled) {
+      providerHealth.setAvailability(entry.id, {
+        available: false,
+        detail: "Provider is disabled",
+      });
+    } else if (entry.adapter === "paseo") {
+      const connected =
+        backendRegistry !== undefined &&
+        (backendRegistry.has(entry.id) || backendRegistry.has("paseo"));
+      providerHealth.setAvailability(entry.id, {
+        available: connected,
+        ...(connected ? {} : { detail: "Paseo bridge backend not connected" }),
+      });
+    } else {
+      const command = entry.command?.trim() || entry.id;
+      const probed = await probeCliBinary(command, {
+        env: { ...process.env, ...entry.env },
+      });
+      providerHealth.setAvailability(entry.id, {
+        available: probed.available,
+        version: probed.version,
+        ...(probed.detail ? { detail: probed.detail } : {}),
+      });
+    }
+
+    const status = providerHealth.buildRuntimeStatus(
+      entry,
+      store.listUsageTurns(),
+      store.readConfig("pricing"),
+    );
+    sseHub.publish({
+      type: "provider.status",
+      providerId: status.provider_id,
+      status: status.status,
+      ...(status.cooldown_until ? { cooldownUntil: status.cooldown_until } : {}),
+      ...(status.detail ? { detail: status.detail } : {}),
+      at: new Date().toISOString(),
+    });
+
+    return c.json({
+      ok: true,
+      status,
+      modelsCount: 0,
+    });
+  });
+
+  app.get("/api/settings/providers", (c) => {
+    if (listenerMode !== "local") {
+      throw new ServerHttpError(403, {
+        error: "local_only_endpoint",
+        path: c.req.path,
+        message: "Reading provider command/env settings is restricted to the local Kiln port",
+      });
+    }
+    return c.json({
+      ok: true,
+      data: store.readEffectiveProvidersConfig(),
+    });
+  });
+
+  app.get("/api/settings/roster", (c) => {
+    return c.json({
+      ok: true,
+      data: store.readEffectiveRosterConfig(),
+    });
+  });
+
   app.get("/api/ledgers", (c) => {
     const extraSpaces = new Set<string>(store.listTasks().map((t) => t.space));
     const ledgers = loadAllLedgers(store, extraSpaces);
@@ -1069,6 +1197,10 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     const roles = store.readConfig("roles");
     const limits = store.readConfig("limits");
     const pricing = store.readConfig("pricing");
+    const roster = store.readEffectiveRosterConfig();
+    const providers = buildSanitizedProviderStatuses();
+    const providersConfig =
+      listenerMode === "local" ? store.readEffectiveProvidersConfig() : undefined;
     const taskRows = store.listTasks();
     const spaces = loadAllSpaces(
       store,
@@ -1165,6 +1297,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       ledgers,
       agents: backendSnap.agents,
       backends: backendSnap.backends,
+      providers,
       providerUsage: backendSnap.providerUsage,
       liveRates: {
         rates: liveSnap.rates,
@@ -1173,8 +1306,15 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
           tokPerSec: liveSnap.tokPerSec,
         },
       },
-      settings: { roles, limits, pricing },
+      settings: {
+        roles,
+        limits,
+        pricing,
+        roster,
+        ...(providersConfig !== undefined ? { providers: providersConfig } : {}),
+      },
       roles,
+      roster,
       limits,
       pricing,
       usage,
@@ -1982,11 +2122,25 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
 
   app.put("/api/settings/:section", async (c) => {
     const section = c.req.param("section");
-    if (section !== "roles" && section !== "limits" && section !== "pricing") {
+    if (
+      section !== "roles" &&
+      section !== "limits" &&
+      section !== "pricing" &&
+      section !== "providers" &&
+      section !== "roster"
+    ) {
       throw new ServerHttpError(400, {
         error: "invalid_settings_section",
         section,
-        message: `Unknown settings section "${section}"; expected one of roles, limits, pricing`,
+        message: `Unknown settings section "${section}"; expected one of roles, limits, pricing, providers, roster`,
+      });
+    }
+
+    if (section === "providers" && listenerMode !== "local") {
+      throw new ServerHttpError(403, {
+        error: "local_only_endpoint",
+        path: c.req.path,
+        message: "Updating provider command/env settings is restricted to the local Kiln port",
       });
     }
 
@@ -1994,18 +2148,31 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     if (section === "roles") {
       const data = RolesConfigSchema.parse(rawBody);
       store.writeConfig("roles", data);
-      onSettingsUpdated?.("roles");
+      await Promise.resolve(onSettingsUpdated?.("roles"));
+      return c.json({ ok: true, section, data });
+    }
+    if (section === "roster") {
+      const data = RosterConfigSchema.parse(rawBody);
+      store.writeConfig("roster", data);
+      store.writeConfig("roles", deriveLegacyRolesConfigFromRoster(data));
+      await Promise.resolve(onSettingsUpdated?.("roster"));
+      return c.json({ ok: true, section, data });
+    }
+    if (section === "providers") {
+      const data = ProvidersConfigSchema.parse(rawBody);
+      store.writeConfig("providers", data);
+      await Promise.resolve(onSettingsUpdated?.("providers"));
       return c.json({ ok: true, section, data });
     }
     if (section === "limits") {
       const data = LimitsConfigSchema.parse(rawBody);
       store.writeConfig("limits", data);
-      onSettingsUpdated?.("limits");
+      await Promise.resolve(onSettingsUpdated?.("limits"));
       return c.json({ ok: true, section, data });
     }
     const data = PricingConfigSchema.parse(rawBody);
     store.writeConfig("pricing", data);
-    onSettingsUpdated?.("pricing");
+    await Promise.resolve(onSettingsUpdated?.("pricing"));
     return c.json({ ok: true, section, data });
   });
 
