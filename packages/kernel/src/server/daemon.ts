@@ -61,6 +61,8 @@ import {
   type TailscaleExecFileFn,
 } from "./remote-tailscale.js";
 import { syncModelPricing as syncModelPricingImpl } from "./pricing-sync.js";
+import type { PrDeliverExecFn } from "./pr-deliver.js";
+import { KilnScriptRunner } from "./script-runner.js";
 import { SseHub } from "./sse.js";
 import type { EmbeddedStaticAssets } from "./static-files.js";
 import { signRunToken, verifyRunToken } from "./token.js";
@@ -115,6 +117,8 @@ export interface KilndServerOptions {
   pricingFetchTimeoutMs?: number;
   syncPricing?: (input: SyncPricingRequest) => Promise<SyncPricingResponse>;
   extensionsHomeDir?: string;
+  scriptRunner?: KilnScriptRunner;
+  prDeliverExec?: PrDeliverExecFn;
 }
 
 export interface KilndServerAddress {
@@ -163,6 +167,7 @@ export class KilndServer {
   readonly backendRegistry: BackendRegistry;
   readonly providerHealth: ProviderHealthTracker;
   readonly sseHub: SseHub;
+  readonly scriptRunner: KilnScriptRunner;
   readonly caffeinate: CaffeinateController;
   readonly remoteAuth: RemoteAuthManager;
   readonly remoteNotifier: RemoteNotifier;
@@ -209,6 +214,9 @@ export class KilndServer {
     this.backendRegistry = options.backendRegistry ?? new BackendRegistry();
     this.providerHealth = options.providerHealth ?? new ProviderHealthTracker();
     this.sseHub = options.sseHub ?? new SseHub();
+    this.scriptRunner =
+      options.scriptRunner ??
+      new KilnScriptRunner({ store: this.store, sseHub: this.sseHub });
     this.caffeinate = options.caffeinate ?? new CaffeinateController();
     this.remoteAuth =
       options.remoteAuth ??
@@ -323,6 +331,7 @@ export class KilndServer {
         ? { rateLimitCooldownMs: options.rateLimitCooldownMs }
         : {}),
       providerHealth: this.providerHealth,
+      scriptRunner: this.scriptRunner,
     });
 
     const inspectTailscale = (remotePort: number): Promise<TailscaleStatusResponse> =>
@@ -344,6 +353,10 @@ export class KilndServer {
       testProvider: (providerId) => this.testProvider(providerId),
       rateTracker: this.rateTracker,
       chatEngine: this.chatEngine,
+      scriptRunner: this.scriptRunner,
+      ...(options.prDeliverExec !== undefined
+        ? { prDeliverExec: options.prDeliverExec }
+        : {}),
       remoteAuth: this.remoteAuth,
       remoteNotifier: this.remoteNotifier,
       getLocalPort: () => this.activeAddress?.port ?? this.requestedPort,
@@ -827,6 +840,7 @@ export class KilndServer {
     await this.remoteConfigQueue;
     this.unsubscribeNotify();
     await this.orchestrator.stop();
+    await this.scriptRunner.stopAll();
     this.rateTracker.stop();
     this.caffeinate.stop();
     this.sseHub.closeAll();

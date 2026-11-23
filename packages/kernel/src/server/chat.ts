@@ -1745,6 +1745,10 @@ export class KilnChatEngine {
         }
 
         const resolvedWorkspace = this.resolveIntakeWorkspace(draft, safeDraftId);
+        const attachmentsSig = (draft.attachments ?? [])
+          .map((a) => `${a.id}:${a.sha256}`)
+          .sort()
+          .join(",");
         const reusable = await this.canReuseSession(draft.session_ref);
         let activeBackend = executor.backend;
         let sessionRef: SessionRef;
@@ -1756,7 +1760,8 @@ export class KilnChatEngine {
           reusableMeta?.kiln_chat_agent === executor.agent &&
           reusableMeta?.kiln_chat_model === executor.model &&
           reusableMeta?.kiln_chat_space === draft.space &&
-          reusableMeta?.kiln_chat_cwd === resolvedWorkspace.cwd
+          reusableMeta?.kiln_chat_cwd === resolvedWorkspace.cwd &&
+          (reusableMeta?.kiln_chat_attachments_sig ?? "") === attachmentsSig
         ) {
           sessionRef = reusable.sessionRef;
           const contextLines: string[] = [];
@@ -1810,6 +1815,7 @@ export class KilnChatEngine {
               kiln_chat_model: executor.model,
               kiln_chat_space: draft.space,
               kiln_chat_cwd: resolvedWorkspace.cwd,
+              kiln_chat_attachments_sig: attachmentsSig,
             },
           };
           const updatedDraft = DraftCardSchema.parse({

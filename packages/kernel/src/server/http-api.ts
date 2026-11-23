@@ -6,6 +6,7 @@ import { z, ZodError } from "zod";
 import {
   CardContractSchema,
   CardLimitsSchema,
+  CommitPrActionRequestSchema,
   DecideRequestSchema,
   DraftCardSchema,
   GateReportSchema,
@@ -19,10 +20,12 @@ import {
   ProvidersConfigSchema,
   RemoteConfigSchema,
   RemoteNotificationTestRequestSchema,
+  RollbackCheckpointRequestSchema,
   RolesConfigSchema,
   RosterConfigSchema,
   RunEventSchema,
   RunMetaSchema,
+  RunSpaceScriptRequestSchema,
   SessionRefSchema,
   SpaceConfigSchema,
   SplitCardPlanItemSchema,
@@ -55,6 +58,10 @@ import {
   type BackendRegistry,
   type TestProviderResult,
 } from "../backend/index.js";
+import {
+  listTaskCheckpoints,
+  rollbackGitWorktreeToCheckpoint,
+} from "../gate/checkpoints.js";
 import {
   HostBackupManifestSchema,
   buildHostStagedDiffs,
@@ -111,7 +118,13 @@ import {
 } from "./remote-auth.js";
 import { RemoteNotifier } from "./remote-notify.js";
 import { inspectTailscaleStatus } from "./remote-tailscale.js";
+import {
+  buildPrDraft,
+  executeCommitPrAction,
+  type PrDeliverExecFn,
+} from "./pr-deliver.js";
 import { syncModelPricing } from "./pricing-sync.js";
+import { KilnScriptRunner } from "./script-runner.js";
 import {
   discoverLocalGitRepos,
   inspectGitSpacePath,
@@ -174,6 +187,8 @@ export interface HttpApiDependencies {
   testProvider?: (providerId: string) => Promise<TestProviderResult>;
   rateTracker?: LiveRateTracker;
   chatEngine?: KilnChatEngine;
+  scriptRunner?: KilnScriptRunner;
+  prDeliverExec?: PrDeliverExecFn;
   publicDir?: string | null;
   embeddedPublicAssets?: EmbeddedStaticAssets | null;
   backendQueryTimeoutMs?: number;
@@ -513,6 +528,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     backendRegistry,
     rateTracker,
     chatEngine,
+    prDeliverExec,
     backendQueryTimeoutMs,
     getLocalPort,
     getRemoteRuntimeStatus,
@@ -527,6 +543,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
   const listenerMode: HttpApiListenerMode = deps.listenerMode ?? "local";
   const remoteAuth = deps.remoteAuth ?? new RemoteAuthManager({ store, sseHub });
   const remoteNotifier = deps.remoteNotifier ?? new RemoteNotifier({ store });
+  const scriptRunner = deps.scriptRunner ?? new KilnScriptRunner({ store, sseHub });
   const version = deps.version ?? "0.0.4";
   const app = new Hono();
   const authenticatedDevicesByRequest = new WeakMap<Request, PublicPairedDevice>();
@@ -1243,6 +1260,8 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         ? { default_accept_cmd: body.default_accept_cmd }
         : {}),
       freeze_patterns: body.freeze_patterns,
+      ...(body.pinned !== undefined ? { pinned: body.pinned } : {}),
+      ...(body.scripts !== undefined ? { scripts: body.scripts } : {}),
     });
 
     store.writeSpace(space);
@@ -1429,6 +1448,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     const usageTurns = store.listUsageTurns({ taskId });
 
     const runs: Array<Record<string, unknown>> = [];
+    const runMetas: RunMeta[] = [];
     let latestMeta: RunMeta | null = null;
     const runsDir = store.paths.runsDir(taskId);
     if (fs.existsSync(runsDir)) {
@@ -1442,6 +1462,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         const meta = readYamlOptional(store.paths.runYaml(taskId, runDirName), RunMetaSchema);
         if (meta) {
           latestMeta = meta;
+          runMetas.push(meta);
         }
         const handoff = readOptionalText(store.paths.handoffMd(taskId, runDirName));
         const receipt = readOptionalText(store.paths.receiptMd(taskId, runDirName));
@@ -1499,6 +1520,14 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     const hostStagedDiffs = buildHostStagedDiffs(store, taskId);
     const chatMessages = readTaskChatFallback(taskId);
     const usage = computeUsageSnapshot(usageTurns, pricing);
+    const checkpoints =
+      card.workspace_mode === "git_worktree" && spaceConfig?.repo_path
+        ? await listTaskCheckpoints({
+            repoPath: spaceConfig.repo_path,
+            taskId,
+            runs: runMetas,
+          })
+        : [];
 
     return c.json({
       card,
@@ -1510,6 +1539,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       plan,
       research,
       attachments: card.attachments ?? [],
+      checkpoints,
       decisions,
       pendingDecision,
       ledgerProposals,
@@ -2370,6 +2400,161 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     store.writeConfig("pricing", data);
     await Promise.resolve(onSettingsUpdated?.("pricing"));
     return c.json({ ok: true, section, data });
+  });
+
+  app.get("/api/tasks/:id/checkpoints", async (c) => {
+    const taskId = requireExistingTask(c.req.param("id"));
+    const card = store.readTaskCard(taskId);
+    if (card.workspace_mode !== "git_worktree") {
+      return c.json({ ok: true, taskId, checkpoints: [] });
+    }
+    const spaceConfig = store.readSpace(card.space);
+    if (!spaceConfig?.repo_path) {
+      return c.json({ ok: true, taskId, checkpoints: [] });
+    }
+    const runMetas: RunMeta[] = [];
+    const runsDir = store.paths.runsDir(taskId);
+    if (fs.existsSync(runsDir)) {
+      const dirNames = fs
+        .readdirSync(runsDir, { withFileTypes: true })
+        .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+        .map((e) => assertSafeSegment(e.name, "runDirName"))
+        .sort((a, b) => a.localeCompare(b));
+      for (const dirName of dirNames) {
+        const meta = readYamlOptional(store.paths.runYaml(taskId, dirName), RunMetaSchema);
+        if (meta) {
+          runMetas.push(meta);
+        }
+      }
+    }
+    const checkpoints = await listTaskCheckpoints({
+      repoPath: spaceConfig.repo_path,
+      taskId,
+      runs: runMetas,
+    });
+    return c.json({ ok: true, taskId, checkpoints });
+  });
+
+  app.post("/api/tasks/:id/checkpoints/rollback", async (c) => {
+    const taskId = requireExistingTask(c.req.param("id"));
+    const rawBody = await readJsonBodyStrict(c);
+    const body = RollbackCheckpointRequestSchema.parse(rawBody);
+    const card = store.readTaskCard(taskId);
+    if (card.workspace_mode !== "git_worktree") {
+      throw new ServerHttpError(400, {
+        error: "unsupported_workspace_mode",
+        workspaceMode: card.workspace_mode,
+        message: `Checkpoint rollback is only supported for git_worktree tasks`,
+      });
+    }
+    const derived = deriveTaskStatus(card, store.readStateEvents(taskId));
+    if (derived.status === "running") {
+      throw new ServerHttpError(409, {
+        error: "task_running",
+        taskId,
+        message: `Task "${taskId}" is currently running; pause or wait before rolling back checkpoint`,
+      });
+    }
+
+    const worktreePath = path.join(store.paths.workspaceDir(taskId), "worktree");
+    if (!fs.existsSync(worktreePath) || !fs.statSync(worktreePath).isDirectory()) {
+      throw new ServerHttpError(400, {
+        error: "worktree_not_found",
+        taskId,
+        worktreePath,
+        message: `Task "${taskId}" worktree directory does not exist: ${worktreePath}`,
+      });
+    }
+    const rolled = await rollbackGitWorktreeToCheckpoint({
+      worktreePath,
+      taskId,
+      checkpointRef: body.checkpoint_ref,
+    });
+
+    const nextState = store.appendStateEvent(taskId, {
+      type: "checkpoint_rolled_back",
+      at: new Date().toISOString(),
+      checkpoint_ref: rolled.checkpointRef,
+      commit_sha: rolled.commitSha,
+    });
+    sseHub.publish({
+      type: "task.updated",
+      taskId,
+      patch: {
+        status: nextState.status,
+        ...(nextState.stage !== null ? { stage: nextState.stage } : {}),
+        contractVersion: nextState.contractVersion,
+      },
+    });
+
+    return c.json({
+      ok: true,
+      taskId,
+      checkpoint_ref: rolled.checkpointRef,
+      commit_sha: rolled.commitSha,
+    });
+  });
+
+  app.post("/api/spaces/:id/scripts/run", async (c) => {
+    const spaceId = assertSafeSegment(c.req.param("id"), "spaceId");
+    const rawBody = await readJsonBodyStrict(c);
+    const body = RunSpaceScriptRequestSchema.parse(rawBody);
+    const { response } = scriptRunner.startScript({
+      spaceId,
+      scriptKey: body.script,
+      ...(body.taskId !== undefined ? { taskId: body.taskId } : {}),
+    });
+    return c.json(response, 202);
+  });
+
+  app.get("/api/scripts", (c) => {
+    const rawSpaceId = c.req.query("spaceId");
+    const rawTaskId = c.req.query("taskId");
+    const spaceId =
+      rawSpaceId !== undefined && rawSpaceId.trim().length > 0
+        ? assertSafeSegment(rawSpaceId.trim(), "spaceId")
+        : undefined;
+    const taskId =
+      rawTaskId !== undefined && rawTaskId.trim().length > 0
+        ? assertSafeSegment(rawTaskId.trim(), "taskId")
+        : undefined;
+    const runs = scriptRunner.listRuns({
+      ...(spaceId !== undefined ? { spaceId } : {}),
+      ...(taskId !== undefined ? { taskId } : {}),
+    });
+    return c.json({ ok: true, runs });
+  });
+
+  app.post("/api/scripts/:scriptRunId/stop", async (c) => {
+    const scriptRunId = assertSafeSegment(c.req.param("scriptRunId"), "scriptRunId");
+    const stopped = await scriptRunner.stop(scriptRunId);
+    if (!stopped) {
+      throw new ServerHttpError(404, {
+        error: "script_run_not_found",
+        scriptRunId,
+        message: `Running script "${scriptRunId}" was not found`,
+      });
+    }
+    return c.json({ ok: true, scriptRunId, stopped: true });
+  });
+
+  app.get("/api/tasks/:id/deliver/pr-draft", (c) => {
+    const taskId = requireExistingTask(c.req.param("id"));
+    const draft = buildPrDraft(store, taskId);
+    return c.json({ ok: true, draft });
+  });
+
+  app.post("/api/tasks/:id/deliver/git", async (c) => {
+    const taskId = requireExistingTask(c.req.param("id"));
+    const rawBody = await readJsonBodyStrict(c);
+    const body = CommitPrActionRequestSchema.parse(rawBody);
+    const result = await executeCommitPrAction({
+      store,
+      taskId,
+      request: body,
+      ...(prDeliverExec !== undefined ? { execCommand: prDeliverExec } : {}),
+    });
+    return c.json(result);
   });
 
   app.get("/api/events", (c) => {

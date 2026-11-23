@@ -52,7 +52,9 @@ import {
   buildSanitizedEnv,
   checkScope,
   cleanupGitWorktree,
+  cleanupTaskCheckpoints,
   computeFrozenSnapshot,
+  createGitWorktreeCheckpoint,
   isHostTargetWithinScope,
   normalizeRepoRelativePath,
   prepareGitWorktree,
@@ -107,6 +109,7 @@ import {
   readOptionalText,
 } from "./pending-decisions.js";
 import type { LiveRateTracker } from "./rate-tracker.js";
+import type { KilnScriptRunner } from "./script-runner.js";
 import type { SseHub } from "./sse.js";
 
 const execFileAsync = promisify(execFile);
@@ -163,6 +166,7 @@ export interface KilnOrchestratorOptions {
   approvalHandler?: OrchestratorApprovalHandler;
   rateLimitCooldownMs?: number;
   providerHealth?: ProviderHealthTracker;
+  scriptRunner?: KilnScriptRunner;
 }
 
 interface ActiveRunHandle {
@@ -722,6 +726,7 @@ export class KilnOrchestrator {
   private readonly approvalHandler: OrchestratorApprovalHandler | undefined;
   private readonly rateLimitCooldownMs: number;
   private readonly providerHealth: ProviderHealthTracker | undefined;
+  private readonly scriptRunner: KilnScriptRunner | undefined;
 
   private readonly agentCapabilitiesMap = new Map<string, BackendCapabilities>();
   private readonly activeRuns = new Map<string, ActiveRunHandle>();
@@ -755,6 +760,7 @@ export class KilnOrchestrator {
     this.rateLimitCooldownMs =
       options.rateLimitCooldownMs ?? DEFAULT_RATE_LIMIT_COOLDOWN_MS;
     this.providerHealth = options.providerHealth;
+    this.scriptRunner = options.scriptRunner;
 
     this.scheduler = new KilnScheduler({
       store: this.store,
@@ -1412,7 +1418,42 @@ export class KilnOrchestrator {
         cloneDeps: space.clone_deps,
       });
 
-      this.ensureFrozenBaselineInitialized(card, prep.worktreePath);
+      try {
+        if (space.scripts?.setup?.trim()) {
+          const setupOutcome = this.scriptRunner
+            ? await this.scriptRunner.runAndWait({
+                spaceId: card.space,
+                scriptKey: "setup",
+                taskId: card.id,
+                timeoutMs: 120_000,
+              })
+            : await runIsolatedCommand(space.scripts.setup, {
+                cwd: prep.worktreePath,
+                timeoutMs: 120_000,
+              });
+          if (setupOutcome.exitCode !== 0) {
+            const detail =
+              "tailOutput" in setupOutcome
+                ? setupOutcome.tailOutput
+                : setupOutcome.stderr || setupOutcome.stdout;
+            throw new Error(
+              `Space "${card.space}" setup script failed (exit=${setupOutcome.exitCode}) for "${card.id}": ${detail.trim().slice(-400)}`,
+            );
+          }
+        }
+
+        this.ensureFrozenBaselineInitialized(card, prep.worktreePath);
+      } catch (err) {
+        await runGitCommand([
+          "-C",
+          prep.repoPath,
+          "worktree",
+          "remove",
+          "--force",
+          prep.worktreePath,
+        ]).catch(() => {});
+        throw err;
+      }
       return { cwd: prep.worktreePath, inputRef: prep.baseCommit };
     }
 
@@ -1740,6 +1781,27 @@ export class KilnOrchestrator {
       mcpEnabled: caps.mcpInjection,
     });
 
+    const isReadOnly =
+      isReadOnlyRole(plan.role) ||
+      (assignment.perm !== undefined && isReadOnlyRosterPermission(assignment.perm));
+
+    let checkpointRef: string | undefined;
+    if (!isReadOnly && plan.card.workspace_mode === "git_worktree") {
+      try {
+        const ckpt = await createGitWorktreeCheckpoint({
+          worktreePath: workspace.cwd,
+          taskId: plan.taskId,
+          runId,
+          phase: "pre",
+          stage: plan.stage,
+          round: plan.round,
+        });
+        checkpointRef = ckpt.ref;
+      } catch {
+        // Checkpoint creation is best-effort and never blocks stage execution.
+      }
+    }
+
     const placeholderSessionRef: SessionRef = {
       backendId: backend.backendId,
       sessionId: `pending-${runId}`,
@@ -1760,6 +1822,7 @@ export class KilnOrchestrator {
       session_ref: placeholderSessionRef,
       cwd: workspace.cwd,
       ...(workspace.inputRef !== undefined ? { input_ref: workspace.inputRef } : {}),
+      ...(checkpointRef !== undefined ? { checkpoint_ref: checkpointRef } : {}),
       started_at: now,
     };
 
@@ -1801,9 +1864,6 @@ export class KilnOrchestrator {
         ]
       : undefined;
 
-    const isReadOnly =
-      isReadOnlyRole(plan.role) ||
-      (assignment.perm !== undefined && isReadOnlyRosterPermission(assignment.perm));
     const attachments: RunAttachmentInput[] = resolveRunAttachmentInputs(this.store, {
       kind: "task",
       taskId: plan.taskId,
@@ -3177,6 +3237,21 @@ export class KilnOrchestrator {
         this.syncCaffeinate();
         return;
       }
+    }
+
+    if (
+      latestCard.workspace_mode === "git_worktree" &&
+      worktreePath &&
+      fs.existsSync(worktreePath)
+    ) {
+      await createGitWorktreeCheckpoint({
+        worktreePath,
+        taskId,
+        runId: runMeta.run_id,
+        phase: "post",
+        stage: "implement",
+        round: runMeta.round,
+      }).catch(() => {});
     }
 
     if (stageDecision.action === "advance_stage") {
@@ -5099,13 +5174,16 @@ export class KilnOrchestrator {
       if (delivered && card.workspace_mode === "git_worktree" && worktreePath) {
         const space = this.store.readSpace(card.space);
         if (space?.repo_path) {
-          await cleanupGitWorktree({
+          const cleaned = await cleanupGitWorktree({
             repoPath: space.repo_path,
             worktreePath,
             taskStatus: "done",
             gatePassed: true,
             awaitingHumanReview: false,
-          }).catch(() => {});
+          }).catch(() => null);
+          if (cleaned?.deleted) {
+            await cleanupTaskCheckpoints(space.repo_path, plan.taskId).catch(() => {});
+          }
         }
       }
     });

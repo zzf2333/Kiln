@@ -5,6 +5,10 @@ import {
   UnknownBackendError,
 } from "../backend/types.js";
 import {
+  CheckpointNotFoundError,
+  InvalidCheckpointRefError,
+} from "../gate/checkpoints.js";
+import {
   DependencyCycleError,
   InvalidStateTransitionError,
   MissingDependencyError,
@@ -65,6 +69,25 @@ export function mapDomainError(err: unknown): {
         error: "invalid_state_transition",
         from: err.from,
         to: err.to,
+        message: err.message,
+      },
+    };
+  }
+  if (err instanceof InvalidCheckpointRefError) {
+    return {
+      statusCode: 400,
+      payload: {
+        error: "invalid_checkpoint_ref",
+        message: err.message,
+      },
+    };
+  }
+  if (err instanceof CheckpointNotFoundError) {
+    return {
+      statusCode: 404,
+      payload: {
+        error: "checkpoint_not_found",
+        checkpoint_ref: err.checkpointRef,
         message: err.message,
       },
     };

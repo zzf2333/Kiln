@@ -1,4 +1,22 @@
 export {
+  KilnScriptRunner,
+  DEFAULT_SCRIPT_TIMEOUT_MS,
+  DEV_SCRIPT_TIMEOUT_MS,
+  MAX_BUFFERED_LOG_BYTES,
+  MAX_CONCURRENT_SCRIPTS,
+  MAX_RECENT_SCRIPTS,
+  type KilnScriptRunnerOptions,
+  type ScriptCompletionResult,
+  type ScriptRunSummary,
+} from "./script-runner.js";
+export {
+  buildPrDraft,
+  executeCommitPrAction,
+  type CommitPrActionResult,
+  type PrDeliverExecFn,
+  type PrDraftSummary,
+} from "./pr-deliver.js";
+export {
   MAX_ATTACHMENTS_PER_CARD,
   MAX_ATTACHMENT_UPLOAD_BODY_BYTES,
   copyDraftAttachmentsToTask,

@@ -6,10 +6,12 @@ import path from "node:path";
 import { promisify } from "node:util";
 import {
   OpenRunTuiResponseSchema,
+  RunAntiDriftSummarySchema,
   parseFrontmatterMarkdown,
   type GateReport,
   type OpenRunTuiResponse,
   type PricingConfig,
+  type RunAntiDriftSummary,
   type RunEvent,
   type RunMeta,
   type TaskCard,
@@ -519,6 +521,7 @@ function isGateReportPassed(gate: GateReport): boolean {
 export function buildRunOverviewSummary(input: BuildRunOverviewInput): {
   session: RunSessionInfo | null;
   ioSummary: RunIoSummary;
+  antiDriftSummary: RunAntiDriftSummary;
 } {
   const { card, meta, receipt, gate, events, usageTurns, pricing, activeRunId, taskStatus } =
     input;
@@ -650,6 +653,42 @@ export function buildRunOverviewSummary(input: BuildRunOverviewInput): {
     }
   }
 
+  const stageLabel = meta?.stage ?? "run";
+  const antiDriftInput = meta?.input_ref
+    ? `[${stageLabel}] ${card.contract.goal} (ref: ${meta.input_ref.slice(0, 12)})`
+    : `[${stageLabel}] ${card.contract.goal}`;
+  const alignmentPoints: string[] = [
+    `目标对齐: ${card.contract.goal}`,
+    ...(card.contract.non_goals && card.contract.non_goals.length > 0
+      ? [`非目标护栏: 已锁定 ${card.contract.non_goals.length} 项（如：${card.contract.non_goals[0]}）`]
+      : []),
+    ...(changedPaths.length > 0
+      ? [`改动文件 (${changedPaths.length}): ${changedPaths.slice(0, 3).join(", ")}`]
+      : []),
+    ...(gate
+      ? [
+          `门禁校验: schema=${gate.schema_ok ? "通过" : "失败"}, scope=${gate.scope_ok ? "通过" : "越界"}, frozen=${gate.frozen_files_changed.length === 0 ? "未触碰" : "触发改动"}, accept=${gate.accept_exit_code}`,
+        ]
+      : []),
+  ].slice(0, 5);
+
+  const nonPassingWithoutGate =
+    outputVerdict === "退回" ||
+    outputVerdict === "失败" ||
+    outputVerdict === "中断" ||
+    outputVerdict === "进行中";
+  const antiDriftSummary = RunAntiDriftSummarySchema.parse({
+    input: antiDriftInput,
+    alignment_points: alignmentPoints,
+    output: `${outputVerdict} · ${outputSummary}`,
+    gate_proof: {
+      schema_ok: gate ? gate.schema_ok : !nonPassingWithoutGate,
+      scope_ok: gate ? gate.scope_ok : true,
+      frozen_ok: gate ? gate.frozen_files_changed.length === 0 : true,
+      accept_ok: gate ? gate.accept_exit_code === 0 : !nonPassingWithoutGate,
+    },
+  });
+
   return {
     session,
     ioSummary: {
@@ -662,5 +701,6 @@ export function buildRunOverviewSummary(input: BuildRunOverviewInput): {
       totalTokens: runUsage.totalTokens,
       costUsd: runUsage.costUsd,
     },
+    antiDriftSummary,
   };
 }

@@ -1,3 +1,4 @@
+export * from "./checkpoints.js";
 export * from "./command-runner.js";
 export * from "./gate-runner.js";
 export * from "./git-worktree.js";
