@@ -1,4 +1,21 @@
 export {
+  MAX_ATTACHMENTS_PER_CARD,
+  MAX_ATTACHMENT_UPLOAD_BODY_BYTES,
+  copyDraftAttachmentsToTask,
+  deleteDraftAttachment,
+  resolveReadableAttachmentFile,
+  resolveRunAttachmentInputs,
+  sanitizeAttachmentFilename,
+  saveDraftAttachment,
+  validateCommitAttachments,
+  validateImageMagicBytes,
+} from "./attachments.js";
+export {
+  commitSplitCards,
+  type CommitSplitCardsDeps,
+  type CommitSplitCardsResult,
+} from "./split-commit.js";
+export {
   CAFFEINATE_BIN_PATH,
   CaffeinateController,
   type CaffeinateChildProcess,

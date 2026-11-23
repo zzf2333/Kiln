@@ -7,9 +7,11 @@ import { promisify } from "node:util";
 import {
   extractWorkflowToggles,
   flattenWorkflowSteps,
+  validateBlueprintAgainstRoster,
   type DiscoveredGitRepo,
   type DiscoverSpacesResponse,
   type PickDirectoryResponse,
+  type RosterConfig,
   type SpaceConfig,
   type SpaceFileEntry,
   type WorkflowBlueprint,
@@ -1022,6 +1024,7 @@ function containsDraftsReference(text: string, textPrefixes: readonly string[]):
 export function validateCommitWorkflow(
   workspaceMode: WorkspaceMode,
   workflow: WorkflowBlueprint | undefined,
+  roster?: RosterConfig | null,
 ): void {
   if (!workflow) {
     return;
@@ -1056,6 +1059,24 @@ export function validateCommitWorkflow(
         workspaceMode,
         message:
           '"host_scoped" tasks with explicit workflow must keep dry_run_only + staged_only + apply_staged + final_accept_gate enabled',
+      });
+    }
+  }
+
+  const usesRosterRoles = flat.some(
+    (node) => node.kind === "agent" && node.roster_role !== undefined,
+  );
+  if (usesRosterRoles) {
+    const rosterCheck = validateBlueprintAgainstRoster(
+      workflow,
+      roster?.roster ?? {},
+      { workspaceMode },
+    );
+    if (!rosterCheck.ok) {
+      throw new ServerHttpError(400, {
+        error: "invalid_workflow_roster",
+        errors: rosterCheck.errors,
+        message: rosterCheck.errors.join("; "),
       });
     }
   }

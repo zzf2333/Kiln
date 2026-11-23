@@ -278,6 +278,7 @@ export class KilndServer {
       backendRegistry: this.backendRegistry,
       pendingDecisions: this.pendingDecisions,
       stateMachine: this.stateMachine,
+      providerHealth: this.providerHealth,
       sseHub: this.sseHub,
       caffeinate: this.caffeinate,
       socketPath: this.socketPath,

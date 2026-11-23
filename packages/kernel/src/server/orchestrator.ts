@@ -16,6 +16,7 @@ import {
   getImplementAgentMode,
   getVerifyGateCheckMode,
   isAdvisorEligibleDecisionCategory,
+  isReadOnlyRosterPermission,
   parseAndValidateReceipt,
   parseFrontmatterMarkdown,
   serializeFrontmatterMarkdown,
@@ -44,6 +45,7 @@ import {
   type BackendRunSpec,
   type ExecutionBackend,
   type McpStdioMountSpec,
+  type RunAttachmentInput,
 } from "../backend/index.js";
 import {
   applyApprovedHostScopedChanges,
@@ -89,6 +91,7 @@ import {
   writeFileAtomic,
   writeYamlAtomic,
 } from "../store/index.js";
+import { resolveRunAttachmentInputs } from "./attachments.js";
 import type { CaffeinateController } from "./caffeinate.js";
 import {
   resolveMcpServerCommand,
@@ -756,6 +759,7 @@ export class KilnOrchestrator {
     this.scheduler = new KilnScheduler({
       store: this.store,
       stateMachine: this.stateMachine,
+      ...(this.providerHealth !== undefined ? { providerHealth: this.providerHealth } : {}),
       agentCapabilitiesMap: this.agentCapabilitiesMap,
       onDispatch: async (plan) => {
         await this.dispatchPlan(plan);
@@ -932,6 +936,9 @@ export class KilnOrchestrator {
           switch (runMeta.stage) {
             case "plan":
               await this.finalizePlanRun(taskId, matchingRun.dirName, runMeta);
+              break;
+            case "research":
+              await this.finalizeResearchRun(taskId, matchingRun.dirName, runMeta);
               break;
             case "implement":
               await this.finalizeWorkerRun(taskId, matchingRun.dirName, runMeta, null);
@@ -1463,6 +1470,8 @@ export class KilnOrchestrator {
   }): string {
     const { card, runId, runDirName, stage, round, role, cwd, inputRef, mcpEnabled } = params;
     const brief = readOptionalText(this.store.paths.briefMd(card.id)) ?? "";
+    const researchDoc =
+      stage !== "research" ? (readOptionalText(this.store.paths.researchMd(card.id)) ?? "") : "";
     const planDoc =
       stage !== "plan" ? (readOptionalText(this.store.paths.planMd(card.id)) ?? "") : "";
     const advisorReq =
@@ -1497,9 +1506,11 @@ export class KilnOrchestrator {
         getVerifyGateCheckMode(card) === "staged_only");
 
     const modeNote =
-      stage === "plan"
-        ? `当前为前置方案阶段 (plan · advisor)：你正在只读分析目标工作区 ${cwd} 与《产品方案》(BRIEF.md)。请产出清晰、可落地且无歧义的技术实施方案（改动模块、接口/状态设计、边界与验证要点）写在回执正文中（严禁直接修改源码或暂存文件），完成后提交 advisor 角色回执（outcome: resolved）；若必须改契约/扩 scope/人类审批，请在 frontmatter 置位 requires_* 字段或提交 outcome: need_decision。`
-        : stage === "advise"
+      stage === "research"
+        ? `当前为前置调研阶段 (research · advisor)：你正在只读分析目标工作区 ${cwd} 与《产品方案》(BRIEF.md)。请围绕代码现状、依赖边界、接口兼容与风险验证给出客观调研结论（严禁直接修改源码或暂存文件），完成后提交 advisor 角色回执（outcome: resolved）；若必须改契约/扩 scope/人类审批，请在 frontmatter 置位 requires_* 字段或提交 outcome: need_decision。`
+        : stage === "plan"
+          ? `当前为前置方案阶段 (plan · advisor)：你正在只读分析目标工作区 ${cwd} 与《产品方案》(BRIEF.md)。请产出清晰、可落地且无歧义的技术实施方案（改动模块、接口/状态设计、边界与验证要点）写在回执正文中（严禁直接修改源码或暂存文件），完成后提交 advisor 角色回执（outcome: resolved）；若必须改契约/扩 scope/人类审批，请在 frontmatter 置位 requires_* 字段或提交 outcome: need_decision。`
+          : stage === "advise"
           ? `当前为盘中技术顾问决策阶段 (advise · advisor)：你正在只读分析目标工作区 ${cwd}、产品方案、历史裁决与触发上下文。严禁直接修改源码或暂存文件；严禁擅自更改交付目标、扩大 contract.scope 或越过人类红线。请在已授权契约内给出明确可执行的单一选型建议并提交 outcome: resolved（可通过 target_stage 指定回到 implement 或 review）；若判定必须修改契约（requires_contract_change: true）、扩大 scope（requires_scope_expansion: true）或需人类批准红线副作用（requires_human_approval: true），请如实在 frontmatter 标明或提交 outcome: need_decision，由内核转交本人拍板。`
           : isHostTwoPhase
             ? `当前为 host_op 两阶段确定性执行（Phase 1 · dry_run_only）：只能把待写入/待执行的脚本、配置文件等产物放入沙盒暂存目录 ${this.store.paths.stagedDir(card.id)}，并在回执 changed_paths 中列出对应的宿主机目标绝对路径，严禁直接修改宿主机目标或运行直接改动宿主机的正式命令！Phase 1 门禁采用 staged_only（不会预先运行宿主机正式 accept_cmd），完成暂存与 dry-run 自检后请直接提交 outcome: completed（accept_result 可填 skipped 或 pass），严禁提出 action: return_external。后续落盘审批、交付命令执行与最终 accept_cmd 验真将由 Kiln 内核在 deliver 阶段原子完成。`
@@ -1566,7 +1577,18 @@ export class KilnOrchestrator {
       ledgerText,
       ``,
       ...(brief ? [`## 立项说明 (BRIEF)`, brief, ``] : []),
+      ...(researchDoc ? [`## 调研结论 (RESEARCH.md)`, researchDoc, ``] : []),
       ...(planDoc ? [`## 技术实施方案 (PLAN.md)`, planDoc, ``] : []),
+      ...(card.attachments && card.attachments.length > 0
+        ? [
+            `## 任务附件 (${card.attachments.length})`,
+            ...card.attachments.map((att) => {
+              const diskName = path.posix.basename(att.rel_path.replace(/\\/g, "/"));
+              return `- ${att.filename} (${att.mime_type}) -> ${this.store.paths.taskAttachmentFile(card.id, diskName)}`;
+            }),
+            ``,
+          ]
+        : []),
       ...(decisions ? [`## 历史裁决 (decisions)`, decisions, ``] : []),
     ].join("\n");
   }
@@ -1730,6 +1752,7 @@ export class KilnOrchestrator {
       stage: plan.stage,
       round: plan.round,
       role: plan.role,
+      ...(assignment.rosterRoleId !== undefined ? { roster_role: assignment.rosterRoleId } : {}),
       contract_version: plan.contractVersion,
       backend_id: backend.backendId,
       agent: assignment.agent,
@@ -1778,6 +1801,14 @@ export class KilnOrchestrator {
         ]
       : undefined;
 
+    const isReadOnly =
+      isReadOnlyRole(plan.role) ||
+      (assignment.perm !== undefined && isReadOnlyRosterPermission(assignment.perm));
+    const attachments: RunAttachmentInput[] = resolveRunAttachmentInputs(this.store, {
+      kind: "task",
+      taskId: plan.taskId,
+    });
+
     const runSpec: BackendRunSpec = {
       runId,
       taskId: plan.taskId,
@@ -1791,12 +1822,15 @@ export class KilnOrchestrator {
       prompt: handoffMarkdown,
       freshContext: assignment.freshContext,
       allowFullAccessFallback: assignment.allowFullAccessFallback,
+      readOnly: isReadOnly,
       ...(mcpServers !== undefined ? { mcpServers } : {}),
+      ...(attachments.length > 0 ? { attachments } : {}),
     };
 
     if (
       (plan.stage === "plan" ||
         plan.stage === "advise" ||
+        plan.stage === "research" ||
         ((plan.stage === "review" || plan.stage === "triage") &&
           (!this.approvalHandler || caps.readOnlySandbox === false))) &&
       plan.card.workspace_mode === "git_worktree"
@@ -2319,6 +2353,9 @@ export class KilnOrchestrator {
     switch (runMeta.stage) {
       case "plan":
         await this.finalizePlanRun(taskId, runDirName, runMeta);
+        break;
+      case "research":
+        await this.finalizeResearchRun(taskId, runDirName, runMeta);
         break;
       case "implement":
         await this.finalizeWorkerRun(taskId, runDirName, runMeta, exitEvent, signal);
@@ -3743,6 +3780,63 @@ export class KilnOrchestrator {
     runDirName: string,
     runMeta: RunMeta,
   ): Promise<void> {
+    await this.finalizeReadOnlyPlanningRun({
+      taskId,
+      runDirName,
+      runMeta,
+      stage: "plan",
+      outputPath: this.store.paths.planMd(taskId),
+      titlePrefix: "技术实施方案",
+      missingReceiptError: "Missing advisor PLAN RECEIPT.md",
+      needDecisionReason: "plan_need_decision",
+      needDecisionCategory: "plan_decision",
+      stageLabel: "方案阶段",
+    });
+  }
+
+  private async finalizeResearchRun(
+    taskId: string,
+    runDirName: string,
+    runMeta: RunMeta,
+  ): Promise<void> {
+    await this.finalizeReadOnlyPlanningRun({
+      taskId,
+      runDirName,
+      runMeta,
+      stage: "research",
+      outputPath: this.store.paths.researchMd(taskId),
+      titlePrefix: "调研结论与可行性报告",
+      missingReceiptError: "Missing researcher RECEIPT.md",
+      needDecisionReason: "research_need_decision",
+      needDecisionCategory: "research_decision",
+      stageLabel: "调研阶段",
+    });
+  }
+
+  private async finalizeReadOnlyPlanningRun(params: {
+    taskId: string;
+    runDirName: string;
+    runMeta: RunMeta;
+    stage: "plan" | "research";
+    outputPath: string;
+    titlePrefix: string;
+    missingReceiptError: string;
+    needDecisionReason: string;
+    needDecisionCategory: string;
+    stageLabel: string;
+  }): Promise<void> {
+    const {
+      taskId,
+      runDirName,
+      runMeta,
+      stage,
+      outputPath,
+      titlePrefix,
+      missingReceiptError,
+      needDecisionReason,
+      needDecisionCategory,
+      stageLabel,
+    } = params;
     const guard: ExpectedRunGuard = {
       runId: runMeta.run_id,
       contractVersion: runMeta.contract_version,
@@ -3772,7 +3866,7 @@ export class KilnOrchestrator {
     if (workspaceMutated) {
       this.escalateAdvisorWorkspaceMutation({
         taskId,
-        stage: "plan",
+        stage,
         card,
         runMeta,
         guard,
@@ -3784,11 +3878,11 @@ export class KilnOrchestrator {
     if (!receiptLoad.ok) {
       await this.applyStageFailure(
         taskId,
-        "plan",
+        stage,
         runMeta,
         {
           kind: "schema_invalid",
-          errors: ["Missing advisor PLAN RECEIPT.md"],
+          errors: [missingReceiptError],
         },
         guard,
       );
@@ -3798,11 +3892,11 @@ export class KilnOrchestrator {
     if (!parsed || !parsed.ok) {
       await this.applyStageFailure(
         taskId,
-        "plan",
+        stage,
         runMeta,
         {
           kind: "schema_invalid",
-          errors: parsed ? parsed.errors : ["Missing advisor PLAN RECEIPT.md"],
+          errors: parsed ? parsed.errors : [missingReceiptError],
         },
         guard,
       );
@@ -3815,12 +3909,12 @@ export class KilnOrchestrator {
     ) {
       await this.applyStageFailure(
         taskId,
-        "plan",
+        stage,
         runMeta,
         {
           kind: "schema_invalid",
           errors: [
-            `Advisor plan receipt run_id/contract_version mismatch (${parsed.frontmatter.run_id}, v${parsed.frontmatter.contract_version})`,
+            `Advisor ${stage} receipt run_id/contract_version mismatch (${parsed.frontmatter.run_id}, v${parsed.frontmatter.contract_version})`,
           ],
         },
         guard,
@@ -3839,13 +3933,13 @@ export class KilnOrchestrator {
         contract_version: card.contract_version,
         reason: authGuard.reason,
         category: "advisor_guardrail_escalation",
-        question: `技术顾问在方案阶段触发防越权护栏：${authGuard.detail}。\n- 顾问建议: ${parsed.frontmatter.chosen_approach}`,
+        question: `技术顾问在${stageLabel}触发防越权护栏：${authGuard.detail}。\n- 建议结论: ${parsed.frontmatter.chosen_approach}`,
         options: [
           {
-            id: "opt-retry-plan",
-            label: "重新生成方案（保持原边界）",
+            id: `opt-retry-${stage}`,
+            label: `重新生成（保持原边界）`,
             action: "resume",
-            target_stage: "plan",
+            target_stage: stage,
             recommended: true,
           },
           {
@@ -3869,8 +3963,8 @@ export class KilnOrchestrator {
     }
 
     if (parsed.frontmatter.outcome === "resolved") {
-      const planMarkdown = [
-        `# 技术实施方案 (${card.id})`,
+      const markdown = [
+        `# ${titlePrefix} (${card.id})`,
         ``,
         `- 选定方案: ${parsed.frontmatter.chosen_approach}`,
         `- 阶段轮次: ${runMeta.run_id}`,
@@ -3878,9 +3972,9 @@ export class KilnOrchestrator {
         parsed.body.trim(),
         ``,
       ].join("\n");
-      writeFileAtomic(this.store.paths.planMd(taskId), planMarkdown);
+      writeFileAtomic(outputPath, markdown);
       const derived = deriveTaskStatus(card, this.store.readStateEvents(taskId));
-      const next = nextTaskStageAfter(card, "plan", derived.track) ?? "implement";
+      const next = nextTaskStageAfter(card, stage, derived.track) ?? "implement";
       await this.advanceToNextStage(taskId, next, guard);
       return;
     }
@@ -3890,9 +3984,9 @@ export class KilnOrchestrator {
       task_id: taskId,
       run_id: runMeta.run_id,
       contract_version: card.contract_version,
-      reason: "plan_need_decision",
-      category: "plan_decision",
-      question: `技术顾问在方案阶段提出需人工拍板事项（${parsed.frontmatter.chosen_approach}），请确认方案方向。`,
+      reason: needDecisionReason,
+      category: needDecisionCategory,
+      question: `只读角色在${stageLabel}提出需人工拍板事项（${parsed.frontmatter.chosen_approach}），请确认方向。`,
       options: [
         {
           id: "opt-resume-implement",
@@ -3902,10 +3996,10 @@ export class KilnOrchestrator {
           recommended: true,
         },
         {
-          id: "opt-retry-plan",
-          label: "补充要求后重新生成方案",
+          id: `opt-retry-${stage}`,
+          label: "补充要求后重新执行本阶段",
           action: "resume",
-          target_stage: "plan",
+          target_stage: stage,
           recommended: false,
         },
         {
@@ -3922,7 +4016,7 @@ export class KilnOrchestrator {
 
   private escalateAdvisorWorkspaceMutation(input: {
     taskId: string;
-    stage: "plan" | "advise";
+    stage: "plan" | "research" | "advise";
     card: TaskCard;
     runMeta: RunMeta;
     guard: ExpectedRunGuard;
@@ -3935,13 +4029,16 @@ export class KilnOrchestrator {
       ? `\n- 原触发问题: ${input.advisorReq.question}`
       : "";
     const options =
-      input.stage === "plan"
+      input.stage === "plan" || input.stage === "research"
         ? [
             {
-              id: "opt-retry-plan",
-              label: "重新生成方案（请先核查工作区改动并保持边界）",
+              id: `opt-retry-${input.stage}`,
+              label:
+                input.stage === "research"
+                  ? "重新调研（请先核查工作区改动并保持只读）"
+                  : "重新生成方案（请先核查工作区改动并保持边界）",
               action: "resume" as const,
-              target_stage: "plan" as const,
+              target_stage: input.stage,
               recommended: true,
             },
             {
@@ -3987,7 +4084,9 @@ export class KilnOrchestrator {
       question:
         input.stage === "plan"
           ? `技术顾问在方案阶段触发防越权护栏：顾问仅限只读分析与方案裁决，禁止直接修改任务工作区文件（已拦截）。${approachSuffix}`
-          : `技术顾问在只读决策阶段触发防越权护栏：顾问仅限只读分析与方案裁决，禁止直接修改或提交任务工作区文件（已拦截，请先核查或清理工作区改动）。${approachSuffix}${contextSuffix}`,
+          : input.stage === "research"
+            ? `只读调研角色触发防越权护栏：调研侦察仅限只读探索，禁止修改任务工作区文件（已拦截）。${approachSuffix}`
+            : `技术顾问在只读决策阶段触发防越权护栏：顾问仅限只读分析与方案裁决，禁止直接修改或提交任务工作区文件（已拦截，请先核查或清理工作区改动）。${approachSuffix}${contextSuffix}`,
       options,
       created_at: new Date().toISOString(),
     });

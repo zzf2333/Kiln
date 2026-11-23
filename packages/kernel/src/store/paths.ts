@@ -177,6 +177,14 @@ export class KilnPaths {
     return path.join(this.draftDir(draftId), "events.ndjson");
   }
 
+  draftAttachmentsDir(draftId: string): string {
+    return path.join(this.draftDir(draftId), "attachments");
+  }
+
+  draftAttachmentFile(draftId: string, fileName: string): string {
+    return joinUnder(this.draftAttachmentsDir(draftId), fileName, "attachmentFile");
+  }
+
   get tasksDir(): string {
     return path.join(this.home, "tasks");
   }
@@ -195,6 +203,18 @@ export class KilnPaths {
 
   planMd(taskId: string): string {
     return path.join(this.taskDir(taskId), "PLAN.md");
+  }
+
+  researchMd(taskId: string): string {
+    return path.join(this.taskDir(taskId), "RESEARCH.md");
+  }
+
+  taskAttachmentsDir(taskId: string): string {
+    return path.join(this.taskDir(taskId), "attachments");
+  }
+
+  taskAttachmentFile(taskId: string, fileName: string): string {
+    return joinUnder(this.taskAttachmentsDir(taskId), fileName, "attachmentFile");
   }
 
   advisorRequestYaml(taskId: string): string {

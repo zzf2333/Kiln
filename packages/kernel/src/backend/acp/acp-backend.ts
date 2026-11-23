@@ -11,6 +11,7 @@ import {
   RequestError,
   type ClientConnection,
   type ClientContext,
+  type ContentBlock,
   type NewSessionResponse,
   type PermissionOption,
   type PromptResponse,
@@ -20,6 +21,7 @@ import {
   type ToolCallUpdate,
 } from "@agentclientprotocol/sdk";
 import {
+  MAX_ATTACHMENT_BYTES,
   type BackendCapabilities,
   type ProviderEntry,
   type RunEvent,
@@ -50,6 +52,7 @@ import {
   type BackendRunSpec,
   type ProviderProbeSnapshot,
   type ProviderTelemetryBackend,
+  type RunAttachmentInput,
   type SessionProbeResult,
 } from "../types.js";
 import {
@@ -866,7 +869,7 @@ export class AcpBackend implements ProviderTelemetryBackend {
         providerSessionId,
       });
 
-      this.dispatchPromptTurn(session, turn, initialPrompt);
+      this.dispatchPromptTurn(session, turn, initialPrompt, runSpec.attachments);
     } catch (err) {
       this.sessions.delete(sessionId);
       this.clearPendingApprovalsForSession(sessionId);
@@ -1009,11 +1012,45 @@ export class AcpBackend implements ProviderTelemetryBackend {
     return turn;
   }
 
-  private dispatchPromptTurn(session: AcpSessionState, turn: AcpTurnState, promptText: string): void {
+  private buildPromptBlocks(
+    promptText: string,
+    attachments?: readonly RunAttachmentInput[],
+  ): ContentBlock[] {
+    const blocks: ContentBlock[] = [{ type: "text", text: promptText }];
+    if (!attachments || attachments.length === 0 || !this.cachedCapabilities.imageInput) {
+      return blocks;
+    }
+
+    for (const att of attachments) {
+      try {
+        const st = fs.statSync(att.path);
+        if (!st.isFile() || st.size <= 0 || st.size > MAX_ATTACHMENT_BYTES) {
+          continue;
+        }
+        const data = fs.readFileSync(att.path).toString("base64");
+        blocks.push({
+          type: "image",
+          mimeType: att.mimeType,
+          data,
+        });
+      } catch {
+        // Ignore unreadable attachment files so text execution still proceeds.
+      }
+    }
+    return blocks;
+  }
+
+  private dispatchPromptTurn(
+    session: AcpSessionState,
+    turn: AcpTurnState,
+    promptText: string,
+    attachments?: readonly RunAttachmentInput[],
+  ): void {
+    const prompt = this.buildPromptBlocks(promptText, attachments);
     void session.agentCtx
       .request("session/prompt", {
         sessionId: session.providerSessionId,
-        prompt: [{ type: "text", text: promptText }],
+        prompt,
       })
       .then((res) => {
         if (turn.queue.isFinished()) {

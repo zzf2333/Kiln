@@ -82,7 +82,7 @@ export const WbSplitCardsPlanInputSchema = z.object({
 });
 export type WbSplitCardsPlanInput = z.infer<typeof WbSplitCardsPlanInputSchema>;
 
-export const WbPlanInputSchema = z.discriminatedUnion("mode", [
+const WbPlanBaseUnionSchema = z.discriminatedUnion("mode", [
   z.object({
     mode: z.literal("upsert_draft"),
     draft_id: z.string().min(1),
@@ -121,7 +121,26 @@ export const WbPlanInputSchema = z.discriminatedUnion("mode", [
     affected_stages: z.array(StageIdSchema).min(1),
     rationale: z.string().min(1),
   }),
+  z.object({
+    mode: z.literal("commit_split_cards"),
+    draft_id: z.string().min(1).optional(),
+    cards: z.array(SplitCardPlanItemSchema).min(2).max(12),
+  }),
 ]);
+
+export const WbPlanInputSchema = WbPlanBaseUnionSchema.superRefine((val, ctx) => {
+  if (val.mode === "commit_split_cards") {
+    const dag = validateSplitCardsDag(val.cards);
+    if (!dag.ok) {
+      for (const err of dag.errors) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: err,
+        });
+      }
+    }
+  }
+});
 
 export const WbAskDecisionInputSchema = z.object({
   category: z.string().min(1),

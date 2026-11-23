@@ -201,7 +201,9 @@ describe("@kiln/mcp server & client", () => {
     expect(wbPlanTool?.inputSchema.properties).toHaveProperty("brief_markdown");
     expect(wbPlanTool?.inputSchema.properties).toHaveProperty("open_questions");
     expect(Array.isArray(wbPlanTool?.inputSchema.anyOf)).toBe(true);
-    expect((wbPlanTool?.inputSchema.anyOf as unknown[]).length).toBe(3);
+    expect((wbPlanTool?.inputSchema.anyOf as unknown[]).length).toBe(4);
+    const modeProp = wbPlanTool?.inputSchema.properties?.mode as { enum?: string[] } | undefined;
+    expect(modeProp?.enum).toContain("commit_split_cards");
   });
 
   it("forwards all 7 valid tool calls with Bearer KILN_RUN_TOKEN to /rpc/mcp/:tool", async () => {
@@ -450,6 +452,49 @@ describe("@kiln/mcp server & client", () => {
     };
     expect(unknownPayload.error).toBe("unknown_tool");
     expect(unknownPayload.tool).toBe("merge_main");
+    expect(rpcCount).toBe(0);
+
+    const cyclicSplit = await pair.mcpClient.callTool({
+      name: "wb_plan",
+      arguments: {
+        mode: "commit_split_cards",
+        cards: [
+          {
+            temp_id: "a",
+            title: "Card A",
+            space: "local",
+            workspace_mode: "scratch_dir",
+            depends_on_temp_ids: ["b"],
+            contract: {
+              goal: "g",
+              end: "out.txt",
+              accept_cmd: "test -f out.txt",
+              accept_files_hash: "deadbeef",
+              scope: ["out.txt"],
+              deliver: { mode: "manual" },
+            },
+            brief_markdown: "A",
+          },
+          {
+            temp_id: "b",
+            title: "Card B",
+            space: "local",
+            workspace_mode: "scratch_dir",
+            depends_on_temp_ids: ["a"],
+            contract: {
+              goal: "g2",
+              end: "out2.txt",
+              accept_cmd: "test -f out2.txt",
+              accept_files_hash: "deadbeef",
+              scope: ["out2.txt"],
+              deliver: { mode: "manual" },
+            },
+            brief_markdown: "B",
+          },
+        ],
+      },
+    });
+    expect(cyclicSplit.isError).toBe(true);
     expect(rpcCount).toBe(0);
   });
 

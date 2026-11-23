@@ -25,6 +25,7 @@ import {
   RunMetaSchema,
   SessionRefSchema,
   SpaceConfigSchema,
+  SplitCardPlanItemSchema,
   StageIdSchema,
   SyncPricingRequestSchema,
   TaskCardSchema,
@@ -74,6 +75,14 @@ import {
 } from "../store/index.js";
 import type { CaffeinateController } from "./caffeinate.js";
 import {
+  MAX_ATTACHMENT_UPLOAD_BODY_BYTES,
+  copyDraftAttachmentsToTask,
+  deleteDraftAttachment,
+  resolveReadableAttachmentFile,
+  saveDraftAttachment,
+  validateCommitAttachments,
+} from "./attachments.js";
+import {
   ChatMessageRecordSchema,
   getBuiltinChatCommands,
   KilnChatEngine,
@@ -114,6 +123,7 @@ import {
   validateCommitWorkflow,
   validateCommitWorkspace,
 } from "./space-inspect.js";
+import { commitSplitCards } from "./split-commit.js";
 import type { SseHub } from "./sse.js";
 import {
   createStaticFilesHandler,
@@ -251,6 +261,85 @@ const DecideExtensionsSchema = z.object({
   contractUpdate: ContractUpdatePayloadSchema.optional(),
   contract_update: ContractUpdateSnakePayloadSchema.optional(),
 });
+
+const CommitSplitDraftRequestSchema = z.object({
+  cards: z.array(SplitCardPlanItemSchema).min(2).max(12),
+});
+
+const AttachmentJsonUploadSchema = z.object({
+  filename: z.string().trim().min(1),
+  mime_type: z.string().trim().min(1),
+  data_base64: z.string().min(1),
+});
+
+async function readAttachmentUploadPayload(
+  c: Context,
+): Promise<{ filename: string; mimeType: string; bytes: Buffer }> {
+  const rawLen = c.req.header("content-length");
+  if (rawLen && /^\d+$/.test(rawLen.trim())) {
+    const contentLen = Number.parseInt(rawLen.trim(), 10);
+    if (contentLen > MAX_ATTACHMENT_UPLOAD_BODY_BYTES) {
+      throw new ServerHttpError(413, {
+        error: "payload_too_large",
+        message: `Attachment upload exceeds ${MAX_ATTACHMENT_UPLOAD_BODY_BYTES} bytes`,
+      });
+    }
+  }
+
+  const contentType = (c.req.header("content-type") ?? "").toLowerCase();
+  if (contentType.includes("multipart/form-data")) {
+    const form = await c.req.raw.formData();
+    const fileEntry = form.get("file");
+    if (!fileEntry || typeof fileEntry === "string") {
+      throw new ServerHttpError(400, {
+        error: "invalid_request",
+        message: 'Multipart form upload requires a binary "file" field',
+      });
+    }
+    if (fileEntry.size > MAX_ATTACHMENT_UPLOAD_BODY_BYTES) {
+      throw new ServerHttpError(413, {
+        error: "attachment_too_large",
+        message: `Uploaded file exceeds ${MAX_ATTACHMENT_UPLOAD_BODY_BYTES} bytes`,
+      });
+    }
+    const buf = Buffer.from(await fileEntry.arrayBuffer());
+    return {
+      filename: fileEntry.name || "screenshot.png",
+      mimeType: fileEntry.type || "application/octet-stream",
+      bytes: buf,
+    };
+  }
+
+  const rawText = await c.req.text();
+  if (Buffer.byteLength(rawText, "utf8") > MAX_ATTACHMENT_UPLOAD_BODY_BYTES) {
+    throw new ServerHttpError(413, {
+      error: "payload_too_large",
+      message: `Attachment upload exceeds ${MAX_ATTACHMENT_UPLOAD_BODY_BYTES} bytes`,
+    });
+  }
+  let rawJson: unknown;
+  try {
+    rawJson = JSON.parse(rawText) as unknown;
+  } catch {
+    throw new ServerHttpError(400, {
+      error: "invalid_json",
+      message: "Request body must be valid JSON",
+    });
+  }
+  const parsed = AttachmentJsonUploadSchema.parse(rawJson);
+  const cleanedB64 = parsed.data_base64.replace(/^data:[^;]+;base64,/i, "").replace(/\s+/g, "");
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(cleanedB64) || cleanedB64.length % 4 !== 0) {
+    throw new ServerHttpError(400, {
+      error: "invalid_request",
+      message: "data_base64 must be valid base64",
+    });
+  }
+  return {
+    filename: parsed.filename,
+    mimeType: parsed.mime_type,
+    bytes: Buffer.from(cleanedB64, "base64"),
+  };
+}
 
 const ChatMessageBodySchema = z.object({
   message: z.string().trim().min(1),
@@ -1332,6 +1421,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
 
     const brief = readOptionalText(store.paths.briefMd(taskId)) ?? "";
     const plan = readOptionalText(store.paths.planMd(taskId)) ?? "";
+    const research = readOptionalText(store.paths.researchMd(taskId)) ?? "";
     const decisions = readOptionalText(store.paths.decisionsMd(taskId)) ?? "";
     const pendingDecision = pendingDecisions.get(taskId);
     const ledgerProposals = readLedgerProposals(store, taskId);
@@ -1418,6 +1508,8 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       },
       brief,
       plan,
+      research,
+      attachments: card.attachments ?? [],
       decisions,
       pendingDecision,
       ledgerProposals,
@@ -1512,6 +1604,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       ...((input.workflow ?? existing?.workflow) !== undefined
         ? { workflow: input.workflow ?? existing?.workflow }
         : {}),
+      ...(existing?.attachments !== undefined ? { attachments: existing.attachments } : {}),
       contract: {
         ...(existing?.contract ?? {}),
         ...(input.contract ?? {}),
@@ -1566,37 +1659,56 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       input.id ?? `t-${randomUUID().slice(0, 8)}`,
       "taskId",
     );
+    if (store.getTaskIndex(taskId) !== null || fs.existsSync(store.paths.cardYaml(taskId))) {
+      throw new ServerHttpError(409, {
+        error: "task_already_exists",
+        taskId,
+        message: `Task "${taskId}" already exists`,
+      });
+    }
     const space = assertSafeSegment(input.space ?? existingDraft.space, "space");
     const workspaceMode = input.workspace_mode ?? existingDraft.workspace_mode;
     validateCommitWorkspace(store, space, workspaceMode);
+    const nextWorkflow = input.workflow ?? existingDraft.workflow;
+    const roster = store.readEffectiveRosterConfig();
+    validateCommitWorkflow(workspaceMode, nextWorkflow, roster);
 
     const now = new Date().toISOString();
-    const card = TaskCardSchema.parse({
-      schema_version: 1,
-      id: taskId,
-      title: input.title ?? existingDraft.title,
-      space,
-      priority: input.priority ?? existingDraft.priority,
-      track: input.track ?? existingDraft.track,
-      workspace_mode: workspaceMode,
-      parent: input.parent ?? null,
-      depends_on: input.depends_on ?? existingDraft.depends_on,
-      ...((input.workflow ?? existingDraft.workflow) !== undefined
-        ? { workflow: input.workflow ?? existingDraft.workflow }
-        : {}),
-      contract_version: 1,
-      contract: {
-        ...existingDraft.contract,
-        ...(input.contract ?? {}),
-      },
-      limits: resolveCardLimits(store, input.limits),
-      created_at: now,
-      updated_at: now,
-    });
-    validateCommitContract(store, card.contract);
-    validateCommitWorkflow(card.workspace_mode, card.workflow);
 
-    const created = stateMachine.createTask(card, effectiveBrief);
+    let created;
+    try {
+      const copiedAttachments =
+        existingDraft.attachments && existingDraft.attachments.length > 0
+          ? copyDraftAttachmentsToTask(store, draftId, taskId, existingDraft.attachments)
+          : [];
+      validateCommitAttachments(copiedAttachments, taskId);
+      const card = TaskCardSchema.parse({
+        schema_version: 1,
+        id: taskId,
+        title: input.title ?? existingDraft.title,
+        space,
+        priority: input.priority ?? existingDraft.priority,
+        track: input.track ?? existingDraft.track,
+        workspace_mode: workspaceMode,
+        parent: input.parent ?? null,
+        depends_on: input.depends_on ?? existingDraft.depends_on,
+        ...(nextWorkflow !== undefined ? { workflow: nextWorkflow } : {}),
+        ...(copiedAttachments.length > 0 ? { attachments: copiedAttachments } : {}),
+        contract_version: 1,
+        contract: {
+          ...existingDraft.contract,
+          ...(input.contract ?? {}),
+        },
+        limits: resolveCardLimits(store, input.limits),
+        created_at: now,
+        updated_at: now,
+      });
+      validateCommitContract(store, card.contract);
+      created = stateMachine.createTask(card, effectiveBrief);
+    } catch (err) {
+      store.deleteTaskOnRollback(taskId);
+      throw err;
+    }
     store.deleteDraft(draftId);
     if (created.state.status === "waiting") {
       const dec = pendingDecisions.ensureUpstreamCancelledDecision(created.card.id);
@@ -1635,6 +1747,90 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       },
       201,
     );
+  });
+
+  app.post("/api/drafts/:id/commit-split", async (c) => {
+    const { draftId } = requireExistingDraft(c.req.param("id"));
+    const rawBody = await readJsonBodyStrict(c);
+    const parsed = CommitSplitDraftRequestSchema.parse(rawBody);
+    const res = commitSplitCards(
+      {
+        store,
+        stateMachine,
+        pendingDecisions,
+        sseHub,
+        caffeinate,
+        ...(onTaskQueued !== undefined ? { onTaskQueued } : {}),
+      },
+      {
+        mode: "commit_split_cards",
+        draft_id: draftId,
+        cards: parsed.cards,
+      },
+    );
+    return c.json(res, 201);
+  });
+
+  app.post("/api/drafts/:id/attachments", async (c) => {
+    const { draftId } = requireExistingDraft(c.req.param("id"));
+    const upload = await readAttachmentUploadPayload(c);
+    const saved = saveDraftAttachment(store, draftId, upload);
+    return c.json(
+      {
+        ok: true,
+        attachment: saved.attachment,
+        draft: serializeDraftWithBrief(saved.draft),
+      },
+      201,
+    );
+  });
+
+  app.delete("/api/drafts/:id/attachments/:attachmentId", (c) => {
+    const { draftId } = requireExistingDraft(c.req.param("id"));
+    const nextDraft = deleteDraftAttachment(store, draftId, c.req.param("attachmentId"));
+    return c.json({
+      ok: true,
+      deleted: true,
+      draft: serializeDraftWithBrief(nextDraft),
+    });
+  });
+
+  app.get("/api/drafts/:id/attachments/:attachmentId", (c) => {
+    const { draftId } = requireExistingDraft(c.req.param("id"));
+    const { attachment, absPath } = resolveReadableAttachmentFile(
+      store,
+      { kind: "draft", draftId },
+      c.req.param("attachmentId"),
+    );
+    const bytes = fs.readFileSync(absPath);
+    return new Response(bytes, {
+      status: 200,
+      headers: {
+        "Content-Type": attachment.mime_type,
+        "Content-Length": String(bytes.length),
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "private, max-age=3600",
+      },
+    });
+  });
+
+  app.get("/api/tasks/:id/attachments/:attachmentId", (c) => {
+    const taskId = requireExistingTask(c.req.param("id"));
+    const { attachment, absPath } = resolveReadableAttachmentFile(
+      store,
+      { kind: "task", taskId },
+      c.req.param("attachmentId"),
+    );
+    const bytes = fs.readFileSync(absPath);
+    return new Response(bytes, {
+      status: 200,
+      headers: {
+        "Content-Type": attachment.mime_type,
+        "Content-Length": String(bytes.length),
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "private, max-age=3600",
+      },
+    });
   });
 
   app.get("/api/tasks/:id/chat", (c) => {

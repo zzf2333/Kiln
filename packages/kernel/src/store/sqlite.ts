@@ -353,6 +353,24 @@ export class KilnSqliteIndex {
     });
   }
 
+  deleteTaskIndex(id: string): void {
+    this.db.transaction(() => {
+      for (const sql of [
+        `DELETE FROM stage_leases WHERE task_id = ?`,
+        `DELETE FROM host_path_locks WHERE task_id = ?`,
+        `DELETE FROM usage_turns WHERE task_id = ?`,
+        `DELETE FROM tasks_index WHERE id = ?`,
+      ]) {
+        const stmt = this.db.prepare(sql);
+        try {
+          stmt.run(id);
+        } finally {
+          stmt.finalize();
+        }
+      }
+    });
+  }
+
   getTaskIndex(id: string): TaskIndexRow | null {
     const row = this.getTaskStmt.get(id) as TaskIndexRow | undefined;
     return row ?? null;

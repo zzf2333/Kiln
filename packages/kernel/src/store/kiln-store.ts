@@ -243,6 +243,8 @@ export function deriveTaskStatus(
       case "track_escalated":
         track = event.to;
         break;
+      case "checkpoint_rolled_back":
+        break;
     }
   }
 
@@ -1151,6 +1153,15 @@ export class KilnStore {
       }
       throw error;
     }
+  }
+
+  /**
+   * Rolls back a partially committed task created during an atomic multi-card split commit.
+   */
+  deleteTaskOnRollback(taskId: string): void {
+    const safeTaskId = assertSafeSegment(taskId, "taskId");
+    this.sqlite.deleteTaskIndex(safeTaskId);
+    fs.rmSync(this.paths.taskDir(safeTaskId), { recursive: true, force: true });
   }
 
   close(): void {

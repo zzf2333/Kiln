@@ -303,6 +303,12 @@ export const StateEventSchema = z.discriminatedUnion("type", [
     to: TrackSchema,
     reason: z.string().min(1),
   }),
+  z.object({
+    type: z.literal("checkpoint_rolled_back"),
+    at: z.string().min(1),
+    checkpoint_ref: z.string().min(1),
+    commit_sha: z.string().min(1),
+  }),
 ]);
 export type StateEvent = z.infer<typeof StateEventSchema>;
 

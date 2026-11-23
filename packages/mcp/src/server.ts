@@ -8,7 +8,7 @@ import {
   type CallToolResult,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import { ZodError } from "zod";
+import { z, ZodError } from "zod";
 import {
   MCP_TOOL_NAMES,
   McpToolNameSchema,
@@ -55,7 +55,7 @@ const TOOL_DESCRIPTIONS: Record<McpToolName, string> = {
     "Read-only list of tasks and associated space configurations, optionally filtered by space or status.",
   wb_read_ledger: "Read long-term engineering constraint entries from the space ledger.",
   wb_plan:
-    "Create or update a task draft (upsert_draft), commit a formal task card (commit_card), or bump contract_version with affected stages (update_contract).",
+    "Create or update a task draft (upsert_draft), commit a formal task card (commit_card), commit split dependent cards (commit_split_cards), or bump contract_version with affected stages (update_contract).",
   wb_ask_decision:
     "Suspend execution into waiting state and submit a structured pending decision with explicit action options.",
   wb_submit_receipt:
@@ -79,14 +79,19 @@ function stripDollarSchema(schema: Record<string, unknown>): Record<string, unkn
  */
 function buildToolInputSchema(tool: McpToolName): ToolInputSchema {
   if (tool === "wb_plan") {
+    const rawPlanUnion = (
+      "_def" in WbPlanInputSchema && "schema" in WbPlanInputSchema._def
+        ? WbPlanInputSchema._def.schema
+        : WbPlanInputSchema
+    ) as z.ZodTypeAny & { options: readonly z.ZodTypeAny[] };
     const unionJson = stripDollarSchema(
-      toJsonSchemaCompat(WbPlanInputSchema, {
+      toJsonSchemaCompat(rawPlanUnion, {
         strictUnions: true,
         pipeStrategy: "input",
       }),
     );
     const mergedProperties: Record<string, object> = {};
-    for (const option of WbPlanInputSchema.options) {
+    for (const option of rawPlanUnion.options) {
       const optJson = toJsonSchemaCompat(option, {
         strictUnions: true,
         pipeStrategy: "input",
@@ -97,7 +102,7 @@ function buildToolInputSchema(tool: McpToolName): ToolInputSchema {
     }
     mergedProperties.mode = {
       type: "string",
-      enum: ["upsert_draft", "commit_card", "update_contract"],
+      enum: ["upsert_draft", "commit_card", "update_contract", "commit_split_cards"],
     };
 
     return {

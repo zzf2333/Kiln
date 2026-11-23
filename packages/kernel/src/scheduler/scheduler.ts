@@ -1,17 +1,23 @@
+import fs from "node:fs";
 import {
   LimitsConfigSchema,
   PRIORITY_RANK,
+  RunMetaSchema,
+  flattenWorkflowSteps,
   getStageNodeKind,
+  resolveTaskWorkflow,
   type BackendCapabilities,
   type LimitsConfig,
   type Priority,
   type RoleId,
   type RolesConfig,
+  type RosterConfig,
   type StageId,
   type StateEvent,
   type TaskCard,
   type TaskStatus,
 } from "@kiln/protocol";
+import type { ProviderHealthTracker } from "../backend/provider-health.js";
 import {
   UnsupportedTrackError,
   computeEffectivePriorities,
@@ -21,6 +27,7 @@ import {
 } from "../state/index.js";
 import {
   deriveTaskStatus,
+  readYamlOptional,
   type DerivedTaskState,
   type KilnStore,
   type TaskIndexRow,
@@ -36,6 +43,7 @@ import {
 } from "./locks.js";
 import {
   resolveRoleAssignment,
+  resolveRosterStageAssignment,
   type ResolvedRoleAssignment,
 } from "./role-resolver.js";
 
@@ -84,6 +92,7 @@ export interface KilnSchedulerOptions {
   limits?: LimitsConfig;
   rolesConfig?: RolesConfig;
   rateLimitTracker?: RateLimitTracker;
+  providerHealth?: ProviderHealthTracker;
   agentCapabilitiesMap?: ReadonlyMap<string, BackendCapabilities>;
   resolveHostTargetPaths?: (card: TaskCard, store: KilnStore) => readonly string[];
   now?: () => number;
@@ -117,6 +126,28 @@ function compareStringAsc(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+function findLatestImplementAgentModel(
+  store: KilnStore,
+  taskId: string,
+): { agent: string; model: string } | null {
+  const runsDir = store.paths.runsDir(taskId);
+  if (!fs.existsSync(runsDir)) {
+    return null;
+  }
+  const dirs = fs
+    .readdirSync(runsDir, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && !d.name.startsWith("."))
+    .map((d) => d.name)
+    .sort((a, b) => b.localeCompare(a));
+  for (const dirName of dirs) {
+    const meta = readYamlOptional(store.paths.runYaml(taskId, dirName), RunMetaSchema);
+    if (meta && meta.stage === "implement") {
+      return { agent: meta.agent, model: meta.model };
+    }
+  }
+  return null;
+}
+
 function getRoleForStage(stage: StageId): RoleId | null {
   switch (stage) {
     case "intake":
@@ -137,7 +168,7 @@ function getRoleForStage(stage: StageId): RoleId | null {
     case "deliver":
       return null;
     case "research":
-      throw new UnsupportedTrackError("L3");
+      return "advisor";
   }
 }
 
@@ -227,6 +258,7 @@ export class KilnScheduler {
   private readonly limitsOverride: LimitsConfig | undefined;
   private readonly rolesConfigOverride: RolesConfig | undefined;
   private readonly rateLimitTracker: RateLimitTracker;
+  private readonly providerHealth: ProviderHealthTracker | undefined;
   private readonly agentCapabilitiesMap: ReadonlyMap<string, BackendCapabilities> | undefined;
   private readonly resolveHostTargetPaths:
     | ((card: TaskCard, store: KilnStore) => readonly string[])
@@ -260,6 +292,7 @@ export class KilnScheduler {
       : undefined;
     this.rolesConfigOverride = options.rolesConfig;
     this.rateLimitTracker = options.rateLimitTracker ?? new RateLimitTracker();
+    this.providerHealth = options.providerHealth;
     this.agentCapabilitiesMap = options.agentCapabilitiesMap;
     this.resolveHostTargetPaths = options.resolveHostTargetPaths;
     this.now = options.now ?? (() => Date.now());
@@ -404,7 +437,9 @@ export class KilnScheduler {
     this.rateLimitTracker.pruneExpired(nowMs);
 
     const limits = this.loadLimits();
-    const rolesConfig = this.loadRolesConfig();
+    const rosterConfig: RosterConfig | null =
+      this.rolesConfigOverride === undefined ? this.store.readConfig("roster") : null;
+    const rolesConfig = rosterConfig === null ? this.loadRolesConfig() : null;
     const rows = this.store.listTasks();
     const activeLeases = this.store.listActiveStageLeases();
     const activeLeaseTaskIds = new Set(activeLeases.map((lease) => lease.task_id));
@@ -614,7 +649,45 @@ export class KilnScheduler {
             ? null
             : getRoleForStage(stage);
 
-        if (rolesConfig && role !== null) {
+        if (rosterConfig !== null && role !== null) {
+          const workflowNodes = flattenWorkflowSteps(resolveTaskWorkflow(snap.card));
+          const stageNode = workflowNodes.find(
+            (n) => n.kind === "agent" && n.stage === stage,
+          );
+          let avoidAgentModel: { agent: string; model: string } | null = null;
+          if (stage === "review") {
+            avoidAgentModel = findLatestImplementAgentModel(this.store, taskId);
+            if (!avoidAgentModel) {
+              const implNode = workflowNodes.find(
+                (n) => n.kind === "agent" && n.stage === "implement",
+              );
+              const implKey =
+                implNode?.kind === "agent" && implNode.roster_role
+                  ? implNode.roster_role
+                  : "main_dev";
+              const implEntry = rosterConfig.roster[implKey];
+              if (implEntry?.enabled && implEntry.primary) {
+                avoidAgentModel = {
+                  agent: implEntry.primary.provider,
+                  model: implEntry.primary.model,
+                };
+              }
+            }
+          }
+
+          roleAssignment = resolveRosterStageAssignment(rosterConfig, stage, role, {
+            ...(stageNode?.kind === "agent" && stageNode.roster_role
+              ? { rosterRoleId: stageNode.roster_role }
+              : {}),
+            ...(avoidAgentModel !== null ? { avoidAgentModel } : {}),
+            ...(this.agentCapabilitiesMap !== undefined
+              ? { agentCapabilitiesMap: this.agentCapabilitiesMap }
+              : {}),
+            isCoolingDown: (key) =>
+              this.rateLimitTracker.getCooldownUntil(key, nowMs) !== null ||
+              (this.providerHealth?.isInCooldown(key.agent, nowMs) ?? false),
+          });
+        } else if (rolesConfig && role !== null) {
           const shouldResolveRole =
             (stage !== "accept" && stage !== "plan") ||
             rolesConfig.roles[role] !== undefined;
@@ -640,7 +713,21 @@ export class KilnScheduler {
           agent: roleAssignment.agent,
           model: roleAssignment.model,
         };
-        const cooldownUntilMs = this.rateLimitTracker.getCooldownUntil(rlKey, nowMs);
+        const trackerCooldownMs = this.rateLimitTracker.getCooldownUntil(rlKey, nowMs);
+        const healthCooldownIso = this.providerHealth?.getCooldownUntil(
+          roleAssignment.agent,
+          nowMs,
+        );
+        const parsedHealthMs = healthCooldownIso ? Date.parse(healthCooldownIso) : Number.NaN;
+        const healthCooldownMs =
+          Number.isFinite(parsedHealthMs) && parsedHealthMs > nowMs ? parsedHealthMs : null;
+        if (healthCooldownMs !== null && trackerCooldownMs === null) {
+          this.rateLimitTracker.markRateLimited(rlKey, healthCooldownMs - nowMs, nowMs);
+        }
+        const cooldownUntilMs =
+          trackerCooldownMs !== null && healthCooldownMs !== null
+            ? Math.max(trackerCooldownMs, healthCooldownMs)
+            : (trackerCooldownMs ?? healthCooldownMs);
         if (cooldownUntilMs !== null) {
           const deferredEvent: RateLimitDeferredEvent = {
             taskId,

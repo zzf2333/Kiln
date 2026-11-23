@@ -29,6 +29,7 @@ import {
   type RunTokenClaims,
   type SpaceConfig,
   type StageId,
+  type TaskAttachment,
   type TaskCard,
 } from "@kiln/protocol";
 import {
@@ -46,6 +47,7 @@ import {
   type DerivedTaskState,
 } from "../store/index.js";
 import type { CaffeinateController } from "./caffeinate.js";
+import { copyDraftAttachmentsToTask, validateCommitAttachments } from "./attachments.js";
 import { ServerHttpError, mapDomainError } from "./errors.js";
 import {
   createNetHttpServer,
@@ -65,6 +67,7 @@ import {
   validateCommitWorkflow,
   validateCommitWorkspace,
 } from "./space-inspect.js";
+import { commitSplitCards } from "./split-commit.js";
 import type { SseHub } from "./sse.js";
 import { RunTokenAuthError, verifyRunToken } from "./token.js";
 
@@ -744,6 +747,7 @@ export class McpRpcServer {
     WbGetContextInputSchema.parse(rawBody);
     const card = this.requireCard(claims.taskId);
     const brief = readOptionalText(this.store.paths.briefMd(claims.taskId)) ?? "";
+    const research = readOptionalText(this.store.paths.researchMd(claims.taskId)) ?? "";
     const plan = readOptionalText(this.store.paths.planMd(claims.taskId)) ?? "";
     const stateEvents = this.store.readStateEvents(claims.taskId);
     const derived = deriveTaskStatus(card, stateEvents);
@@ -762,6 +766,7 @@ export class McpRpcServer {
       contract_version: card.contract_version,
       card,
       brief,
+      research,
       plan,
       state: {
         ...derived,
@@ -855,6 +860,8 @@ export class McpRpcServer {
           ...((input.workflow ?? existing?.workflow) !== undefined
             ? { workflow: input.workflow ?? existing?.workflow }
             : {}),
+          // Preserve HTTP-managed draft attachments; ignore unvalidated attachments metadata from agent RPC.
+          ...(existing?.attachments !== undefined ? { attachments: existing.attachments } : {}),
           contract: {
             ...(existing?.contract ?? {}),
             ...(input.contract ?? {}),
@@ -896,29 +903,62 @@ export class McpRpcServer {
           assertSafeSegment(input.draft_id, "draft_id");
         }
         validateCommitWorkspace(this.store, input.space, input.workspace_mode);
+        const roster = this.store.readEffectiveRosterConfig();
+        validateCommitWorkflow(input.workspace_mode, input.workflow, roster);
 
-        const taskId = `t-${randomUUID().slice(0, 8)}`;
-        const card = TaskCardSchema.parse({
-          schema_version: 1,
-          id: taskId,
-          title: input.title,
-          space: input.space,
-          priority: input.priority,
-          track: input.track,
-          workspace_mode: input.workspace_mode,
-          parent: input.parent,
-          depends_on: input.depends_on,
-          ...(input.workflow !== undefined ? { workflow: input.workflow } : {}),
-          contract_version: 1,
-          contract: input.contract,
-          limits: resolveCardLimits(this.store, input.limits),
-          created_at: now,
-          updated_at: now,
-        });
-        validateCommitContract(this.store, card.contract);
-        validateCommitWorkflow(card.workspace_mode, card.workflow);
+        validateCommitContract(this.store, input.contract);
 
-        const created = this.stateMachine.createTask(card, input.brief_markdown);
+        let taskId = `t-${randomUUID().slice(0, 8)}`;
+        while (
+          this.store.getTaskIndex(taskId) !== null ||
+          fs.existsSync(this.store.paths.cardYaml(taskId))
+        ) {
+          taskId = `t-${randomUUID().slice(0, 8)}`;
+        }
+
+        let created;
+        try {
+          let resolvedAttachments: TaskAttachment[] | undefined = input.attachments;
+          if (input.draft_id !== undefined) {
+            const copied = copyDraftAttachmentsToTask(
+              this.store,
+              input.draft_id,
+              taskId,
+              input.attachments,
+            );
+            if (copied.length > 0) {
+              resolvedAttachments = copied;
+            }
+          }
+          if (resolvedAttachments) {
+            validateCommitAttachments(resolvedAttachments, taskId);
+          }
+
+          const card = TaskCardSchema.parse({
+            schema_version: 1,
+            id: taskId,
+            title: input.title,
+            space: input.space,
+            priority: input.priority,
+            track: input.track,
+            workspace_mode: input.workspace_mode,
+            parent: input.parent,
+            depends_on: input.depends_on,
+            ...(input.workflow !== undefined ? { workflow: input.workflow } : {}),
+            ...(resolvedAttachments !== undefined ? { attachments: resolvedAttachments } : {}),
+            contract_version: 1,
+            contract: input.contract,
+            limits: resolveCardLimits(this.store, input.limits),
+            created_at: now,
+            updated_at: now,
+          });
+          validateCommitContract(this.store, card.contract);
+
+          created = this.stateMachine.createTask(card, input.brief_markdown);
+        } catch (err) {
+          this.store.deleteTaskOnRollback(taskId);
+          throw err;
+        }
         if (input.draft_id !== undefined) {
           this.store.deleteDraft(input.draft_id);
         }
@@ -955,6 +995,22 @@ export class McpRpcServer {
             ...created.state,
             effectivePriority: created.effectivePriority,
           },
+        };
+      }
+
+      case "commit_split_cards": {
+        return {
+          ...commitSplitCards(
+            {
+              store: this.store,
+              stateMachine: this.stateMachine,
+              pendingDecisions: this.pendingDecisions,
+              sseHub: this.sseHub,
+              caffeinate: this.caffeinate,
+              ...(this.onTaskQueued !== undefined ? { onTaskQueued: this.onTaskQueued } : {}),
+            },
+            input,
+          ),
         };
       }
 

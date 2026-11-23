@@ -25,6 +25,7 @@ import {
   type WorkflowBlueprint,
 } from "@kiln/protocol";
 import {
+  ProviderHealthTracker,
   assertRoleAgentEligible,
   isFullAccessMode,
   type BackendAgentDescriptor,
@@ -33,6 +34,7 @@ import {
   type BackendRunSpec,
   type ExecutionBackend,
   type McpStdioMountSpec,
+  type RunAttachmentInput,
 } from "../backend/index.js";
 import type { TaskStateMachine } from "../state/index.js";
 import {
@@ -44,6 +46,7 @@ import {
   readNdjsonValidated,
   writeFileAtomic,
 } from "../store/index.js";
+import { resolveRunAttachmentInputs } from "./attachments.js";
 import type { CaffeinateController } from "./caffeinate.js";
 import { ServerHttpError } from "./errors.js";
 import { discoverMcpServers, discoverSkills } from "./extensions.js";
@@ -94,6 +97,7 @@ const NonMcpDraftPatchSchema = z.object({
   workspace_mode: z.enum(["git_worktree", "host_scoped", "scratch_dir"]).optional(),
   workflow_preset: z.enum(["quick", "host_op", "standard_dev", "full_delivery"]).optional(),
   workflow: WorkflowBlueprintSchema.optional(),
+  pm_rationale: optionalTrimmedString,
   depends_on: optionalStringList,
   open_questions: optionalStringList,
   brief_markdown: z.string().optional(),
@@ -103,6 +107,7 @@ const NonMcpDraftPatchSchema = z.object({
       end: optionalTrimmedString,
       accept_cmd: optionalTrimmedString,
       scope: optionalStringList,
+      non_goals: optionalStringList,
       deliver: DeliverConfigSchema.optional(),
     })
     .optional(),
@@ -638,6 +643,7 @@ export interface KilnChatEngineOptions {
   backendRegistry: BackendRegistry;
   pendingDecisions: PendingDecisionStore;
   stateMachine?: TaskStateMachine;
+  providerHealth?: ProviderHealthTracker;
   sseHub?: SseHub;
   caffeinate?: CaffeinateController;
   socketPath: string;
@@ -673,6 +679,7 @@ export class KilnChatEngine {
   private readonly backendRegistry: BackendRegistry;
   private readonly pendingDecisions: PendingDecisionStore;
   private readonly stateMachine: TaskStateMachine | undefined;
+  private readonly providerHealth: ProviderHealthTracker | undefined;
   private readonly sseHub: SseHub | undefined;
   private readonly caffeinate: CaffeinateController | undefined;
   private readonly socketPath: string;
@@ -688,6 +695,7 @@ export class KilnChatEngine {
     this.backendRegistry = options.backendRegistry;
     this.pendingDecisions = options.pendingDecisions;
     this.stateMachine = options.stateMachine;
+    this.providerHealth = options.providerHealth;
     this.sseHub = options.sseHub;
     this.caffeinate = options.caffeinate;
     this.socketPath = options.socketPath;
@@ -1254,6 +1262,10 @@ export class KilnChatEngine {
           nextContract.scope = patch.contract.scope;
           updatedFields.push("contract.scope");
         }
+        if (patch.contract.non_goals !== undefined) {
+          nextContract.non_goals = patch.contract.non_goals;
+          updatedFields.push("contract.non_goals");
+        }
         if (patch.contract.deliver !== undefined) {
           nextContract.deliver = patch.contract.deliver;
           updatedFields.push("contract.deliver");
@@ -1292,6 +1304,13 @@ export class KilnChatEngine {
           });
           if (!updatedFields.includes("workflow")) updatedFields.push("workflow");
         }
+      }
+      if (patch.pm_rationale !== undefined && nextWorkflow !== undefined) {
+        nextWorkflow = {
+          ...nextWorkflow,
+          pm_rationale: patch.pm_rationale,
+        };
+        if (!updatedFields.includes("workflow")) updatedFields.push("workflow");
       }
 
       let nextTrack = patch.track ?? latest.track;
@@ -1531,25 +1550,54 @@ export class KilnChatEngine {
         : "(尚未生成《产品方案 (BRIEF.md)》，请在本轮完成后输出并同步)";
 
     const pmWorkflowProtocol = [
-      `你的职责是 Kiln 的产品经理与技术立项架构师（intake）：将用户的原始想法打磨为清晰、无歧义、可执行的产品设计方案（BRIEF.md）与工程契约，并将确认后的方案无损传递给下游 worker / reviewer / verifier。`,
-      `核心工作方法（四步协议）：`,
-      `1. **先查代码与账本，基于事实提案**：若在项目仓库目录，先只读检索相关源码、接口、测试脚本与上方空间长期账本（ledger），搞清现有模块、依赖与约束后再给方案，绝不猜测路径或命令。`,
-      `2. **先出可编辑模型与方案草案，不抛长问卷**：直接给出当前理解的方案雏形，明确区分「已确认」/「建议」/「待拍板」；每轮仅聚焦最多 2–3 个真正影响用户流程、数据结构、边界或范围的关键分叉点，并在 open_questions 中维护尚未拍板的事项（用户确认后置空 []）。`,
-      `3. **方案对比取舍与垂直切分**：存在重要技术路线或交互分叉时，对比 2–3 个可行方案的效果、改动代价与风险并给出明确推荐；若需求过大过重，主动建议切分为垂直 MVP 切片，先收敛首片。`,
+      `你的职责是 Kiln 的产品经理与技术立项架构师（intake）：将用户的原始想法打磨为清晰、无歧义、可执行的产品设计方案（BRIEF.md）与工程契约，并将确认后的方案无损传递给下游执行角色。`,
+      `核心工作方法（四步协议 + D25/D26 规则）：`,
+      `1. **三档自适应对话节奏（D26）**：明确小活 0–1 轮直接推导并补齐完整字段供一语发车；有边界盲区 1–2 轮给出带「推荐」与代价的结构化分叉选项；模糊或较大需求围绕《产品方案 (BRIEF.md)》收敛；需求过大时主动拆出 2–12 张带 \`depends_on_temp_ids\` 依赖关系的垂直切片（可调用 \`wb_plan(mode: "commit_split_cards")\`）。`,
+      `2. **先查代码、账本与常备阵容（D25）**：若在项目仓库目录，先只读检索相关源码、脚本与空间长期账本（ledger），并结合下方「当前待命 Agent 阵容池」的名称、特性（traits）、权限（perm）与实时冷却状态，只点将本任务真正需要的角色（设计了不必全上，在 \`workflow.steps[].roster_role\` 与 \`rationale\` 及 \`workflow.pm_rationale\` 说明排兵理由；严禁将 \`read_only\` 角色点将到 \`implement\`）。`,
+      `3. **清晰目标与明确不做什么（non_goals）**：只聚焦产品目标、规则、外部行为与范围边界，显式锁定 \`contract.non_goals\`；若存在关键分歧在 \`open_questions\` 维护待决事项（确认后置空 []）。`,
       `4. **L1 / L2 自适应探索深度**：`,
       draft.track === "L1"
         ? `- 当前为 **L1 快车道**：保持 1–2 轮高效收敛，避免过度访谈；生成精简 4 段设计稿（目标与改动、边界约束、方案要点、验收命令）并尽快补齐全部契约字段。`
         : `- 当前为 **L2 标准交付**：确保业务规则、多状态流转、异常边界与人工兜底全部梳理清晰，直至 open_questions 清零；BRIEF.md 固定采用 5 段结构：\n  ## 1. 目标与用户场景\n  ## 2. 已确认规则与关键流程 / 边界\n  ## 3. 选定落地方案与关键取舍\n  ## 4. 范围边界（做什么 / 明确不做什么）\n  ## 5. 可观察验收场景`,
-      `自动补全与安全边界：用户已在前端通过 Tab 选定了项目空间、优先级或轨道；请主动替用户推导并回填 title、end、accept_cmd、scope、depends_on、open_questions 与 brief_markdown，严禁私自调用 commit_card 直接建卡（必须由用户点击「开始推进」确认）。`,
+      `自动补全与安全边界：用户已在前端通过 Tab 选定了项目空间、优先级或轨道；请主动替用户推导并回填 title、end、accept_cmd、scope、non_goals、depends_on、open_questions 与 brief_markdown，严禁私自调用 commit_card 直接建卡（必须由用户点击「开始推进」确认）。`,
       `5. **可组合流程蓝图预设**：按任务复杂度优先选用 4 套配方之一：\`quick\`（快速通道：实施→验真→交付，适合简单脚本/小改）、\`host_op\`（本机两阶段操作：实施暂存 dry-run→staged_only 门禁→单一交付审批后由内核原子落盘+执行+终审）、\`standard_dev\`（标准开发：实施⇄审查循环→交付，默认项目开发）、\`full_delivery\`（完整交付：顾问出方案 PLAN.md→实施⇄审查→独立验收→交付审批）。若为 \`host_op\` 涉及本机实际执行命令，应把待执行命令放入 \`contract.deliver: { mode: "run_cmd", cmd: "..." }\`、把最终校验命令放入 \`contract.accept_cmd\`，Phase 1 只生成暂存脚本与校验报告，切勿让正式宿主验收命令在审批落盘前执行。`,
     ].join("\n");
 
+    const rosterConfig = this.store.readEffectiveRosterConfig();
+    const enabledRosterEntries = Object.entries(rosterConfig.roster).filter(
+      ([, entry]) => entry.enabled,
+    );
+    const rosterLines =
+      enabledRosterEntries.length > 0
+        ? enabledRosterEntries
+            .map(([id, entry]) => {
+              const primaryLabel = entry.primary
+                ? `${entry.primary.provider}/${entry.primary.model}`
+                : entry.mode === "kernel"
+                  ? "kernel(0-token)"
+                  : "unset";
+              const cooling =
+                entry.primary && this.providerHealth?.isInCooldown(entry.primary.provider)
+                  ? " [冷却中]"
+                  : "";
+              return `- ${id} (${entry.name}) | stage=${entry.stage} | perm=${entry.perm} | primary=${primaryLabel}${cooling} | traits=${entry.traits}`;
+            })
+            .join("\n")
+        : "(当前暂无已启用 Agent 阵容，将按默认流程推进)";
+
+    const attachmentsSection =
+      draft.attachments && draft.attachments.length > 0
+        ? `当前草稿附件截图 (${draft.attachments.length})：\n${draft.attachments
+            .map((a) => `- ${a.filename} (${a.mime_type}, ${a.size_bytes} bytes, rel_path=${a.rel_path})`)
+            .join("\n")}`
+        : "";
+
     const priorSummary = this.formatPriorChatSummary(priorHistory);
     const protocolInstruction = mcpEnabled
-      ? `你拥有 kiln-mcp 工具权限（wb_list_tasks, wb_read_ledger, wb_plan），请每轮及时调用 wb_plan(mode: "upsert_draft") 将已确定的 title、workflow、contract（goal/end/accept_cmd/scope/deliver）、depends_on、open_questions 与完整 brief_markdown 同步写入草稿与 BRIEF.md。`
+      ? `你拥有 kiln-mcp 工具权限（wb_list_tasks, wb_read_ledger, wb_plan），请每轮及时调用 wb_plan(mode: "upsert_draft") 将已确定的 title、workflow（含 steps[].roster_role / rationale / pm_rationale）、contract（goal/end/accept_cmd/scope/non_goals/deliver）、depends_on、open_questions 与完整 brief_markdown 同步写入草稿与 BRIEF.md；拆多卡时可调用 wb_plan(mode: "commit_split_cards")。`
       : [
-          `当前对话运行在无 MCP 模式：已将项目空间、在途任务、长期账本、当前方案与草稿字段注入上下文，无需调用 kiln-mcp 工具。`,
-          `如本次对话确认或变更了任何立项字段或产品方案，请在正常回复末尾附一个 \`\`\`kiln-draft-patch\\n{...}\\n\`\`\` JSON 代码块（可选字段：title (string)、priority ("P0"|"P1"|"P2"|"P3")、track ("L1"|"L2")、workflow_preset ("quick"|"host_op"|"standard_dev"|"full_delivery")、workspace_mode ("git_worktree"|"host_scoped"|"scratch_dir")、depends_on (string[])、open_questions (string[])、brief_markdown (string，完整 Markdown 设计方案)、contract: { goal (string), end (string), accept_cmd (string), scope (string[]), deliver?: { mode: "merge_main"|"open_pr"|"manual" } | { mode: "run_cmd", cmd: string } }；严禁更改 space 或直接建卡）。系统会自动剥离该代码块并同步到右侧「产品方案」与立项单。`,
+          `当前对话运行在无 MCP 模式：已将项目空间、在途任务、长期账本、待命阵容池、当前方案与草稿字段注入上下文，无需调用 kiln-mcp 工具。`,
+          `如本次对话确认或变更了任何立项字段或产品方案，请在正常回复末尾附一个 \`\`\`kiln-draft-patch\\n{...}\\n\`\`\` JSON 代码块（可选字段：title (string)、priority ("P0"|"P1"|"P2"|"P3")、track ("L1"|"L2")、workflow_preset ("quick"|"host_op"|"standard_dev"|"full_delivery")、workflow (对象)、pm_rationale (string)、workspace_mode ("git_worktree"|"host_scoped"|"scratch_dir")、depends_on (string[])、open_questions (string[])、brief_markdown (string，完整 Markdown 设计方案)、contract: { goal (string), end (string), accept_cmd (string), scope (string[]), non_goals?: string[], deliver?: { mode: "merge_main"|"open_pr"|"manual" } | { mode: "run_cmd", cmd: string } }；严禁更改 space 或直接建卡）。系统会自动剥离该代码块并同步到右侧「产品方案」与立项单。`,
         ].join("\n");
 
     return [
@@ -1557,8 +1605,10 @@ export class KilnChatEngine {
       pmWorkflowProtocol,
       modeSummary,
       protocolInstruction,
+      `当前待命 Agent 阵容池（enabled=true，严禁点将禁用角色或将 read_only 角色点将至 implement）：\n${rosterLines}`,
       `已登记项目空间列表：\n${registeredSpacesText}`,
       draftSummary,
+      attachmentsSection,
       currentBriefSection,
       `当前在途任务：\n${taskLines}`,
       `空间 ${draft.space} 长期决策账本：\n${ledgerLines}`,
@@ -1722,6 +1772,10 @@ export class KilnChatEngine {
             effectiveMessage,
             turnContextNotes,
           );
+          const draftAttachments: RunAttachmentInput[] = resolveRunAttachmentInputs(
+            this.store,
+            { kind: "draft", draftId: safeDraftId },
+          );
           const spec: BackendRunSpec = {
             runId,
             taskId: safeDraftId,
@@ -1745,6 +1799,7 @@ export class KilnChatEngine {
             freshContext: false,
             allowFullAccessFallback: executor.allowFullAccessFallback,
             ...(executor.mcpEnabled ? { mcpServers: [this.buildMcpMount(token)] } : {}),
+            ...(draftAttachments.length > 0 ? { attachments: draftAttachments } : {}),
           };
           sessionRef = await activeBackend.start(spec);
           const taggedSessionRef: SessionRef = {

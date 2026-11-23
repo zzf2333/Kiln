@@ -1,4 +1,5 @@
 import type {
+  AttachmentMimeType,
   BackendCapabilities,
   ProviderNativeQuota,
   ReasoningEffort,
@@ -37,6 +38,12 @@ export interface McpStdioMountSpec {
   env?: Record<string, string>;
 }
 
+export interface RunAttachmentInput {
+  path: string;
+  mimeType: AttachmentMimeType;
+  filename: string;
+}
+
 export interface BackendRunSpec {
   runId: string;
   taskId: string;
@@ -52,6 +59,7 @@ export interface BackendRunSpec {
   readOnly?: boolean;
   allowedWriteRoots?: string[];
   mcpServers?: McpStdioMountSpec[];
+  attachments?: RunAttachmentInput[];
   env?: Record<string, string>;
 }
 

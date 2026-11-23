@@ -12,6 +12,7 @@ import {
   RunAntiDriftSummarySchema,
   RunMetaSchema,
   SpaceConfigSchema,
+  StateEventSchema,
   TaskAttachmentSchema,
   TaskCardSchema,
 } from "../card.js";
@@ -432,6 +433,66 @@ describe("v0.0.5 protocol contracts", () => {
       ],
     });
     expect(cyclicSplitMcp.success).toBe(false);
+
+    const cyclicSplitPlan = WbPlanInputSchema.safeParse({
+      mode: "commit_split_cards",
+      cards: [
+        {
+          temp_id: "s1",
+          title: "One",
+          space: "kiln",
+          workspace_mode: "git_worktree",
+          depends_on_temp_ids: ["s2"],
+          contract: makeContract(),
+          brief_markdown: "One",
+        },
+        {
+          temp_id: "s2",
+          title: "Two",
+          space: "kiln",
+          workspace_mode: "git_worktree",
+          depends_on_temp_ids: ["s1"],
+          contract: makeContract(),
+          brief_markdown: "Two",
+        },
+      ],
+    });
+    expect(cyclicSplitPlan.success).toBe(false);
+
+    expect(
+      WbPlanInputSchema.safeParse({
+        mode: "commit_split_cards",
+        cards: [
+          {
+            temp_id: "s1",
+            title: "One",
+            space: "kiln",
+            workspace_mode: "git_worktree",
+            depends_on_temp_ids: [],
+            contract: makeContract(),
+            brief_markdown: "One",
+          },
+          {
+            temp_id: "s2",
+            title: "Two",
+            space: "kiln",
+            workspace_mode: "git_worktree",
+            depends_on_temp_ids: ["s1"],
+            contract: makeContract(),
+            brief_markdown: "Two",
+          },
+        ],
+      }).success,
+    ).toBe(true);
+
+    expect(
+      StateEventSchema.safeParse({
+        type: "checkpoint_rolled_back",
+        at: "2026-11-23T02:00:00.000Z",
+        checkpoint_ref: "refs/kiln/checkpoints/t-201/r-1",
+        commit_sha: "abcdef1234567",
+      }).success,
+    ).toBe(true);
 
     expect(
       WbPlanInputSchema.safeParse({
