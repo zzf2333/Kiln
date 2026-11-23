@@ -16,18 +16,23 @@ const AVATAR_META: Record<string, { label: string; cls: string }> = {
 export function ProviderAvatar({
   providerId,
   large = false,
+  size,
 }: {
   providerId: string;
   large?: boolean;
+  size?: "xs" | "sm" | "lg";
 }) {
   const key = providerId.toLowerCase();
   const meta = AVATAR_META[key] ?? {
     label: providerId.slice(0, 2).toUpperCase() || "AG",
     cls: "",
   };
+  const resolvedSize = size ?? (large ? "lg" : "sm");
+  const sizeCls =
+    resolvedSize === "lg" ? "av-lg" : resolvedSize === "xs" ? "av-xs" : "";
   return (
     <span
-      className={`av ${meta.cls} ${large ? "av-lg" : ""}`.trim()}
+      className={`av ${meta.cls} ${sizeCls}`.trim()}
       aria-hidden="true"
     >
       {meta.label}

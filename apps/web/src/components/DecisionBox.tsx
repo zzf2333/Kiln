@@ -72,11 +72,15 @@ export function DecisionBox({
   return (
     <section className="decision">
       <div className="decision-head">
-        <WarnCircleIcon />
-        <span>需要你决定</span>
-        <span className="muted">
-          {decision.category} · {fmtTime(decision.created_at)} · {decision.reason}
+        <span className="ico-chip ask">
+          <WarnCircleIcon />
         </span>
+        <div className="decision-head-t">
+          <b>需要你决定</b>
+          <span className="muted">
+            {decision.category} · {fmtTime(decision.created_at)} · {decision.reason}
+          </span>
+        </div>
       </div>
       <div className="decision-q">
         <MarkdownContent text={decision.question} />

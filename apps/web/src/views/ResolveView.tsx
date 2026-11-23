@@ -3,6 +3,7 @@ import type { TaskDetailResponse } from "../api/types";
 import { ChatComposer } from "../components/ChatComposer";
 import { ChatTimeline } from "../components/ChatTimeline";
 import { DecisionBox } from "../components/DecisionBox";
+import { MiniRail } from "../components/MiniRail";
 import { ViewFrame } from "../components/ViewFrame";
 import { isProjectSpace, useKilnStore } from "../state/store";
 
@@ -203,7 +204,30 @@ export function ResolveView() {
                         {detail.card.contract.scope.join("\n")}
                       </dd>
                     </div>
+                    {detail.card.contract.non_goals &&
+                    detail.card.contract.non_goals.length > 0 ? (
+                      <div>
+                        <dt>明确不做</dt>
+                        <dd>
+                          <div className="ng-list">
+                            {detail.card.contract.non_goals.map((ng) => (
+                              <span key={ng} className="ng-tag">
+                                {ng}
+                              </span>
+                            ))}
+                          </div>
+                        </dd>
+                      </div>
+                    ) : null}
                   </dl>
+                  <div style={{ marginTop: "12px" }}>
+                    <MiniRail
+                      track={taskSummary.track}
+                      workflow={detail.card.workflow}
+                      status={detail.state.status}
+                      activeStage={detail.state.stage}
+                    />
+                  </div>
                 </section>
               </div>
             ) : null}

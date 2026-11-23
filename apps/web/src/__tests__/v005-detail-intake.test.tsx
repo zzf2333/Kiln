@@ -1600,7 +1600,18 @@ describe("@kiln/web Slice 6b DetailView & IntakeView", () => {
       expect(draftCreates).toBe(1);
     });
 
+    // While upload is in flight, /new, close/save draft, and Enter send are blocked
     const chatEl = document.getElementById("chatIn") as HTMLTextAreaElement;
+    expect((screen.getByRole("button", { name: "关闭对话" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect((screen.getByRole("button", { name: "先存为草稿" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    fireEvent.change(chatEl, { target: { value: "/new" } });
+    fireEvent.keyDown(chatEl, { key: "Enter", shiftKey: false });
+    expect(draftCreates).toBe(1);
+
     fireEvent.change(chatEl, { target: { value: "带截图需求" } });
     expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.keyDown(chatEl, { key: "Enter", shiftKey: false });

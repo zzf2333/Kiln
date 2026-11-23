@@ -1,7 +1,9 @@
 import { PRIORITY_RANK, type Priority } from "@kiln/protocol/web";
 import type { BootstrapTask } from "../api/types";
+import { CloseIcon } from "../components/Icons";
 import { MiniRail } from "../components/MiniRail";
 import { PrioritySelect } from "../components/PrioritySelect";
+import { ProviderAvatar } from "../components/ProviderAvatar";
 import { ViewFrame } from "../components/ViewFrame";
 import {
   TRACK_LABEL,
@@ -306,7 +308,12 @@ export function BoardView() {
             rate={rate}
           />
           <div className="card-foot">
-            <span>{execLabel}</span>
+            <span className="card-exec">
+              {execLabel ? (
+                <ProviderAvatar providerId={t.agent ?? execLabel} size="xs" />
+              ) : null}
+              <span>{execLabel}</span>
+            </span>
             <span className="mono">{fmtTokens(t.tokens.total_tokens)}</span>
           </div>
         </article>
@@ -450,6 +457,18 @@ export function BoardView() {
       left={
         <>
           <h1 className="tb-title">总览</h1>
+          {spaceFilter !== "all" ? (
+            <button
+              type="button"
+              className="tb-scope"
+              title="查看全部项目"
+              aria-label="清除空间筛选"
+              onClick={() => store.setSpaceFilter("all")}
+            >
+              <span>{spaces[spaceFilter]?.name ?? spaceFilter}</span>
+              <CloseIcon />
+            </button>
+          ) : null}
           <span className="tb-sub">
             {runningLeafCount} 个任务在跑
             {pausedLeafCount > 0 ? `，${pausedLeafCount} 个已暂停` : ""}
