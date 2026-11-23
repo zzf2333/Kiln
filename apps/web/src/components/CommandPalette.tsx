@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "preact/hooks";
+import { Dialog } from "radix-ui";
+import { useEffect, useRef, useState } from "react";
 import { useKilnStore, type MvpView, type SettingsTab } from "../state/store";
 
 interface PaletteAction {
@@ -40,22 +41,27 @@ export function CommandPalette() {
         }
         const cur = store.getState();
         if (cur.spaceModalOpen) {
+          e.preventDefault();
           store.closeSpaceModal();
           return;
         }
         if (cur.paletteOpen) {
+          e.preventDefault();
           store.setPaletteOpen(false);
           return;
         }
         if (cur.navOpen) {
+          e.preventDefault();
           store.setNavOpen(false);
           return;
         }
         if (cur.view === "resolve" && cur.taskId) {
+          e.preventDefault();
           store.openTask(cur.taskId);
           return;
         }
         if (cur.view === "detail" || cur.view === "intake") {
+          e.preventDefault();
           store.go("board");
           return;
         }
@@ -128,46 +134,66 @@ export function CommandPalette() {
   );
 
   return (
-    <div
-      class="palette-mask open"
-      id="paletteMask"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) {
+    <Dialog.Root
+      open={state.paletteOpen}
+      onOpenChange={(open) => {
+        if (!open) {
           store.setPaletteOpen(false);
         }
       }}
     >
-      <div class="palette" role="dialog" aria-label="命令面板">
-        <input
-          ref={inputRef}
-          id="paletteInput"
-          placeholder="搜索任务或跳转"
-          value={query}
-          onInput={(e) => setQuery((e.currentTarget as HTMLInputElement).value)}
-        />
-        <div class="palette-list" id="paletteList">
-          {filteredActions.map((a) => (
-            <button key={a.label} type="button" class="p-item" onClick={a.run}>
-              <span>{a.label}</span>
-              <span class="muted">跳转</span>
-            </button>
-          ))}
-          {filteredTasks.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              class="p-item"
-              onClick={() => {
-                store.setPaletteOpen(false);
-                store.openTask(t.id);
-              }}
-            >
-              <span>{t.title}</span>
-              <span class="mono muted">{t.id}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-    </div>
+      <Dialog.Portal>
+        <Dialog.Overlay
+          className="palette-mask open"
+          id="paletteMask"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              store.setPaletteOpen(false);
+            }
+          }}
+        >
+          <Dialog.Content
+            className="palette"
+            aria-label="命令面板"
+            aria-describedby={undefined}
+            onEscapeKeyDown={(e) => {
+              e.preventDefault();
+              store.setPaletteOpen(false);
+            }}
+          >
+            <Dialog.Title className="sr-only">命令面板</Dialog.Title>
+            <input
+              ref={inputRef}
+              id="paletteInput"
+              placeholder="搜索任务或跳转"
+              value={query}
+              onChange={(e) => setQuery((e.currentTarget as HTMLInputElement).value)}
+            />
+            <div className="palette-list" id="paletteList">
+              {filteredActions.map((a) => (
+                <button key={a.label} type="button" className="p-item" onClick={a.run}>
+                  <span>{a.label}</span>
+                  <span className="muted">跳转</span>
+                </button>
+              ))}
+              {filteredTasks.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  className="p-item"
+                  onClick={() => {
+                    store.setPaletteOpen(false);
+                    store.openTask(t.id);
+                  }}
+                >
+                  <span>{t.title}</span>
+                  <span className="mono muted">{t.id}</span>
+                </button>
+              ))}
+            </div>
+          </Dialog.Content>
+        </Dialog.Overlay>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }

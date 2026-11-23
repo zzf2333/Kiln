@@ -26,7 +26,7 @@
 | [`packages/kernel`](packages/kernel/package.json) | **`kilnd` 守护进程核心**：可组合蓝图编排器与状态机、调度器、验真门禁与两阶段 `host_op` 暂存、零原生依赖 SQLite（`bun:sqlite` / `node:sqlite`）存储、双端口 HTTP+SSE、原生 TUI 启动器（`tui-launcher.ts`）、内嵌静态资源服务与执行底座抽象 |
 | [`packages/mcp`](packages/mcp/package.json) | **`kiln-mcp` 工具服务**：受限 `stdio` MCP 服务（同时内置为 `kiln __mcp`），通过 POSIX `0600` Unix Socket 或 Windows Named Pipe + `KILN_RUN_TOKEN` 调用 `kilnd` |
 | [`packages/cli`](packages/cli/package.json) | **`kiln` / `kl` CLI**：守护进程启停、状态查询、草稿/审批/空间/远程管理命令、环境自检及跨平台系统服务管理（macOS / Linux / Windows） |
-| [`apps/web`](apps/web/package.json) | **Web 工作台**：桌面与移动端（`<= 820px`）自适应 Preact 前端，编译产出至 `packages/kernel/public/` 并内嵌进单文件二进制 |
+| [`apps/web`](apps/web/package.json) | **Web 工作台**：桌面与移动端（`<= 820px`）自适应 React 19 + Tailwind CSS v4 + Radix UI 前端，编译产出至 `packages/kernel/public/` 并内嵌进单文件二进制 |
 | [`apps/desktop`](apps/desktop/README.md) | **跨平台桌面托盘薄壳（macOS / Windows）**：Tauri v2 Sidecar 托盘壳（Windows `CREATE_NO_WINDOW` 无黑框、按需销毁 WebView、终端命令一键链接及纯 `std` `model.rs` 核心） |
 | [`scripts/`](scripts/install.sh) | **零依赖安装脚本与单文件编译**：POSIX [`install.sh`](scripts/install.sh)、Windows [`install.ps1`](scripts/install.ps1)、[`test-install.sh`](scripts/test-install.sh) 与 Bun 单文件编译 [`build-binary.mjs`](scripts/build-binary.mjs) |
 | [`packaging/`](packaging/README.md) | **发版打包模板**：预编译二进制 Homebrew [Formula](packaging/homebrew/Formula/kiln.rb)、macOS [Cask](packaging/homebrew/Casks/kiln-app.rb) 与发版核对清单 |

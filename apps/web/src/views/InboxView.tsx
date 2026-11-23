@@ -18,26 +18,26 @@ export function InboxView() {
     <ViewFrame
       left={
         <>
-          <h1 class="tb-title">等你决定</h1>
-          <span class="tb-sub">
+          <h1 className="tb-title">等你决定</h1>
+          <span className="tb-sub">
             只有产品承诺、本机首次写入、外部动作、前置取消和熔断会来到这里（手动暂停不进此处）
           </span>
         </>
       }
     >
-      <div class="page">
-        <div class="page-inner">
+      <div className="page">
+        <div className="page-inner">
           {waitingTasks.length > 0 ? (
             waitingTasks.map((t) => {
               const dec = decisionByTask.get(t.id);
               const spaceName = spaces[t.space]?.name ?? t.space;
               return (
-                <div key={t.id} class="inbox-item">
-                  <div class="inbox-task">
+                <div key={t.id} className="inbox-item">
+                  <div className="inbox-task">
                     <button type="button" onClick={() => store.openTask(t.id)}>
                       {t.title}
                     </button>
-                    <span class="muted">
+                    <span className="muted">
                       <PrioritySelect
                         value={t.priority}
                         onChange={(next) => void store.updatePriority(t.id, next)}
@@ -53,11 +53,11 @@ export function InboxView() {
                       onOpenResolve={() => store.openResolve(t.id)}
                     />
                   ) : (
-                    <div class="decision">
-                      <p class="decision-q">{t.waiting_reason ?? "等待人工裁决"}</p>
+                    <div className="decision">
+                      <p className="decision-q">{t.waiting_reason ?? "等待人工裁决"}</p>
                       <button
                         type="button"
-                        class="btn btn-sm"
+                        className="btn btn-sm"
                         onClick={() => store.openTask(t.id)}
                       >
                         查看详情
@@ -68,7 +68,7 @@ export function InboxView() {
               );
             })
           ) : (
-            <p class="empty">
+            <p className="empty">
               没有等你决定的事
               <br />
               后台遇到只有你能拍板的问题时，会放到这里

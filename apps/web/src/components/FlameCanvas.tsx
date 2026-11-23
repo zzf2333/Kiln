@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect, useRef } from "react";
 
 const FIRE_STOPS: ReadonlyArray<readonly [number, number, number, number, number]> = [
   [0.0, 255, 252, 240, 1.0],
@@ -273,5 +273,5 @@ export function FlameCanvas({ size = "default", heat }: FlameCanvasProps) {
     };
   }, []);
 
-  return <canvas ref={canvasRef} class="fire-canvas" aria-hidden="true" />;
+  return <canvas ref={canvasRef} className="fire-canvas" aria-hidden="true" />;
 }

@@ -10,7 +10,7 @@ export function PrioritySelect({ value, disabled, onChange }: PrioritySelectProp
   return (
     <select
       aria-label="优先级"
-      class={`pri-select pri-${value}`}
+      className={`pri-select pri-${value}`}
       value={value}
       disabled={disabled}
       onClick={(e) => e.stopPropagation()}

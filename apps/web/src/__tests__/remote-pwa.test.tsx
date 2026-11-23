@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/preact";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   BootstrapResponse,
@@ -565,7 +565,7 @@ describe("@kiln/web Slice 4: QR Generator, PWA, Remote Auth Gate, Offline Banner
 
     // Edit device label and one-tap pair
     const labelInput = screen.getByLabelText("设备名称") as HTMLInputElement;
-    fireEvent.input(labelInput, { target: { value: "我的主力 iPhone" } });
+    fireEvent.change(labelInput, { target: { value: "我的主力 iPhone" } });
     fireEvent.click(screen.getByRole("button", { name: "一键完成配对" }));
 
     // Transitions cleanly into full workbench + remote indicator bar + SSE
@@ -654,14 +654,14 @@ describe("@kiln/web Slice 4: QR Generator, PWA, Remote Auth Gate, Offline Banner
     const codeInput = (await screen.findByLabelText("6 位配对码")) as HTMLInputElement;
 
     // 1. Wrong code shows clear error + remaining attempts
-    fireEvent.input(codeInput, { target: { value: "000000" } });
+    fireEvent.change(codeInput, { target: { value: "000000" } });
     fireEvent.click(screen.getByRole("button", { name: "配对并进入工作台" }));
     await waitFor(() => {
       expect(screen.getByText(/剩余 4 次尝试/)).toBeTruthy();
     });
 
     // 2. Correct code (with spaces) succeeds
-    fireEvent.input(codeInput, { target: { value: "482 910" } });
+    fireEvent.change(codeInput, { target: { value: "482 910" } });
     fireEvent.click(screen.getByRole("button", { name: "配对并进入工作台" }));
     await waitFor(() => {
       expect(screen.getByText("远程看板测试任务")).toBeTruthy();
@@ -999,10 +999,10 @@ describe("@kiln/web Slice 4: QR Generator, PWA, Remote Auth Gate, Offline Banner
     fireEvent.change(screen.getByLabelText("推送通道"), {
       target: { value: "bark" },
     });
-    fireEvent.input(screen.getByLabelText("推送地址"), {
+    fireEvent.change(screen.getByLabelText("推送地址"), {
       target: { value: "https://api.day.app/demoKey" },
     });
-    fireEvent.input(screen.getByLabelText("推送密钥"), {
+    fireEvent.change(screen.getByLabelText("推送密钥"), {
       target: { value: "my-secret" },
     });
 

@@ -1,4 +1,4 @@
-import { useState } from "preact/hooks";
+import { useState } from "react";
 import {
   extractWorkflowToggles,
   type Priority,
@@ -162,8 +162,8 @@ export function IntakeView() {
     <ViewFrame
       left={
         <>
-          <h1 class="tb-title">新需求</h1>
-          <span class="tb-sub">
+          <h1 className="tb-title">新需求</h1>
+          <span className="tb-sub">
             聊清楚就能离开，未聊完保存在 drafts/ 目录
           </span>
         </>
@@ -172,7 +172,7 @@ export function IntakeView() {
         <>
           <button
             type="button"
-            class="btn btn-ghost desktop-panel-toggle"
+            className="btn btn-ghost desktop-panel-toggle"
             aria-pressed={state.desktopDraftCollapsed}
             onClick={() => store.toggleDesktopDraftCollapsed()}
           >
@@ -181,7 +181,7 @@ export function IntakeView() {
           {intakeActiveOpen || hasDraftOrChat ? (
             <button
               type="button"
-              class="btn btn-ghost"
+              className="btn btn-ghost"
               disabled={intakeBusy}
               onClick={() => void store.closeIntakeSession()}
             >
@@ -191,7 +191,7 @@ export function IntakeView() {
           {hasDraftOrChat ? (
             <button
               type="button"
-              class="btn btn-ghost"
+              className="btn btn-ghost"
               disabled={intakeBusy}
               onClick={() => store.startNewIntake()}
             >
@@ -200,7 +200,7 @@ export function IntakeView() {
           ) : null}
           <button
             type="button"
-            class="btn btn-ghost"
+            className="btn btn-ghost"
             onClick={() => store.go("board")}
           >
             返回看板
@@ -208,30 +208,30 @@ export function IntakeView() {
         </>
       }
     >
-      <div class={`converse ${state.desktopDraftCollapsed ? "is-panel-collapsed" : ""}`}>
-        <div class="chat">
+      <div className={`converse ${state.desktopDraftCollapsed ? "is-panel-collapsed" : ""}`}>
+        <div className="chat">
           {drafts.length > 0 ? (
-            <div class="drafts">
+            <div className="drafts">
               <span>未完成的立项</span>
               {drafts.map((d) => (
                 <div
                   key={d.id}
-                  class={`draft-chip ${intakeDraftId === d.id ? "is-active" : ""}`}
+                  className={`draft-chip ${intakeDraftId === d.id ? "is-active" : ""}`}
                 >
                   <button
                     type="button"
-                    class="btn btn-sm"
+                    className="btn btn-sm"
                     onClick={() => {
                       setEditingBriefRaw(false);
                       void store.loadDraftIntoIntake(d);
                     }}
                   >
                     <span>{d.title || d.id}</span>
-                    <span class="muted mono">{fmtTime(d.updated_at)}</span>
+                    <span className="muted mono">{fmtTime(d.updated_at)}</span>
                   </button>
                   <button
                     type="button"
-                    class="draft-del"
+                    className="draft-del"
                     aria-label={`删除草稿 ${d.title || d.id}`}
                     title="删除草稿"
                     disabled={intakeBusy}
@@ -244,18 +244,18 @@ export function IntakeView() {
             </div>
           ) : null}
 
-          <div class="intake-bar">
-            <div class="seg" role="group" aria-label="任务模式">
+          <div className="intake-bar">
+            <div className="seg" role="group" aria-label="任务模式">
               <button
                 type="button"
-                class={isProjectMode ? "on" : ""}
+                className={isProjectMode ? "on" : ""}
                 onClick={() => store.setIntakeMode("project")}
               >
                 项目任务
               </button>
               <button
                 type="button"
-                class={!isProjectMode ? "on" : ""}
+                className={!isProjectMode ? "on" : ""}
                 onClick={() => store.setIntakeMode("local")}
               >
                 本机 / 临时任务
@@ -263,9 +263,9 @@ export function IntakeView() {
             </div>
 
             {isProjectMode ? (
-              <div class="intake-target">
+              <div className="intake-target">
                 {projectSpaces.length > 0 || (intakeForm.space && !selectedProject) ? (
-                  <div class="intake-chips" role="radiogroup" aria-label="目标项目空间">
+                  <div className="intake-chips" role="radiogroup" aria-label="目标项目空间">
                     {projectSpaces.map((sp) => (
                       <button
                         key={sp.id}
@@ -273,14 +273,14 @@ export function IntakeView() {
                         role="radio"
                         aria-checked={intakeForm.space === sp.id}
                         data-space-id={sp.id}
-                        class={`chip-tab ${intakeForm.space === sp.id ? "on" : ""}`}
+                        className={`chip-tab ${intakeForm.space === sp.id ? "on" : ""}`}
                         onClick={() => store.selectIntakeProjectSpace(sp.id)}
                       >
                         {sp.name}
                       </button>
                     ))}
                     {intakeForm.space && !selectedProject ? (
-                      <span class="chip chip-bad">
+                      <span className="chip chip-bad">
                         {intakeForm.space}（未登记或缺少仓库路径）
                       </span>
                     ) : null}
@@ -288,7 +288,7 @@ export function IntakeView() {
                 ) : null}
                 {selectedProject?.repo_path ? (
                   <span
-                    class="intake-path mono muted"
+                    className="intake-path mono muted"
                     title={selectedProject.repo_path}
                   >
                     {selectedProject.repo_path}
@@ -296,7 +296,7 @@ export function IntakeView() {
                 ) : null}
                 <button
                   type="button"
-                  class={`btn btn-sm ${projectSpaces.length === 0 ? "btn-light" : ""}`}
+                  className={`btn btn-sm ${projectSpaces.length === 0 ? "btn-light" : ""}`}
                   onClick={() => store.openAddSpaceModal(true)}
                 >
                   + 添加项目
@@ -304,7 +304,7 @@ export function IntakeView() {
                 {authMode === "local" ? (
                   <button
                     type="button"
-                    class="btn btn-sm"
+                    className="btn btn-sm"
                     disabled={pickDirBusy}
                     onClick={() => void store.pickDirectoryAndAttach(true)}
                   >
@@ -313,15 +313,15 @@ export function IntakeView() {
                 ) : null}
               </div>
             ) : (
-              <div class="intake-target">
-                <span class="chip">本机与临时 (local)</span>
-                <div class="seg" role="radiogroup" aria-label="本机工作区模式">
+              <div className="intake-target">
+                <span className="chip">本机与临时 (local)</span>
+                <div className="seg" role="radiogroup" aria-label="本机工作区模式">
                     <button
                       type="button"
                       role="radio"
                       aria-checked={intakeForm.workspace_mode !== "host_scoped"}
                       data-workspace-mode="scratch_dir"
-                      class={intakeForm.workspace_mode !== "host_scoped" ? "on" : ""}
+                      className={intakeForm.workspace_mode !== "host_scoped" ? "on" : ""}
                       onClick={() => store.selectIntakeWorkspaceMode("scratch_dir")}
                     >
                       临时沙盒
@@ -331,7 +331,7 @@ export function IntakeView() {
                       role="radio"
                       aria-checked={intakeForm.workspace_mode === "host_scoped"}
                       data-workspace-mode="host_scoped"
-                      class={intakeForm.workspace_mode === "host_scoped" ? "on" : ""}
+                      className={intakeForm.workspace_mode === "host_scoped" ? "on" : ""}
                       onClick={() => store.selectIntakeWorkspaceMode("host_scoped")}
                     >
                       本机配置修改
@@ -354,7 +354,7 @@ export function IntakeView() {
             defaultAgentName="intake"
             emptySlot={
               projectBlocked ? (
-                <div class="intake-empty">
+                <div className="intake-empty">
                   <h3>
                     {projectSpaces.length === 0
                       ? "还没有登记项目空间"
@@ -365,10 +365,10 @@ export function IntakeView() {
                       ? "先绑定一个本地 Git 项目目录，立项对话就会直接进入该项目仓库只读探索代码与测试命令。"
                       : "当前草稿指向的空间尚未登记或缺少本地 Git 仓库路径，请在上方切换项目空间，或添加/补全对应空间。"}
                   </p>
-                  <div class="intake-empty-actions">
+                  <div className="intake-empty-actions">
                     <button
                       type="button"
-                      class="btn btn-light"
+                      className="btn btn-light"
                       onClick={() => store.openAddSpaceModal(true)}
                     >
                       + 添加本地 Git 项目
@@ -376,7 +376,7 @@ export function IntakeView() {
                     {authMode === "local" ? (
                       <button
                         type="button"
-                        class="btn"
+                        className="btn"
                         disabled={pickDirBusy}
                         onClick={() => void store.pickDirectoryAndAttach(true)}
                       >
@@ -385,7 +385,7 @@ export function IntakeView() {
                     ) : null}
                     <button
                       type="button"
-                      class="btn"
+                      className="btn"
                       onClick={() => store.setIntakeMode("local")}
                     >
                       改用本机 / 临时任务
@@ -422,39 +422,39 @@ export function IntakeView() {
           />
         </div>
 
-        <aside class={`draft ${draftOpen ? "open" : ""}`}>
-          <div class="draft-head">
-            <div class="draft-tabs" role="tablist" aria-label="立项面板">
+        <aside className={`draft ${draftOpen ? "open" : ""}`}>
+          <div className="draft-head">
+            <div className="draft-tabs" role="tablist" aria-label="立项面板">
               <button
                 type="button"
                 role="tab"
                 aria-selected={intakeRightTab === "brief"}
-                class={`draft-tab ${intakeRightTab === "brief" ? "on" : ""}`}
+                className={`draft-tab ${intakeRightTab === "brief" ? "on" : ""}`}
                 onClick={() => store.setIntakeRightTab("brief")}
               >
                 <span>产品方案</span>
                 {openQuestions.length > 0 ? (
-                  <span class="draft-tab-badge is-ask">{openQuestions.length}</span>
+                  <span className="draft-tab-badge is-ask">{openQuestions.length}</span>
                 ) : hasBrief ? (
-                  <span class="draft-tab-badge is-ok">✓</span>
+                  <span className="draft-tab-badge is-ok">✓</span>
                 ) : null}
               </button>
               <button
                 type="button"
                 role="tab"
                 aria-selected={intakeRightTab === "settings"}
-                class={`draft-tab ${intakeRightTab === "settings" ? "on" : ""}`}
+                className={`draft-tab ${intakeRightTab === "settings" ? "on" : ""}`}
                 onClick={() => store.setIntakeRightTab("settings")}
               >
                 <span>立项设置</span>
-                <span class="mono muted" id="draftProg">
+                <span className="mono muted" id="draftProg">
                   {doneCount} / 8
                 </span>
               </button>
             </div>
             <button
               type="button"
-              class="btn btn-sm draft-toggle"
+              className="btn btn-sm draft-toggle"
               id="btnDraftToggle"
               onClick={() => store.toggleDraftOpen()}
             >
@@ -462,11 +462,11 @@ export function IntakeView() {
             </button>
           </div>
 
-          <div class="draft-body">
+          <div className="draft-body">
             {intakeRightTab === "brief" ? (
-              <div class="brief-panel" role="tabpanel" aria-label="产品方案">
-                <div class="brief-bar">
-                  <span class="brief-status">
+              <div className="brief-panel" role="tabpanel" aria-label="产品方案">
+                <div className="brief-bar">
+                  <span className="brief-status">
                     {openQuestions.length > 0
                       ? `待拍板 ${openQuestions.length} 项`
                       : hasBrief
@@ -476,7 +476,7 @@ export function IntakeView() {
                   {hasBrief || editingBriefRaw ? (
                     <button
                       type="button"
-                      class="btn btn-sm"
+                      className="btn btn-sm"
                       onClick={() => setEditingBriefRaw((v) => !v)}
                     >
                       {editingBriefRaw ? "完成预览" : "编辑原文"}
@@ -485,8 +485,8 @@ export function IntakeView() {
                 </div>
 
                 {openQuestions.length > 0 ? (
-                  <div class="open-questions" aria-label="待拍板事项">
-                    <div class="oq-title">待拍板（{openQuestions.length}）</div>
+                  <div className="open-questions" aria-label="待拍板事项">
+                    <div className="oq-title">待拍板（{openQuestions.length}）</div>
                     <ul>
                       {openQuestions.map((q, idx) => (
                         <li key={idx}>{q}</li>
@@ -498,28 +498,28 @@ export function IntakeView() {
                 {editingBriefRaw ? (
                   <textarea
                     aria-label="产品方案原文"
-                    class="input mono brief-editor"
+                    className="input mono brief-editor"
                     rows={14}
                     placeholder="Markdown 格式产品设计方案与验收标准…"
                     value={intakeForm.brief_markdown}
-                    onInput={(e) =>
+                    onChange={(e) =>
                       store.updateIntakeForm({
                         brief_markdown: (e.currentTarget as HTMLTextAreaElement).value,
                       })
                     }
                   />
                 ) : hasBrief ? (
-                  <div class="brief-preview" data-brief-preview="true">
+                  <div className="brief-preview" data-brief-preview="true">
                     <MarkdownContent text={intakeForm.brief_markdown} />
                   </div>
                 ) : (
-                  <div class="brief-empty">
+                  <div className="brief-empty">
                     <p>
                       在左侧描述你的想法后，立项助手会先只读探索代码库与账本，输出结构化的《产品方案》(BRIEF.md) 并在本页实时预览，提交后直接驱动后续实施与验收。
                     </p>
                     <button
                       type="button"
-                      class="btn btn-sm btn-light"
+                      className="btn btn-sm btn-light"
                       disabled={intakeBusy || projectBlocked}
                       onClick={() => void store.requestPmAutofill()}
                     >
@@ -529,18 +529,18 @@ export function IntakeView() {
                 )}
               </div>
             ) : (
-              <div class="settings-panel" role="tabpanel" aria-label="立项设置">
-                <dl class="draft-fields">
-                  <div class="field">
+              <div className="settings-panel" role="tabpanel" aria-label="立项设置">
+                <dl className="draft-fields">
+                  <div className="field">
                     <div>
                       <dt>标题</dt>
                       <dd>
                         <input
                           aria-label="标题"
-                          class="draft-edit"
+                          className="draft-edit"
                           placeholder="可简写，也可由助手自动提炼"
                           value={intakeForm.title}
-                          onInput={(e) =>
+                          onChange={(e) =>
                             store.updateIntakeForm({
                               title: (e.currentTarget as HTMLInputElement).value,
                             })
@@ -548,16 +548,16 @@ export function IntakeView() {
                         />
                       </dd>
                     </div>
-                    <span class="field-mark">
+                    <span className="field-mark">
                       {requiredChecks[0]![1] ? <CheckIcon /> : null}
                     </span>
                   </div>
 
-                  <div class="field">
+                  <div className="field">
                     <div>
                       <dt>优先级</dt>
                       <dd>
-                        <div class="seg seg-wrap" role="radiogroup" aria-label="优先级">
+                        <div className="seg seg-wrap" role="radiogroup" aria-label="优先级">
                           {PRIORITY_TABS.map(([val, label]) => (
                             <button
                               key={val}
@@ -565,7 +565,7 @@ export function IntakeView() {
                               role="radio"
                               aria-checked={intakeForm.priority === val}
                               data-priority={val}
-                              class={intakeForm.priority === val ? "on" : ""}
+                              className={intakeForm.priority === val ? "on" : ""}
                               onClick={() => store.updateIntakeForm({ priority: val })}
                             >
                               {label}
@@ -574,16 +574,16 @@ export function IntakeView() {
                         </div>
                       </dd>
                     </div>
-                    <span class="field-mark">
+                    <span className="field-mark">
                       {requiredChecks[1]![1] ? <CheckIcon /> : null}
                     </span>
                   </div>
 
-                  <div class="field">
+                  <div className="field">
                     <div>
                       <dt>轨道</dt>
                       <dd>
-                        <div class="seg seg-wrap" role="radiogroup" aria-label="轨道">
+                        <div className="seg seg-wrap" role="radiogroup" aria-label="轨道">
                           {TRACK_TABS.map(([val, label]) => (
                             <button
                               key={val}
@@ -591,7 +591,7 @@ export function IntakeView() {
                               role="radio"
                               aria-checked={intakeForm.track === val}
                               data-track={val}
-                              class={intakeForm.track === val ? "on" : ""}
+                              className={intakeForm.track === val ? "on" : ""}
                               onClick={() => store.selectIntakeTrack(val)}
                             >
                               {label}
@@ -600,16 +600,16 @@ export function IntakeView() {
                         </div>
                       </dd>
                     </div>
-                    <span class="field-mark">
+                    <span className="field-mark">
                       {requiredChecks[3]![1] ? <CheckIcon /> : null}
                     </span>
                   </div>
 
-                  <div class="field">
+                  <div className="field">
                     <div>
                       <dt>流程蓝图 · {WORKFLOW_PRESET_LABEL[effectiveWorkflow.preset]}</dt>
-                      <dd class="bp-box">
-                        <div class="seg seg-wrap" role="radiogroup" aria-label="流程预设">
+                      <dd className="bp-box">
+                        <div className="seg seg-wrap" role="radiogroup" aria-label="流程预设">
                           {WORKFLOW_PRESET_TABS.map(([val, label]) => (
                             <button
                               key={val}
@@ -617,7 +617,7 @@ export function IntakeView() {
                               role="radio"
                               aria-checked={effectiveWorkflow.preset === val}
                               data-workflow-preset={val}
-                              class={effectiveWorkflow.preset === val ? "on" : ""}
+                              className={effectiveWorkflow.preset === val ? "on" : ""}
                               onClick={() => store.selectIntakeWorkflowPreset(val)}
                             >
                               {label}
@@ -625,10 +625,10 @@ export function IntakeView() {
                           ))}
                         </div>
 
-                        <div class="bp-toggles" role="group" aria-label="流程步骤开关">
+                        <div className="bp-toggles" role="group" aria-label="流程步骤开关">
                           <button
                             type="button"
-                            class={`chip-tab ${wfToggles.includePlan ? "on" : ""}`}
+                            className={`chip-tab ${wfToggles.includePlan ? "on" : ""}`}
                             aria-pressed={wfToggles.includePlan}
                             onClick={() =>
                               store.updateIntakeWorkflowToggles({
@@ -640,7 +640,7 @@ export function IntakeView() {
                           </button>
                           <button
                             type="button"
-                            class={`chip-tab ${wfToggles.includeReview ? "on" : ""}`}
+                            className={`chip-tab ${wfToggles.includeReview ? "on" : ""}`}
                             aria-pressed={wfToggles.includeReview}
                             onClick={() =>
                               store.updateIntakeWorkflowToggles({
@@ -652,7 +652,7 @@ export function IntakeView() {
                           </button>
                           <button
                             type="button"
-                            class={`chip-tab ${wfToggles.includeAccept ? "on" : ""}`}
+                            className={`chip-tab ${wfToggles.includeAccept ? "on" : ""}`}
                             aria-pressed={wfToggles.includeAccept}
                             onClick={() =>
                               store.updateIntakeWorkflowToggles({
@@ -665,7 +665,7 @@ export function IntakeView() {
                           </button>
                           <button
                             type="button"
-                            class={`chip-tab ${wfToggles.deliverApproval ? "on" : ""}`}
+                            className={`chip-tab ${wfToggles.deliverApproval ? "on" : ""}`}
                             aria-pressed={wfToggles.deliverApproval}
                             disabled={
                               wfToggles.hostTwoPhase ||
@@ -682,10 +682,10 @@ export function IntakeView() {
                         </div>
 
                         {wfToggles.includeReview ? (
-                          <div class="bp-rounds">
-                            <span class="bp-rounds-label">审查上限</span>
+                          <div className="bp-rounds">
+                            <span className="bp-rounds-label">审查上限</span>
                             <div
-                              class="seg seg-wrap"
+                              className="seg seg-wrap"
                               role="radiogroup"
                               aria-label="最大循环轮数"
                             >
@@ -696,7 +696,7 @@ export function IntakeView() {
                                   role="radio"
                                   aria-checked={(wfToggles.maxRounds ?? 3) === n}
                                   data-loop-rounds={n}
-                                  class={(wfToggles.maxRounds ?? 3) === n ? "on" : ""}
+                                  className={(wfToggles.maxRounds ?? 3) === n ? "on" : ""}
                                   onClick={() =>
                                     store.updateIntakeWorkflowToggles({ maxRounds: n })
                                   }
@@ -708,26 +708,26 @@ export function IntakeView() {
                           </div>
                         ) : null}
 
-                        <div class="bp-preview mono" aria-label="流程预览">
+                        <div className="bp-preview mono" aria-label="流程预览">
                           {workflowPreview}
                         </div>
                       </dd>
                     </div>
-                    <span class="field-mark">
+                    <span className="field-mark">
                       <CheckIcon />
                     </span>
                   </div>
 
-                  <div class="field">
+                  <div className="field">
                     <div>
                       <dt>目标空间与工作区</dt>
                       <dd>
-                        <div class="draft-static" aria-label="空间与工作区摘要">
+                        <div className="draft-static" aria-label="空间与工作区摘要">
                           {targetSummary}
                         </div>
                       </dd>
                     </div>
-                    <span class="field-mark">
+                    <span className="field-mark">
                       {requiredChecks[2]![1] && requiredChecks[4]![1] ? (
                         <CheckIcon />
                       ) : null}
@@ -735,18 +735,18 @@ export function IntakeView() {
                   </div>
                 </dl>
 
-                <div class="contract-card">
-                  <div class="contract-head">
+                <div className="contract-card">
+                  <div className="contract-head">
                     <div>
-                      <span class="contract-title">PM 执行契约摘要</span>
-                      <span class="mono muted contract-count">
+                      <span className="contract-title">PM 执行契约摘要</span>
+                      <span className="mono muted contract-count">
                         {contractDoneCount} / 3
                       </span>
                     </div>
-                    <div class="contract-actions">
+                    <div className="contract-actions">
                       <button
                         type="button"
-                        class="btn btn-sm btn-light"
+                        className="btn btn-sm btn-light"
                         disabled={intakeBusy || projectBlocked}
                         onClick={() => void store.requestPmAutofill()}
                       >
@@ -754,7 +754,7 @@ export function IntakeView() {
                       </button>
                       <button
                         type="button"
-                        class="btn btn-sm"
+                        className="btn btn-sm"
                         aria-expanded={contractEditOpen}
                         onClick={() => setContractEditOpen((v) => !v)}
                       >
@@ -764,56 +764,56 @@ export function IntakeView() {
                   </div>
 
                   {!contractEditOpen ? (
-                    <dl class="contract-summary">
-                      <div class="cs-row">
+                    <dl className="contract-summary">
+                      <div className="cs-row">
                         <dt>交付终点</dt>
                         <dd>
-                          {intakeForm.end.trim() || <span class="muted">待 PM 补全</span>}
+                          {intakeForm.end.trim() || <span className="muted">待 PM 补全</span>}
                         </dd>
                       </div>
-                      <div class="cs-row">
+                      <div className="cs-row">
                         <dt>验收命令</dt>
-                        <dd class="mono">
+                        <dd className="mono">
                           {intakeForm.accept_cmd.trim() || (
-                            <span class="muted">待 PM 补全</span>
+                            <span className="muted">待 PM 补全</span>
                           )}
                         </dd>
                       </div>
-                      <div class="cs-row">
+                      <div className="cs-row">
                         <dt>可改范围</dt>
-                        <dd class="mono">
+                        <dd className="mono">
                           {scopeList.length > 0 ? (
                             scopeList.join(", ")
                           ) : (
-                            <span class="muted">待 PM 补全</span>
+                            <span className="muted">待 PM 补全</span>
                           )}
                         </dd>
                       </div>
                       {intakeForm.deliver_cmd.trim() ? (
-                        <div class="cs-row">
+                        <div className="cs-row">
                           <dt>交付命令</dt>
-                          <dd class="mono">{intakeForm.deliver_cmd.trim()}</dd>
+                          <dd className="mono">{intakeForm.deliver_cmd.trim()}</dd>
                         </div>
                       ) : null}
                       {intakeForm.depends_on.trim() ? (
-                        <div class="cs-row">
+                        <div className="cs-row">
                           <dt>前置任务</dt>
-                          <dd class="mono">{intakeForm.depends_on.trim()}</dd>
+                          <dd className="mono">{intakeForm.depends_on.trim()}</dd>
                         </div>
                       ) : null}
                     </dl>
                   ) : (
-                    <dl class="draft-fields">
-                      <div class="field">
+                    <dl className="draft-fields">
+                      <div className="field">
                         <div>
                           <dt>交付终点</dt>
                           <dd>
                             <input
                               aria-label="交付终点"
-                              class="draft-edit"
+                              className="draft-edit"
                               placeholder="对话生成或直接点击填写"
                               value={intakeForm.end}
-                              onInput={(e) =>
+                              onChange={(e) =>
                                 store.updateIntakeForm({
                                   end: (e.currentTarget as HTMLInputElement).value,
                                 })
@@ -821,21 +821,21 @@ export function IntakeView() {
                             />
                           </dd>
                         </div>
-                        <span class="field-mark">
+                        <span className="field-mark">
                           {requiredChecks[5]![1] ? <CheckIcon /> : null}
                         </span>
                       </div>
 
-                      <div class="field">
+                      <div className="field">
                         <div>
                           <dt>验收命令</dt>
                           <dd>
                             <input
                               aria-label="验收命令"
-                              class="draft-edit mono"
+                              className="draft-edit mono"
                               placeholder="如 pnpm test"
                               value={intakeForm.accept_cmd}
-                              onInput={(e) =>
+                              onChange={(e) =>
                                 store.updateIntakeForm({
                                   accept_cmd: (e.currentTarget as HTMLInputElement).value,
                                 })
@@ -843,21 +843,21 @@ export function IntakeView() {
                             />
                           </dd>
                         </div>
-                        <span class="field-mark">
+                        <span className="field-mark">
                           {requiredChecks[6]![1] ? <CheckIcon /> : null}
                         </span>
                       </div>
 
-                      <div class="field">
+                      <div className="field">
                         <div>
                           <dt>可改范围</dt>
                           <dd>
                             <input
                               aria-label="可改范围"
-                              class="draft-edit mono"
+                              className="draft-edit mono"
                               placeholder="多个路径用逗号或换行分隔"
                               value={intakeForm.scope}
-                              onInput={(e) =>
+                              onChange={(e) =>
                                 store.updateIntakeForm({
                                   scope: (e.currentTarget as HTMLInputElement).value,
                                 })
@@ -865,21 +865,21 @@ export function IntakeView() {
                             />
                           </dd>
                         </div>
-                        <span class="field-mark">
+                        <span className="field-mark">
                           {requiredChecks[7]![1] ? <CheckIcon /> : null}
                         </span>
                       </div>
 
-                      <div class="field">
+                      <div className="field">
                         <div>
                           <dt>交付命令（可选）</dt>
                           <dd>
                             <input
                               aria-label="交付命令"
-                              class="draft-edit mono"
+                              className="draft-edit mono"
                               placeholder="可选，如审批落盘后执行的命令"
                               value={intakeForm.deliver_cmd}
-                              onInput={(e) =>
+                              onChange={(e) =>
                                 store.updateIntakeForm({
                                   deliver_cmd: (e.currentTarget as HTMLInputElement).value,
                                 })
@@ -887,21 +887,21 @@ export function IntakeView() {
                             />
                           </dd>
                         </div>
-                        <span class="field-mark">
+                        <span className="field-mark">
                           {intakeForm.deliver_cmd.trim() ? <CheckIcon /> : null}
                         </span>
                       </div>
 
-                      <div class="field">
+                      <div className="field">
                         <div>
                           <dt>前置任务（可选）</dt>
                           <dd>
                             <input
                               aria-label="前置任务"
-                              class="draft-edit mono"
+                              className="draft-edit mono"
                               placeholder="选填，如 t-118"
                               value={intakeForm.depends_on}
-                              onInput={(e) =>
+                              onChange={(e) =>
                                 store.updateIntakeForm({
                                   depends_on: (e.currentTarget as HTMLInputElement).value,
                                 })
@@ -909,7 +909,7 @@ export function IntakeView() {
                             />
                           </dd>
                         </div>
-                        <span class="field-mark">
+                        <span className="field-mark">
                           {intakeForm.depends_on.trim() ? <CheckIcon /> : null}
                         </span>
                       </div>
@@ -920,10 +920,10 @@ export function IntakeView() {
             )}
           </div>
 
-          <div class="draft-foot">
+          <div className="draft-foot">
             <button
               type="button"
-              class="btn btn-light"
+              className="btn btn-light"
               id="btnCreateTask"
               style={{ height: "36px", justifyContent: "center" }}
               disabled={!ready || intakeBusy || projectBlocked}
@@ -933,7 +933,7 @@ export function IntakeView() {
             </button>
             <button
               type="button"
-              class="btn"
+              className="btn"
               id="btnSaveDraft"
               style={{ height: "32px", justifyContent: "center" }}
               disabled={!intakeForm.title.trim() || intakeBusy || projectBlocked}
@@ -941,7 +941,7 @@ export function IntakeView() {
             >
               先存为草稿
             </button>
-            <span class="note" id="draftNote">
+            <span className="note" id="draftNote">
               {projectBlocked
                 ? "请先添加或选择目标项目空间"
                 : ready

@@ -1,4 +1,4 @@
-import { useState } from "preact/hooks";
+import { useState, type FormEvent } from "react";
 import { BrandIcon } from "../components/Icons";
 import { useKilnStore, type PairSubmitOutcome } from "../state/store";
 
@@ -63,7 +63,7 @@ export function RemoteAuthView() {
     }
   };
 
-  const submitCode = async (e: Event): Promise<void> => {
+  const submitCode = async (e: FormEvent<HTMLFormElement>): Promise<void> => {
     e.preventDefault();
     if (busy) return;
     const normalized = codeInput.replace(/[\s-]+/g, "").trim();
@@ -85,47 +85,47 @@ export function RemoteAuthView() {
   };
 
   return (
-    <main class="auth-gate" aria-label="Kiln 远程配对登录">
-      <div class="auth-card">
-        <div class="auth-brand">
-          <span class="brand-mark">
+    <main className="auth-gate" aria-label="Kiln 远程配对登录">
+      <div className="auth-card">
+        <div className="auth-brand">
+          <span className="brand-mark">
             <BrandIcon />
           </span>
           <div>
             <h1>Kiln 远程访问</h1>
-            <p class="auth-sub">需配对授权后方可访问本机工作台</p>
+            <p className="auth-sub">需配对授权后方可访问本机工作台</p>
           </div>
         </div>
 
         {state.authNotice ? (
-          <div class="auth-notice" role="alert">
+          <div className="auth-notice" role="alert">
             {state.authNotice}
           </div>
         ) : null}
 
         {errorText ? (
-          <div class="auth-error" role="alert">
+          <div className="auth-error" role="alert">
             {errorText}
           </div>
         ) : null}
 
         {hasToken ? (
-          <div class="auth-section">
-            <div class="auth-token-banner">
+          <div className="auth-section">
+            <div className="auth-token-banner">
               <strong>已读取一次性扫码配对凭证</strong>
               <p>配对链接中的一次性令牌已自动从浏览器地址栏与历史记录清除。</p>
             </div>
 
-            <label class="modal-field">
+            <label className="modal-field">
               <span>设备名称（用于桌面端识别与管理）</span>
               <input
                 type="text"
-                class="input"
+                className="input"
                 aria-label="设备名称"
                 maxLength={120}
                 placeholder="例如：我的 iPhone"
                 value={deviceLabel}
-                onInput={(e) =>
+                onChange={(e) =>
                   setDeviceLabel((e.currentTarget as HTMLInputElement).value)
                 }
               />
@@ -133,7 +133,7 @@ export function RemoteAuthView() {
 
             <button
               type="button"
-              class="btn btn-light auth-submit"
+              className="btn btn-light auth-submit"
               disabled={busy}
               onClick={() => void submitToken()}
             >
@@ -142,7 +142,7 @@ export function RemoteAuthView() {
 
             <button
               type="button"
-              class="btn btn-ghost auth-switch"
+              className="btn btn-ghost auth-switch"
               disabled={busy}
               onClick={() => {
                 setErrorText(null);
@@ -153,34 +153,34 @@ export function RemoteAuthView() {
             </button>
           </div>
         ) : (
-          <form class="auth-section" onSubmit={(e) => void submitCode(e)}>
-            <label class="modal-field">
+          <form className="auth-section" onSubmit={(e) => void submitCode(e)}>
+            <label className="modal-field">
               <span>6 位配对码</span>
               <input
                 type="text"
                 inputMode="numeric"
                 autoComplete="one-time-code"
-                class="input mono auth-code-input"
+                className="input mono auth-code-input"
                 aria-label="6 位配对码"
                 placeholder="000000"
                 maxLength={12}
                 value={codeInput}
-                onInput={(e) =>
+                onChange={(e) =>
                   setCodeInput((e.currentTarget as HTMLInputElement).value)
                 }
               />
             </label>
 
-            <label class="modal-field">
+            <label className="modal-field">
               <span>设备名称（可选）</span>
               <input
                 type="text"
-                class="input"
+                className="input"
                 aria-label="设备名称"
                 maxLength={120}
                 placeholder="例如：我的 iPhone"
                 value={deviceLabel}
-                onInput={(e) =>
+                onChange={(e) =>
                   setDeviceLabel((e.currentTarget as HTMLInputElement).value)
                 }
               />
@@ -188,7 +188,7 @@ export function RemoteAuthView() {
 
             <button
               type="submit"
-              class="btn btn-light auth-submit"
+              className="btn btn-light auth-submit"
               disabled={busy}
             >
               {busy ? "验证配对中…" : "配对并进入工作台"}
@@ -196,9 +196,9 @@ export function RemoteAuthView() {
           </form>
         )}
 
-        <p class="auth-foot">
+        <p className="auth-foot">
           请在桌面端 Kiln 的「设置 → 远程访问」或终端运行{" "}
-          <span class="mono">kiln remote pair</span>{" "}
+          <span className="mono">kiln remote pair</span>{" "}
           获取配对二维码或 6 位配对码。会话以 30 天 HttpOnly Cookie 持久保存，可随时在桌面端一键吊销。
         </p>
       </div>

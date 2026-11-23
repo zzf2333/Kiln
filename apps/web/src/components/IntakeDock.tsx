@@ -49,35 +49,35 @@ export function IntakeDock() {
 
   return (
     <aside
-      class="intake-dock"
+      className="intake-dock"
       aria-label="未完成的新需求对话"
       data-intake-dock="true"
     >
       <button
         type="button"
-        class="intake-dock-main"
+        className="intake-dock-main"
         onClick={() => store.go("intake")}
       >
         <span
-          class={`intake-dock-dot ${
+          className={`intake-dock-dot ${
             intakeBusy ? "is-busy" : intakeHasUnreadReply ? "is-unread" : ""
           }`}
         />
-        <span class="intake-dock-info">
-          <span class="intake-dock-meta">
+        <span className="intake-dock-info">
+          <span className="intake-dock-meta">
             <span>{statusText}</span>
-            <span class="mono muted">
+            <span className="mono muted">
               {spaceLabel} · {readyFields}/8
             </span>
           </span>
-          <span class="intake-dock-title">{displayTitle}</span>
+          <span className="intake-dock-title">{displayTitle}</span>
         </span>
-        <span class="intake-dock-cta">继续对话</span>
+        <span className="intake-dock-cta">继续对话</span>
       </button>
 
       <button
         type="button"
-        class="intake-dock-close"
+        className="intake-dock-close"
         aria-label="关闭未完成的新需求对话"
         title="关闭对话"
         onClick={() => void store.closeIntakeSession()}

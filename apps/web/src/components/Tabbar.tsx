@@ -13,11 +13,11 @@ export function Tabbar() {
   const waitingCount = tasks.filter((t) => t.status === "waiting").length;
 
   return (
-    <nav class="tabbar" aria-label="底部导航">
+    <nav className="tabbar" aria-label="底部导航">
       <button
         type="button"
         data-tab="board"
-        class={view === "board" ? "on" : ""}
+        className={view === "board" ? "on" : ""}
         onClick={() => store.go("board")}
       >
         <BoardIcon />
@@ -27,12 +27,12 @@ export function Tabbar() {
       <button
         type="button"
         data-tab="inbox"
-        class={view === "inbox" || view === "resolve" ? "on" : ""}
+        className={view === "inbox" || view === "resolve" ? "on" : ""}
         onClick={() => store.go("inbox")}
       >
         <InboxIcon />
         <span>等你决定</span>
-        <b class="tab-badge" id="tabInbox">
+        <b className="tab-badge" id="tabInbox">
           {waitingCount || ""}
         </b>
       </button>
@@ -40,7 +40,7 @@ export function Tabbar() {
       <button
         type="button"
         data-tab="intake"
-        class={`tab-new ${view === "intake" ? "on" : ""}`}
+        className={`tab-new ${view === "intake" ? "on" : ""}`}
         onClick={() => store.go("intake")}
       >
         <PlusIcon />
@@ -50,7 +50,7 @@ export function Tabbar() {
       <button
         type="button"
         data-tab="ledger"
-        class={view === "ledger" ? "on" : ""}
+        className={view === "ledger" ? "on" : ""}
         onClick={() => store.go("ledger")}
       >
         <LedgerIcon />
@@ -60,7 +60,7 @@ export function Tabbar() {
       <button
         type="button"
         data-tab="usage"
-        class={view === "usage" ? "on" : ""}
+        className={view === "usage" ? "on" : ""}
         onClick={() => store.go("usage")}
       >
         <UsageIcon />

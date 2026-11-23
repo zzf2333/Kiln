@@ -1,13 +1,13 @@
-import type { ComponentChildren } from "preact";
+import type { ReactNode } from "react";
 import { fmtTime } from "../state/format";
 import { useKilnStore } from "../state/store";
 import { MenuIcon } from "./Icons";
 
 export interface ViewFrameProps {
-  left: ComponentChildren;
-  right?: ComponentChildren;
+  left: ReactNode;
+  right?: ReactNode;
   isBoard?: boolean;
-  children: ComponentChildren;
+  children: ReactNode;
 }
 
 export function ViewFrame({ left, right, isBoard, children }: ViewFrameProps) {
@@ -18,18 +18,18 @@ export function ViewFrame({ left, right, isBoard, children }: ViewFrameProps) {
     : "尚未连接";
 
   return (
-    <section class="main">
+    <section className="main">
       {state.authMode === "remote" && state.authAuthenticated ? (
-        <div class="remote-bar" role="status" aria-label="远程会话状态">
-          <span class="remote-bar-label">
-            <span class="dot remote-dot" />
-            <span class="remote-bar-text">
+        <div className="remote-bar" role="status" aria-label="远程会话状态">
+          <span className="remote-bar-label">
+            <span className="dot remote-dot" />
+            <span className="remote-bar-text">
               远程 · {state.authDevice?.label ?? "已配对设备"}
             </span>
           </span>
           <button
             type="button"
-            class="btn btn-ghost btn-sm"
+            className="btn btn-ghost btn-sm"
             onClick={() => void store.logoutRemote()}
           >
             退出登录
@@ -39,20 +39,20 @@ export function ViewFrame({ left, right, isBoard, children }: ViewFrameProps) {
 
       {isOffline ? (
         <div
-          class="offline-banner"
+          className="offline-banner"
           role="status"
           aria-live="polite"
           data-offline-banner="true"
         >
-          <span class="offline-banner-text">
-            <span class="dot offline-dot" />
+          <span className="offline-banner-text">
+            <span className="dot offline-dot" />
             <span>
               主机离线或连接已断开（最后在线 {lastOnlineText}）— 正在自动重连…
             </span>
           </span>
           <button
             type="button"
-            class="btn btn-sm"
+            className="btn btn-sm"
             disabled={state.retryingConnection}
             onClick={() => void store.retryConnection()}
           >
@@ -61,23 +61,23 @@ export function ViewFrame({ left, right, isBoard, children }: ViewFrameProps) {
         </div>
       ) : null}
 
-      <header class={`topbar ${isBoard ? "is-board" : ""}`}>
+      <header className={`topbar ${isBoard ? "is-board" : ""}`}>
         <button
           type="button"
-          class="menu-btn"
+          className="menu-btn"
           aria-label="打开导航"
           onClick={() => store.setNavOpen(!state.navOpen)}
         >
           <MenuIcon />
         </button>
-        <div class="tb-l" id="tbL">
+        <div className="tb-l" id="tbL">
           {left}
         </div>
-        <div class="tb-r" id="tbR">
+        <div className="tb-r" id="tbR">
           {right}
         </div>
       </header>
-      <div class="view" id="view">
+      <div className="view" id="view">
         {children}
       </div>
     </section>

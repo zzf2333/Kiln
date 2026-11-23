@@ -1,4 +1,4 @@
-import { useState } from "preact/hooks";
+import { useState } from "react";
 import type { TaskDetailResponse } from "../api/types";
 import { ChatComposer } from "../components/ChatComposer";
 import { ChatTimeline } from "../components/ChatTimeline";
@@ -21,26 +21,26 @@ export function HostStagedDiffSection({
   }
 
   return (
-    <section class="staged-diffs" aria-label="待落盘暂存 Diff">
-      <div class="staged-diffs-head">
+    <section className="staged-diffs" aria-label="待落盘暂存 Diff">
+      <div className="staged-diffs-head">
         <h4>待落盘暂存 Diff</h4>
-        <span class="muted mono">{diffs.length} 个文件待写入</span>
+        <span className="muted mono">{diffs.length} 个文件待写入</span>
       </div>
-      <div class="staged-diffs-list">
+      <div className="staged-diffs-list">
         {diffs.map((entry, idx) => (
-          <div key={`${entry.targetPath}-${idx}`} class="staged-diff-file">
-            <div class="staged-diff-file-head">
-              <span class={`staged-tag ${entry.existedBefore ? "is-mod" : "is-add"}`}>
+          <div key={`${entry.targetPath}-${idx}`} className="staged-diff-file">
+            <div className="staged-diff-file-head">
+              <span className={`staged-tag ${entry.existedBefore ? "is-mod" : "is-add"}`}>
                 {entry.existedBefore ? "修改" : "新增"}
               </span>
-              <span class="staged-diff-path mono" title={entry.targetPath}>
+              <span className="staged-diff-path mono" title={entry.targetPath}>
                 {entry.targetPath}
               </span>
               {entry.truncated ? (
-                <span class="staged-tag is-trunc">内容已截断</span>
+                <span className="staged-tag is-trunc">内容已截断</span>
               ) : null}
             </div>
-            <pre class="mono staged-diff-pre">{entry.diff}</pre>
+            <pre className="mono staged-diff-pre">{entry.diff}</pre>
           </div>
         ))}
       </div>
@@ -83,15 +83,15 @@ export function ResolveView() {
         left={
           <button
             type="button"
-            class="btn btn-ghost"
+            className="btn btn-ghost"
             onClick={() => store.go("board")}
           >
             返回总览
           </button>
         }
       >
-        <div class="page">
-          <p class="empty">当前任务没有待决事项，已返回总览。</p>
+        <div className="page">
+          <p className="empty">当前任务没有待决事项，已返回总览。</p>
         </div>
       </ViewFrame>
     );
@@ -107,7 +107,7 @@ export function ResolveView() {
   return (
     <ViewFrame
       left={
-        <div class="crumbs">
+        <div className="crumbs">
           <button type="button" onClick={() => store.go("board")}>
             总览
           </button>
@@ -123,7 +123,7 @@ export function ResolveView() {
         <>
           <button
             type="button"
-            class="btn btn-ghost desktop-panel-toggle"
+            className="btn btn-ghost desktop-panel-toggle"
             aria-pressed={state.desktopDraftCollapsed}
             onClick={() => store.toggleDesktopDraftCollapsed()}
           >
@@ -131,7 +131,7 @@ export function ResolveView() {
           </button>
           <button
             type="button"
-            class="btn btn-ghost"
+            className="btn btn-ghost"
             onClick={() => store.openTask(taskId)}
           >
             返回详情
@@ -139,8 +139,8 @@ export function ResolveView() {
         </>
       }
     >
-      <div class={`converse ${state.desktopDraftCollapsed ? "is-panel-collapsed" : ""}`}>
-        <div class="chat">
+      <div className={`converse ${state.desktopDraftCollapsed ? "is-panel-collapsed" : ""}`}>
+        <div className="chat">
           <ChatTimeline
             messages={messages}
             busy={state.resolveBusy}
@@ -162,26 +162,26 @@ export function ResolveView() {
           />
         </div>
 
-        <aside class={`draft ${state.draftOpen ? "open" : ""}`}>
-          <div class="draft-head">
+        <aside className={`draft ${state.draftOpen ? "open" : ""}`}>
+          <div className="draft-head">
             <h3>拍板与契约</h3>
             <button
               type="button"
-              class="btn btn-sm draft-toggle"
+              className="btn btn-sm draft-toggle"
               id="btnDraftToggle"
               onClick={() => store.toggleDraftOpen()}
             >
               {state.draftOpen ? "收起面板" : "展开拍板"}
             </button>
           </div>
-          <div class="resolve-panel" style={{ paddingTop: "12px" }}>
+          <div className="resolve-panel" style={{ paddingTop: "12px" }}>
             <DecisionBox
               decision={pendingDecision}
               onSubmit={(payload) => store.submitDecision(taskId, payload)}
             />
             <HostStagedDiffSection detail={detail} />
             {detail?.card && detail?.state ? (
-              <div class="ctx" style={{ border: "none", padding: "0 0 20px" }}>
+              <div className="ctx" style={{ border: "none", padding: "0 0 20px" }}>
                 <section>
                   <h3>当前契约 · v{detail.state.contractVersion}</h3>
                   <dl>
@@ -195,11 +195,11 @@ export function ResolveView() {
                     </div>
                     <div>
                       <dt>验收命令</dt>
-                      <dd class="mono">{detail.card.contract.accept_cmd}</dd>
+                      <dd className="mono">{detail.card.contract.accept_cmd}</dd>
                     </div>
                     <div>
                       <dt>可改范围</dt>
-                      <dd class="mono">
+                      <dd className="mono">
                         {detail.card.contract.scope.join("\n")}
                       </dd>
                     </div>

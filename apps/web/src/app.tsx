@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "preact/hooks";
+import { useEffect, useMemo } from "react";
 import { CommandPalette } from "./components/CommandPalette";
 import { IntakeDock } from "./components/IntakeDock";
 import { Sidebar } from "./components/Sidebar";
@@ -92,7 +92,7 @@ function AppShell() {
 
   const renderToast = () => (
     <div
-      class={`toast ${state.toastMessage ? "show" : ""}`}
+      className={`toast ${state.toastMessage ? "show" : ""}`}
       id="toast"
       role="status"
       aria-live="polite"
@@ -104,8 +104,8 @@ function AppShell() {
   if (!state.authChecked) {
     return (
       <>
-        <main class="auth-gate" aria-label="正在连接 Kiln">
-          <div class="auth-loading">正在连接 Kiln…</div>
+        <main className="auth-gate" aria-label="正在连接 Kiln">
+          <div className="auth-loading">正在连接 Kiln…</div>
         </main>
         {renderToast()}
       </>
@@ -123,12 +123,12 @@ function AppShell() {
 
   return (
     <>
-      <div class="app">
+      <div className="app">
         <Sidebar />
         {renderView()}
       </div>
       <div
-        class="nav-mask"
+        className="nav-mask"
         onClick={() => store.setNavOpen(false)}
       />
       <Tabbar />

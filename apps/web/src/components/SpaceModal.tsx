@@ -1,4 +1,5 @@
-import { useEffect, useState } from "preact/hooks";
+import { Dialog } from "radix-ui";
+import { useEffect, useState } from "react";
 import type { DiscoveredGitRepo } from "../api/types";
 import { useKilnStore } from "../state/store";
 
@@ -199,48 +200,74 @@ export function SpaceModal() {
   });
 
   return (
-    <div
-      class="palette-mask open"
-      onClick={(e) => {
-        if (e.target === e.currentTarget && !saveBusy && !quickBusyPath) {
+    <Dialog.Root
+      open={spaceModalOpen}
+      onOpenChange={(open) => {
+        if (!open && !saveBusy && !quickBusyPath) {
           store.closeSpaceModal();
         }
       }}
     >
-      <div
-        class="modal-card modal-card-wide"
-        role="dialog"
-        aria-modal="true"
-        aria-label={isEditing ? "编辑项目空间" : "添加项目空间"}
-      >
-        <div class="modal-head">
-          <h2>{isEditing ? `编辑项目空间 · ${editingSpaceId}` : "添加项目空间"}</h2>
-          <button
-            type="button"
-            class="btn btn-ghost btn-sm"
-            onClick={() => store.closeSpaceModal()}
+      <Dialog.Portal>
+        <Dialog.Overlay
+          className="palette-mask open"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !saveBusy && !quickBusyPath) {
+              store.closeSpaceModal();
+            }
+          }}
+        >
+          <Dialog.Content
+            className="modal-card modal-card-wide"
+            aria-label={isEditing ? "编辑项目空间" : "添加项目空间"}
+            aria-describedby={undefined}
+            onEscapeKeyDown={(e) => {
+              e.preventDefault();
+              if (!saveBusy && !quickBusyPath) {
+                store.closeSpaceModal();
+              }
+            }}
+            onPointerDownOutside={(e) => {
+              if (saveBusy || quickBusyPath) {
+                e.preventDefault();
+              }
+            }}
+            onInteractOutside={(e) => {
+              if (saveBusy || quickBusyPath) {
+                e.preventDefault();
+              }
+            }}
           >
-            关闭
-          </button>
-        </div>
+            <div className="modal-head">
+              <Dialog.Title asChild>
+                <h2>{isEditing ? `编辑项目空间 · ${editingSpaceId}` : "添加项目空间"}</h2>
+              </Dialog.Title>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => store.closeSpaceModal()}
+              >
+                关闭
+              </button>
+            </div>
 
-        <div class="modal-body">
+        <div className="modal-body">
           {!isEditing ? (
-            <section class="discover-section" aria-label="选择本机 Git 项目">
-              <div class="discover-toolbar">
+            <section className="discover-section" aria-label="选择本机 Git 项目">
+              <div className="discover-toolbar">
                 <input
                   aria-label="搜索本机 Git 项目"
-                  class="input"
+                  className="input"
                   placeholder="搜索本机扫描出的 Git 项目或路径…"
                   value={searchQuery}
-                  onInput={(e) =>
+                  onChange={(e) =>
                     setSearchQuery((e.currentTarget as HTMLInputElement).value)
                   }
                 />
                 {authMode === "local" ? (
                   <button
                     type="button"
-                    class="btn btn-sm"
+                    className="btn btn-sm"
                     disabled={pickDirBusy || saveBusy}
                     onClick={() => void handlePickFromFolder()}
                   >
@@ -249,7 +276,7 @@ export function SpaceModal() {
                 ) : null}
                 <button
                   type="button"
-                  class="btn btn-ghost btn-sm"
+                  className="btn btn-ghost btn-sm"
                   disabled={discoverBusy}
                   onClick={() => void store.discoverLocalSpaces(true)}
                 >
@@ -258,29 +285,29 @@ export function SpaceModal() {
               </div>
 
               {discoverError ? (
-                <p class="warn-line" style={{ marginTop: "6px" }}>
+                <p className="warn-line" style={{ marginTop: "6px" }}>
                   {discoverError}
                 </p>
               ) : (discoverBusy || !discoverLoaded) && discoveredRepos.length === 0 ? (
-                <div class="discover-empty">
+                <div className="discover-empty">
                   正在扫描常见代码目录中的 Git 项目…
                 </div>
               ) : filteredRepos.length === 0 ? (
-                <div class="discover-empty">
+                <div className="discover-empty">
                   {discoveredRepos.length === 0
                     ? "未在常见目录扫描到 Git 项目，可点击「从文件目录选择」或下方手动输入路径。"
                     : "没有匹配的 Git 项目，请调整关键词或从文件目录选择。"}
                 </div>
               ) : (
-                <div class="discover-list" role="list">
+                <div className="discover-list" role="list">
                   {filteredRepos.map((repo) => {
                     const isExisting = repo.already_added && Boolean(repo.space_id);
                     const isQuickBusy = quickBusyPath === repo.repo_path;
                     return (
-                      <div key={repo.repo_path} class="discover-item" role="listitem">
+                      <div key={repo.repo_path} className="discover-item" role="listitem">
                         <button
                           type="button"
-                          class="discover-main"
+                          className="discover-main"
                           onClick={() => {
                             if (isExisting && repo.space_id && spaceModalSelectInIntake) {
                               handleSelectExisting(repo.space_id);
@@ -290,23 +317,23 @@ export function SpaceModal() {
                             void runInspect(repo.repo_path, true);
                           }}
                         >
-                          <div class="discover-title-row">
-                            <span class="discover-name">{repo.name}</span>
-                            <span class="chip mono">{repo.default_branch}</span>
+                          <div className="discover-title-row">
+                            <span className="discover-name">{repo.name}</span>
+                            <span className="chip mono">{repo.default_branch}</span>
                             {isExisting ? (
-                              <span class="chip chip-ok">已添加</span>
+                              <span className="chip chip-ok">已添加</span>
                             ) : null}
                           </div>
-                          <div class="discover-path mono" title={repo.repo_path}>
+                          <div className="discover-path mono" title={repo.repo_path}>
                             {repo.display_path}
                           </div>
                         </button>
-                        <div class="discover-act">
+                        <div className="discover-act">
                           {isExisting && repo.space_id ? (
                             spaceModalSelectInIntake ? (
                               <button
                                 type="button"
-                                class="btn btn-sm btn-light"
+                                className="btn btn-sm btn-light"
                                 onClick={() => handleSelectExisting(repo.space_id!)}
                               >
                                 选用
@@ -315,7 +342,7 @@ export function SpaceModal() {
                           ) : (
                             <button
                               type="button"
-                              class="btn btn-sm btn-light"
+                              className="btn btn-sm btn-light"
                               disabled={quickBusyPath !== null || saveBusy}
                               onClick={() => void handleQuickAdd(repo)}
                             >
@@ -331,16 +358,16 @@ export function SpaceModal() {
             </section>
           ) : null}
 
-          <div class="modal-field">
-            <label for="spaceRepoPath">仓库路径</label>
-            <div class="modal-row">
+          <div className="modal-field">
+            <label htmlFor="spaceRepoPath">仓库路径</label>
+            <div className="modal-row">
               <input
                 id="spaceRepoPath"
                 aria-label="仓库路径"
-                class="input mono"
+                className="input mono"
                 placeholder="/Users/you/Projects/my-app 或 ~/Projects/my-app"
                 value={repoPath}
-                onInput={(e) =>
+                onChange={(e) =>
                   setRepoPath((e.currentTarget as HTMLInputElement).value)
                 }
                 onKeyDown={(e) => {
@@ -352,7 +379,7 @@ export function SpaceModal() {
               />
               <button
                 type="button"
-                class="btn"
+                className="btn"
                 disabled={!repoPath.trim() || inspectBusy}
                 onClick={() => void handleInspect()}
               >
@@ -361,37 +388,37 @@ export function SpaceModal() {
             </div>
           </div>
 
-          {inspectInfo ? <p class="modal-ok">{inspectInfo}</p> : null}
+          {inspectInfo ? <p className="modal-ok">{inspectInfo}</p> : null}
           {errorMsg ? (
-            <p class="warn-line" role="alert" style={{ marginTop: "0" }}>
+            <p className="warn-line" role="alert" style={{ marginTop: "0" }}>
               {errorMsg}
             </p>
           ) : null}
 
-          <div class="modal-grid">
-            <label class="modal-field">
+          <div className="modal-grid">
+            <label className="modal-field">
               <span>空间标识</span>
               <input
                 aria-label="空间标识"
-                class="input mono"
+                className="input mono"
                 placeholder="如 kiln"
                 value={spaceId}
                 disabled={isEditing}
-                onInput={(e) => {
+                onChange={(e) => {
                   setIdTouched(true);
                   setSpaceId((e.currentTarget as HTMLInputElement).value);
                 }}
               />
             </label>
 
-            <label class="modal-field">
+            <label className="modal-field">
               <span>显示名称</span>
               <input
                 aria-label="显示名称"
-                class="input"
+                className="input"
                 placeholder="如 Kiln 本体"
                 value={name}
-                onInput={(e) => {
+                onChange={(e) => {
                   setNameTouched(true);
                   setName((e.currentTarget as HTMLInputElement).value);
                 }}
@@ -399,58 +426,58 @@ export function SpaceModal() {
             </label>
           </div>
 
-          <div class="modal-grid">
-            <label class="modal-field">
+          <div className="modal-grid">
+            <label className="modal-field">
               <span>默认分支</span>
               <input
                 aria-label="默认分支"
-                class="input mono"
+                className="input mono"
                 placeholder="main"
                 value={defaultBranch}
-                onInput={(e) =>
+                onChange={(e) =>
                   setDefaultBranch((e.currentTarget as HTMLInputElement).value)
                 }
               />
             </label>
 
-            <label class="modal-field">
+            <label className="modal-field">
               <span>默认验收命令（可选）</span>
               <input
                 aria-label="默认验收命令"
-                class="input mono"
+                className="input mono"
                 placeholder="如 pnpm test"
                 value={defaultAcceptCmd}
-                onInput={(e) =>
+                onChange={(e) =>
                   setDefaultAcceptCmd((e.currentTarget as HTMLInputElement).value)
                 }
               />
             </label>
           </div>
 
-          <details class="modal-advanced">
+          <details className="modal-advanced">
             <summary>高级设置（环境文件与依赖克隆）</summary>
-            <div class="modal-grid" style={{ marginTop: "10px" }}>
-              <label class="modal-field">
+            <div className="modal-grid" style={{ marginTop: "10px" }}>
+              <label className="modal-field">
                 <span>复制未跟踪文件</span>
                 <input
                   aria-label="复制未跟踪文件"
-                  class="input mono"
+                  className="input mono"
                   placeholder="如 .env.local（逗号分隔）"
                   value={copyUntracked}
-                  onInput={(e) =>
+                  onChange={(e) =>
                     setCopyUntracked((e.currentTarget as HTMLInputElement).value)
                   }
                 />
               </label>
 
-              <label class="modal-field">
+              <label className="modal-field">
                 <span>APFS 克隆依赖目录</span>
                 <input
                   aria-label="APFS 克隆依赖目录"
-                  class="input mono"
+                  className="input mono"
                   placeholder="如 node_modules（逗号分隔）"
                   value={cloneDeps}
-                  onInput={(e) =>
+                  onChange={(e) =>
                     setCloneDeps((e.currentTarget as HTMLInputElement).value)
                   }
                 />
@@ -459,10 +486,10 @@ export function SpaceModal() {
           </details>
         </div>
 
-        <div class="modal-foot">
+        <div className="modal-foot">
           <button
             type="button"
-            class="btn"
+            className="btn"
             disabled={saveBusy || quickBusyPath !== null}
             onClick={() => store.closeSpaceModal()}
           >
@@ -470,7 +497,7 @@ export function SpaceModal() {
           </button>
           <button
             type="button"
-            class="btn btn-light"
+            className="btn btn-light"
             disabled={
               saveBusy ||
               quickBusyPath !== null ||
@@ -483,7 +510,9 @@ export function SpaceModal() {
             {saveBusy ? "保存中…" : "保存空间"}
           </button>
         </div>
-      </div>
-    </div>
+          </Dialog.Content>
+        </Dialog.Overlay>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }

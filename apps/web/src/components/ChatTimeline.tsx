@@ -1,5 +1,5 @@
-import type { ComponentChildren } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import type { ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ChatMessage } from "../api/types";
 import { fmtTime } from "../state/format";
 import type { IntakeProgressItem } from "../state/store";
@@ -12,7 +12,7 @@ export interface ChatTimelineProps {
   progressLogs?: ReadonlyArray<IntakeProgressItem>;
   roleLabel: string;
   defaultAgentName: string;
-  emptySlot?: ComponentChildren;
+  emptySlot?: ReactNode;
 }
 
 interface ParsedToolStep {
@@ -197,44 +197,44 @@ function WorkLogGroupCard({
   };
 
   return (
-    <div class={`worklog ${hasWarn ? "has-warn" : ""}`} aria-label="探索与操作记录">
+    <div className={`worklog ${hasWarn ? "has-warn" : ""}`} aria-label="探索与操作记录">
       <button
         type="button"
-        class="worklog-toggle"
+        className="worklog-toggle"
         aria-expanded={expanded}
         onClick={() => setExpanded((v) => !v)}
       >
-        <span class="worklog-toggle-l">
-          <span class={`worklog-chevron ${expanded ? "is-open" : ""}`} aria-hidden="true">
+        <span className="worklog-toggle-l">
+          <span className={`worklog-chevron ${expanded ? "is-open" : ""}`} aria-hidden="true">
             ▸
           </span>
-          <span class={`worklog-dot ${hasWarn ? "is-warn" : ""}`} />
-          <span class="worklog-summary">{summarizeWorkLog(steps, rawCount)}</span>
-          {hasWarn ? <span class="worklog-warn-badge">含提示</span> : null}
+          <span className={`worklog-dot ${hasWarn ? "is-warn" : ""}`} />
+          <span className="worklog-summary">{summarizeWorkLog(steps, rawCount)}</span>
+          {hasWarn ? <span className="worklog-warn-badge">含提示</span> : null}
         </span>
-        <span class="worklog-toggle-r">{expanded ? "收起" : "展开详情"}</span>
+        <span className="worklog-toggle-r">{expanded ? "收起" : "展开详情"}</span>
       </button>
 
       {expanded ? (
-        <ul class="worklog-rail">
+        <ul className="worklog-rail">
           {steps.map((step) => {
             const detailOpen = Boolean(openStepIds[step.id]);
             return (
-              <li key={step.id} class={`worklog-item is-${step.status}`}>
-                <span class="worklog-node" aria-hidden="true" />
-                <div class="worklog-body">
-                  <div class="worklog-row">
-                    <span class="worklog-verb">{step.verb}</span>
+              <li key={step.id} className={`worklog-item is-${step.status}`}>
+                <span className="worklog-node" aria-hidden="true" />
+                <div className="worklog-body">
+                  <div className="worklog-row">
+                    <span className="worklog-verb">{step.verb}</span>
                     {step.count > 1 ? (
-                      <span class="worklog-count mono">×{step.count}</span>
+                      <span className="worklog-count mono">×{step.count}</span>
                     ) : null}
                     {step.preview ? (
-                      <span class="worklog-detail mono">{step.preview}</span>
+                      <span className="worklog-detail mono">{step.preview}</span>
                     ) : null}
                     {step.expandable ? (
                       <button
                         type="button"
-                        class="worklog-more"
+                        className="worklog-more"
                         onClick={() => toggleStepDetail(step.id)}
                       >
                         {detailOpen ? "收起" : "完整内容"}
@@ -242,11 +242,11 @@ function WorkLogGroupCard({
                     ) : null}
                   </div>
                   {detailOpen && step.fullDetail ? (
-                    <div class="worklog-cmd-wrap">
-                      <pre class="worklog-cmd mono">{step.fullDetail}</pre>
+                    <div className="worklog-cmd-wrap">
+                      <pre className="worklog-cmd mono">{step.fullDetail}</pre>
                       <button
                         type="button"
-                        class="btn btn-ghost btn-sm md-copy-btn worklog-cmd-copy"
+                        className="btn btn-ghost btn-sm md-copy-btn worklog-cmd-copy"
                         onClick={() => void copyCommand(step.id, step.fullDetail)}
                       >
                         {copiedId === step.id ? "已复制" : "复制"}
@@ -285,19 +285,19 @@ function AgentMessageCard({
   };
 
   return (
-    <article class="msg agent">
-      <header class="msg-head">
-        <div class="msg-head-l">
-          <span class="msg-role-dot" aria-hidden="true" />
-          <span class="msg-who">{roleLabel}</span>
-          <span class="msg-agent mono">{msg.name ?? defaultAgentName}</span>
+    <article className="msg agent">
+      <header className="msg-head">
+        <div className="msg-head-l">
+          <span className="msg-role-dot" aria-hidden="true" />
+          <span className="msg-who">{roleLabel}</span>
+          <span className="msg-agent mono">{msg.name ?? defaultAgentName}</span>
           {msg.at ? (
-            <span class="msg-time mono">{fmtTime(msg.at)}</span>
+            <span className="msg-time mono">{fmtTime(msg.at)}</span>
           ) : null}
         </div>
         <button
           type="button"
-          class="btn btn-ghost btn-sm msg-copy-btn"
+          className="btn btn-ghost btn-sm msg-copy-btn"
           aria-label="复制消息正文"
           onClick={() => void handleCopy()}
         >
@@ -359,9 +359,9 @@ export function ChatTimeline({
   const segments = groupTimelineSegments(messages);
 
   return (
-    <div class="msgs-wrap">
-      <div class="msgs" id="msgs" ref={scrollerRef} onScroll={handleScroll}>
-        <div class="msgs-track">
+    <div className="msgs-wrap">
+      <div className="msgs" id="msgs" ref={scrollerRef} onScroll={handleScroll}>
+        <div className="msgs-track">
           {emptySlot}
 
           {segments.map((seg, idx) => {
@@ -376,8 +376,8 @@ export function ChatTimeline({
             }
             if (seg.who === "me") {
               return (
-                <div key={seg.msg.id ?? `me-${idx}`} class="msg me">
-                  <div class="msg-text">{seg.msg.text}</div>
+                <div key={seg.msg.id ?? `me-${idx}`} className="msg me">
+                  <div className="msg-text">{seg.msg.text}</div>
                 </div>
               );
             }
@@ -392,37 +392,37 @@ export function ChatTimeline({
           })}
 
           {busy ? (
-            <div class="msg msg-thinking">
-              <div class="msg-head">
-                <div class="msg-head-l">
-                  <span class="msg-role-dot is-busy" aria-hidden="true" />
-                  <span class="msg-who">{roleLabel}</span>
+            <div className="msg msg-thinking">
+              <div className="msg-head">
+                <div className="msg-head-l">
+                  <span className="msg-role-dot is-busy" aria-hidden="true" />
+                  <span className="msg-who">{roleLabel}</span>
                 </div>
               </div>
-              <div class="worklog is-live">
-                <div class="worklog-live-head">
+              <div className="worklog is-live">
+                <div className="worklog-live-head">
                   <span>{busyLabel}</span>
                   {progressLogs.length > 0 ? (
-                    <span class="worklog-toggle-r mono">{progressLogs.length} 步</span>
+                    <span className="worklog-toggle-r mono">{progressLogs.length} 步</span>
                   ) : null}
                 </div>
                 {progressLogs.length > 0 ? (
                   <ul
-                    class="worklog-rail"
+                    className="worklog-rail"
                     aria-label="立项探索进度"
                     ref={liveRailRef}
                   >
                     {progressLogs.map((step, idx) => (
                       <li
                         key={`${step.at}-${idx}`}
-                        class={`worklog-item ${
+                        className={`worklog-item ${
                           step.kind === "draft_updated" ? "is-ok" : "is-neutral"
                         }`}
                       >
-                        <span class="worklog-node" aria-hidden="true" />
-                        <div class="worklog-body">
-                          <div class="worklog-row">
-                            <span class="worklog-detail mono" title={step.text}>
+                        <span className="worklog-node" aria-hidden="true" />
+                        <div className="worklog-body">
+                          <div className="worklog-row">
+                            <span className="worklog-detail mono" title={step.text}>
                               {step.text}
                             </span>
                           </div>
@@ -440,7 +440,7 @@ export function ChatTimeline({
       {showJumpBottom ? (
         <button
           type="button"
-          class="scroll-bottom-btn"
+          className="scroll-bottom-btn"
           onClick={() => scrollToBottom(true)}
         >
           ↓ 回到底部

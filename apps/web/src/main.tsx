@@ -1,4 +1,4 @@
-import { render } from "preact";
+import { createRoot } from "react-dom/client";
 import "./styles/tokens.css";
 import "./styles/layout.css";
 import { App } from "./app";
@@ -8,5 +8,5 @@ applyThemeToDocument(readStoredThemePreference());
 
 const root = document.getElementById("app");
 if (root) {
-  render(<App />, root);
+  createRoot(root).render(<App />);
 }

@@ -1,4 +1,4 @@
-import { useState } from "preact/hooks";
+import { useState } from "react";
 import type { GateReport, StageId } from "@kiln/protocol/web";
 import type { TaskRunDetail } from "../api/types";
 import { DecisionBox } from "../components/DecisionBox";
@@ -100,23 +100,23 @@ export function DetailView() {
     return (
       <ViewFrame
         left={
-          <div class="crumbs">
+          <div className="crumbs">
             <button type="button" onClick={() => store.go("board")}>
               总览
             </button>
             <span>/</span>
-            <span class="mono">{taskId}</span>
+            <span className="mono">{taskId}</span>
           </div>
         }
       >
-        <div class="page">
+        <div className="page">
           {state.taskDetailError ? (
-            <div class="conflict-box">
-              <div class="conflict-head">
+            <div className="conflict-box">
+              <div className="conflict-head">
                 <span>加载任务详情失败</span>
                 <button
                   type="button"
-                  class="btn btn-sm"
+                  className="btn btn-sm"
                   onClick={() => void store.loadTaskDetail(taskId)}
                 >
                   重试
@@ -125,7 +125,7 @@ export function DetailView() {
               <p>{state.taskDetailError}</p>
             </div>
           ) : (
-            <p class="empty">
+            <p className="empty">
               {taskSummary ? `正在加载 ${taskSummary.title}...` : "正在加载任务详情..."}
             </p>
           )}
@@ -397,14 +397,14 @@ export function DetailView() {
   return (
     <ViewFrame
       left={
-        <div class="crumbs">
+        <div className="crumbs">
           <button type="button" onClick={() => store.go("board")}>
             总览
           </button>
           <span>/</span>
           <span>{spaceName}</span>
           <span>/</span>
-          <span class="mono">{card.id}</span>
+          <span className="mono">{card.id}</span>
         </div>
       }
       right={
@@ -412,7 +412,7 @@ export function DetailView() {
           {taskState.status === "running" || taskState.status === "queued" ? (
             <button
               type="button"
-              class="btn"
+              className="btn"
               onClick={() => void store.pauseTask(card.id)}
             >
               暂停
@@ -421,7 +421,7 @@ export function DetailView() {
           {taskState.status === "paused" || taskState.status === "external" ? (
             <button
               type="button"
-              class="btn btn-light"
+              className="btn btn-light"
               onClick={() => void store.resumeTask(card.id)}
             >
               继续推进
@@ -430,7 +430,7 @@ export function DetailView() {
           {taskState.status === "external" ? (
             <button
               type="button"
-              class="btn"
+              className="btn"
               onClick={() => void store.completeTask(card.id)}
             >
               标记已完成
@@ -439,7 +439,7 @@ export function DetailView() {
           {canShowRestore ? (
             <button
               type="button"
-              class="btn"
+              className="btn"
               onClick={() => void store.restoreHostBackup(card.id)}
             >
               从备份恢复
@@ -447,7 +447,7 @@ export function DetailView() {
           ) : null}
           {isSafeHttpOrPaseoUrl(detail.liveViewUrl) ? (
             <a
-              class="btn"
+              className="btn"
               href={detail.liveViewUrl}
               target="_blank"
               rel="noopener noreferrer"
@@ -457,7 +457,7 @@ export function DetailView() {
           ) : null}
           <button
             type="button"
-            class="btn"
+            className="btn"
             onClick={() => void handleExportHandoff()}
           >
             导出交接包
@@ -465,7 +465,7 @@ export function DetailView() {
           {taskState.status !== "done" && taskState.status !== "cancelled" ? (
             <button
               type="button"
-              class="btn btn-danger"
+              className="btn btn-danger"
               onClick={() => void store.cancelTask(card.id, "用户在详情页取消")}
             >
               取消
@@ -474,13 +474,13 @@ export function DetailView() {
         </>
       }
     >
-      <div class="detail">
-        <div class="d-head">
-          <div class="d-title">
+      <div className="detail">
+        <div className="d-head">
+          <div className="d-title">
             <h1>{card.title}</h1>
-            <span class={`chip ${statusChip[1]}`}>{statusChip[0]}</span>
+            <span className={`chip ${statusChip[1]}`}>{statusChip[0]}</span>
           </div>
-          <div class="d-sub">
+          <div className="d-sub">
             <PrioritySelect
               value={taskState.priority}
               disabled={
@@ -501,7 +501,7 @@ export function DetailView() {
                 · 属于父任务{" "}
                 <button
                   type="button"
-                  class="link mono"
+                  className="link mono"
                   onClick={() => store.openTask(card.parent!)}
                 >
                   {card.parent}
@@ -511,35 +511,35 @@ export function DetailView() {
           </div>
         </div>
 
-        <ol class="stations">
+        <ol className="stations">
           {pipelineStages.map((st) => {
             const meta = stageMeta(st);
             const info = stationStatus(st);
             return (
               <li
                 key={st}
-                class={`station ${info.cls}`}
+                className={`station ${info.cls}`}
                 style={{ "--c": `var(${meta.colorVar})` } as Record<string, string>}
               >
-                <span class="st-mark" />
-                <span class="st-name">{meta.label}</span>
-                <span class="st-sub">{info.sub}</span>
+                <span className="st-mark" />
+                <span className="st-name">{meta.label}</span>
+                <span className="st-sub">{info.sub}</span>
               </li>
             );
           })}
         </ol>
 
         {normalizedRuns.length > 0 ? (
-          <div class="gantt">
-            <div class="g-axis">
+          <div className="gantt">
+            <div className="g-axis">
               <span />
-              <div class="g-ticks">
+              <div className="g-ticks">
                 {[0, 0.25, 0.5, 0.75].map((f) => (
                   <span key={f} style={{ left: `${f * 100}%` }}>
                     {fmtTime(new Date(ganttMin + ganttSpan * f).toISOString())}
                   </span>
                 ))}
-                <span class="now">
+                <span className="now">
                   {taskState.status === "running"
                     ? `现在 ${fmtTime(new Date(ganttMax).toISOString())}`
                     : fmtTime(new Date(ganttMax).toISOString())}
@@ -552,18 +552,18 @@ export function DetailView() {
                 .map((r, i) => ({ r, i }))
                 .filter((x) => x.r.stage === st);
               return (
-                <div key={st} class="g-row">
-                  <div class="g-label">
+                <div key={st} className="g-row">
+                  <div className="g-label">
                     <span
-                      class="dot"
+                      className="dot"
                       style={{ background: `var(${meta.colorVar})` }}
                     />
                     <span>{meta.label}</span>
                     {stageRuns.length > 1 ? (
-                      <span class="muted mono">×{stageRuns.length}</span>
+                      <span className="muted mono">×{stageRuns.length}</span>
                     ) : null}
                   </div>
-                  <div class="g-track">
+                  <div className="g-track">
                     {stageRuns.map(({ r, i }) => {
                       const left = pctAt(r.startMs);
                       const right = pctAt(r.endMs === null ? ganttMax : r.endMs);
@@ -574,7 +574,7 @@ export function DetailView() {
                         return (
                           <div
                             key={i}
-                            class={`flame fire${selCls}`}
+                            className={`flame fire${selCls}`}
                             style={{
                               left: `${left}%`,
                               width: `${width}%`,
@@ -583,8 +583,8 @@ export function DetailView() {
                             onClick={() => store.selectRun(i)}
                             title={`${meta.label} · 进行中`}
                           >
-                            <div class="flame-bar" />
-                            <span class="flame-head" />
+                            <div className="flame-bar" />
+                            <span className="flame-head" />
                             <FlameCanvas heat={heatOf(taskRate)} />
                           </div>
                         );
@@ -593,7 +593,7 @@ export function DetailView() {
                       return (
                         <div
                           key={i}
-                          class={`bar is-${r.visualState}${selCls}`}
+                          className={`bar is-${r.visualState}${selCls}`}
                           style={{
                             left: `${left}%`,
                             width: `${width}%`,
@@ -611,9 +611,9 @@ export function DetailView() {
           </div>
         ) : null}
 
-        <div class="d-body">
-          <nav class="runs" aria-label="执行轮次">
-            <div class="runs-title">{normalizedRuns.length} 次执行</div>
+        <div className="d-body">
+          <nav className="runs" aria-label="执行轮次">
+            <div className="runs-title">{normalizedRuns.length} 次执行</div>
             {normalizedRuns.length > 0 ? (
               normalizedRuns.map((r, i) => {
                 const meta = stageMeta(r.stage);
@@ -630,26 +630,26 @@ export function DetailView() {
                   <button
                     key={r.raw.dirName}
                     type="button"
-                    class={`run ${i === selectedIdx ? "on" : ""}`}
+                    className={`run ${i === selectedIdx ? "on" : ""}`}
                     onClick={() => store.selectRun(i)}
                   >
                     <span
-                      class={`run-bar ${barCls}`}
+                      className={`run-bar ${barCls}`}
                       style={{ "--c": `var(${meta.colorVar})` } as Record<string, string>}
                     />
                     <span>
-                      <span class="run-top">
+                      <span className="run-top">
                         <span>
                           {meta.label}
                           {r.round > 1 ? ` · 第 ${r.round} 轮` : ""}
                         </span>
                         <span
-                          class={`v v-${vTone === "paused" ? "muted" : vTone}`}
+                          className={`v v-${vTone === "paused" ? "muted" : vTone}`}
                         >
                           {vText}
                         </span>
                       </span>
-                      <span class="run-meta">
+                      <span className="run-meta">
                         {fmtTime(new Date(r.startMs).toISOString())}
                         {r.endMs
                           ? `–${fmtTime(new Date(r.endMs).toISOString())}`
@@ -664,17 +664,17 @@ export function DetailView() {
                 );
               })
             ) : (
-              <p class="muted" style={{ padding: "8px", fontSize: "12px" }}>
+              <p className="muted" style={{ padding: "8px", fontSize: "12px" }}>
                 尚未派发执行轮次
               </p>
             )}
           </nav>
 
-          <article class="reader">
-            <div class="reader-inner">
+          <article className="reader">
+            <div className="reader-inner">
               {restoreErr ? (
-                <div class="conflict-box" role="alert">
-                  <div class="conflict-head">
+                <div className="conflict-box" role="alert">
+                  <div className="conflict-head">
                     <span>
                       {restoreErr.code === "hash_mismatch"
                         ? "拦截恢复：目标文件已被后续修改（409 hash_mismatch）"
@@ -682,7 +682,7 @@ export function DetailView() {
                     </span>
                     <button
                       type="button"
-                      class="btn btn-sm"
+                      className="btn btn-sm"
                       onClick={() => store.clearRestoreResult()}
                     >
                       关闭
@@ -691,26 +691,26 @@ export function DetailView() {
                   {restoreErr.conflicts && restoreErr.conflicts.length > 0 ? (
                     restoreErr.conflicts.map((c, idx) => (
                       <div key={idx} style={{ marginTop: "8px" }}>
-                        <div class="conflict-meta">
+                        <div className="conflict-meta">
                           <div>冲突路径：{c.targetCanonicalPath}</div>
                           <div>期望 SHA256：{c.expectedPostSha256 ?? "<none>"}</div>
                           <div>实际 SHA256：{c.actualSha256 ?? "<missing>"}</div>
                         </div>
-                        {c.diff ? <div class="code">{c.diff}</div> : null}
+                        {c.diff ? <div className="code">{c.diff}</div> : null}
                       </div>
                     ))
                   ) : restoreErr.hashMismatch ? (
-                    <div class="conflict-meta">
+                    <div className="conflict-meta">
                       <div>冲突路径：{restoreErr.hashMismatch.path}</div>
                       <div>期望 SHA256：{restoreErr.hashMismatch.expectedSha256}</div>
                       <div>实际 SHA256：{restoreErr.hashMismatch.actualSha256}</div>
                       {restoreErr.hashMismatch.diff ? (
-                        <div class="code">{restoreErr.hashMismatch.diff}</div>
+                        <div className="code">{restoreErr.hashMismatch.diff}</div>
                       ) : null}
                     </div>
                   ) : null}
                   {restoreErr.lockConflicts && restoreErr.lockConflicts.length > 0 ? (
-                    <div class="conflict-meta">
+                    <div className="conflict-meta">
                       {restoreErr.lockConflicts
                         .map((lc) => `${lc.path}（被 ${lc.heldByTaskId} 占用）`)
                         .join("；")}
@@ -728,14 +728,14 @@ export function DetailView() {
               ) : null}
 
               {taskState.status === "external" ? (
-                <section class="external-box" role="status">
-                  <div class="external-head">
+                <section className="external-box" role="status">
+                  <div className="external-head">
                     <span>外部等待中（当前不会自动继续推进）</span>
                     {latestExternalEvent ? (
-                      <span class="muted mono">{fmtTime(latestExternalEvent.at)}</span>
+                      <span className="muted mono">{fmtTime(latestExternalEvent.at)}</span>
                     ) : null}
                   </div>
-                  <p class="external-meta">
+                  <p className="external-meta">
                     {latestExternalEvent?.type === "external" && latestExternalEvent.detail
                       ? `说明：${latestExternalEvent.detail}。`
                       : latestExternalEvent?.type === "decided"
@@ -743,17 +743,17 @@ export function DetailView() {
                         : "当前任务处于外部等待挂起状态。"}
                     请确认外部前置条件已就绪后点「继续推进」，或直接点「标记已完成」结束任务。
                   </p>
-                  <div class="external-actions">
+                  <div className="external-actions">
                     <button
                       type="button"
-                      class="btn btn-light"
+                      className="btn btn-light"
                       onClick={() => void store.resumeTask(card.id)}
                     >
                       继续推进
                     </button>
                     <button
                       type="button"
-                      class="btn"
+                      className="btn"
                       onClick={() => void store.completeTask(card.id)}
                     >
                       标记已完成
@@ -765,16 +765,16 @@ export function DetailView() {
               <HostStagedDiffSection detail={detail} />
 
               {normalizedRuns.length > 0 ? (
-                <section class="session-overview" aria-label="Agent Session 总览">
-                  <div class="session-overview-head">
+                <section className="session-overview" aria-label="Agent Session 总览">
+                  <div className="session-overview-head">
                     <h4>Agent · Session 执行总览（{normalizedRuns.length}）</h4>
-                    <span class="muted">
+                    <span className="muted">
                       {state.authMode === "remote"
                         ? "远程浏览仅展示输入与输出，打开原生 TUI 需在本机桌面端操作"
                         : "点击 Agent + Session 可直接拉起原生 TUI 查看完整执行过程"}
                     </span>
                   </div>
-                  <div class="session-cards">
+                  <div className="session-cards">
                     {normalizedRuns.map((r, i) => {
                       const meta = stageMeta(r.stage);
                       const [vText, vTone] = verdictMeta(r.visualState, r.stage);
@@ -796,12 +796,12 @@ export function DetailView() {
                       return (
                         <div
                           key={r.raw.dirName}
-                          class={`session-card${i === selectedIdx ? " is-sel" : ""}`}
+                          className={`session-card${i === selectedIdx ? " is-sel" : ""}`}
                         >
-                          <div class="session-card-head">
-                            <div class="session-card-title">
+                          <div className="session-card-head">
+                            <div className="session-card-title">
                               <span
-                                class={`v v-${vTone === "paused" ? "muted" : vTone}`}
+                                className={`v v-${vTone === "paused" ? "muted" : vTone}`}
                               >
                                 {io?.outputVerdict ?? vText}
                               </span>
@@ -810,11 +810,11 @@ export function DetailView() {
                                 {r.round > 1 ? ` · 第 ${r.round} 轮` : ""}
                               </strong>
                               {r.raw.meta?.role ? (
-                                <span class="chip">{r.raw.meta.role}</span>
+                                <span className="chip">{r.raw.meta.role}</span>
                               ) : null}
                               <button
                                 type="button"
-                                class="session-trigger"
+                                className="session-trigger"
                                 disabled={!canOpenTui}
                                 title={tuiTooltip}
                                 onClick={() =>
@@ -822,16 +822,16 @@ export function DetailView() {
                                 }
                               >
                                 <span>{agentName}</span>
-                                <span class="mono">{sessionBadge}</span>
+                                <span className="mono">{sessionBadge}</span>
                                 {canOpenTui ? (
-                                  <span class="session-open-hint">打开 TUI</span>
+                                  <span className="session-open-hint">打开 TUI</span>
                                 ) : null}
                               </button>
                             </div>
-                            <div class="session-card-meta">
-                              <span class="mono">{fmtDurationMs(runDurMs)}</span>
+                            <div className="session-card-meta">
+                              <span className="mono">{fmtDurationMs(runDurMs)}</span>
                               {io && (io.costUsd > 0 || io.totalTokens > 0) ? (
-                                <span class="mono">
+                                <span className="mono">
                                   {fmtTokens(io.totalTokens)} tok ·{" "}
                                   {fmtUsd(io.costUsd)}
                                 </span>
@@ -839,38 +839,38 @@ export function DetailView() {
                             </div>
                           </div>
 
-                          <div class="session-io">
-                            <div class="session-io-row">
-                              <span class="session-io-label">输入</span>
-                              <span class="session-io-val">
+                          <div className="session-io">
+                            <div className="session-io-row">
+                              <span className="session-io-label">输入</span>
+                              <span className="session-io-val">
                                 {io?.inputTitle ?? card.contract.goal}
                                 {io?.inputRef ? (
-                                  <span class="mono muted"> · {io.inputRef}</span>
+                                  <span className="mono muted"> · {io.inputRef}</span>
                                 ) : null}
                               </span>
                             </div>
-                            <div class="session-io-row">
-                              <span class="session-io-label">输出</span>
-                              <div class="session-io-val">
+                            <div className="session-io-row">
+                              <span className="session-io-label">输出</span>
+                              <div className="session-io-val">
                                 <span>
                                   {io?.outputSummary ?? "已完成本轮动作"}
                                 </span>
                                 {io && io.gatePassed !== null ? (
                                   <span
-                                    class={`chip ${io.gatePassed ? "is-ok" : "is-bad"}`}
+                                    className={`chip ${io.gatePassed ? "is-ok" : "is-bad"}`}
                                   >
                                     {io.gatePassed ? "门禁通过" : "门禁未过"}
                                   </span>
                                 ) : null}
                                 {io && io.changedPaths.length > 0 ? (
-                                  <span class="session-paths">
+                                  <span className="session-paths">
                                     {io.changedPaths.slice(0, 3).map((p) => (
-                                      <code key={p} class="session-path-chip">
+                                      <code key={p} className="session-path-chip">
                                         {p}
                                       </code>
                                     ))}
                                     {io.changedPaths.length > 3 ? (
-                                      <span class="muted">
+                                      <span className="muted">
                                         +{io.changedPaths.length - 3}
                                       </span>
                                     ) : null}
@@ -880,16 +880,16 @@ export function DetailView() {
                             </div>
                           </div>
 
-                          <div class="session-card-foot">
+                          <div className="session-card-foot">
                             <button
                               type="button"
-                              class="btn btn-sm"
+                              className="btn btn-sm"
                               onClick={() => store.selectRun(i)}
                             >
                               {i === selectedIdx ? "正在查看产物" : "查看产物"}
                             </button>
                             {s?.cwd ? (
-                              <span class="session-cwd mono muted" title={s.cwd}>
+                              <span className="session-cwd mono muted" title={s.cwd}>
                                 cwd: {s.cwd}
                               </span>
                             ) : null}
@@ -914,9 +914,9 @@ export function DetailView() {
 
                     return (
                       <>
-                        <header class="art-head">
+                        <header className="art-head">
                           <div>
-                            <div class="art-kicker">
+                            <div className="art-kicker">
                               {meta.label}
                               {selectedRun.round > 1
                                 ? ` · 第 ${selectedRun.round} 轮`
@@ -925,13 +925,13 @@ export function DetailView() {
                             <h2>{selectedRun.raw.dirName}</h2>
                           </div>
                           <span
-                            class={`chip chip-${vTone === "ask" ? "ask" : vTone}`}
+                            className={`chip chip-${vTone === "ask" ? "ask" : vTone}`}
                           >
                             {vText}
                           </span>
                         </header>
 
-                        <dl class="art-meta">
+                        <dl className="art-meta">
                           <div>
                             <dt>执行者</dt>
                             <dd>{selectedRun.executorLabel}</dd>
@@ -953,39 +953,39 @@ export function DetailView() {
                         </dl>
 
                         {selectedRun.raw.gate ? (
-                          <div class="block">
+                          <div className="block">
                             <h4>确定性门禁报告（GATE.yaml）</h4>
-                            <div class="checks">
-                              <div class="check">
+                            <div className="checks">
+                              <div className="check">
                                 <CheckIcon />
                                 <span>Schema 与租约校验</span>
-                                <span class="r">
+                                <span className="r">
                                   {selectedRun.raw.gate.schema_ok ? "通过" : "失败"}
                                 </span>
                               </div>
-                              <div class="check">
+                              <div className="check">
                                 <CheckIcon />
                                 <span>可改范围检查</span>
-                                <span class="r">
+                                <span className="r">
                                   {selectedRun.raw.gate.scope_ok
                                     ? "0 个越界"
                                     : `${selectedRun.raw.gate.out_of_scope_paths.length} 个越界`}
                                 </span>
                               </div>
-                              <div class="check">
+                              <div className="check">
                                 <CheckIcon />
                                 <span>冻结测试文件哈希</span>
-                                <span class="r">
+                                <span className="r">
                                   {selectedRun.raw.gate.frozen_files_changed
                                     .length === 0
                                     ? "一致"
                                     : `${selectedRun.raw.gate.frozen_files_changed.length} 处变更${selectedRun.raw.gate.escalated_to_l2 ? "（已升轨 L2）" : ""}`}
                                 </span>
                               </div>
-                              <div class="check">
+                              <div className="check">
                                 <CheckIcon />
                                 <span>隔离环境验收命令</span>
-                                <span class="r">
+                                <span className="r">
                                   exit {selectedRun.raw.gate.accept_exit_code} ·{" "}
                                   {selectedRun.raw.gate.accept_duration_ms}ms
                                 </span>
@@ -1000,11 +1000,11 @@ export function DetailView() {
                               selectedRun.raw.receipt,
                             );
                             return (
-                              <div class="block">
+                              <div className="block">
                                 <h4>阶段回执（RECEIPT.md）</h4>
                                 {metaLines.length > 0 ? (
                                   <div
-                                    class="code"
+                                    className="code"
                                     style={{ marginBottom: "12px" }}
                                   >
                                     {metaLines
@@ -1019,12 +1019,12 @@ export function DetailView() {
                         ) : null}
 
                         {selectedRun.raw.events.length > 0 ? (
-                          <div class="block">
-                            <div class="events-toggle-row">
+                          <div className="block">
+                            <div className="events-toggle-row">
                               <h4>执行事件流（{selectedRun.raw.events.length}）</h4>
                               <button
                                 type="button"
-                                class="btn btn-sm"
+                                className="btn btn-sm"
                                 onClick={() => setShowRawEvents((prev) => !prev)}
                               >
                                 {showRawEvents
@@ -1033,11 +1033,11 @@ export function DetailView() {
                               </button>
                             </div>
                             {!showRawEvents ? (
-                              <p class="muted events-collapsed-hint">
+                              <p className="muted events-collapsed-hint">
                                 完整步骤细节默认折叠；可点击上方「Agent + Session」直接打开原生 TUI，或按需展开原始事件流。
                               </p>
                             ) : (
-                              <div class="code">
+                              <div className="code">
                                 {selectedRun.raw.events
                                   .map((ev) => {
                                     if (ev.kind === "message") return ev.text;
@@ -1069,7 +1069,7 @@ export function DetailView() {
 
                         {(showHandoff || !selectedRun.raw.receipt) &&
                         selectedRun.raw.handoff ? (
-                          <div class="block">
+                          <div className="block">
                             <h4>交接包（HANDOFF.md）</h4>
                             <MarkdownContent text={selectedRun.raw.handoff} />
                           </div>
@@ -1079,7 +1079,7 @@ export function DetailView() {
                   })()}
                 </>
               ) : (
-                <div class="block">
+                <div className="block">
                   <h4>立项说明（BRIEF.md）</h4>
                   <MarkdownContent text={brief || card.contract.goal} />
                 </div>
@@ -1087,7 +1087,7 @@ export function DetailView() {
             </div>
           </article>
 
-          <aside class="ctx">
+          <aside className="ctx">
             <section>
               <h3>交付契约 · v{taskState.contractVersion}</h3>
               <dl>
@@ -1107,7 +1107,7 @@ export function DetailView() {
                 </div>
                 <div>
                   <dt>验收命令</dt>
-                  <dd class="mono">{card.contract.accept_cmd}</dd>
+                  <dd className="mono">{card.contract.accept_cmd}</dd>
                 </div>
                 <div>
                   <dt>
@@ -1115,7 +1115,7 @@ export function DetailView() {
                       ? "本机白名单路径"
                       : "可改范围"}
                   </dt>
-                  <dd class="mono">{card.contract.scope.join("\n")}</dd>
+                  <dd className="mono">{card.contract.scope.join("\n")}</dd>
                 </div>
               </dl>
             </section>
@@ -1133,14 +1133,14 @@ export function DetailView() {
               <section>
                 <h3>决定与流转记录</h3>
                 {detail.stateEvents && detail.stateEvents.length > 0 ? (
-                  <div class="log" style={{ marginBottom: decisions ? "12px" : "0" }}>
+                  <div className="log" style={{ marginBottom: decisions ? "12px" : "0" }}>
                     {detail.stateEvents
                       .slice()
                       .reverse()
                       .slice(0, 8)
                       .map((ev, idx) => (
-                        <div key={idx} class="log-item">
-                          <span class="mono">{fmtTime(ev.at)}</span>
+                        <div key={idx} className="log-item">
+                          <span className="mono">{fmtTime(ev.at)}</span>
                           <span>
                             <b>{ev.type}</b>
                             {"reason" in ev && ev.reason ? ` · ${ev.reason}` : ""}
@@ -1153,7 +1153,7 @@ export function DetailView() {
                   </div>
                 ) : null}
                 {decisions ? (
-                  <div class="code" style={{ maxHeight: "220px", overflowY: "auto" }}>
+                  <div className="code" style={{ maxHeight: "220px", overflowY: "auto" }}>
                     {decisions}
                   </div>
                 ) : null}
@@ -1163,10 +1163,10 @@ export function DetailView() {
             {ledgerProposals.length > 0 ? (
               <section>
                 <h3>待确认账本提议（未入账）</h3>
-                <div class="log">
+                <div className="log">
                   {ledgerProposals.map((p) => (
-                    <div key={p.id} class="log-item">
-                      <span class="mono">{p.role}</span>
+                    <div key={p.id} className="log-item">
+                      <span className="mono">{p.role}</span>
                       <span>{p.rule}</span>
                     </div>
                   ))}
@@ -1176,7 +1176,7 @@ export function DetailView() {
 
             <section>
               <h3>本卡消耗</h3>
-              <dl class="usage">
+              <dl className="usage">
                 <div>
                   <dt>Token</dt>
                   <dd>{fmtTokens(detail.usage.totalTokens)}</dd>

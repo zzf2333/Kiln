@@ -71,11 +71,11 @@ export function UsagePanel() {
           : "本地工作台";
 
   return (
-    <div id="usagePanel" class="side-bottom">
+    <div id="usagePanel" className="side-bottom">
       <div
         role="button"
         tabIndex={0}
-        class="usage-panel"
+        className="usage-panel"
         onClick={() => store.go("usage")}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
@@ -84,14 +84,14 @@ export function UsagePanel() {
           }
         }}
       >
-        <div class="up-head">
+        <div className="up-head">
           <span>今日费用 · API 标价</span>
-          <span class="mono" id="upTotalCost">
+          <span className="mono" id="upTotalCost">
             {fmtUsd(displayCostUsd)}
           </span>
         </div>
-        <div class="up-rate">
-          <span class="dot live-dot" />
+        <div className="up-rate">
+          <span className="dot live-dot" />
           <b id="upTotalRate">{totalRate}</b> tok/s ·{" "}
           <span id="upSessions">
             {runningLeafTasks.length} / {limits.max_concurrent_slots}
@@ -104,28 +104,28 @@ export function UsagePanel() {
           const agentCost = computeAgentCostUsd(agent, usage, pricing);
           const agentLiveRate = Math.round(liveRateByAgent[agent] ?? 0);
           return (
-            <div key={agent} class="up-agent">
-              <div class="up-row">
+            <div key={agent} className="up-agent">
+              <div className="up-row">
                 <span>
                   {agent}
-                  <span class="up-live" data-up-live={agent}>
+                  <span className="up-live" data-up-live={agent}>
                     {agentLiveRate > 0 ? `${agentLiveRate} tok/s` : ""}
                   </span>
                 </span>
-                <span class="mono" data-up-cost={agent}>
+                <span className="mono" data-up-cost={agent}>
                   {fmtUsd(agentCost)}
                 </span>
               </div>
               {quota ? (
                 <>
-                  <div class="quota">
+                  <div className="quota">
                     <i
                       data-up-bar={agent}
-                      class={quotaClassName(quota.usedRatio)}
+                      className={quotaClassName(quota.usedRatio)}
                       style={{ width: `${Math.round(quota.usedRatio * 100)}%` }}
                     />
                   </div>
-                  <div class="up-sub">
+                  <div className="up-sub">
                     <span data-up-qtext={agent}>
                       {quota.label} {Math.round(quota.usedRatio * 100)}%
                     </span>
@@ -139,11 +139,11 @@ export function UsagePanel() {
           );
         })}
 
-        <div class="up-foot">
+        <div className="up-foot">
           <span>{connLabel}</span>
           <button
             type="button"
-            class="key key-dark"
+            className="key key-dark"
             aria-label="打开命令面板"
             onClick={(e) => {
               e.stopPropagation();

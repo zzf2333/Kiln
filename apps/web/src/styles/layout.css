@@ -1,48 +1,51 @@
-* { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; overflow: hidden; }
-body {
-  font-family: var(--sans);
-  font-size: 13px;
-  line-height: 1.5;
-  background: var(--bg);
-  color: var(--t1);
-  font-variant-numeric: tabular-nums;
-  -webkit-font-smoothing: antialiased;
-}
-button { font-family: inherit; color: inherit; }
-:focus-visible { outline: 2px solid var(--line-focus); outline-offset: 2px; }
-.mono { font-family: var(--mono); }
-.muted { color: var(--t3); }
+@layer base {
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    font-family: var(--sans);
+    font-size: 13px;
+    line-height: 1.5;
+    background: var(--bg);
+    color: var(--t1);
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font-family: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--line-focus); outline-offset: 2px; }
+  .mono { font-family: var(--mono); }
+  .muted { color: var(--t3); }
 
-@supports not selector(::-webkit-scrollbar) {
-  * {
-    scrollbar-width: thin;
-    scrollbar-color: var(--scroll-thumb) transparent;
+  @supports not selector(::-webkit-scrollbar) {
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: var(--scroll-thumb) transparent;
+    }
+  }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner { background: transparent; }
+  ::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--scroll-thumb-idle);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+    min-height: 36px;
+    min-width: 36px;
+  }
+  *:hover::-webkit-scrollbar-thumb { background-color: var(--scroll-thumb); }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--scroll-thumb-hover);
+    border-width: 2px;
+  }
+  ::-webkit-scrollbar-thumb:active {
+    background-color: var(--scroll-thumb-active);
+    border-width: 2px;
   }
 }
 
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-track,
-::-webkit-scrollbar-corner { background: transparent; }
-::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
-::-webkit-scrollbar-thumb {
-  background-color: var(--scroll-thumb-idle);
-  border-radius: 999px;
-  border: 3px solid transparent;
-  background-clip: content-box;
-  min-height: 36px;
-  min-width: 36px;
-}
-*:hover::-webkit-scrollbar-thumb { background-color: var(--scroll-thumb); }
-::-webkit-scrollbar-thumb:hover {
-  background-color: var(--scroll-thumb-hover);
-  border-width: 2px;
-}
-::-webkit-scrollbar-thumb:active {
-  background-color: var(--scroll-thumb-active);
-  border-width: 2px;
-}
-
+@layer components {
 /* ---------- 外壳 ---------- */
 .app { display: grid; grid-template-columns: 224px 1fr; height: 100vh; height: 100dvh; }
 
@@ -2466,4 +2469,5 @@ table.ut .live { color: var(--live-fg); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
+}
 }

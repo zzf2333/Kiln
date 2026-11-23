@@ -147,10 +147,10 @@ export function BoardView() {
       return (
         <article
           key={t.id}
-          class={`card${p0Class}`}
+          className={`card${p0Class}`}
           onClick={() => store.openTask(t.id)}
         >
-          <div class="card-meta">
+          <div className="card-meta">
             <span>
               <PrioritySelect
                 value={t.priority}
@@ -158,18 +158,18 @@ export function BoardView() {
               />
               <span>{spaceName} · 父任务</span>
             </span>
-            <span class="mono">{children.length} 切片</span>
+            <span className="mono">{children.length} 切片</span>
           </div>
-          <h3 class="card-title">{t.title}</h3>
-          {t.summary ? <p class="card-desc">{t.summary}</p> : null}
-          <div class="card-foot">
+          <h3 className="card-title">{t.title}</h3>
+          {t.summary ? <p className="card-desc">{t.summary}</p> : null}
+          <div className="card-foot">
             <span>
               {cnt("done")} 完成 · {cnt("running")} 在跑 · {cnt("queued")} 排队
               {cnt("waiting") > 0 ? ` · ${cnt("waiting")} 待决` : ""}
             </span>
             <button
               type="button"
-              class="btn btn-ghost btn-sm"
+              className="btn btn-ghost btn-sm"
               onClick={(e) => {
                 e.stopPropagation();
                 store.toggleParentSlices();
@@ -189,44 +189,44 @@ export function BoardView() {
       return (
         <article
           key={t.id}
-          class={`card${p0Class}`}
+          className={`card${p0Class}`}
           onClick={() => store.openTask(t.id)}
         >
-          <div class="card-meta">
+          <div className="card-meta">
             <span>
               <PrioritySelect
                 value={t.priority}
                 onChange={(next) => void store.updatePriority(t.id, next)}
               />
               <span>{spaceName}</span>
-              {t.parent_id ? <span class="mono">· {t.parent_id}</span> : null}
+              {t.parent_id ? <span className="mono">· {t.parent_id}</span> : null}
             </span>
             <span>
               等了 {fmtRelativeSince(dec?.created_at ?? t.waiting_since ?? t.updated_at)}
             </span>
           </div>
-          <h3 class="card-title">{t.title}</h3>
+          <h3 className="card-title">{t.title}</h3>
           {dec ? (
-            <div class="ask-box">
-              <div class="ask-q">{dec.question}</div>
+            <div className="ask-box">
+              <div className="ask-q">{dec.question}</div>
               {recOpt ? (
-                <div class="ask-rec">
-                  <span class="rec">推荐</span>
+                <div className="ask-rec">
+                  <span className="rec">推荐</span>
                   {recOpt.label}
                 </div>
               ) : null}
             </div>
           ) : (
-            <div class="ask-box">
-              <div class="ask-q">{t.waiting_reason ?? "等待人工裁决"}</div>
+            <div className="ask-box">
+              <div className="ask-q">{t.waiting_reason ?? "等待人工裁决"}</div>
             </div>
           )}
           <MiniRail track={t.track} workflow={t.workflow} status={t.status} activeStage={t.stage} />
-          <div class="card-actions">
+          <div className="card-actions">
             {dec && recOpt ? (
               <button
                 type="button"
-                class="btn btn-sm btn-light"
+                className="btn btn-sm btn-light"
                 onClick={(e) => {
                   e.stopPropagation();
                   void store.submitDecision(t.id, {
@@ -242,7 +242,7 @@ export function BoardView() {
             ) : null}
             <button
               type="button"
-              class="btn btn-sm"
+              className="btn btn-sm"
               onClick={(e) => {
                 e.stopPropagation();
                 if (dec) {
@@ -271,10 +271,10 @@ export function BoardView() {
       return (
         <article
           key={t.id}
-          class={`card${p0Class}`}
+          className={`card${p0Class}`}
           onClick={() => store.openTask(t.id)}
         >
-          <div class="card-meta">
+          <div className="card-meta">
             <span>
               <PrioritySelect
                 value={t.priority}
@@ -283,18 +283,18 @@ export function BoardView() {
               <span>
                 {spaceName} · {TRACK_LABEL[t.track]}
               </span>
-              {t.parent_id ? <span class="mono">· {t.parent_id}</span> : null}
+              {t.parent_id ? <span className="mono">· {t.parent_id}</span> : null}
             </span>
-            <span class="mono">{t.id}</span>
+            <span className="mono">{t.id}</span>
           </div>
-          <h3 class="card-title">{t.title}</h3>
-          {t.summary ? <p class="card-desc">{t.summary}</p> : null}
-          <div class="live-row">
-            <span class="live-stage">
-              <span class="dot live-dot" />
+          <h3 className="card-title">{t.title}</h3>
+          {t.summary ? <p className="card-desc">{t.summary}</p> : null}
+          <div className="live-row">
+            <span className="live-stage">
+              <span className="dot live-dot" />
               {stageTitle}
             </span>
-            <span class="mono muted" data-rate={t.id}>
+            <span className="mono muted" data-rate={t.id}>
               {rate} tok/s
             </span>
           </div>
@@ -305,9 +305,9 @@ export function BoardView() {
             activeStage={t.stage}
             rate={rate}
           />
-          <div class="card-foot">
+          <div className="card-foot">
             <span>{execLabel}</span>
-            <span class="mono">{fmtTokens(t.tokens.total_tokens)}</span>
+            <span className="mono">{fmtTokens(t.tokens.total_tokens)}</span>
           </div>
         </article>
       );
@@ -318,10 +318,10 @@ export function BoardView() {
       return (
         <article
           key={t.id}
-          class={`card${p0Class}`}
+          className={`card${p0Class}`}
           onClick={() => store.openTask(t.id)}
         >
-          <div class="card-meta">
+          <div className="card-meta">
             <span>
               <PrioritySelect
                 value={t.priority}
@@ -330,25 +330,25 @@ export function BoardView() {
               <span>
                 {spaceName} · {TRACK_LABEL[t.track]}
               </span>
-              {t.parent_id ? <span class="mono">· {t.parent_id}</span> : null}
+              {t.parent_id ? <span className="mono">· {t.parent_id}</span> : null}
             </span>
-            <span class="chip chip-paused" style={{ height: "20px" }}>
+            <span className="chip chip-paused" style={{ height: "20px" }}>
               已暂停
             </span>
           </div>
-          <h3 class="card-title">{t.title}</h3>
-          {t.summary ? <p class="card-desc">{t.summary}</p> : null}
+          <h3 className="card-title">{t.title}</h3>
+          {t.summary ? <p className="card-desc">{t.summary}</p> : null}
           <MiniRail track={t.track} workflow={t.workflow} status={t.status} activeStage={t.stage} />
           <div
-            class="card-actions"
+            className="card-actions"
             style={{ justifyContent: "space-between", alignItems: "center" }}
           >
-            <span class="muted" style={{ fontSize: "12px" }}>
+            <span className="muted" style={{ fontSize: "12px" }}>
               {t.stage ? `${stMeta.label} · 现场已保留` : "已暂停 · 现场已保留"}
             </span>
             <button
               type="button"
-              class="btn btn-sm btn-light"
+              className="btn btn-sm btn-light"
               onClick={(e) => {
                 e.stopPropagation();
                 void store.resumeTask(t.id);
@@ -365,10 +365,10 @@ export function BoardView() {
       return (
         <article
           key={t.id}
-          class={`card${p0Class}`}
+          className={`card${p0Class}`}
           onClick={() => store.openTask(t.id)}
         >
-          <div class="card-meta">
+          <div className="card-meta">
             <span>
               <PrioritySelect
                 value={t.priority}
@@ -377,14 +377,14 @@ export function BoardView() {
               <span>
                 {spaceName} · {TRACK_LABEL[t.track]}
               </span>
-              {t.parent_id ? <span class="mono">· {t.parent_id}</span> : null}
+              {t.parent_id ? <span className="mono">· {t.parent_id}</span> : null}
             </span>
             <span>排队</span>
           </div>
-          <h3 class="card-title">{t.title}</h3>
-          {t.summary ? <p class="card-desc">{t.summary}</p> : null}
+          <h3 className="card-title">{t.title}</h3>
+          {t.summary ? <p className="card-desc">{t.summary}</p> : null}
           <MiniRail track={t.track} workflow={t.workflow} status={t.status} activeStage={t.stage} />
-          <div class="card-foot">
+          <div className="card-foot">
             <span>
               {t.depends_on.length > 0
                 ? `等 ${t.depends_on.join("、")} 完成后开始`
@@ -399,10 +399,10 @@ export function BoardView() {
       return (
         <article
           key={t.id}
-          class={`card${p0Class}`}
+          className={`card${p0Class}`}
           onClick={() => store.openTask(t.id)}
         >
-          <div class="card-meta">
+          <div className="card-meta">
             <span>
               <PrioritySelect
                 value={t.priority}
@@ -412,11 +412,11 @@ export function BoardView() {
             </span>
             <span>{fmtRelativeSince(t.updated_at)}</span>
           </div>
-          <h3 class="card-title">{t.title}</h3>
-          <p class="card-desc">{t.summary ?? "等待外部回应"}</p>
+          <h3 className="card-title">{t.title}</h3>
+          <p className="card-desc">{t.summary ?? "等待外部回应"}</p>
           <MiniRail track={t.track} workflow={t.workflow} status={t.status} activeStage={t.stage} />
-          <div class="card-foot">
-            <span class="mono">{t.id}</span>
+          <div className="card-foot">
+            <span className="mono">{t.id}</span>
             <span>外部等待</span>
           </div>
         </article>
@@ -427,12 +427,12 @@ export function BoardView() {
     return (
       <article
         key={t.id}
-        class="card card-done"
+        className="card card-done"
         onClick={() => store.openTask(t.id)}
       >
-        <h3 class="card-title">{t.title}</h3>
-        <div class="card-foot">
-          <span class="mono">
+        <h3 className="card-title">{t.title}</h3>
+        <div className="card-foot">
+          <span className="mono">
             {t.delivered_ref ??
               (t.tokens.total_tokens > 0
                 ? `${fmtTokens(t.tokens.total_tokens)} · ${fmtUsd(taskCost)}`
@@ -449,8 +449,8 @@ export function BoardView() {
       isBoard
       left={
         <>
-          <h1 class="tb-title">总览</h1>
-          <span class="tb-sub">
+          <h1 className="tb-title">总览</h1>
+          <span className="tb-sub">
             {runningLeafCount} 个任务在跑
             {pausedLeafCount > 0 ? `，${pausedLeafCount} 个已暂停` : ""}
             {waitingTotal > 0 ? `，${waitingTotal} 件事等你决定` : ""}
@@ -460,7 +460,7 @@ export function BoardView() {
       right={
         <>
           <select
-            class="select"
+            className="select"
             aria-label="筛选优先级"
             style={{ width: "120px", height: "30px" }}
             value={priorityFilter}
@@ -476,12 +476,12 @@ export function BoardView() {
             <option value="P2">P2 普通</option>
             <option value="P3">P3 有空再做</option>
           </select>
-          <div class="seg" role="group" aria-label="时间范围">
+          <div className="seg" role="group" aria-label="时间范围">
             {PERIOD_OPTIONS.map(([key, label]) => (
               <button
                 key={key}
                 type="button"
-                class={periodFilter === key ? "on" : ""}
+                className={periodFilter === key ? "on" : ""}
                 onClick={() => store.setPeriodFilter(key)}
               >
                 {label}
@@ -492,13 +492,13 @@ export function BoardView() {
       }
     >
       {state.bootstrapError && !state.bootstrapLoaded ? (
-        <div class="page">
-          <div class="conflict-box">
-            <div class="conflict-head">
+        <div className="page">
+          <div className="conflict-box">
+            <div className="conflict-head">
               <span>无法连接 Kiln 内核</span>
               <button
                 type="button"
-                class="btn btn-sm"
+                className="btn btn-sm"
                 onClick={() => void store.retryConnection()}
               >
                 重试
@@ -508,22 +508,22 @@ export function BoardView() {
           </div>
         </div>
       ) : (
-        <div class="board">
+        <div className="board">
           {cols.map((col) => (
-            <section key={col.name} class="col">
-              <div class="col-head">
-                <div class="col-name">
-                  <span class="dot" style={{ background: col.color }} />
+            <section key={col.name} className="col">
+              <div className="col-head">
+                <div className="col-name">
+                  <span className="dot" style={{ background: col.color }} />
                   <span>{col.name}</span>
-                  <span class="nav-count">{col.items.length}</span>
+                  <span className="nav-count">{col.items.length}</span>
                 </div>
-                <div class="col-hint">{col.hint}</div>
+                <div className="col-hint">{col.hint}</div>
               </div>
-              <div class="col-body">
+              <div className="col-body">
                 {col.items.length > 0 ? (
                   col.items.map(renderCard)
                 ) : (
-                  <div class="col-empty">这一列现在是空的</div>
+                  <div className="col-empty">这一列现在是空的</div>
                 )}
               </div>
             </section>

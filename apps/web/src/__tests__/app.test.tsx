@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/preact";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BootstrapResponse, TaskDetailResponse } from "../api/types";
 import { App } from "../app";
@@ -992,7 +992,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "模型单价" }));
     const inPriceInput = screen.getByLabelText("gpt-5.4 输入单价") as HTMLInputElement;
-    fireEvent.input(inPriceInput, { target: { value: "10" } });
+    fireEvent.change(inPriceInput, { target: { value: "10" } });
 
     await waitFor(() => {
       expect(document.getElementById("upTotalCost")?.textContent).toBe("$7.05");
@@ -1125,17 +1125,17 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     expect(document.body.classList.contains("kb-open")).toBe(true);
 
     // Expand PM 执行契约摘要 to fill local scratch task containing <新任务> placeholder and commit
-    fireEvent.input(screen.getByLabelText("标题"), {
+    fireEvent.change(screen.getByLabelText("标题"), {
       target: { value: "临时沙盒统计脚本" },
     });
     fireEvent.click(screen.getByRole("button", { name: "手动编辑" }));
-    fireEvent.input(screen.getByLabelText("交付终点"), {
+    fireEvent.change(screen.getByLabelText("交付终点"), {
       target: { value: "output.md 生成且非空" },
     });
-    fireEvent.input(screen.getByLabelText("验收命令"), {
+    fireEvent.change(screen.getByLabelText("验收命令"), {
       target: { value: "test -s workspaces/<新任务>/output.md" },
     });
-    fireEvent.input(screen.getByLabelText("可改范围"), {
+    fireEvent.change(screen.getByLabelText("可改范围"), {
       target: { value: "workspaces/<新任务>/**" },
     });
     fireEvent.click(screen.getByRole("button", { name: "开始推进" }));
@@ -1292,7 +1292,9 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     };
     expect(Object.keys(pkgJson.dependencies).sort()).toEqual([
       "@kiln/protocol",
-      "preact",
+      "radix-ui",
+      "react",
+      "react-dom",
     ]);
   });
 
@@ -1589,7 +1591,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       Object.defineProperty(hostEl, "clientWidth", { value: 60, configurable: true });
       Object.defineProperty(hostEl, "clientHeight", { value: 4, configurable: true });
 
-      // Wait for Preact's afterPaint useEffect & at least one FlameCanvas frame to execute
+      // Wait for React's post-commit useEffect & at least one FlameCanvas frame to execute
       await waitFor(() => {
         expect(drawCount).toBeGreaterThanOrEqual(1);
       });
@@ -2273,7 +2275,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     // 2. Open SpaceModal via empty guide, inspect path, save -> auto-selected in Intake & chat unlocked
     fireEvent.click(screen.getByRole("button", { name: "+ 添加本地 Git 项目" }));
     const modal = await screen.findByRole("dialog", { name: "添加项目空间" });
-    fireEvent.input(within(modal).getByLabelText("仓库路径"), {
+    fireEvent.change(within(modal).getByLabelText("仓库路径"), {
       target: { value: "~/Projects/alpha" },
     });
     fireEvent.click(within(modal).getByRole("button", { name: "识别仓库" }));
@@ -2335,7 +2337,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     await waitFor(() => {
       expect(screen.getByRole("heading", { name: "新需求" })).toBeTruthy();
     });
-    fireEvent.input(document.getElementById("chatIn")!, {
+    fireEvent.change(document.getElementById("chatIn")!, {
       target: { value: "帮我加个导出接口" },
     });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
@@ -2355,7 +2357,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
 
     // Switch to 本机 / 临时任务 and send follow-up -> syncs local + scratch_dir before chat
     fireEvent.click(screen.getByRole("button", { name: "本机 / 临时任务" }));
-    fireEvent.input(document.getElementById("chatIn")!, {
+    fireEvent.change(document.getElementById("chatIn")!, {
       target: { value: "改用沙盒先跑脚本" },
     });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
@@ -2550,7 +2552,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     fireEvent.click(screen.getByRole("button", { name: "设置" }));
     fireEvent.click(await screen.findByRole("tab", { name: "模型单价" }));
     const lunaInput = screen.getByLabelText("gpt-6-luna 输入单价") as HTMLInputElement;
-    fireEvent.input(lunaInput, { target: { value: "1" } });
+    fireEvent.change(lunaInput, { target: { value: "1" } });
 
     fireEvent.click(container.querySelector('.tabbar button[data-tab="usage"]')!);
     await waitFor(() => {
@@ -2720,7 +2722,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     await waitFor(() => {
       expect(within(listModal).getByText("~/Code/kiln")).toBeTruthy();
     });
-    fireEvent.input(within(listModal).getByLabelText("搜索本机 Git 项目"), {
+    fireEvent.change(within(listModal).getByLabelText("搜索本机 Git 项目"), {
       target: { value: "Code/kiln" },
     });
     expect(within(listModal).queryByText("~/AI/Kiln")).toBeNull();
@@ -2948,7 +2950,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     await waitFor(() => {
       expect(document.getElementById("chatIn")).toBeTruthy();
     });
-    fireEvent.input(document.getElementById("chatIn")!, {
+    fireEvent.change(document.getElementById("chatIn")!, {
       target: { value: "我想优化立项对话体验" },
     });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
@@ -3003,7 +3005,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     });
     const resolveInput = document.getElementById("chatIn") as HTMLTextAreaElement;
     expect(resolveInput.tagName).toBe("TEXTAREA");
-    fireEvent.input(resolveInput, { target: { value: "请细化方案 A" } });
+    fireEvent.change(resolveInput, { target: { value: "请细化方案 A" } });
     fireEvent.keyDown(resolveInput, { key: "Enter", shiftKey: false });
     await waitFor(() => {
       expect(screen.getByRole("heading", { name: "建议" })).toBeTruthy();
@@ -3141,7 +3143,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     expect(document.getElementById("upTotalCost")?.textContent).toBe("$3.10");
 
     // Manual edit marks custom_models, shows 自定义 chip & 恢复同步价 button
-    fireEvent.input(screen.getByLabelText("gpt-5.4 输入单价"), {
+    fireEvent.change(screen.getByLabelText("gpt-5.4 输入单价"), {
       target: { value: "10" },
     });
     await waitFor(() => {
@@ -3363,7 +3365,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     // Edit raw Markdown and verify commit passes the edited full brief verbatim (NOT the 4-line fallback!)
     fireEvent.click(screen.getByRole("button", { name: "编辑原文" }));
     const rawEditor = screen.getByLabelText("产品方案原文") as HTMLTextAreaElement;
-    fireEvent.input(rawEditor, {
+    fireEvent.change(rawEditor, {
       target: { value: `${fullBrief}\n\n- 人工追加：单次上限 10000 条。` },
     });
     fireEvent.click(screen.getByRole("button", { name: "完成预览" }));
@@ -3879,9 +3881,10 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
 
     const inputEl = document.getElementById("chatIn") as HTMLTextAreaElement;
     const setTyped = (text: string) => {
-      inputEl.value = text;
+      fireEvent.change(inputEl, {
+        target: { value: text, selectionStart: text.length, selectionEnd: text.length },
+      });
       inputEl.setSelectionRange(text.length, text.length);
-      fireEvent.input(inputEl, { target: { value: text } });
     };
 
     // Wait for skills + MCP servers to hydrate under antigravity
@@ -4215,20 +4218,20 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     expect(screen.getByLabelText("流程预览").textContent).toContain("交付(落盘+终验)");
 
     // 4. Fill fields + deliver_cmd & commit
-    fireEvent.input(screen.getByLabelText("标题"), {
+    fireEvent.change(screen.getByLabelText("标题"), {
       target: { value: "清理本机临时缓存" },
     });
     fireEvent.click(screen.getByRole("button", { name: "手动编辑" }));
-    fireEvent.input(screen.getByLabelText("交付终点"), {
+    fireEvent.change(screen.getByLabelText("交付终点"), {
       target: { value: "清理完毕" },
     });
-    fireEvent.input(screen.getByLabelText("验收命令"), {
+    fireEvent.change(screen.getByLabelText("验收命令"), {
       target: { value: "test -f ~/cache.flag" },
     });
-    fireEvent.input(screen.getByLabelText("可改范围"), {
+    fireEvent.change(screen.getByLabelText("可改范围"), {
       target: { value: "~/clean.py" },
     });
-    fireEvent.input(screen.getByLabelText("交付命令"), {
+    fireEvent.change(screen.getByLabelText("交付命令"), {
       target: { value: "python3 ~/clean.py" },
     });
     fireEvent.click(screen.getByRole("button", { name: "开始推进" }));
@@ -4316,17 +4319,17 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     expect(previewSpaceChip).not.toContain("仅暂存");
     expect(previewSpaceChip).not.toContain("落盘+终验");
 
-    fireEvent.input(screen.getByLabelText("标题"), {
+    fireEvent.change(screen.getByLabelText("标题"), {
       target: { value: "项目仓库正常任务" },
     });
     fireEvent.click(screen.getByRole("button", { name: "手动编辑" }));
-    fireEvent.input(screen.getByLabelText("交付终点"), {
+    fireEvent.change(screen.getByLabelText("交付终点"), {
       target: { value: "合入主分支" },
     });
-    fireEvent.input(screen.getByLabelText("验收命令"), {
+    fireEvent.change(screen.getByLabelText("验收命令"), {
       target: { value: "pnpm test" },
     });
-    fireEvent.input(screen.getByLabelText("可改范围"), {
+    fireEvent.change(screen.getByLabelText("可改范围"), {
       target: { value: "src/**" },
     });
     fireEvent.click(screen.getByRole("button", { name: "开始推进" }));
@@ -4765,17 +4768,17 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     expect(previewScratch).toContain("方案(顾问)");
     expect(previewScratch).toContain("审查");
 
-    fireEvent.input(screen.getByLabelText("标题"), {
+    fireEvent.change(screen.getByLabelText("标题"), {
       target: { value: "定制流程切回沙盒" },
     });
     fireEvent.click(screen.getByRole("button", { name: "手动编辑" }));
-    fireEvent.input(screen.getByLabelText("交付终点"), {
+    fireEvent.change(screen.getByLabelText("交付终点"), {
       target: { value: "沙盒脚本完成" },
     });
-    fireEvent.input(screen.getByLabelText("验收命令"), {
+    fireEvent.change(screen.getByLabelText("验收命令"), {
       target: { value: "echo ok" },
     });
-    fireEvent.input(screen.getByLabelText("可改范围"), {
+    fireEvent.change(screen.getByLabelText("可改范围"), {
       target: { value: "scripts/**" },
     });
     fireEvent.click(screen.getByRole("button", { name: "开始推进" }));

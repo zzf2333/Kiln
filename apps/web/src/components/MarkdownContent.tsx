@@ -1,5 +1,5 @@
-import { Fragment, type ComponentChildren } from "preact";
-import { useContext, useState } from "preact/hooks";
+import { Fragment, type ReactNode } from "react";
+import { useContext, useState } from "react";
 import { StoreContext } from "../state/store";
 
 interface CodeBlockProps {
@@ -12,7 +12,7 @@ const LONG_CODE_LINE_LIMIT = 28;
 const CODE_TOKEN_RE =
   /(\/\/[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|(?:^|\s)(--?[A-Za-z0-9][A-Za-z0-9_-]*)|\b(?:const|let|var|function|return|if|else|for|while|switch|case|break|continue|async|await|import|from|export|type|interface|class|extends|implements|new|try|catch|throw|finally|def|elif|with|as|pass|yield|lambda|pub|fn|struct|enum|impl|match|use|mod|crate|true|false|null|undefined|None|True|False)\b|\b\d+(?:\.\d+)?(?:[KMGTP]i?B?)?\b)/gm;
 
-function highlightCodeLineDiff(lines: string[]): ComponentChildren {
+function highlightCodeLineDiff(lines: string[]): ReactNode {
   return lines.map((line, idx) => {
     const cls =
       line.startsWith("diff ") ||
@@ -29,7 +29,7 @@ function highlightCodeLineDiff(lines: string[]): ComponentChildren {
               : null;
     const content = idx < lines.length - 1 ? `${line}\n` : line;
     return cls ? (
-      <span key={idx} class={cls}>
+      <span key={idx} className={cls}>
         {content}
       </span>
     ) : (
@@ -38,14 +38,14 @@ function highlightCodeLineDiff(lines: string[]): ComponentChildren {
   });
 }
 
-function highlightCode(code: string, lang: string): ComponentChildren {
+function highlightCode(code: string, lang: string): ReactNode {
   const norm = lang.trim().toLowerCase();
   if (norm === "diff" || norm === "patch") {
     return highlightCodeLineDiff(code.split("\n"));
   }
   if (!code) return "";
 
-  const out: ComponentChildren[] = [];
+  const out: ReactNode[] = [];
   let cursor = 0;
   CODE_TOKEN_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -88,7 +88,7 @@ function highlightCode(code: string, lang: string): ComponentChildren {
     }
 
     out.push(
-      <span key={out.length} class={cls}>
+      <span key={out.length} className={cls}>
         {tok}
       </span>,
     );
@@ -122,17 +122,17 @@ function CodeBlock({ lang, code }: CodeBlockProps) {
   };
 
   return (
-    <div class="md-code">
-      <div class="md-code-head">
-        <span class="mono">
+    <div className="md-code">
+      <div className="md-code-head">
+        <span className="mono">
           {lang || "text"}
           {isLong ? ` · ${lineCount} 行` : ""}
         </span>
-        <div class="md-code-actions">
+        <div className="md-code-actions">
           {isLong ? (
             <button
               type="button"
-              class="btn btn-ghost btn-sm md-copy-btn"
+              className="btn btn-ghost btn-sm md-copy-btn"
               onClick={() => setExpanded((v) => !v)}
             >
               {expanded ? "收起代码" : `展开全部 ${lineCount} 行`}
@@ -140,15 +140,15 @@ function CodeBlock({ lang, code }: CodeBlockProps) {
           ) : null}
           <button
             type="button"
-            class="btn btn-ghost btn-sm md-copy-btn"
+            className="btn btn-ghost btn-sm md-copy-btn"
             onClick={() => void handleCopy()}
           >
             {copied ? "已复制" : "复制"}
           </button>
         </div>
       </div>
-      <div class={`md-code-body ${!expanded ? "is-collapsed" : ""}`}>
-        <pre class="mono code">
+      <div className={`md-code-body ${!expanded ? "is-collapsed" : ""}`}>
+        <pre className="mono code">
           <code>{highlightCode(code, lang)}</code>
         </pre>
       </div>
@@ -185,34 +185,34 @@ function FilePathPill({
   };
 
   return (
-    <span class="md-file-pill">
+    <span className="md-file-pill">
       <button
         type="button"
-        class="md-file-copy"
+        className="md-file-copy"
         title={`点击复制路径：${fullPath}`}
         onClick={() => void handleCopy()}
       >
         <svg
-          class="md-file-ico"
+          className="md-file-ico"
           width="12"
           height="12"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
-          stroke-width="1.8"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
           aria-hidden="true"
         >
           <path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4.2l1.6 2H19.5A1.5 1.5 0 0 1 21 8.5v9A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5z" />
         </svg>
-        <span class="mono md-file-name">{label}</span>
-        {copied ? <span class="md-file-ok">✓</span> : null}
+        <span className="mono md-file-name">{label}</span>
+        {copied ? <span className="md-file-ok">✓</span> : null}
       </button>
       {allowReveal ? (
         <button
           type="button"
-          class="md-file-reveal"
+          className="md-file-reveal"
           aria-label={`在文件管理器中定位 ${label}`}
           title={`在文件管理器中定位：${fullPath}`}
           onClick={() => onReveal?.(fullPath)}
@@ -223,9 +223,9 @@ function FilePathPill({
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
-            stroke-width="1.9"
-            stroke-linecap="round"
-            stroke-linejoin="round"
+            strokeWidth="1.9"
+            strokeLinecap="round"
+            strokeLinejoin="round"
             aria-hidden="true"
           >
             <path d="M14 5h5v5" />
@@ -352,9 +352,9 @@ function renderInline(
   text: string,
   ctx: InlineRenderContext,
   depth = 0,
-): ComponentChildren {
+): ReactNode {
   if (depth > 8 || text.length === 0) return text;
-  const out: ComponentChildren[] = [];
+  const out: ReactNode[] = [];
   let buf = "";
   let i = 0;
 
@@ -383,7 +383,7 @@ function renderInline(
           inner = inner.slice(1, -1);
         }
         out.push(
-          <code key={out.length} class="md-inline-code">
+          <code key={out.length} className="md-inline-code">
             {inner}
           </code>,
         );
@@ -428,7 +428,7 @@ function renderInline(
             out.push(
               <a
                 key={out.length}
-                class="md-link"
+                className="md-link"
                 href={safeUrl}
                 target="_blank"
                 rel="noopener noreferrer"
@@ -825,7 +825,7 @@ function parseMarkdown(raw: string): MdBlock[] {
 function renderInlineMultiline(
   text: string,
   ctx: InlineRenderContext,
-): ComponentChildren {
+): ReactNode {
   if (!text.includes("\n")) {
     return renderInline(text, ctx);
   }
@@ -838,7 +838,7 @@ function renderInlineMultiline(
   ));
 }
 
-function renderBlocks(blocks: MdBlock[], ctx: InlineRenderContext): ComponentChildren {
+function renderBlocks(blocks: MdBlock[], ctx: InlineRenderContext): ReactNode {
   return blocks.map((b, idx) => {
     switch (b.kind) {
       case "heading": {
@@ -865,17 +865,17 @@ function renderBlocks(blocks: MdBlock[], ctx: InlineRenderContext): ComponentChi
             {b.items.map((item, j) => (
               <li
                 key={j}
-                class={item.checked !== undefined ? "md-task-item" : undefined}
+                className={item.checked !== undefined ? "md-task-item" : undefined}
               >
                 {item.checked !== undefined ? (
                   <span
-                    class={`md-task-box ${item.checked ? "is-checked" : ""}`}
+                    className={`md-task-box ${item.checked ? "is-checked" : ""}`}
                     aria-hidden="true"
                   >
                     {item.checked ? "✓" : ""}
                   </span>
                 ) : null}
-                <div class="md-li-body">
+                <div className="md-li-body">
                   <span>{renderInlineMultiline(item.text, ctx)}</span>
                   {item.children && item.children.length > 0
                     ? renderBlocks(item.children, ctx)
@@ -889,14 +889,14 @@ function renderBlocks(blocks: MdBlock[], ctx: InlineRenderContext): ComponentChi
       case "table": {
         const colSizes = classifyTableColumns(b.headers, b.rows);
         return (
-          <div key={idx} class="md-table-wrap">
-            <table class="md-table">
+          <div key={idx} className="md-table-wrap">
+            <table className="md-table">
               <thead>
                 <tr>
                   {b.headers.map((h, ci) => (
                     <th
                       key={ci}
-                      class={`col-${colSizes[ci] ?? "medium"}`}
+                      className={`col-${colSizes[ci] ?? "medium"}`}
                       style={
                         b.aligns[ci] ? { textAlign: b.aligns[ci]! } : undefined
                       }
@@ -912,7 +912,7 @@ function renderBlocks(blocks: MdBlock[], ctx: InlineRenderContext): ComponentChi
                     {row.map((cell, ci) => (
                       <td
                         key={ci}
-                        class={`col-${colSizes[ci] ?? "medium"}`}
+                        className={`col-${colSizes[ci] ?? "medium"}`}
                         style={
                           b.aligns[ci] ? { textAlign: b.aligns[ci]! } : undefined
                         }
@@ -968,7 +968,7 @@ export function MarkdownContent({
   };
   const blocks = parseMarkdown(text);
   return (
-    <div class={className ? `md ${className}` : "md"}>
+    <div className={className ? `md ${className}` : "md"}>
       {renderBlocks(blocks, ctx)}
     </div>
   );

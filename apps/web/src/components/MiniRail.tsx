@@ -25,7 +25,7 @@ export function MiniRail({ track, workflow, status, activeStage, rate }: MiniRai
   const activeRank = activeStage ? (STAGE_RANK[activeStage] ?? 2) : 0;
 
   return (
-    <div class="rail">
+    <div className="rail">
       {stages.map((st) => {
         const meta = stageMeta(st);
         const rank = STAGE_RANK[st] ?? 0;
@@ -69,7 +69,7 @@ export function MiniRail({ track, workflow, status, activeStage, rate }: MiniRai
         return (
           <span
             key={st}
-            class={`rail-seg ${cls}`}
+            className={`rail-seg ${cls}`}
             style={{ "--c": `var(${meta.colorVar})` } as Record<string, string>}
             title={meta.label}
           >

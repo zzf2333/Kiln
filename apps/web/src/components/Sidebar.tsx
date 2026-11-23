@@ -43,26 +43,26 @@ export function Sidebar() {
   ).sort();
 
   return (
-    <aside class="side-nav" aria-label="主导航">
-      <div class="side-scroll">
-        <div class="brand">
-          <span class="brand-mark">
+    <aside className="side-nav" aria-label="主导航">
+      <div className="side-scroll">
+        <div className="brand">
+          <span className="brand-mark">
             <BrandIcon />
           </span>
-          <span class="brand-name">Kiln</span>
+          <span className="brand-name">Kiln</span>
           {state.daemonVersion ? (
-            <span class="brand-ver mono" title={`Kiln v${state.daemonVersion}`}>
+            <span className="brand-ver mono" title={`Kiln v${state.daemonVersion}`}>
               v{state.daemonVersion}
             </span>
           ) : null}
-          <div class="theme-switch" role="radiogroup" aria-label="外观主题">
+          <div className="theme-switch" role="radiogroup" aria-label="外观主题">
             <button
               type="button"
               role="radio"
               aria-checked={state.themePreference === "system"}
               aria-label="跟随系统"
               title={`跟随系统（当前：${state.resolvedTheme === "light" ? "浅色" : "深色"}）`}
-              class={state.themePreference === "system" ? "on" : ""}
+              className={state.themePreference === "system" ? "on" : ""}
               onClick={() => store.setThemePreference("system")}
             >
               <SystemThemeIcon />
@@ -73,7 +73,7 @@ export function Sidebar() {
               aria-checked={state.themePreference === "light"}
               aria-label="浅色主题"
               title="浅色主题"
-              class={state.themePreference === "light" ? "on" : ""}
+              className={state.themePreference === "light" ? "on" : ""}
               onClick={() => store.setThemePreference("light")}
             >
               <SunIcon />
@@ -84,7 +84,7 @@ export function Sidebar() {
               aria-checked={state.themePreference === "dark"}
               aria-label="深色主题"
               title="深色主题"
-              class={state.themePreference === "dark" ? "on" : ""}
+              className={state.themePreference === "dark" ? "on" : ""}
               onClick={() => store.setThemePreference("dark")}
             >
               <MoonIcon />
@@ -94,14 +94,14 @@ export function Sidebar() {
 
         <button
           type="button"
-          class="new-btn"
+          className="new-btn"
           onClick={() => store.go("intake")}
         >
           <span>
             新需求
             {state.intakeActiveOpen ? (
               <span
-                class="side-live-dot"
+                className="side-live-dot"
                 title={
                   state.intakeBusy
                     ? "AI 正在回复"
@@ -112,76 +112,76 @@ export function Sidebar() {
               />
             ) : null}
           </span>
-          <span class="key">{state.intakeActiveOpen ? "进行中" : "N"}</span>
+          <span className="key">{state.intakeActiveOpen ? "进行中" : "N"}</span>
         </button>
 
-        <div class="nav-label">视图</div>
+        <div className="nav-label">视图</div>
 
         <button
           type="button"
-          class={`nav-btn ${view === "board" ? "on" : ""}`}
+          className={`nav-btn ${view === "board" ? "on" : ""}`}
           data-nav="board"
           onClick={() => store.go("board")}
         >
-          <span class="nav-l">
+          <span className="nav-l">
             <BoardIcon />
             <span>总览</span>
           </span>
-          <span class="nav-count" id="nBoard">
+          <span className="nav-count" id="nBoard">
             {nonCancelledCount || ""}
           </span>
         </button>
 
         <button
           type="button"
-          class="nav-btn is-disabled"
+          className="nav-btn is-disabled"
           disabled
           aria-disabled="true"
           title="Post-MVP 阶段扩展"
         >
-          <span class="nav-l">
+          <span className="nav-l">
             <ConsoleIcon />
             <span>执行台</span>
-            <span class="nav-tag">M2+</span>
+            <span className="nav-tag">M2+</span>
           </span>
         </button>
 
         <button
           type="button"
-          class={`nav-btn ${view === "inbox" || view === "resolve" ? "on" : ""}`}
+          className={`nav-btn ${view === "inbox" || view === "resolve" ? "on" : ""}`}
           data-nav="inbox"
           onClick={() => store.go("inbox")}
         >
-          <span class="nav-l">
+          <span className="nav-l">
             <InboxIcon />
             <span>等你决定</span>
           </span>
-          <span class="nav-count ask" id="nInbox">
+          <span className="nav-count ask" id="nInbox">
             {waitingCount || ""}
           </span>
         </button>
 
         <button
           type="button"
-          class="nav-btn is-disabled"
+          className="nav-btn is-disabled"
           disabled
           aria-disabled="true"
           title="Post-MVP 阶段扩展"
         >
-          <span class="nav-l">
+          <span className="nav-l">
             <FeedIcon />
             <span>动态</span>
-            <span class="nav-tag">M2+</span>
+            <span className="nav-tag">M2+</span>
           </span>
         </button>
 
         <button
           type="button"
-          class={`nav-btn ${view === "usage" ? "on" : ""}`}
+          className={`nav-btn ${view === "usage" ? "on" : ""}`}
           data-nav="usage"
           onClick={() => store.go("usage")}
         >
-          <span class="nav-l">
+          <span className="nav-l">
             <UsageIcon />
             <span>用量与费用</span>
           </span>
@@ -189,11 +189,11 @@ export function Sidebar() {
 
         <button
           type="button"
-          class={`nav-btn ${view === "ledger" ? "on" : ""}`}
+          className={`nav-btn ${view === "ledger" ? "on" : ""}`}
           data-nav="ledger"
           onClick={() => store.go("ledger")}
         >
-          <span class="nav-l">
+          <span className="nav-l">
             <LedgerIcon />
             <span>决策账本</span>
           </span>
@@ -201,21 +201,21 @@ export function Sidebar() {
 
         <button
           type="button"
-          class={`nav-btn ${view === "settings" ? "on" : ""}`}
+          className={`nav-btn ${view === "settings" ? "on" : ""}`}
           data-nav="settings"
           onClick={() => store.go("settings")}
         >
-          <span class="nav-l">
+          <span className="nav-l">
             <SettingsIcon />
             <span>设置</span>
           </span>
         </button>
 
-        <div class="side-label-row">
-          <div class="nav-label">空间</div>
+        <div className="side-label-row">
+          <div className="nav-label">空间</div>
           <button
             type="button"
-            class="side-add-btn"
+            className="side-add-btn"
             aria-label="添加项目空间"
             title="添加项目空间"
             onClick={() => store.openAddSpaceModal(false)}
@@ -226,17 +226,17 @@ export function Sidebar() {
         <div id="spaceNav">
           <button
             type="button"
-            class={`nav-btn ${spaceFilter === "all" && view === "board" ? "on" : ""}`}
+            className={`nav-btn ${spaceFilter === "all" && view === "board" ? "on" : ""}`}
             onClick={() => store.go("board", { space: "all" })}
           >
-            <span class="nav-l">
+            <span className="nav-l">
               <span
-                class="dot"
+                className="dot"
                 style={{ background: "var(--t3)", margin: "0 5px" }}
               />
               <span>全部</span>
             </span>
-            <span class="nav-count" />
+            <span className="nav-count" />
           </button>
 
           {spaceIds.map((spId) => {
@@ -246,12 +246,12 @@ export function Sidebar() {
               <button
                 key={spId}
                 type="button"
-                class={`nav-btn ${spaceFilter === spId && view === "board" ? "on" : ""}`}
+                className={`nav-btn ${spaceFilter === spId && view === "board" ? "on" : ""}`}
                 onClick={() => store.go("board", { space: spId })}
               >
-                <span class="nav-l">
+                <span className="nav-l">
                   <span
-                    class="dot"
+                    className="dot"
                     style={{
                       background: runCount ? "var(--ember-2)" : "var(--line-2)",
                       margin: "0 5px",
@@ -259,7 +259,7 @@ export function Sidebar() {
                   />
                   <span>{label}</span>
                 </span>
-                <span class="nav-count">
+                <span className="nav-count">
                   {runCount > 0 ? `${runCount} 在跑` : ""}
                 </span>
               </button>

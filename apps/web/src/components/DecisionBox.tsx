@@ -1,4 +1,4 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useState } from "react";
 import type { DecisionAction, PendingDecision } from "@kiln/protocol/web";
 import type { SubmitDecisionPayload } from "../api/types";
 import { fmtTime } from "../state/format";
@@ -70,22 +70,22 @@ export function DecisionBox({
   };
 
   return (
-    <section class="decision">
-      <div class="decision-head">
+    <section className="decision">
+      <div className="decision-head">
         <WarnCircleIcon />
         <span>需要你决定</span>
-        <span class="muted">
+        <span className="muted">
           {decision.category} · {fmtTime(decision.created_at)} · {decision.reason}
         </span>
       </div>
-      <div class="decision-q">
+      <div className="decision-q">
         <MarkdownContent text={decision.question} />
       </div>
-      <div class="options">
+      <div className="options">
         {decision.options.map((opt) => {
           const checked = opt.id === selectedOption?.id;
           return (
-            <label key={opt.id} class="option">
+            <label key={opt.id} className="option">
               <input
                 type="radio"
                 name={`opt-${decision.id}`}
@@ -94,18 +94,18 @@ export function DecisionBox({
                 onChange={() => handleSelectOption(opt.id)}
               />
               <div>
-                <div class="opt-label">
-                  {opt.recommended ? <span class="rec">推荐</span> : null}
+                <div className="opt-label">
+                  {opt.recommended ? <span className="rec">推荐</span> : null}
                   <span>{opt.label}</span>
                   <span
-                    class={opt.action === "return_external" ? "opt-act is-warn" : "opt-act"}
+                    className={opt.action === "return_external" ? "opt-act is-warn" : "opt-act"}
                     data-action={opt.action}
                     title={ACTION_DESC[opt.action]}
                   >
                     {opt.action}
                   </span>
                   <span
-                    class={
+                    className={
                       opt.action === "return_external"
                         ? "opt-act-desc is-warn"
                         : "opt-act-desc"
@@ -115,10 +115,10 @@ export function DecisionBox({
                   </span>
                 </div>
                 {opt.cost_note ? (
-                  <div class="opt-effect">{opt.cost_note}</div>
+                  <div className="opt-effect">{opt.cost_note}</div>
                 ) : null}
                 {opt.ledger_rule ? (
-                  <div class="opt-effect muted">
+                  <div className="opt-effect muted">
                     可选账本规则：{opt.ledger_rule}
                   </div>
                 ) : null}
@@ -129,7 +129,7 @@ export function DecisionBox({
       </div>
 
       {hasLedgerRule ? (
-        <label class="ledger-check">
+        <label className="ledger-check">
           <input
             type="checkbox"
             checked={applyLedgerRule}
@@ -144,27 +144,27 @@ export function DecisionBox({
       <div style={{ marginTop: "10px" }}>
         <input
           type="text"
-          class="input"
+          className="input"
           aria-label="补充说明（可选）"
           placeholder="补充拍板理由（选填）"
           value={rationale}
-          onInput={(e) =>
+          onChange={(e) =>
             setRationale((e.currentTarget as HTMLInputElement).value)
           }
         />
       </div>
 
-      <div class="decision-actions">
+      <div className="decision-actions">
         <button
           type="button"
-          class="btn btn-light"
+          className="btn btn-light"
           disabled={!selectedOption || submitting}
           onClick={() => void handleConfirm()}
         >
           {submitting ? "提交中..." : "确认执行"}
         </button>
         {onOpenResolve ? (
-          <button type="button" class="btn" onClick={onOpenResolve}>
+          <button type="button" className="btn" onClick={onOpenResolve}>
             开对话讨论
           </button>
         ) : null}

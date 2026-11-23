@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   DEFAULT_LOCAL_PORT,
   DEFAULT_REMOTE_PORT,
@@ -175,27 +175,27 @@ export function RemoteSettingsPanel() {
 
   if (state.authMode === "remote") {
     return (
-      <div class="remote-readonly-card" role="region" aria-label="远程访问只读提示">
-        <div class="remote-card-head">
+      <div className="remote-readonly-card" role="region" aria-label="远程访问只读提示">
+        <div className="remote-card-head">
           <h3>仅限本机桌面端管理远程访问</h3>
-          <span class="chip chip-ask">远程只读隔离</span>
+          <span className="chip chip-ask">远程只读隔离</span>
         </div>
-        <p class="remote-card-desc">
+        <p className="remote-card-desc">
           远程端口开关、公网地址、配对二维码、设备吊销与推送通知仅允许在宿主本机（
-          <span class="mono">http://127.0.0.1:{DEFAULT_LOCAL_PORT}</span>
+          <span className="mono">http://127.0.0.1:{DEFAULT_LOCAL_PORT}</span>
           ）管理，远程端口拒绝管理操作。
         </p>
         {state.authDevice ? (
-          <div class="setting-row" style={{ marginTop: "8px" }}>
+          <div className="setting-row" style={{ marginTop: "8px" }}>
             <div>
               <span>当前远程设备：{state.authDevice.label}</span>
-              <p class="mono">
+              <p className="mono">
                 {state.authDevice.id} · 配对于 {fmtTs(state.authDevice.created_at)}
               </p>
             </div>
             <button
               type="button"
-              class="btn btn-danger btn-sm"
+              className="btn btn-danger btn-sm"
               style={{ justifySelf: "end" }}
               onClick={() => void store.logoutRemote()}
             >
@@ -335,15 +335,15 @@ export function RemoteSettingsPanel() {
   const recommendedCmd = `tailscale serve --bg http://127.0.0.1:${draft.remote_port}`;
   const remainMs = challenge ? Date.parse(challenge.expiresAt) - nowMs : 0;
 
-  if (loading) return <div class="empty">正在读取远程访问配置…</div>;
+  if (loading) return <div className="empty">正在读取远程访问配置…</div>;
 
   return (
-    <div class="remote-panel">
+    <div className="remote-panel">
       {loadError ? (
-        <div class="conflict-box">
-          <div class="conflict-head">
+        <div className="conflict-box">
+          <div className="conflict-head">
             <span>读取远程配置失败</span>
-            <button type="button" class="btn btn-sm" onClick={() => void loadAll()}>
+            <button type="button" className="btn btn-sm" onClick={() => void loadAll()}>
               重试
             </button>
           </div>
@@ -351,28 +351,28 @@ export function RemoteSettingsPanel() {
         </div>
       ) : null}
 
-      <section class="remote-section">
-        <div class="remote-card-head">
+      <section className="remote-section">
+        <div className="remote-card-head">
           <div>
             <h3>远程监听与公网入口</h3>
-            <p class="remote-card-desc">
+            <p className="remote-card-desc">
               独立远程端口强制 HttpOnly 会话认证，与本机 :{DEFAULT_LOCAL_PORT} 隔离。
             </p>
           </div>
           <span
-            class={`chip ${runtime.listening ? "chip-ok" : ""}`}
+            className={`chip ${runtime.listening ? "chip-ok" : ""}`}
             data-remote-runtime={runtime.listening ? "listening" : "stopped"}
           >
             {runtime.listening ? `已监听 :${runtime.port ?? draft.remote_port}` : "未开启"}
           </span>
         </div>
 
-        <div class="setting-row">
+        <div className="setting-row">
           <div>
             <span>启用远程访问监听</span>
             <p>热启停独立远程端口，供手机 PWA 经 HTTPS 隧道访问</p>
           </div>
-          <label class="switch" style={{ justifySelf: "end" }}>
+          <label className="switch" style={{ justifySelf: "end" }}>
             <input
               type="checkbox"
               aria-label="启用远程访问"
@@ -385,19 +385,19 @@ export function RemoteSettingsPanel() {
           </label>
         </div>
 
-        <div class="setting-row">
+        <div className="setting-row">
           <div>
             <span>远程监听端口</span>
             <p>默认 {DEFAULT_REMOTE_PORT}，仅绑 127.0.0.1 供隧道转发，不可为 {DEFAULT_LOCAL_PORT}</p>
           </div>
           <input
             type="number"
-            class="input mono"
+            className="input mono"
             aria-label="远程监听端口"
             min={1}
             max={65535}
             value={portInput}
-            onInput={(e) => {
+            onChange={(e) => {
               const raw = (e.currentTarget as HTMLInputElement).value;
               setPortInput(raw);
               const n = Number(raw);
@@ -408,29 +408,29 @@ export function RemoteSettingsPanel() {
           />
         </div>
 
-        <div class="setting-row setting-row-wide">
+        <div className="setting-row setting-row-wide">
           <div>
             <span>公网 HTTPS 地址（public_url）</span>
             <p>支持 Tailscale Serve、Cloudflare Tunnel 或任意 HTTPS 反代（不可含参数或 #）</p>
           </div>
           <input
             type="url"
-            class="input mono"
+            className="input mono"
             aria-label="公网 HTTPS 地址"
             placeholder="https://my-mac.tail12345.ts.net"
             value={publicUrlInput}
-            onInput={(e) => setPublicUrlInput((e.currentTarget as HTMLInputElement).value)}
+            onChange={(e) => setPublicUrlInput((e.currentTarget as HTMLInputElement).value)}
           />
         </div>
 
-        <div class="setting-row">
+        <div className="setting-row">
           <div>
             <span>远程待命防休眠（仅插电时生效）</span>
             <p>
               仅接入交流电源时阻止系统自动休眠；电池供电不生效，笔记本合盖默认仍会休眠（合盖待命需接电源与外接显示器）
             </p>
           </div>
-          <label class="switch" style={{ justifySelf: "end" }}>
+          <label className="switch" style={{ justifySelf: "end" }}>
             <input
               type="checkbox"
               aria-label="远程待命防休眠（仅插电时生效）"
@@ -446,33 +446,33 @@ export function RemoteSettingsPanel() {
           </label>
         </div>
 
-        {saveError ? <p class="warn-line" role="alert">{saveError}</p> : null}
+        {saveError ? <p className="warn-line" role="alert">{saveError}</p> : null}
 
-        <div class="remote-actions-row">
+        <div className="remote-actions-row">
           <button
             type="button"
-            class="btn btn-light"
+            className="btn btn-light"
             disabled={busy.save}
             onClick={() => void handleSave()}
           >
             {busy.save ? "保存中…" : "保存远程设置"}
           </button>
-          <span class="muted">写入 config/remote.yaml 并即时生效</span>
+          <span className="muted">写入 config/remote.yaml 并即时生效</span>
         </div>
       </section>
 
-      <section class="remote-section">
-        <div class="remote-card-head">
+      <section className="remote-section">
+        <div className="remote-card-head">
           <div>
             <h3>Tailscale 隧道引导（兼容 Cloudflare / 任意 HTTPS 反代）</h3>
-            <p class="remote-card-desc">
-              请将隧道指向 <span class="mono">http://127.0.0.1:{draft.remote_port}</span>（切勿指向 :{DEFAULT_LOCAL_PORT}）。
+            <p className="remote-card-desc">
+              请将隧道指向 <span className="mono">http://127.0.0.1:{draft.remote_port}</span>（切勿指向 :{DEFAULT_LOCAL_PORT}）。
             </p>
           </div>
-          <div class="remote-head-actions">
+          <div className="remote-head-actions">
             {tailscale ? (
               <span
-                class={`chip ${
+                className={`chip ${
                   tailscale.running && tailscale.serveConfiguredForPort
                     ? "chip-ok"
                     : tailscale.running
@@ -491,7 +491,7 @@ export function RemoteSettingsPanel() {
             ) : null}
             <button
               type="button"
-              class="btn btn-ghost btn-sm"
+              className="btn btn-ghost btn-sm"
               disabled={busy.ts}
               onClick={async () => {
                 setFlag("ts", true);
@@ -511,16 +511,16 @@ export function RemoteSettingsPanel() {
         </div>
 
         {tailscale?.magicDnsUrl ? (
-          <div class="remote-inline-box">
+          <div className="remote-inline-box">
             <div style={{ minWidth: 0 }}>
-              <div class="muted" style={{ fontSize: "11.5px" }}>已探测到 MagicDNS HTTPS 地址</div>
-              <div class="mono" style={{ fontSize: "12.5px", wordBreak: "break-all" }}>
+              <div className="muted" style={{ fontSize: "11.5px" }}>已探测到 MagicDNS HTTPS 地址</div>
+              <div className="mono" style={{ fontSize: "12.5px", wordBreak: "break-all" }}>
                 {tailscale.magicDnsUrl}
               </div>
             </div>
             <button
               type="button"
-              class="btn btn-sm"
+              className="btn btn-sm"
               onClick={() => {
                 setPublicUrlInput(tailscale.magicDnsUrl ?? "");
                 store.showToast("已填入公网地址，请点击「保存远程设置」");
@@ -531,11 +531,11 @@ export function RemoteSettingsPanel() {
           </div>
         ) : null}
 
-        <div class="remote-cmd-box">
-          <code class="mono">{recommendedCmd}</code>
+        <div className="remote-cmd-box">
+          <code className="mono">{recommendedCmd}</code>
           <button
             type="button"
-            class="btn btn-sm"
+            className="btn btn-sm"
             onClick={async () => {
               await copyText(recommendedCmd);
               store.showToast("已复制 Tailscale Serve 命令");
@@ -545,19 +545,19 @@ export function RemoteSettingsPanel() {
           </button>
         </div>
         {tailscale?.detail ? (
-          <p class="muted" style={{ fontSize: "12px", marginTop: "6px" }}>{tailscale.detail}</p>
+          <p className="muted" style={{ fontSize: "12px", marginTop: "6px" }}>{tailscale.detail}</p>
         ) : null}
       </section>
 
-      <section class="remote-section">
-        <div class="remote-card-head">
+      <section className="remote-section">
+        <div className="remote-card-head">
           <div>
             <h3>手机扫码与配对码</h3>
-            <p class="remote-card-desc">5 分钟有效、5 次输错作废；二维码完全本地 SVG 渲染。</p>
+            <p className="remote-card-desc">5 分钟有效、5 次输错作废；二维码完全本地 SVG 渲染。</p>
           </div>
           <button
             type="button"
-            class="btn btn-light btn-sm"
+            className="btn btn-light btn-sm"
             disabled={busy.pair}
             onClick={async () => {
               setFlag("pair", true);
@@ -579,17 +579,17 @@ export function RemoteSettingsPanel() {
         </div>
 
         {!runtime.listening ? (
-          <p class="warn-line" style={{ marginTop: "0", marginBottom: "10px" }}>
+          <p className="warn-line" style={{ marginTop: "0", marginBottom: "10px" }}>
             提示：远程监听未开启，请先启用并保存上方配置后再用手机访问。
           </p>
         ) : null}
 
         {challenge ? (
-          <div class="pair-box">
+          <div className="pair-box">
             {qr ? (
-              <div class="qr-frame">
+              <div className="qr-frame">
                 <svg
-                  class="qr-svg"
+                  className="qr-svg"
                   viewBox={`0 0 ${qr.viewBoxSize} ${qr.viewBoxSize}`}
                   width="176"
                   height="176"
@@ -597,32 +597,32 @@ export function RemoteSettingsPanel() {
                   aria-label="远程配对二维码"
                 >
                   <rect x="0" y="0" width={qr.viewBoxSize} height={qr.viewBoxSize} fill="#ffffff" />
-                  <path d={qr.pathData} fill="#121110" shape-rendering="crispEdges" />
+                  <path d={qr.pathData} fill="#121110" shapeRendering="crispEdges" />
                 </svg>
               </div>
             ) : null}
-            <div class="pair-info">
-              <div class="pair-label">6 位一次性配对码</div>
-              <div class="pair-code mono" data-pairing-code={challenge.code}>
+            <div className="pair-info">
+              <div className="pair-label">6 位一次性配对码</div>
+              <div className="pair-code mono" data-pairing-code={challenge.code}>
                 {challenge.code.length === 6
                   ? `${challenge.code.slice(0, 3)} ${challenge.code.slice(3)}`
                   : challenge.code}
               </div>
               <div
-                class={`pair-countdown mono ${remainMs <= 0 ? "is-expired" : ""}`}
+                className={`pair-countdown mono ${remainMs <= 0 ? "is-expired" : ""}`}
                 data-pairing-countdown
               >
                 {fmtCountdown(remainMs)}
               </div>
               {!effectivePairUrl ? (
-                <p class="warn-line" style={{ marginTop: "4px", fontSize: "12px" }}>
+                <p className="warn-line" style={{ marginTop: "4px", fontSize: "12px" }}>
                   尚未配置公网 HTTPS 地址，手机打开远程页后请手动输入上方 6 位配对码。
                 </p>
               ) : null}
-              <div class="pair-actions">
+              <div className="pair-actions">
                 <button
                   type="button"
-                  class="btn btn-sm"
+                  className="btn btn-sm"
                   onClick={async () => {
                     await copyText(challenge.code);
                     store.showToast("已复制 6 位配对码");
@@ -633,7 +633,7 @@ export function RemoteSettingsPanel() {
                 {effectivePairUrl ? (
                   <button
                     type="button"
-                    class="btn btn-sm"
+                    className="btn btn-sm"
                     onClick={async () => {
                       await copyText(effectivePairUrl);
                       store.showToast("已复制一次性配对链接");
@@ -646,26 +646,26 @@ export function RemoteSettingsPanel() {
             </div>
           </div>
         ) : (
-          <div class="remote-empty-hint">点击右上角「生成配对二维码」，手机扫码或输入 6 位码即可登录。</div>
+          <div className="remote-empty-hint">点击右上角「生成配对二维码」，手机扫码或输入 6 位码即可登录。</div>
         )}
       </section>
 
-      <section class="remote-section">
-        <div class="remote-card-head">
+      <section className="remote-section">
+        <div className="remote-card-head">
           <div>
             <h3>已配对设备（有效 {activeDevices.length} 台）</h3>
-            <p class="remote-card-desc">
-              仅存 SHA-256 哈希于 <span class="mono">config/devices.yaml</span>（0600），吊销即时断流。
+            <p className="remote-card-desc">
+              仅存 SHA-256 哈希于 <span className="mono">config/devices.yaml</span>（0600），吊销即时断流。
             </p>
           </div>
-          <div class="remote-head-actions">
-            <button type="button" class="btn btn-ghost btn-sm" onClick={() => void refreshDevices()}>
+          <div className="remote-head-actions">
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => void refreshDevices()}>
               刷新
             </button>
             {activeDevices.length > 0 ? (
               <button
                 type="button"
-                class="btn btn-danger btn-sm"
+                className="btn btn-danger btn-sm"
                 disabled={busy.revoke}
                 onClick={() => setConfirmTarget("all")}
               >
@@ -677,7 +677,7 @@ export function RemoteSettingsPanel() {
 
         {confirmTarget ? (
           <div
-            class="confirm-bar"
+            className="confirm-bar"
             role="alertdialog"
             aria-label={confirmTarget === "all" ? "确认踢出全部设备" : "确认吊销设备"}
           >
@@ -686,20 +686,20 @@ export function RemoteSettingsPanel() {
                 `确认吊销全部 ${activeDevices.length} 台有效远程设备并立即断开实时连接？`
               ) : (
                 <>
-                  确认吊销设备「{confirmTarget.label}」（<span class="mono">{confirmTarget.id}</span>）？会话将立即失效。
+                  确认吊销设备「{confirmTarget.label}」（<span className="mono">{confirmTarget.id}</span>）？会话将立即失效。
                 </>
               )}
             </p>
-            <div class="remote-head-actions">
+            <div className="remote-head-actions">
               <button
                 type="button"
-                class="btn btn-danger btn-sm"
+                className="btn btn-danger btn-sm"
                 disabled={busy.revoke}
                 onClick={() => void handleConfirmRevoke()}
               >
                 {confirmTarget === "all" ? "确认踢出全部" : "确认吊销"}
               </button>
-              <button type="button" class="btn btn-sm" onClick={() => setConfirmTarget(null)}>
+              <button type="button" className="btn btn-sm" onClick={() => setConfirmTarget(null)}>
                 取消
               </button>
             </div>
@@ -707,9 +707,9 @@ export function RemoteSettingsPanel() {
         ) : null}
 
         {devices.length === 0 ? (
-          <div class="remote-empty-hint">暂无已配对设备。</div>
+          <div className="remote-empty-hint">暂无已配对设备。</div>
         ) : (
-          <table class="t" style={{ marginTop: "8px" }}>
+          <table className="t" style={{ marginTop: "8px" }}>
             <thead>
               <tr>
                 <th>设备</th>
@@ -725,23 +725,23 @@ export function RemoteSettingsPanel() {
                 return (
                   <tr key={dev.id}>
                     <td>
-                      <div class="role-name">{dev.label}</div>
-                      <div class="role-desc mono">{dev.id}</div>
+                      <div className="role-name">{dev.label}</div>
+                      <div className="role-desc mono">{dev.id}</div>
                     </td>
-                    <td class="mono" style={{ fontSize: "12px" }}>{fmtTs(dev.created_at)}</td>
-                    <td class="mono" style={{ fontSize: "12px" }}>{fmtTs(dev.last_seen_at)}</td>
+                    <td className="mono" style={{ fontSize: "12px" }}>{fmtTs(dev.created_at)}</td>
+                    <td className="mono" style={{ fontSize: "12px" }}>{fmtTs(dev.last_seen_at)}</td>
                     <td>
-                      <span class={`chip ${revoked ? "chip-bad" : "chip-ok"}`}>
+                      <span className={`chip ${revoked ? "chip-bad" : "chip-ok"}`}>
                         {revoked ? "已吊销" : "有效"}
                       </span>
                     </td>
                     <td>
                       {revoked ? (
-                        <span class="muted">—</span>
+                        <span className="muted">—</span>
                       ) : (
                         <button
                           type="button"
-                          class="btn btn-danger btn-sm"
+                          className="btn btn-danger btn-sm"
                           disabled={busy.revoke}
                           onClick={() => setConfirmTarget(dev)}
                         >
@@ -757,20 +757,20 @@ export function RemoteSettingsPanel() {
         )}
       </section>
 
-      <section class="remote-section">
-        <div class="remote-card-head">
+      <section className="remote-section">
+        <div className="remote-card-head">
           <div>
             <h3>待决推送通知（Bark / ntfy / Webhook）</h3>
-            <p class="remote-card-desc">命中选定优先级的待决任务将非阻塞推送至手机（默认 P0 / P1）。</p>
+            <p className="remote-card-desc">命中选定优先级的待决任务将非阻塞推送至手机（默认 P0 / P1）。</p>
           </div>
         </div>
 
-        <div class="setting-row">
+        <div className="setting-row">
           <div>
             <span>启用推送通知</span>
             <p>超时严格 ≤ 5 秒，失败不影响守护进程</p>
           </div>
-          <label class="switch" style={{ justifySelf: "end" }}>
+          <label className="switch" style={{ justifySelf: "end" }}>
             <input
               type="checkbox"
               aria-label="启用待决推送通知"
@@ -789,13 +789,13 @@ export function RemoteSettingsPanel() {
           </label>
         </div>
 
-        <div class="setting-row">
+        <div className="setting-row">
           <div>
             <span>推送通道</span>
             <p>支持 Bark、ntfy 或自定义 Webhook</p>
           </div>
           <select
-            class="select"
+            className="select"
             aria-label="推送通道"
             value={draft.notifications.channel}
             onChange={(e) =>
@@ -814,18 +814,18 @@ export function RemoteSettingsPanel() {
           </select>
         </div>
 
-        <div class="setting-row setting-row-wide">
+        <div className="setting-row setting-row-wide">
           <div>
             <span>推送目标 URL</span>
             <p>Bark Key URL、ntfy 主题 URL 或 Webhook 接收地址</p>
           </div>
           <input
             type="url"
-            class="input mono"
+            className="input mono"
             aria-label="推送地址"
             placeholder={CHANNELS[draft.notifications.channel][1]}
             value={draft.notifications.url}
-            onInput={(e) =>
+            onChange={(e) =>
               setDraft({
                 ...draft,
                 notifications: {
@@ -837,29 +837,29 @@ export function RemoteSettingsPanel() {
           />
         </div>
 
-        <div class="setting-row setting-row-wide">
+        <div className="setting-row setting-row-wide">
           <div>
             <span>签名密钥 / Token（可选）</span>
             <p>附带 Bearer 与 X-Kiln-Signature-256 HMAC 签名</p>
           </div>
           <input
             type="password"
-            class="input mono"
+            className="input mono"
             aria-label="推送密钥"
             placeholder="可选"
             value={secretInput}
-            onInput={(e) => setSecretInput((e.currentTarget as HTMLInputElement).value)}
+            onChange={(e) => setSecretInput((e.currentTarget as HTMLInputElement).value)}
           />
         </div>
 
-        <div class="setting-row setting-row-wide">
+        <div className="setting-row setting-row-wide">
           <div>
             <span>触发推送的优先级</span>
             <p>默认勾选 P0 / P1</p>
           </div>
-          <div class="priority-checks" role="group" aria-label="推送优先级">
+          <div className="priority-checks" role="group" aria-label="推送优先级">
             {PRIORITIES.map((p: Priority) => (
-              <label key={p} class="pri-check">
+              <label key={p} className="pri-check">
                 <input
                   type="checkbox"
                   aria-label={`推送优先级 ${p}`}
@@ -877,22 +877,22 @@ export function RemoteSettingsPanel() {
                     });
                   }}
                 />
-                <span class={`pri pri-${p}`}>{p}</span>
+                <span className={`pri pri-${p}`}>{p}</span>
               </label>
             ))}
           </div>
         </div>
 
         {pushFeedback ? (
-          <p class={pushFeedback.ok ? "modal-ok" : "warn-line"} role="status" style={{ marginTop: "10px" }}>
+          <p className={pushFeedback.ok ? "modal-ok" : "warn-line"} role="status" style={{ marginTop: "10px" }}>
             {pushFeedback.text}
           </p>
         ) : null}
 
-        <div class="remote-actions-row">
+        <div className="remote-actions-row">
           <button
             type="button"
-            class="btn btn-light"
+            className="btn btn-light"
             disabled={busy.save}
             onClick={() => void handleSave()}
           >
@@ -900,7 +900,7 @@ export function RemoteSettingsPanel() {
           </button>
           <button
             type="button"
-            class="btn"
+            className="btn"
             disabled={busy.push}
             onClick={() => void handleTestPush()}
           >

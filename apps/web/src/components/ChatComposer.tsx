@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchChatCommands, fetchSpaceFiles } from "../api/client";
 import type {
   ChatCommandAction,
@@ -569,7 +569,7 @@ export function ChatComposer({
         role="option"
         aria-selected={isSelected}
         data-popup-idx={idx}
-        class={`composer-popup-item ${isSelected ? "is-active" : ""}`}
+        className={`composer-popup-item ${isSelected ? "is-active" : ""}`}
         title={entry.item.description}
         onMouseEnter={() => setActiveIndex(idx)}
         onMouseDown={(e) => {
@@ -577,14 +577,14 @@ export function ChatComposer({
           applySelection(entry);
         }}
       >
-        <div class="composer-popup-main">
-          <span class="composer-popup-name mono">/{entry.item.name}</span>
+        <div className="composer-popup-main">
+          <span className="composer-popup-name mono">/{entry.item.name}</span>
           {entry.item.argumentHint ? (
-            <span class="composer-popup-hint mono">{entry.item.argumentHint}</span>
+            <span className="composer-popup-hint mono">{entry.item.argumentHint}</span>
           ) : null}
-          <span class={`composer-popup-badge ${badgeClass}`}>{badgeLabel}</span>
+          <span className={`composer-popup-badge ${badgeClass}`}>{badgeLabel}</span>
         </div>
-        <div class="composer-popup-desc">{entry.item.description}</div>
+        <div className="composer-popup-desc">{entry.item.description}</div>
       </button>
     );
   };
@@ -599,7 +599,7 @@ export function ChatComposer({
         role="option"
         aria-selected={isSelected}
         data-popup-idx={idx}
-        class={`composer-popup-item ${isSelected ? "is-active" : ""}`}
+        className={`composer-popup-item ${isSelected ? "is-active" : ""}`}
         title={`${entry.item.displayLabel} · ${entry.item.meta}`}
         onMouseEnter={() => setActiveIndex(idx)}
         onMouseDown={(e) => {
@@ -607,41 +607,41 @@ export function ChatComposer({
           applySelection(entry);
         }}
       >
-        <div class="composer-popup-main">
-          <span class={`composer-popup-badge ${badgeClass}`}>{entry.item.badge}</span>
-          <span class="composer-popup-name mono">{entry.item.displayLabel}</span>
+        <div className="composer-popup-main">
+          <span className={`composer-popup-badge ${badgeClass}`}>{entry.item.badge}</span>
+          <span className="composer-popup-name mono">{entry.item.displayLabel}</span>
         </div>
-        <div class="composer-popup-desc">{entry.item.meta}</div>
+        <div className="composer-popup-desc">{entry.item.meta}</div>
       </button>
     );
   };
 
   return (
-    <div class="composer">
-      <div class="composer-stack">
-        <div class="composer-inner">
+    <div className="composer">
+      <div className="composer-stack">
+        <div className="composer-inner">
           {showPopup ? (
             <div
-              class="composer-popup"
+              className="composer-popup"
               role="listbox"
               aria-label={
                 trigger?.kind === "/" ? "指令与技能补全" : "选择文件、MCP、任务或账本"
               }
             >
-              <div class="composer-popup-head">
+              <div className="composer-popup-head">
                 <span>
                   {trigger?.kind === "/"
                     ? "指令与技能"
                     : `引用上下文${filesRootLabel ? ` · ${filesRootLabel}` : ""}`}
                 </span>
-                <span class="mono muted">
+                <span className="mono muted">
                   {trigger?.kind === "@"
                     ? "↑↓ 选择 · Tab 进目录/插入 · Enter 插入 · Esc 关闭"
                     : "↑↓ 选择 · Tab/Enter 插入 · Esc 关闭"}
                 </span>
               </div>
 
-              <div class="composer-popup-list" ref={popupListRef}>
+              <div className="composer-popup-list" ref={popupListRef}>
                 {trigger?.kind === "/" ? (
                   entries.length > 0 ? (
                     trigger.query.trim().length > 0 ? (
@@ -652,7 +652,7 @@ export function ChatComposer({
                       <>
                         {kilnCommandEntries.length > 0 ? (
                           <>
-                            <div class="composer-popup-group">Kiln 快捷指令</div>
+                            <div className="composer-popup-group">Kiln 快捷指令</div>
                             {kilnCommandEntries.map(({ e, idx }) =>
                               renderCommandRow(
                                 e as PopupEntry & { type: "command" },
@@ -663,7 +663,7 @@ export function ChatComposer({
                         ) : null}
                         {skillCommandEntries.length > 0 ? (
                           <>
-                            <div class="composer-popup-group">Skills 技能</div>
+                            <div className="composer-popup-group">Skills 技能</div>
                             {skillCommandEntries.map(({ e, idx }) =>
                               renderCommandRow(
                                 e as PopupEntry & { type: "command" },
@@ -675,7 +675,7 @@ export function ChatComposer({
                       </>
                     )
                   ) : (
-                    <div class="composer-popup-empty">
+                    <div className="composer-popup-empty">
                       {commandsLoading
                         ? "正在扫描可用指令与 Skills…"
                         : "未找到匹配的指令或技能，继续回车将原样发送"}
@@ -686,7 +686,7 @@ export function ChatComposer({
                     <>
                       {fileMentionEntries.length > 0 ? (
                         <>
-                          <div class="composer-popup-group">
+                          <div className="composer-popup-group">
                             {filesRootLabel ? `当前目录（${filesRootLabel}）` : "当前目录文件"}
                           </div>
                           {fileMentionEntries.map(({ e, idx }) =>
@@ -699,7 +699,7 @@ export function ChatComposer({
                       ) : null}
                       {mcpMentionEntries.length > 0 ? (
                         <>
-                          <div class="composer-popup-group">MCP 服务</div>
+                          <div className="composer-popup-group">MCP 服务</div>
                           {mcpMentionEntries.map(({ e, idx }) =>
                             renderMentionRow(
                               e as PopupEntry & { type: "mention" },
@@ -710,7 +710,7 @@ export function ChatComposer({
                       ) : null}
                       {taskMentionEntries.length > 0 ? (
                         <>
-                          <div class="composer-popup-group">在途任务</div>
+                          <div className="composer-popup-group">在途任务</div>
                           {taskMentionEntries.map(({ e, idx }) =>
                             renderMentionRow(
                               e as PopupEntry & { type: "mention" },
@@ -721,7 +721,7 @@ export function ChatComposer({
                       ) : null}
                       {ledgerMentionEntries.length > 0 ? (
                         <>
-                          <div class="composer-popup-group">决策账本</div>
+                          <div className="composer-popup-group">决策账本</div>
                           {ledgerMentionEntries.map(({ e, idx }) =>
                             renderMentionRow(
                               e as PopupEntry & { type: "mention" },
@@ -737,7 +737,7 @@ export function ChatComposer({
                     )
                   )
                 ) : (
-                  <div class="composer-popup-empty">
+                  <div className="composer-popup-empty">
                     {filesLoading
                       ? "正在读取当前目录文件…"
                       : "未找到匹配的文件、MCP 服务、任务或账本"}
@@ -750,7 +750,7 @@ export function ChatComposer({
           <textarea
             ref={textareaRef}
             id={id}
-            class="input"
+            className="input"
             rows={2}
             placeholder={placeholder}
             value={value}
@@ -763,7 +763,7 @@ export function ChatComposer({
               composingRef.current = false;
               syncCaretFromTarget(e.currentTarget as HTMLTextAreaElement);
             }}
-            onInput={(e) => {
+            onChange={(e) => {
               const target = e.currentTarget as HTMLTextAreaElement;
               setDismissedAnchor(null);
               setCaretPos(target.selectionStart ?? target.value.length);
@@ -783,7 +783,7 @@ export function ChatComposer({
               syncCaretFromTarget(e.currentTarget as HTMLTextAreaElement);
             }}
             onKeyDown={(e) => {
-              if (composingRef.current || e.isComposing) {
+              if (composingRef.current || e.nativeEvent.isComposing) {
                 return;
               }
 
@@ -823,16 +823,16 @@ export function ChatComposer({
           />
           <button
             type="button"
-            class="btn btn-light"
+            className="btn btn-light"
             disabled={disabled || !value.trim()}
             onClick={() => onSend()}
           >
             发送
           </button>
         </div>
-        <div class="composer-hint">
-          输入 <span class="mono">/</span> 调用指令或技能 ·{" "}
-          <span class="mono">@</span> 选择当前目录文件、MCP 或任务 · Enter 发送，Shift+Enter 换行
+        <div className="composer-hint">
+          输入 <span className="mono">/</span> 调用指令或技能 ·{" "}
+          <span className="mono">@</span> 选择当前目录文件、MCP 或任务 · Enter 发送，Shift+Enter 换行
         </div>
       </div>
     </div>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useState } from "react";
 import {
   REASONING_EFFORTS,
   ROLE_IDS,
@@ -213,14 +213,14 @@ export function SettingsView() {
 
     return (
       <>
-        <div class="sync-line">
+        <div className="sync-line">
           <span>
             可选项来自 ExecutionBackend.listAgents()（当前已发现 {agents.length}{" "}
             个 Agent，共 {totalModels} 个模型）
           </span>
           <button
             type="button"
-            class="btn btn-ghost btn-sm"
+            className="btn btn-ghost btn-sm"
             disabled={refreshBusy}
             onClick={async () => {
               if (refreshBusy) return;
@@ -236,7 +236,7 @@ export function SettingsView() {
           </button>
         </div>
 
-        <table class="t">
+        <table className="t">
           <thead>
             <tr>
               <th style={{ width: "22%" }}>角色</th>
@@ -284,25 +284,25 @@ export function SettingsView() {
               return (
                 <tr key={roleId}>
                   <td>
-                    <div class="role-name">
+                    <div className="role-name">
                       {info.label}{" "}
-                      <span class="mono muted" style={{ fontSize: "11px" }}>
+                      <span className="mono muted" style={{ fontSize: "11px" }}>
                         {roleId}
                       </span>
                     </div>
-                    <div class="role-desc">{info.desc}</div>
+                    <div className="role-desc">{info.desc}</div>
                     {currentIneligible ? (
-                      <div class="warn-line" style={{ marginTop: "4px", fontSize: "11.5px" }}>
+                      <div className="warn-line" style={{ marginTop: "4px", fontSize: "11.5px" }}>
                         当前 {currentAgentId} 不支持实时交互对话，请更换
                       </div>
                     ) : isNonMcpInteractive ? (
-                      <div class="role-desc" style={{ marginTop: "4px" }}>
+                      <div className="role-desc" style={{ marginTop: "4px" }}>
                         无 MCP 模式：自动通过结构化补丁同步草稿/契约
                       </div>
                     ) : null}
                     {fullAccessOnly &&
                     !assignment?.allow_full_access_fallback ? (
-                      <div class="warn-line" style={{ marginTop: "4px", fontSize: "11.5px" }}>
+                      <div className="warn-line" style={{ marginTop: "4px", fontSize: "11.5px" }}>
                         仅暴露 full-access，默认拦截派发，需先开启右侧「允许全权兜底」
                       </div>
                     ) : null}
@@ -310,7 +310,7 @@ export function SettingsView() {
 
                   <td>
                     <select
-                      class="select"
+                      className="select"
                       aria-label={`${info.label} Agent`}
                       value={currentAgentId}
                       onChange={(e) => {
@@ -346,7 +346,7 @@ export function SettingsView() {
 
                   <td>
                     <select
-                      class="select mono"
+                      className="select mono"
                       aria-label={`${info.label} 主模型`}
                       style={{ fontSize: "12px" }}
                       value={currentModel}
@@ -367,7 +367,7 @@ export function SettingsView() {
 
                   <td>
                     <select
-                      class="select"
+                      className="select"
                       aria-label={`${info.label} 推理档位`}
                       value={assignment?.reasoning_effort ?? "medium"}
                       onChange={(e) =>
@@ -388,12 +388,12 @@ export function SettingsView() {
 
                   <td>
                     {info.interactive ? (
-                      <span class="muted" style={{ fontSize: "12px" }}>
+                      <span className="muted" style={{ fontSize: "12px" }}>
                         —
                       </span>
                     ) : (
                       <select
-                        class="select mono"
+                        className="select mono"
                         aria-label={`${info.label} 备选`}
                         style={{ fontSize: "11.5px" }}
                         value={fallbackKey}
@@ -431,7 +431,7 @@ export function SettingsView() {
                   </td>
 
                   <td>
-                    <label class="switch">
+                    <label className="switch">
                       <input
                         type="checkbox"
                         aria-label={`${info.label} 允许全权兜底`}
@@ -464,16 +464,16 @@ export function SettingsView() {
         </table>
 
         {pendingConfirmRole ? (
-          <div class="confirm-bar" role="alertdialog" aria-label="确认开启全权兜底">
+          <div className="confirm-bar" role="alertdialog" aria-label="确认开启全权兜底">
             <p>
               高风险确认：仅为「{ROLE_INFO[pendingConfirmRole].label}」显式启用{" "}
-              <span class="mono">allow_full_access_fallback</span>？当所选
+              <span className="mono">allow_full_access_fallback</span>？当所选
               Provider 仅暴露 full-access 模式时，守护进程将放行无人值守派发。
             </p>
             <div style={{ display: "flex", gap: "8px" }}>
               <button
                 type="button"
-                class="btn btn-light btn-sm"
+                className="btn btn-light btn-sm"
                 onClick={() => {
                   updateRole(pendingConfirmRole, {
                     allow_full_access_fallback: true,
@@ -485,7 +485,7 @@ export function SettingsView() {
               </button>
               <button
                 type="button"
-                class="btn btn-sm"
+                className="btn btn-sm"
                 onClick={() => setPendingConfirmRole(null)}
               >
                 取消
@@ -495,19 +495,19 @@ export function SettingsView() {
         ) : null}
 
         {samePrimaryModel ? (
-          <p class="warn-line" role="alert">
+          <p className="warn-line" role="alert">
             {fbClash
               ? `独立审查与实施主模型和备选均撞车（${worker?.agent} / ${worker?.model}），请为独立审查选择不同的备选模型`
               : `独立审查与实施当前选了同一模型（${worker?.agent} / ${worker?.model}），派发时将自动切换为备选（${reviewer?.fallback?.agent} / ${reviewer?.fallback?.model}）`}
           </p>
         ) : null}
 
-        <div class="setting-row">
+        <div className="setting-row">
           <div>
             <span>审查避开实施所用模型</span>
             <p>独立审查与实施撞同一模型时，自动改用该行的备选模型</p>
           </div>
-          <label class="switch" style={{ justifySelf: "end" }}>
+          <label className="switch" style={{ justifySelf: "end" }}>
             <input
               type="checkbox"
               checked={rolesDraft.heterogeneous_review}
@@ -533,12 +533,12 @@ export function SettingsView() {
         >
           <button
             type="button"
-            class="btn btn-light"
+            className="btn btn-light"
             onClick={() => void store.saveSettingsSection("roles", rolesDraft)}
           >
             保存
           </button>
-          <span class="muted">
+          <span className="muted">
             修改写入 config/roles.yaml，只影响之后派发的执行
           </span>
         </div>
@@ -553,38 +553,38 @@ export function SettingsView() {
 
     return (
       <>
-        <div class="sync-line">
+        <div className="sync-line">
           <span>
             项目空间决定代码任务的仓库路径、工作树基准分支与默认验收命令，立项对话将直接进入对应仓库目录探索。
           </span>
           <button
             type="button"
-            class="btn btn-light btn-sm"
+            className="btn btn-light btn-sm"
             onClick={() => store.openAddSpaceModal(false)}
           >
             + 添加项目空间
           </button>
         </div>
 
-        <div class="setting-row">
+        <div className="setting-row">
           <div>
             <span>
-              本机与临时 <span class="mono muted">local</span>
+              本机与临时 <span className="mono muted">local</span>
             </span>
             <p>内置空间：用于本机配置修改（host_scoped）与临时沙盒任务（scratch_dir），不可删除</p>
           </div>
-          <span class="chip" style={{ justifySelf: "end" }}>
+          <span className="chip" style={{ justifySelf: "end" }}>
             内置
           </span>
         </div>
 
         {customSpaces.length === 0 ? (
-          <div class="empty">
+          <div className="empty">
             暂无已登记的项目空间。点击右上角「+ 添加项目空间」或在项目根目录运行{" "}
-            <span class="mono">kiln space add .</span>。
+            <span className="mono">kiln space add .</span>。
           </div>
         ) : (
-          <table class="t" style={{ marginTop: "8px" }}>
+          <table className="t" style={{ marginTop: "8px" }}>
             <thead>
               <tr>
                 <th style={{ width: "20%" }}>空间</th>
@@ -600,34 +600,34 @@ export function SettingsView() {
                 return (
                   <tr key={sp.id}>
                     <td>
-                      <div class="role-name">{sp.name}</div>
-                      <div class="role-desc mono">{sp.id}</div>
+                      <div className="role-name">{sp.name}</div>
+                      <div className="role-desc mono">{sp.id}</div>
                     </td>
-                    <td class="mono" style={{ fontSize: "12px", wordBreak: "break-all" }}>
+                    <td className="mono" style={{ fontSize: "12px", wordBreak: "break-all" }}>
                       {validRepo ? (
                         sp.repo_path
                       ) : (
-                        <span class="warn-line" style={{ marginTop: "0" }}>
+                        <span className="warn-line" style={{ marginTop: "0" }}>
                           缺少 repo_path，请点击编辑绑定本地 Git 仓库
                         </span>
                       )}
                     </td>
-                    <td class="mono">{sp.default_branch}</td>
-                    <td class="mono" style={{ fontSize: "12px" }}>
-                      {sp.default_accept_cmd || <span class="muted">—</span>}
+                    <td className="mono">{sp.default_branch}</td>
+                    <td className="mono" style={{ fontSize: "12px" }}>
+                      {sp.default_accept_cmd || <span className="muted">—</span>}
                     </td>
                     <td>
                       <div style={{ display: "flex", gap: "6px" }}>
                         <button
                           type="button"
-                          class="btn btn-sm"
+                          className="btn btn-sm"
                           onClick={() => store.openEditSpaceModal(sp.id)}
                         >
                           编辑
                         </button>
                         <button
                           type="button"
-                          class="btn btn-sm btn-danger"
+                          className="btn btn-sm btn-danger"
                           onClick={() => setPendingDeleteSpaceId(sp.id)}
                         >
                           删除
@@ -642,15 +642,15 @@ export function SettingsView() {
         )}
 
         {pendingDeleteSpaceId ? (
-          <div class="confirm-bar" role="alertdialog" aria-label="确认删除项目空间">
+          <div className="confirm-bar" role="alertdialog" aria-label="确认删除项目空间">
             <p>
-              确认删除项目空间 <span class="mono">{pendingDeleteSpaceId}</span>
-              ？仅删除 <span class="mono">space.yaml</span> 配置，不会删除磁盘代码仓库或历史任务记录。
+              确认删除项目空间 <span className="mono">{pendingDeleteSpaceId}</span>
+              ？仅删除 <span className="mono">space.yaml</span> 配置，不会删除磁盘代码仓库或历史任务记录。
             </p>
             <div style={{ display: "flex", gap: "8px" }}>
               <button
                 type="button"
-                class="btn btn-danger btn-sm"
+                className="btn btn-danger btn-sm"
                 onClick={async () => {
                   const id = pendingDeleteSpaceId;
                   setPendingDeleteSpaceId(null);
@@ -661,7 +661,7 @@ export function SettingsView() {
               </button>
               <button
                 type="button"
-                class="btn btn-sm"
+                className="btn btn-sm"
                 onClick={() => setPendingDeleteSpaceId(null)}
               >
                 取消
@@ -721,18 +721,18 @@ export function SettingsView() {
     return (
       <>
         {numFields.map((f) => (
-          <div key={f.key} class="setting-row">
+          <div key={f.key} className="setting-row">
             <div>
               <span>{f.label}</span>
               <p>{f.desc}</p>
             </div>
             <input
               type="number"
-              class="input mono"
+              className="input mono"
               aria-label={f.label}
               min={f.min}
               value={limitsDraft[f.key]}
-              onInput={(e) => {
+              onChange={(e) => {
                 const raw = Number((e.currentTarget as HTMLInputElement).value);
                 if (Number.isFinite(raw)) {
                   setLimitsDraft({
@@ -745,12 +745,12 @@ export function SettingsView() {
           </div>
         ))}
 
-        <div class="setting-row">
+        <div className="setting-row">
           <div>
             <span>P0 紧急任务允许临时多占 1 个执行槽</span>
             <p>插到队首立即启动，但不强杀正在运行的他卡阶段</p>
           </div>
-          <label class="switch" style={{ justifySelf: "end" }}>
+          <label className="switch" style={{ justifySelf: "end" }}>
             <input
               type="checkbox"
               aria-label="P0 紧急任务允许临时多占 1 个执行槽"
@@ -769,7 +769,7 @@ export function SettingsView() {
         <div style={{ marginTop: "20px" }}>
           <button
             type="button"
-            class="btn btn-light"
+            className="btn btn-light"
             onClick={() =>
               void store.saveSettingsSection("limits", limitsDraft)
             }
@@ -855,14 +855,14 @@ export function SettingsView() {
 
     return (
       <>
-        <div class="sync-line">
+        <div className="sync-line">
           <span>
             仅展示当前角色已配置使用的模型单价（按 models.dev / LiteLLM / 本机模型目录与离线基线自动同步，支持手动覆盖微调，美元 / 百万 Token）。
             {pricing.sync ? (
               <>
                 {" "}
-                最近同步：<span class="mono">{formatPricingSource(pricing.sync.source)}</span> ·{" "}
-                <span class="mono">{fmtTime(pricing.sync.synced_at)}</span>
+                最近同步：<span className="mono">{formatPricingSource(pricing.sync.source)}</span> ·{" "}
+                <span className="mono">{fmtTime(pricing.sync.synced_at)}</span>
               </>
             ) : (
               " 尚未执行自动同步。"
@@ -870,7 +870,7 @@ export function SettingsView() {
           </span>
           <button
             type="button"
-            class="btn btn-light btn-sm"
+            className="btn btn-light btn-sm"
             disabled={pricingSyncBusy}
             onClick={() => void store.syncPricing({ force: true })}
           >
@@ -878,7 +878,7 @@ export function SettingsView() {
           </button>
         </div>
 
-        <table class="t">
+        <table className="t">
           <thead>
             <tr>
               <th>模型标识</th>
@@ -895,26 +895,26 @@ export function SettingsView() {
               return (
                 <tr key={m}>
                   <td>
-                    <div class="pricing-model-cell">
-                      <span class="mono">{m}</span>
+                    <div className="pricing-model-cell">
+                      <span className="mono">{m}</span>
                       {roleTags.length > 0 ? (
-                        <span class="pricing-role-tags">
+                        <span className="pricing-role-tags">
                           {roleTags.map((tag) => (
-                            <span key={tag} class="chip">
+                            <span key={tag} className="chip">
                               {tag}
                             </span>
                           ))}
                         </span>
                       ) : usedSet.has(m) ? (
-                        <span class="chip">已计费</span>
+                        <span className="chip">已计费</span>
                       ) : null}
-                      {!p ? <span class="chip chip-ask">未匹配</span> : null}
+                      {!p ? <span className="chip chip-ask">未匹配</span> : null}
                       {isCustom ? (
                         <>
-                          <span class="chip">自定义</span>
+                          <span className="chip">自定义</span>
                           <button
                             type="button"
-                            class="btn btn-sm"
+                            className="btn btn-sm"
                             aria-label={`恢复 ${m} 同步单价`}
                             disabled={pricingSyncBusy}
                             onClick={() => void store.restoreModelPricing(m)}
@@ -930,11 +930,11 @@ export function SettingsView() {
                       type="number"
                       step="0.01"
                       min="0"
-                      class="input mono"
+                      className="input mono"
                       aria-label={`${m} 输入单价`}
                       placeholder={p ? undefined : "待填"}
                       value={p ? p.in : ""}
-                      onInput={(e) =>
+                      onChange={(e) =>
                         handlePriceInput(
                           m,
                           "in",
@@ -948,11 +948,11 @@ export function SettingsView() {
                       type="number"
                       step="0.005"
                       min="0"
-                      class="input mono"
+                      className="input mono"
                       aria-label={`${m} 缓存命中`}
                       placeholder={p ? undefined : "待填"}
                       value={p ? p.cached : ""}
-                      onInput={(e) =>
+                      onChange={(e) =>
                         handlePriceInput(
                           m,
                           "cached",
@@ -966,11 +966,11 @@ export function SettingsView() {
                       type="number"
                       step="0.1"
                       min="0"
-                      class="input mono"
+                      className="input mono"
                       aria-label={`${m} 输出单价`}
                       placeholder={p ? undefined : "待填"}
                       value={p ? p.out : ""}
-                      onInput={(e) =>
+                      onChange={(e) =>
                         handlePriceInput(
                           m,
                           "out",
@@ -986,11 +986,11 @@ export function SettingsView() {
         </table>
 
         {extraModelIds.length > 0 ? (
-          <div class="pricing-extra-bar">
+          <div className="pricing-extra-bar">
             <span>已隐藏 {extraModelIds.length} 个未绑定到当前角色的模型价格</span>
             <button
               type="button"
-              class="btn btn-sm"
+              className="btn btn-sm"
               onClick={() => setShowExtraPricingModels((prev) => !prev)}
             >
               {showExtraPricingModels
@@ -1010,14 +1010,14 @@ export function SettingsView() {
         >
           <input
             type="text"
-            class="input mono"
+            className="input mono"
             placeholder="新增模型标识（如 gpt-5.4）"
             value={newModelName}
-            onInput={(e) =>
+            onChange={(e) =>
               setNewModelName((e.currentTarget as HTMLInputElement).value)
             }
           />
-          <button type="button" class="btn" onClick={addModel}>
+          <button type="button" className="btn" onClick={addModel}>
             添加模型
           </button>
         </div>
@@ -1025,7 +1025,7 @@ export function SettingsView() {
         <div style={{ marginTop: "20px" }}>
           <button
             type="button"
-            class="btn btn-light"
+            className="btn btn-light"
             onClick={() => void store.saveSettingsSection("pricing", pricing)}
           >
             保存单价表
@@ -1037,7 +1037,7 @@ export function SettingsView() {
 
   const renderConnTab = () => (
     <>
-      <div class="setting-row">
+      <div className="setting-row">
         <div>
           <span>Kiln 版本与运行模式</span>
           <p>
@@ -1045,12 +1045,12 @@ export function SettingsView() {
             {state.authMode === "remote" ? "远程认证访问" : "本机回环 / 桌面端"} · 与运行中 kilnd 实时同步
           </p>
         </div>
-        <span class="chip mono" style={{ justifySelf: "end" }}>
+        <span className="chip mono" style={{ justifySelf: "end" }}>
           {state.daemonVersion ? `v${state.daemonVersion}` : "未获取"}
         </span>
       </div>
 
-      <div class="setting-row setting-row-wide">
+      <div className="setting-row setting-row-wide">
         <div>
           <span>外观主题</span>
           <p>
@@ -1059,7 +1059,7 @@ export function SettingsView() {
           </p>
         </div>
         <div
-          class="seg"
+          className="seg"
           role="radiogroup"
           aria-label="外观主题设置"
           style={{ justifySelf: "end" }}
@@ -1068,7 +1068,7 @@ export function SettingsView() {
             type="button"
             role="radio"
             aria-checked={state.themePreference === "system"}
-            class={state.themePreference === "system" ? "on" : ""}
+            className={state.themePreference === "system" ? "on" : ""}
             onClick={() => store.setThemePreference("system")}
           >
             跟随系统
@@ -1077,7 +1077,7 @@ export function SettingsView() {
             type="button"
             role="radio"
             aria-checked={state.themePreference === "light"}
-            class={state.themePreference === "light" ? "on" : ""}
+            className={state.themePreference === "light" ? "on" : ""}
             onClick={() => store.setThemePreference("light")}
           >
             浅色
@@ -1086,7 +1086,7 @@ export function SettingsView() {
             type="button"
             role="radio"
             aria-checked={state.themePreference === "dark"}
-            class={state.themePreference === "dark" ? "on" : ""}
+            className={state.themePreference === "dark" ? "on" : ""}
             onClick={() => store.setThemePreference("dark")}
           >
             深色
@@ -1096,13 +1096,13 @@ export function SettingsView() {
 
       {backends.length > 0 ? (
         backends.map((b, idx) => (
-          <div key={b.backendId ?? b.id ?? idx} class="setting-row">
+          <div key={b.backendId ?? b.id ?? idx} className="setting-row">
             <div>
               <span>{b.backendId ?? b.id ?? "ExecutionBackend"}</span>
               <p>{b.detail ?? b.url ?? "包在自有 ExecutionBackend 接口之后"}</p>
             </div>
             <span
-              class={`chip ${b.connected ? "chip-ok" : "chip-bad"}`}
+              className={`chip ${b.connected ? "chip-ok" : "chip-bad"}`}
               style={{ justifySelf: "end" }}
             >
               {b.connected ? "已连接" : b.status ?? "未连接"}
@@ -1110,26 +1110,26 @@ export function SettingsView() {
           </div>
         ))
       ) : (
-        <div class="setting-row">
+        <div className="setting-row">
           <div>
             <span>Paseo daemon（V1 自动执行底座）</span>
             <p>
               当前未上报独立底座健康快照；所有派发经自有 ExecutionBackend 接口隔离
             </p>
           </div>
-          <span class="chip" style={{ justifySelf: "end" }}>
+          <span className="chip" style={{ justifySelf: "end" }}>
             待检测
           </span>
         </div>
       )}
 
-      <div class="setting-row">
+      <div className="setting-row">
         <div>
           <span>实时事件流（SSE /api/events）</span>
           <p>支持单调递增 seq 与断线 Last-Event-ID 增量重放</p>
         </div>
         <span
-          class={`chip ${sseStatus === "connected" ? "chip-ok" : ""}`}
+          className={`chip ${sseStatus === "connected" ? "chip-ok" : ""}`}
           style={{ justifySelf: "end" }}
         >
           {sseStatus === "connected"
@@ -1140,12 +1140,12 @@ export function SettingsView() {
         </span>
       </div>
 
-      <div class="setting-row">
+      <div className="setting-row">
         <div>
           <span>外部只读巡检 / Passkey</span>
           <p>external_only 巡检与 Passkey / Web Push 属于后续版本；远程访问与 Bark/ntfy/Webhook 推送请在「远程访问」标签页管理</p>
         </div>
-        <span class="chip" style={{ justifySelf: "end" }}>
+        <span className="chip" style={{ justifySelf: "end" }}>
           后续规划
         </span>
       </div>
@@ -1153,17 +1153,17 @@ export function SettingsView() {
   );
 
   return (
-    <ViewFrame left={<h1 class="tb-title">设置</h1>}>
-      <div class="page">
-        <div class="page-inner" style={{ maxWidth: "980px" }}>
-          <div class="tabs" role="tablist">
+    <ViewFrame left={<h1 className="tb-title">设置</h1>}>
+      <div className="page">
+        <div className="page-inner" style={{ maxWidth: "980px" }}>
+          <div className="tabs" role="tablist">
             {tabs.map(([k, label]) => (
               <button
                 key={k}
                 type="button"
                 role="tab"
                 aria-selected={settingsTab === k}
-                class={settingsTab === k ? "on" : ""}
+                className={settingsTab === k ? "on" : ""}
                 onClick={() => store.setSettingsTab(k)}
               >
                 {label}

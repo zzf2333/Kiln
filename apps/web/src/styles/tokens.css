@@ -1,3 +1,21 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: var(--bg);
+  --color-rail: var(--rail);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-hover: var(--hover);
+  --color-t1: var(--t1);
+  --color-t2: var(--t2);
+  --color-t3: var(--t3);
+  --color-ask: var(--ask);
+  --color-ok: var(--ok);
+  --color-bad: var(--bad);
+  --font-sans: var(--sans);
+  --font-mono: var(--mono);
+}
+
 :root {
   color-scheme: dark;
   /* 暖铁灰中性色阶：外壳安静，颜色只留给阶段与火焰 */

@@ -1,8 +1,9 @@
-import preact from "@preact/preset-vite";
+import tailwindcss from "@tailwindcss/vite";
+import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 export default defineConfig({
-  plugins: [preact()],
+  plugins: [react(), tailwindcss()],
   build: {
     outDir: "../../packages/kernel/public",
     emptyOutDir: true,
