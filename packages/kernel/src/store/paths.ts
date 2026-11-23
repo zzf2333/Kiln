@@ -2,7 +2,15 @@ import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
-export const CONFIG_NAMES = ["roles", "limits", "pricing", "remote", "devices"] as const;
+export const CONFIG_NAMES = [
+  "roles",
+  "limits",
+  "pricing",
+  "remote",
+  "devices",
+  "providers",
+  "roster",
+] as const;
 export type KilnConfigName = (typeof CONFIG_NAMES)[number];
 
 /**

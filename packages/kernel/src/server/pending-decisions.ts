@@ -5,7 +5,8 @@ import {
   PRIORITY_RANK,
   PendingDecisionSchema,
   RoleIdSchema,
-  calculateTurnCostUsd,
+  calculateCacheNetSavedUsd,
+  calculateOrthogonalTurnCostUsd,
   type CardLimits,
   type PendingDecision,
   type PricingConfig,
@@ -42,17 +43,24 @@ export const LedgerProposalsFileSchema = z.object({
 export interface UsageBucketSummary {
   inputTokens: number;
   cachedInputTokens: number;
+  cacheWriteTokens: number;
   outputTokens: number;
+  reasoningTokens: number;
   totalTokens: number;
   costUsd: number;
+  cacheNetSavedUsd: number;
 }
 
 export interface UsageSnapshot {
   inputTokens: number;
   cachedInputTokens: number;
+  cacheWriteTokens: number;
   outputTokens: number;
+  reasoningTokens: number;
   totalTokens: number;
   costUsd: number;
+  cacheNetSavedUsd: number;
+  unknownPricingModels: string[];
   byAgent: Record<string, UsageBucketSummary>;
   byModel: Record<string, UsageBucketSummary>;
 }
@@ -102,7 +110,7 @@ export function resolveCardLimits(store: KilnStore, override?: CardLimits): Card
 }
 
 /**
- * Computes token totals and USD cost breakdown using `@kiln/protocol`'s `calculateTurnCostUsd`.
+ * Computes token totals, orthogonal 5-field USD cost breakdown, and net cache savings.
  */
 export function computeUsageSnapshot(
   turns: readonly UsageTurnRow[],
@@ -110,8 +118,12 @@ export function computeUsageSnapshot(
 ): UsageSnapshot {
   let inputTokens = 0;
   let cachedInputTokens = 0;
+  let cacheWriteTokens = 0;
   let outputTokens = 0;
+  let reasoningTokens = 0;
   let costUsd = 0;
+  let cacheNetSavedUsd = 0;
+  const unknownPricingSet = new Set<string>();
 
   const byAgent: Record<string, UsageBucketSummary> = {};
   const byModel: Record<string, UsageBucketSummary> = {};
@@ -121,50 +133,82 @@ export function computeUsageSnapshot(
     key: string,
     turn: UsageTurnRow,
     turnCost: number,
+    turnSaved: number,
   ): void => {
+    const cacheWrite = turn.cache_write_tokens ?? 0;
+    const reasoning = turn.reasoning_tokens ?? 0;
     const existing = map[key] ?? {
       inputTokens: 0,
       cachedInputTokens: 0,
+      cacheWriteTokens: 0,
       outputTokens: 0,
+      reasoningTokens: 0,
       totalTokens: 0,
       costUsd: 0,
+      cacheNetSavedUsd: 0,
     };
     existing.inputTokens += turn.input_tokens;
     existing.cachedInputTokens += turn.cached_input_tokens;
+    existing.cacheWriteTokens += cacheWrite;
     existing.outputTokens += turn.output_tokens;
-    existing.totalTokens += turn.input_tokens + turn.output_tokens;
+    existing.reasoningTokens += reasoning;
+    existing.totalTokens += turn.input_tokens + cacheWrite + turn.output_tokens;
     existing.costUsd += turnCost;
+    existing.cacheNetSavedUsd += turnSaved;
     map[key] = existing;
   };
 
   for (const turn of turns) {
+    const cacheWrite = turn.cache_write_tokens ?? 0;
+    const reasoning = turn.reasoning_tokens ?? 0;
     const modelPrice = pricing?.models[turn.model];
-    const turnCost = modelPrice
-      ? calculateTurnCostUsd(
-          {
-            inputTokens: turn.input_tokens,
-            cachedInputTokens: turn.cached_input_tokens,
-            outputTokens: turn.output_tokens,
-          },
-          modelPrice,
-        )
-      : 0;
+
+    let turnCost = 0;
+    let turnSaved = 0;
+    if (modelPrice) {
+      const orth = {
+        uncachedInputTokens: Math.max(0, turn.input_tokens - turn.cached_input_tokens),
+        cacheReadTokens: turn.cached_input_tokens,
+        cacheWriteTokens: cacheWrite,
+        outputTokens: turn.output_tokens,
+        reasoningTokens: reasoning,
+        reasoningIncludedInOutput: true,
+      };
+      turnCost = calculateOrthogonalTurnCostUsd(orth, modelPrice, turn.model);
+      turnSaved = calculateCacheNetSavedUsd(orth, modelPrice, turn.model);
+    } else if (
+      typeof turn.provider_cost_usd === "number" &&
+      Number.isFinite(turn.provider_cost_usd) &&
+      turn.provider_cost_usd >= 0
+    ) {
+      turnCost = turn.provider_cost_usd;
+      turnSaved = 0;
+    } else {
+      unknownPricingSet.add(turn.model);
+    }
 
     inputTokens += turn.input_tokens;
     cachedInputTokens += turn.cached_input_tokens;
+    cacheWriteTokens += cacheWrite;
     outputTokens += turn.output_tokens;
+    reasoningTokens += reasoning;
     costUsd += turnCost;
+    cacheNetSavedUsd += turnSaved;
 
-    accumulateBucket(byAgent, turn.agent, turn, turnCost);
-    accumulateBucket(byModel, turn.model, turn, turnCost);
+    accumulateBucket(byAgent, turn.agent, turn, turnCost, turnSaved);
+    accumulateBucket(byModel, turn.model, turn, turnCost, turnSaved);
   }
 
   return {
     inputTokens,
     cachedInputTokens,
+    cacheWriteTokens,
     outputTokens,
-    totalTokens: inputTokens + outputTokens,
+    reasoningTokens,
+    totalTokens: inputTokens + cacheWriteTokens + outputTokens,
     costUsd,
+    cacheNetSavedUsd,
+    unknownPricingModels: Array.from(unknownPricingSet).sort(),
     byAgent,
     byModel,
   };

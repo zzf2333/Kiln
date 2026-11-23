@@ -531,9 +531,13 @@ function emptyUsageSnapshot(): UsageSnapshot {
   return {
     inputTokens: 0,
     cachedInputTokens: 0,
+    cacheWriteTokens: 0,
     outputTokens: 0,
+    reasoningTokens: 0,
     totalTokens: 0,
     costUsd: 0,
+    cacheNetSavedUsd: 0,
+    unknownPricingModels: [],
     byAgent: {},
     byModel: {},
   };

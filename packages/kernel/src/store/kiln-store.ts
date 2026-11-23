@@ -9,13 +9,18 @@ import {
   LimitsConfigSchema,
   PRIORITY_RANK,
   PricingConfigSchema,
+  ProvidersConfigSchema,
   RemoteConfigSchema,
   RolesConfigSchema,
+  RosterConfigSchema,
   RunEventSchema,
   RunMetaSchema,
   SpaceConfigSchema,
   StateEventSchema,
   TaskCardSchema,
+  createDefaultBuiltinRosterMetadata,
+  createDefaultProvidersConfig,
+  migrateRolesConfigToRoster,
   parseFrontmatterMarkdown,
   type CardContract,
   type DevicesConfig,
@@ -24,8 +29,10 @@ import {
   type LimitsConfig,
   type PricingConfig,
   type Priority,
+  type ProvidersConfig,
   type RemoteConfig,
   type RolesConfig,
+  type RosterConfig,
   type RunEvent,
   type RunMeta,
   type SpaceConfig,
@@ -80,7 +87,18 @@ const CONFIG_SCHEMAS = {
   pricing: PricingConfigSchema,
   remote: RemoteConfigSchema,
   devices: DevicesConfigSchema,
+  providers: ProvidersConfigSchema,
+  roster: RosterConfigSchema,
 } as const;
+
+type AnyKilnConfigValue =
+  | RolesConfig
+  | LimitsConfig
+  | PricingConfig
+  | RemoteConfig
+  | DevicesConfig
+  | ProvidersConfig
+  | RosterConfig;
 
 const RESTRICTED_CONFIG_NAMES: ReadonlySet<KilnConfigName> = new Set([
   "remote",
@@ -733,6 +751,10 @@ export class KilnStore {
         input_tokens: parsedEvent.inputTokens,
         cached_input_tokens: parsedEvent.cachedInputTokens ?? 0,
         output_tokens: parsedEvent.outputTokens,
+        cache_write_tokens: parsedEvent.cacheWriteTokens ?? 0,
+        reasoning_tokens: parsedEvent.reasoningTokens ?? 0,
+        provider_cost_usd: parsedEvent.providerCostUsd ?? null,
+        cost_source: parsedEvent.costSource ?? null,
         recorded_at: parsedEvent.at,
       });
     }
@@ -743,12 +765,10 @@ export class KilnStore {
   readConfig(name: "pricing"): PricingConfig | null;
   readConfig(name: "remote"): RemoteConfig | null;
   readConfig(name: "devices"): DevicesConfig | null;
-  readConfig(
-    name: KilnConfigName,
-  ): RolesConfig | LimitsConfig | PricingConfig | RemoteConfig | DevicesConfig | null {
-    const schema = CONFIG_SCHEMAS[name] as AnyZodType<
-      RolesConfig | LimitsConfig | PricingConfig | RemoteConfig | DevicesConfig
-    >;
+  readConfig(name: "providers"): ProvidersConfig | null;
+  readConfig(name: "roster"): RosterConfig | null;
+  readConfig(name: KilnConfigName): AnyKilnConfigValue | null {
+    const schema = CONFIG_SCHEMAS[name] as AnyZodType<AnyKilnConfigValue>;
     return readYamlOptional(this.paths.configFile(name), schema);
   }
 
@@ -757,15 +777,31 @@ export class KilnStore {
   writeConfig(name: "pricing", data: PricingConfig): void;
   writeConfig(name: "remote", data: RemoteConfig): void;
   writeConfig(name: "devices", data: DevicesConfig): void;
-  writeConfig(
-    name: KilnConfigName,
-    data: RolesConfig | LimitsConfig | PricingConfig | RemoteConfig | DevicesConfig,
-  ): void {
-    const schema = CONFIG_SCHEMAS[name] as AnyZodType<
-      RolesConfig | LimitsConfig | PricingConfig | RemoteConfig | DevicesConfig
-    >;
+  writeConfig(name: "providers", data: ProvidersConfig): void;
+  writeConfig(name: "roster", data: RosterConfig): void;
+  writeConfig(name: KilnConfigName, data: AnyKilnConfigValue): void {
+    const schema = CONFIG_SCHEMAS[name] as AnyZodType<AnyKilnConfigValue>;
     const writeOpts = RESTRICTED_CONFIG_NAMES.has(name) ? { mode: 0o600 } : undefined;
     writeYamlAtomic(this.paths.configFile(name), data, schema, writeOpts);
+  }
+
+  readEffectiveProvidersConfig(): ProvidersConfig {
+    return this.readConfig("providers") ?? createDefaultProvidersConfig();
+  }
+
+  readEffectiveRosterConfig(): RosterConfig {
+    const roster = this.readConfig("roster");
+    if (roster !== null) {
+      return roster;
+    }
+    const legacyRoles = this.readConfig("roles");
+    if (legacyRoles !== null) {
+      return migrateRolesConfigToRoster(legacyRoles);
+    }
+    return RosterConfigSchema.parse({
+      schema_version: 2,
+      roster: createDefaultBuiltinRosterMetadata(),
+    });
   }
 
   readSpace(spaceId: string): SpaceConfig | null {
@@ -1028,6 +1064,10 @@ export class KilnStore {
                     input_tokens: ev.inputTokens,
                     cached_input_tokens: ev.cachedInputTokens ?? 0,
                     output_tokens: ev.outputTokens,
+                    cache_write_tokens: ev.cacheWriteTokens ?? 0,
+                    reasoning_tokens: ev.reasoningTokens ?? 0,
+                    provider_cost_usd: ev.providerCostUsd ?? null,
+                    cost_source: ev.costSource ?? null,
                     recorded_at: ev.at,
                   });
                 }

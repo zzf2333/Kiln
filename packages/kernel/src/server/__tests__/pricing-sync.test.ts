@@ -185,6 +185,7 @@ describe("model pricing auto-sync (#4)", () => {
     expect(lookupModelPrice("magpie/group/work", localCat)).toEqual({
       in: 2,
       cached: 0.1,
+      cache_write: 2.5,
       out: 10,
     });
     expect(lookupModelPrice("magpie/group/breach", localCat)).toBeNull();

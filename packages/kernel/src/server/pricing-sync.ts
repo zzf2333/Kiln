@@ -134,6 +134,10 @@ function isNonNegativeFinite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
+function isPositiveFiniteInt(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
 function storeCatalogEntry(
   catalog: Record<string, ModelPricing>,
   rawKey: string,
@@ -188,10 +192,21 @@ export function parseModelsDevCatalog(raw: unknown): Record<string, ModelPricing
       const c = cost as Record<string, unknown>;
       if (!isNonNegativeFinite(c.input) || !isNonNegativeFinite(c.output)) continue;
       const cached = isNonNegativeFinite(c.cache_read) ? c.cache_read : c.input;
+      const limitObj = (modelVal as { limit?: unknown }).limit;
+      const contextRaw =
+        limitObj && typeof limitObj === "object" && !Array.isArray(limitObj)
+          ? (limitObj as Record<string, unknown>).context
+          : undefined;
       const pricing: ModelPricing = {
         in: roundPricePerMillion(c.input),
         cached: roundPricePerMillion(cached),
+        ...(isNonNegativeFinite(c.cache_write)
+          ? { cache_write: roundPricePerMillion(c.cache_write) }
+          : {}),
         out: roundPricePerMillion(c.output),
+        ...(isPositiveFiniteInt(contextRaw)
+          ? { context_window: Math.trunc(contextRaw) }
+          : {}),
       };
 
       const explicitId =
@@ -237,11 +252,21 @@ export function parseLiteLlmCatalog(raw: unknown): Record<string, ModelPricing> 
     const rawCache = isNonNegativeFinite(entry.cache_read_input_token_cost)
       ? entry.cache_read_input_token_cost
       : entry.input_cost_per_token;
+    const rawCacheWrite = isNonNegativeFinite(entry.cache_creation_input_token_cost)
+      ? roundPricePerMillion(entry.cache_creation_input_token_cost * 1_000_000)
+      : undefined;
+    const rawContext = isPositiveFiniteInt(entry.max_input_tokens)
+      ? Math.trunc(entry.max_input_tokens)
+      : isPositiveFiniteInt(entry.max_tokens)
+        ? Math.trunc(entry.max_tokens)
+        : undefined;
 
     const pricing: ModelPricing = {
       in: roundPricePerMillion(entry.input_cost_per_token * 1_000_000),
       cached: roundPricePerMillion(rawCache * 1_000_000),
+      ...(rawCacheWrite !== undefined ? { cache_write: rawCacheWrite } : {}),
       out: roundPricePerMillion(entry.output_cost_per_token * 1_000_000),
+      ...(rawContext !== undefined ? { context_window: rawContext } : {}),
     };
 
     storeCatalogEntry(catalog, rawKey, pricing, true);
@@ -403,10 +428,20 @@ export function loadLocalAgentPricingCatalog(homeDir = os.homedir()): Record<str
         : isNonNegativeFinite(c.cache_read)
           ? c.cache_read
           : c.input;
+      const cacheWrite = isNonNegativeFinite(c.cacheWrite)
+        ? c.cacheWrite
+        : isNonNegativeFinite(c.cache_write)
+          ? c.cache_write
+          : undefined;
+      const contextWindow = isPositiveFiniteInt((rec as { contextWindow?: unknown }).contextWindow)
+        ? Math.trunc((rec as { contextWindow: number }).contextWindow)
+        : undefined;
       const pricing: ModelPricing = {
         in: roundPricePerMillion(c.input),
         cached: roundPricePerMillion(cached),
+        ...(cacheWrite !== undefined ? { cache_write: roundPricePerMillion(cacheWrite) } : {}),
         out: roundPricePerMillion(c.output),
+        ...(contextWindow !== undefined ? { context_window: contextWindow } : {}),
       };
 
       storeCatalogEntry(catalog, `${providerId}/${rawId}`, pricing, true);
@@ -575,6 +610,31 @@ export async function syncModelPricing(
       }
       if (assignment?.fallback?.model?.trim()) {
         targetModels.add(assignment.fallback.model.trim());
+      }
+    }
+  }
+
+  const rosterConfig = options.store.readConfig("roster");
+  if (rosterConfig) {
+    for (const entry of Object.values(rosterConfig.roster)) {
+      if (entry.primary?.model?.trim()) {
+        targetModels.add(entry.primary.model.trim());
+      }
+      for (const fb of entry.fallbacks) {
+        if (fb.model.trim()) {
+          targetModels.add(fb.model.trim());
+        }
+      }
+    }
+  }
+
+  const providersConfig = options.store.readConfig("providers");
+  if (providersConfig) {
+    for (const provider of providersConfig.providers) {
+      for (const customModel of provider.custom_models) {
+        if (customModel.trim()) {
+          targetModels.add(customModel.trim());
+        }
       }
     }
   }

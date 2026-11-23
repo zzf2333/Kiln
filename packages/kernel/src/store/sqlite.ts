@@ -1,5 +1,6 @@
 import path from "node:path";
 import type {
+  CostSource,
   Priority,
   StageId,
   TaskStatus,
@@ -57,6 +58,10 @@ CREATE TABLE IF NOT EXISTS usage_turns (
   input_tokens INTEGER NOT NULL,
   cached_input_tokens INTEGER NOT NULL DEFAULT 0,
   output_tokens INTEGER NOT NULL,
+  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+  reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+  provider_cost_usd REAL,
+  cost_source TEXT,
   recorded_at TEXT NOT NULL,
   PRIMARY KEY (run_id, turn_id)
 );
@@ -139,6 +144,10 @@ export interface UsageTurnRow {
   input_tokens: number;
   cached_input_tokens: number;
   output_tokens: number;
+  cache_write_tokens?: number;
+  reasoning_tokens?: number;
+  provider_cost_usd?: number | null;
+  cost_source?: CostSource | null;
   recorded_at: string;
 }
 
@@ -190,6 +199,7 @@ export class KilnSqliteIndex {
     this.db.pragmaExec("synchronous = NORMAL");
     this.db.pragmaExec("foreign_keys = ON");
     this.db.exec(SCHEMA_SQL);
+    this.migrateUsageTurnsColumns();
 
     this.upsertTaskStmt = this.db.prepare(`
       INSERT INTO tasks_index (
@@ -285,10 +295,14 @@ export class KilnSqliteIndex {
     this.upsertUsageTurnStmt = this.db.prepare(`
       INSERT INTO usage_turns (
         run_id, turn_id, task_id, agent, model,
-        input_tokens, cached_input_tokens, output_tokens, recorded_at
+        input_tokens, cached_input_tokens, output_tokens,
+        cache_write_tokens, reasoning_tokens, provider_cost_usd, cost_source,
+        recorded_at
       ) VALUES (
         @run_id, @turn_id, @task_id, @agent, @model,
-        @input_tokens, @cached_input_tokens, @output_tokens, @recorded_at
+        @input_tokens, @cached_input_tokens, @output_tokens,
+        @cache_write_tokens, @reasoning_tokens, @provider_cost_usd, @cost_source,
+        @recorded_at
       )
       ON CONFLICT(run_id, turn_id) DO UPDATE SET
         task_id = excluded.task_id,
@@ -297,6 +311,10 @@ export class KilnSqliteIndex {
         input_tokens = excluded.input_tokens,
         cached_input_tokens = excluded.cached_input_tokens,
         output_tokens = excluded.output_tokens,
+        cache_write_tokens = excluded.cache_write_tokens,
+        reasoning_tokens = excluded.reasoning_tokens,
+        provider_cost_usd = excluded.provider_cost_usd,
+        cost_source = excluded.cost_source,
         recorded_at = excluded.recorded_at
     `);
 
@@ -574,14 +592,56 @@ export class KilnSqliteIndex {
     }
   }
 
+  private migrateUsageTurnsColumns(): void {
+    const stmt = this.db.prepare("PRAGMA table_info(usage_turns)");
+    const existingCols = new Set<string>();
+    try {
+      const rows = stmt.all() as Array<{ name?: unknown }>;
+      for (const row of rows) {
+        if (typeof row.name === "string") {
+          existingCols.add(row.name);
+        }
+      }
+    } finally {
+      stmt.finalize();
+    }
+
+    const migrations: ReadonlyArray<readonly [string, string]> = [
+      ["cache_write_tokens", "INTEGER NOT NULL DEFAULT 0"],
+      ["reasoning_tokens", "INTEGER NOT NULL DEFAULT 0"],
+      ["provider_cost_usd", "REAL"],
+      ["cost_source", "TEXT"],
+    ];
+    for (const [colName, colDef] of migrations) {
+      if (!existingCols.has(colName)) {
+        this.db.exec(`ALTER TABLE usage_turns ADD COLUMN ${colName} ${colDef}`);
+      }
+    }
+  }
+
   /**
    * Idempotently inserts or overwrites per-turn token usage keyed by `(run_id, turn_id)`.
    * Rejects `cached_input_tokens > input_tokens` with `RangeError`.
    */
   upsertUsageTurn(row: UsageTurnRow): void {
+    const cacheWriteTokens = row.cache_write_tokens ?? 0;
+    const reasoningTokens = row.reasoning_tokens ?? 0;
+    const providerCostUsd = row.provider_cost_usd ?? null;
+    const costSource = row.cost_source ?? null;
+
     assertNonNegativeInt(row.input_tokens, "input_tokens");
     assertNonNegativeInt(row.cached_input_tokens, "cached_input_tokens");
     assertNonNegativeInt(row.output_tokens, "output_tokens");
+    assertNonNegativeInt(cacheWriteTokens, "cache_write_tokens");
+    assertNonNegativeInt(reasoningTokens, "reasoning_tokens");
+    if (
+      providerCostUsd !== null &&
+      (!Number.isFinite(providerCostUsd) || providerCostUsd < 0)
+    ) {
+      throw new RangeError(
+        `provider_cost_usd must be null or finite non-negative, got: ${providerCostUsd}`,
+      );
+    }
 
     if (row.cached_input_tokens > row.input_tokens) {
       throw new RangeError(
@@ -589,7 +649,21 @@ export class KilnSqliteIndex {
       );
     }
 
-    this.upsertUsageTurnStmt.run(row);
+    this.upsertUsageTurnStmt.run({
+      run_id: row.run_id,
+      turn_id: row.turn_id,
+      task_id: row.task_id,
+      agent: row.agent,
+      model: row.model,
+      input_tokens: row.input_tokens,
+      cached_input_tokens: row.cached_input_tokens,
+      output_tokens: row.output_tokens,
+      cache_write_tokens: cacheWriteTokens,
+      reasoning_tokens: reasoningTokens,
+      provider_cost_usd: providerCostUsd,
+      cost_source: costSource,
+      recorded_at: row.recorded_at,
+    });
   }
 
   listUsageTurns(filter?: { taskId?: string; runId?: string }): UsageTurnRow[] {
