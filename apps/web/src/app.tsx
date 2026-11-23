@@ -3,6 +3,7 @@ import { CommandPalette } from "./components/CommandPalette";
 import { IntakeDock } from "./components/IntakeDock";
 import { Sidebar } from "./components/Sidebar";
 import { SpaceModal } from "./components/SpaceModal";
+import { Statusbar } from "./components/Statusbar";
 import { Tabbar } from "./components/Tabbar";
 import { KilnWebStore, StoreContext, useKilnStore } from "./state/store";
 import { BoardView } from "./views/BoardView";
@@ -10,6 +11,7 @@ import { DetailView } from "./views/DetailView";
 import { InboxView } from "./views/InboxView";
 import { IntakeView } from "./views/IntakeView";
 import { LedgerView } from "./views/LedgerView";
+import { LineupView } from "./views/LineupView";
 import { RemoteAuthView } from "./views/RemoteAuthView";
 import { ResolveView } from "./views/ResolveView";
 import { SettingsView } from "./views/SettingsView";
@@ -21,6 +23,10 @@ function AppShell() {
   useEffect(() => {
     document.body.classList.toggle("nav-open", state.navOpen);
   }, [state.navOpen]);
+
+  useEffect(() => {
+    document.body.classList.toggle("side-hidden", state.sidebarCollapsed);
+  }, [state.sidebarCollapsed]);
 
   useEffect(() => {
     document.body.classList.toggle(
@@ -64,12 +70,14 @@ function AppShell() {
       if (blurTimer) clearTimeout(blurTimer);
       document.removeEventListener("focusin", onFocusIn);
       document.removeEventListener("focusout", onFocusOut);
-      document.body.classList.remove("nav-open", "in-converse", "kb-open");
+      document.body.classList.remove("nav-open", "side-hidden", "in-converse", "kb-open");
     };
   }, []);
 
   const renderView = () => {
     switch (state.view) {
+      case "lineup":
+        return <LineupView />;
       case "detail":
         return <DetailView />;
       case "inbox":
@@ -126,6 +134,7 @@ function AppShell() {
       <div className="app">
         <Sidebar />
         {renderView()}
+        <Statusbar />
       </div>
       <div
         className="nav-mask"

@@ -35,6 +35,12 @@ export function CommandPalette() {
         return;
       }
 
+      if (!typing && (e.metaKey || e.ctrlKey) && e.key === "\\") {
+        e.preventDefault();
+        store.toggleSidebar();
+        return;
+      }
+
       if (e.key === "Escape") {
         if (e.defaultPrevented) {
           return;
@@ -91,9 +97,11 @@ export function CommandPalette() {
   const actions: PaletteAction[] = [
     { label: "新需求", run: nav("intake") },
     { label: "总览", run: nav("board") },
+    { label: "编排与阵容", run: nav("lineup") },
     { label: "等你决定", run: nav("inbox") },
     { label: "用量与费用", run: nav("usage") },
     { label: "决策账本", run: nav("ledger") },
+    { label: "设置 · Providers 订阅底座", run: nav("settings", "providers") },
     { label: "设置 · 角色与模型", run: nav("settings", "roles") },
     { label: "设置 · 项目空间", run: nav("settings", "spaces") },
     { label: "设置 · 模型单价", run: nav("settings", "pricing") },

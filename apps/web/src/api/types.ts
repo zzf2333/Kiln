@@ -8,6 +8,7 @@ import type {
   ChatCommandsResponse,
   ChatCommandSource,
   ChatMcpServerItem,
+  CheckpointRecord,
   DecisionAction,
   DiscoveredGitRepo,
   DiscoverSpacesResponse,
@@ -21,9 +22,15 @@ import type {
   PairCompleteRequest,
   PendingDecision,
   PickDirectoryResponse,
+  PmOrchestrationPolicy,
   PricingConfig,
   PricingSyncSource,
   Priority,
+  ProviderAdapterKind,
+  ProviderEntry,
+  ProviderNativeQuota,
+  ProviderRuntimeStatus,
+  ProvidersConfig,
   PublicPairedDevice,
   ReasoningEffort,
   RemoteAuthStatusResponse,
@@ -33,16 +40,29 @@ import type {
   RemotePairChallengeResponse,
   RoleId,
   RolesConfig,
+  RosterConfig,
+  RosterEntry,
+  RosterExecutionMode,
+  RosterGroup,
+  RosterModelBinding,
+  RosterPermission,
+  RunAntiDriftSummary,
   RunEvent,
   RunMeta,
+  RunSpaceScriptRequest,
+  RunSpaceScriptResponse,
   SpaceConfig,
   SpaceFileEntry,
   SpaceFilesResponse,
+  SpaceScriptKey,
+  SpaceScripts,
+  SplitCardPlanItem,
   StageId,
   StateEvent,
   SyncPricingRequest,
   SyncPricingResponse,
   TailscaleStatusResponse,
+  TaskAttachment,
   TaskCard,
   TaskStatus,
   Track,
@@ -50,6 +70,8 @@ import type {
   WorkflowBlueprint,
   WorkflowPreset,
   WorkspaceMode,
+  RollbackCheckpointRequest,
+  CommitPrActionRequest,
 } from "@kiln/protocol/web";
 
 export interface BootstrapTask {
@@ -73,7 +95,9 @@ export interface BootstrapTask {
   tokens: {
     input_tokens: number;
     cached_input_tokens: number;
+    cache_write_tokens?: number;
     output_tokens: number;
+    reasoning_tokens?: number;
     total_tokens: number;
   };
   cost_usd: number;
@@ -92,17 +116,24 @@ export interface BootstrapTask {
 export interface UsageBucketSummary {
   inputTokens: number;
   cachedInputTokens: number;
+  cacheWriteTokens?: number;
   outputTokens: number;
+  reasoningTokens?: number;
   totalTokens: number;
   costUsd: number;
+  cacheNetSavedUsd?: number;
 }
 
 export interface UsageSnapshot {
   inputTokens: number;
   cachedInputTokens: number;
+  cacheWriteTokens?: number;
   outputTokens: number;
+  reasoningTokens?: number;
   totalTokens: number;
   costUsd: number;
+  cacheNetSavedUsd?: number;
+  unknownPricingModels?: string[];
   byAgent: Record<string, UsageBucketSummary>;
   byModel: Record<string, UsageBucketSummary>;
   byAgentModel?: Record<string, Record<string, UsageBucketSummary>>;
@@ -183,10 +214,14 @@ export interface BootstrapResponse {
     roles: RolesConfig | null;
     limits: LimitsConfig | null;
     pricing: PricingConfig | null;
+    roster?: RosterConfig | null;
+    providers?: ProvidersConfig | null;
   };
   roles: RolesConfig | null;
+  roster?: RosterConfig | null;
   limits: LimitsConfig | null;
   pricing: PricingConfig | null;
+  providers?: ProviderRuntimeStatus[];
   usage: UsageSnapshot;
   runningCount: number;
   ledgers?: Record<string, LedgerFile> | LedgerFile[] | Array<{ space: string; entries: LedgerEntry[] }>;
@@ -207,7 +242,10 @@ export interface UsageTurnRow {
   model: string;
   input_tokens: number;
   cached_input_tokens: number;
+  cache_write_tokens?: number;
   output_tokens: number;
+  reasoning_tokens?: number;
+  provider_cost_usd?: number | null;
   recorded_at: string;
 }
 
@@ -287,6 +325,7 @@ export interface TaskRunDetail {
   status?: string;
   session?: RunSessionInfo;
   ioSummary?: RunIoSummary;
+  antiDriftSummary?: RunAntiDriftSummary;
 }
 
 export interface OpenRunTuiResponse {
@@ -325,6 +364,9 @@ export interface TaskDetailResponse {
   };
   brief: string;
   plan?: string;
+  research?: string;
+  attachments?: TaskAttachment[];
+  checkpoints?: CheckpointRecord[];
   decisions: string;
   pendingDecision: PendingDecision | null;
   ledgerProposals: LedgerProposalItem[];
@@ -416,7 +458,121 @@ export type SettingsSectionMap = {
   roles: RolesConfig;
   limits: LimitsConfig;
   pricing: PricingConfig;
+  providers: ProvidersConfig;
+  roster: RosterConfig;
 };
+
+export interface ProvidersStatusResponse {
+  ok: true;
+  providers: ProviderRuntimeStatus[];
+}
+
+export interface TestProviderResponse {
+  ok: true;
+  status: ProviderRuntimeStatus;
+  modelsCount?: number;
+}
+
+export interface ProviderSettingsResponse {
+  ok: true;
+  data: ProvidersConfig;
+}
+
+export interface RosterSettingsResponse {
+  ok: true;
+  data: RosterConfig;
+}
+
+export interface ScriptRunSummary {
+  scriptRunId: string;
+  spaceId: string;
+  taskId?: string;
+  script: SpaceScriptKey;
+  command: string;
+  cwd: string;
+  running: boolean;
+  exitCode: number | null;
+  startedAt: string;
+  endedAt: string | null;
+  outputTail: string;
+}
+
+export interface ListScriptsResponse {
+  ok: true;
+  runs: ScriptRunSummary[];
+}
+
+export interface TaskCheckpointsResponse {
+  ok: true;
+  taskId: string;
+  checkpoints: CheckpointRecord[];
+}
+
+export interface RollbackCheckpointResponse {
+  ok: true;
+  taskId: string;
+  checkpoint_ref: string;
+  commit_sha: string;
+}
+
+export interface PrDraftInfo {
+  taskId: string;
+  branch: string;
+  baseBranch: string;
+  title: string;
+  body: string;
+}
+
+export interface PrDraftResponse {
+  ok: true;
+  draft: PrDraftInfo;
+}
+
+export type DeliverGitResponse =
+  | {
+      ok: true;
+      action: "commit";
+      alreadyClean: boolean;
+      branch: string;
+      commitSha: string;
+    }
+  | {
+      ok: true;
+      action: "push";
+      alreadyUpToDate: boolean;
+      branch: string;
+      commitSha: string;
+    }
+  | {
+      ok: true;
+      action: "open_pr";
+      alreadyExists: boolean;
+      prUrl: string;
+      prNumber: number | null;
+      prTitle: string;
+      branch: string;
+      baseBranch: string;
+    };
+
+export interface DraftAttachmentUploadPayload {
+  filename: string;
+  mime_type: TaskAttachment["mime_type"];
+  data_base64: string;
+}
+
+export interface DraftAttachmentUploadResponse {
+  ok: true;
+  attachment: TaskAttachment;
+  draft: DraftCardWithBrief;
+}
+
+export interface CommitSplitCardsResponse {
+  ok: true;
+  mode: "commit_split_cards";
+  tempIdToTaskId: Record<string, string>;
+  cards: TaskCard[];
+  states: Array<Record<string, unknown>>;
+}
 
 export type InspectSpaceResult = InspectSpaceResponse;
 export type UpsertSpacePayload = UpsertSpaceRequest;
@@ -484,22 +640,44 @@ export type {
   ChatCommandsResponse,
   ChatCommandSource,
   ChatMcpServerItem,
+  CheckpointRecord,
+  CommitPrActionRequest,
   DiscoveredGitRepo,
   DiscoverSpacesResponse,
   PairCompleteRequest,
   PickDirectoryResponse,
+  PmOrchestrationPolicy,
   PricingSyncSource,
+  ProviderAdapterKind,
+  ProviderEntry,
+  ProviderNativeQuota,
+  ProviderRuntimeStatus,
+  ProvidersConfig,
   PublicPairedDevice,
   RemoteAuthStatusResponse,
   RemoteConfig,
   RemoteNotificationChannel,
   RemoteNotificationTestRequest,
   RemotePairChallengeResponse,
+  RollbackCheckpointRequest,
+  RosterConfig,
+  RosterEntry,
+  RosterExecutionMode,
+  RosterGroup,
+  RosterModelBinding,
+  RosterPermission,
+  RunAntiDriftSummary,
+  RunSpaceScriptRequest,
+  RunSpaceScriptResponse,
   SpaceFileEntry,
   SpaceFilesResponse,
+  SpaceScriptKey,
+  SpaceScripts,
+  SplitCardPlanItem,
   SyncPricingRequest,
   SyncPricingResponse,
   TailscaleStatusResponse,
+  TaskAttachment,
   WorkflowBlueprint,
   WorkflowPreset,
 };

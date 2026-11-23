@@ -16,225 +16,295 @@
   --font-mono: var(--mono);
 }
 
+/* =====================================================================
+   Kiln 桌面客户端 · 设计系统 v2「石墨冷灰 + 窑火铜」
+   - 底色：中性偏冷的石墨灰阶，靠明度分层，不靠描边堆叠
+   - 强调：单一低饱和窑火铜（主按钮 / 选中 / 运行中 / 聚焦）
+   - 状态：青 = 通过完成，琥珀 = 等你决定，红 = 拦截失败；运行中 = 铜 + 余烬火焰
+   ===================================================================== */
 :root {
   color-scheme: dark;
-  /* 暖铁灰中性色阶：外壳安静，颜色只留给阶段与火焰 */
-  --bg: #121110;
-  --rail: #171615;
-  --surface: #1c1b19;
-  --raised: #24221f;
-  --hover: #201f1c;
-  --line: rgba(255, 244, 230, 0.07);
-  --line-2: rgba(255, 244, 230, 0.13);
-  --line-focus: rgba(255, 244, 230, 0.32);
-  --t1: #ece7e1;
-  --t2: #a39d96;
-  --t3: #726c66;
+  --bg: #101113;
+  --side: #141518;
+  --panel: #17181b;
+  --raised: #1f2024;
+  --hover: #1b1c20;
+  --sunken: #0c0d0f;
+  --line: rgba(255, 255, 255, 0.06);
+  --line-2: rgba(255, 255, 255, 0.10);
+  --line-3: rgba(255, 255, 255, 0.16);
+  --line-focus: rgba(200, 135, 90, 0.48);
+  --t1: #ececef;
+  --t2: #a3a6ae;
+  --t3: #6e727b;
+  --t4: #4b4f57;
 
-  --btn-light-hover: #ffffff;
-  --key-on-light: rgba(0, 0, 0, 0.12);
+  /* 单一强调色：窑火铜 */
+  --acc: #c8875a;
+  --acc-2: #dc9d70;
+  --acc-soft: rgba(200, 135, 90, 0.14);
+  --acc-line: rgba(200, 135, 90, 0.42);
+  --acc-ink: #1d130c;
+
+  --btn-light-hover: #dc9d70;
+  --key-on-light: rgba(0, 0, 0, 0.14);
 
   /* 阶段色：每种颜色只表示一个阶段 */
-  --s-intake: #8f87c6;
-  --s-impl: #3fa2b3;
-  --s-research: #4b95c8;
-  --s-verify: #5aa57c;
-  --s-review: #6d8ddf;
-  --s-accept: #c086ab;
-  --s-advise: #b8954f;
-  --s-deliver: #8d939a;
+  --s-intake: #8a8ea6;
+  --s-plan: #9089c2;
+  --s-research: #6d9dc4;
+  --s-impl: #5aa8b4;
+  --s-test: #58ad97;
+  --s-verify: #58ad97;
+  --s-review: #7f95d6;
+  --s-accept: #b78bb0;
+  --s-advise: #c4a46c;
+  --s-deliver: #8b9099;
 
   /* 语义色 */
-  --ask: #dba145;
-  --bad: #d1625b;
-  --ok: #5aa57c;
-  --live-fg: #f6b26b;
-  --ok-fg: #7cc29b;
-  --bad-fg: #e08b85;
-  --bad-strong-fg: #f2a7a1;
-  --ask-strong-fg: #ebbd6e;
+  --ask: #d6a346;
+  --ask-soft: rgba(214, 163, 70, 0.13);
+  --bad: #e06a5f;
+  --bad-soft: rgba(224, 106, 95, 0.13);
+  --ok: #4bb3a4;
+  --ok-soft: rgba(75, 179, 164, 0.13);
+  --live-fg: var(--acc-2);
+  --ok-fg: #6ac7b9;
+  --bad-fg: #eb857b;
+  --bad-strong-fg: #f4a49c;
+  --ask-strong-fg: #e7be6f;
 
-  /* 余烬：只用于正在运行 */
-  --ember-1: #c2410c;
-  --ember-2: #f08a24;
-  --ember-3: #fcd34d;
+  /* 兼容旧变量名 */
+  --rail: var(--side);
+  --surface: var(--panel);
+  --live-txt: var(--acc-2);
+  --ok-txt: var(--ok);
+  --bad-txt: var(--bad);
+
+  /* 余烬：仅用于运行态 */
+  --ember-1: #b56536;
+  --ember-2: var(--acc);
+  --ember-3: #f3c18b;
 
   /* 代码 / 路径胶囊 / 表格 / 链接 */
-  --code-bg: #0e0d0c;
-  --code-inline-bg: rgba(255, 244, 230, 0.075);
-  --code-inline-fg: #efe5d8;
-  --file-pill-bg: rgba(255, 244, 230, 0.045);
-  --file-pill-border: rgba(255, 244, 230, 0.11);
-  --file-pill-fg: #e6d7c3;
-  --file-pill-hover: rgba(255, 244, 230, 0.08);
-  --file-pill-sep: rgba(255, 244, 230, 0.09);
-  --table-stripe: rgba(255, 244, 230, 0.015);
+  --code-bg: var(--sunken);
+  --code-inline-bg: rgba(255, 255, 255, 0.065);
+  --code-inline-fg: #ebe6de;
+  --file-pill-bg: rgba(255, 255, 255, 0.045);
+  --file-pill-border: rgba(255, 255, 255, 0.10);
+  --file-pill-fg: #d9dce4;
+  --file-pill-hover: rgba(255, 255, 255, 0.08);
+  --file-pill-sep: rgba(255, 255, 255, 0.09);
+  --table-stripe: rgba(255, 255, 255, 0.018);
   --link-fg: #9fc5f8;
   --link-hover: #c7defc;
 
   /* 语法高亮 */
-  --tok-cmt: #7d7770;
-  --tok-str: #b7cb9c;
-  --tok-kw: #d6a273;
-  --tok-num: #d8b97f;
-  --tok-key: #9fc0db;
-  --tok-add: #84c59e;
-  --tok-add-bg: rgba(90, 165, 124, 0.1);
-  --tok-del: #e28d87;
-  --tok-del-bg: rgba(209, 98, 91, 0.11);
-  --tok-hunk: #9ab3e0;
+  --tok-cmt: #757982;
+  --tok-str: #a4c99b;
+  --tok-kw: #d9a075;
+  --tok-num: #d9b879;
+  --tok-key: #90bbd8;
+  --tok-add: #6ec4b6;
+  --tok-add-bg: rgba(75, 179, 164, 0.12);
+  --tok-del: #eb857b;
+  --tok-del-bg: rgba(224, 106, 95, 0.12);
+  --tok-hunk: #95addf;
 
-  /* 遮罩与投影 */
-  --mask-bg: rgba(0, 0, 0, 0.5);
-  --shadow-float: 0 6px 18px rgba(0, 0, 0, 0.45);
-  --shadow-dock: 0 12px 28px rgba(0, 0, 0, 0.42);
+  /* 遮罩与克制投影 */
+  --mask-bg: rgba(6, 7, 9, 0.56);
+  --card-shadow: none;
+  --sh-1: none;
+  --sh-2: 0 2px 8px rgba(0, 0, 0, 0.28);
+  --shadow-float: 0 6px 20px rgba(0, 0, 0, 0.48);
+  --shadow-dock: 0 12px 32px rgba(0, 0, 0, 0.45);
+  --pop-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 16px 48px rgba(0, 0, 0, 0.55);
 
   /* 滚动条 */
-  --scroll-thumb-idle: rgba(255, 244, 230, 0.08);
-  --scroll-thumb: rgba(255, 244, 230, 0.18);
-  --scroll-thumb-hover: rgba(255, 244, 230, 0.34);
-  --scroll-thumb-active: rgba(255, 244, 230, 0.48);
+  --scroll-thumb-idle: rgba(255, 255, 255, 0.09);
+  --scroll-thumb: rgba(255, 255, 255, 0.18);
+  --scroll-thumb-hover: rgba(255, 255, 255, 0.34);
+  --scroll-thumb-active: rgba(255, 255, 255, 0.48);
 
+  --side-w: 232px;
+  --bar-h: 52px;
+  --status-h: 28px;
   --ease: cubic-bezier(0.2, 0, 0, 1);
-  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
-  --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", sans-serif;
+  --mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
 }
 
-/* 暖纸工业风浅色令牌：显式浅色与未设 dark 时的系统自适应浅色 */
+/* 冷白工业风浅色令牌：显式浅色与未设 dark 时的系统自适应浅色 */
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg: #f7f5f0;
-  --rail: #efece5;
-  --surface: #ffffff;
-  --raised: #e7e3da;
-  --hover: #ece8df;
-  --line: rgba(38, 31, 24, 0.09);
-  --line-2: rgba(38, 31, 24, 0.16);
-  --line-focus: rgba(38, 31, 24, 0.34);
-  --t1: #1c1917;
-  --t2: #575049;
-  --t3: #7d746a;
+  --bg: #fbfbfc;
+  --side: #f3f4f6;
+  --panel: #ffffff;
+  --raised: #eef0f3;
+  --hover: #f4f5f7;
+  --sunken: #f1f2f5;
+  --line: rgba(16, 19, 26, 0.07);
+  --line-2: rgba(16, 19, 26, 0.11);
+  --line-3: rgba(16, 19, 26, 0.18);
+  --line-focus: rgba(181, 112, 63, 0.48);
+  --t1: #16181c;
+  --t2: #565b65;
+  --t3: #8b909a;
+  --t4: #b6bac2;
 
-  --btn-light-hover: #2f2a25;
-  --key-on-light: rgba(255, 255, 255, 0.18);
+  --acc: #b5703f;
+  --acc-2: #9e5c2d;
+  --acc-soft: rgba(181, 112, 63, 0.11);
+  --acc-line: rgba(181, 112, 63, 0.40);
+  --acc-ink: #ffffff;
+
+  --btn-light-hover: #9e5c2d;
+  --key-on-light: rgba(255, 255, 255, 0.22);
 
   --s-intake: #695fb0;
-  --s-impl: #1f7f91;
+  --s-plan: #6f64b5;
   --s-research: #2b72a8;
-  --s-verify: #2f7d53;
+  --s-impl: #1f7f91;
+  --s-test: #1f8a7c;
+  --s-verify: #1f8a7c;
   --s-review: #4668bd;
   --s-accept: #9e5684;
   --s-advise: #916d27;
   --s-deliver: #686f77;
 
-  --ask: #b47412;
-  --bad: #c03e37;
-  --ok: #2e7d52;
-  --live-fg: #c2570c;
-  --ok-fg: #246b45;
-  --bad-fg: #b5352e;
+  --ask: #a87412;
+  --ask-soft: rgba(168, 116, 18, 0.10);
+  --bad: #c9443a;
+  --bad-soft: rgba(201, 68, 58, 0.09);
+  --ok: #1f8a7c;
+  --ok-soft: rgba(31, 138, 124, 0.10);
+  --live-fg: var(--acc-2);
+  --ok-fg: #187266;
+  --bad-fg: #b8372e;
   --bad-strong-fg: #a62b24;
-  --ask-strong-fg: #9c6109;
+  --ask-strong-fg: #8c5f0d;
 
-  --code-bg: #f1eee7;
-  --code-inline-bg: rgba(38, 31, 24, 0.07);
-  --code-inline-fg: #2d261f;
-  --file-pill-bg: rgba(38, 31, 24, 0.045);
-  --file-pill-border: rgba(38, 31, 24, 0.13);
-  --file-pill-fg: #3d342b;
-  --file-pill-hover: rgba(38, 31, 24, 0.085);
-  --file-pill-sep: rgba(38, 31, 24, 0.11);
-  --table-stripe: rgba(38, 31, 24, 0.024);
+  --code-bg: var(--sunken);
+  --code-inline-bg: rgba(16, 19, 26, 0.065);
+  --code-inline-fg: #262930;
+  --file-pill-bg: rgba(16, 19, 26, 0.045);
+  --file-pill-border: rgba(16, 19, 26, 0.12);
+  --file-pill-fg: #343842;
+  --file-pill-hover: rgba(16, 19, 26, 0.08);
+  --file-pill-sep: rgba(16, 19, 26, 0.10);
+  --table-stripe: rgba(16, 19, 26, 0.024);
   --link-fg: #1d5ea8;
   --link-hover: #12437d;
 
-  --tok-cmt: #7b7369;
+  --tok-cmt: #7b808a;
   --tok-str: #3e6b2c;
   --tok-kw: #9f4f17;
   --tok-num: #8f5e0c;
   --tok-key: #235c8c;
-  --tok-add: #216b42;
-  --tok-add-bg: rgba(46, 125, 82, 0.11);
+  --tok-add: #1c7265;
+  --tok-add-bg: rgba(31, 138, 124, 0.10);
   --tok-del: #b3342d;
-  --tok-del-bg: rgba(192, 62, 55, 0.1);
+  --tok-del-bg: rgba(201, 68, 58, 0.10);
   --tok-hunk: #3659a3;
 
-  --mask-bg: rgba(24, 20, 16, 0.34);
-  --shadow-float: 0 6px 18px rgba(34, 28, 22, 0.14);
-  --shadow-dock: 0 12px 28px rgba(34, 28, 22, 0.14);
+  --mask-bg: rgba(20, 24, 32, 0.24);
+  --card-shadow: 0 1px 2px rgba(16, 19, 26, 0.05);
+  --sh-1: 0 1px 2px rgba(16, 19, 26, 0.045);
+  --sh-2: 0 4px 12px rgba(16, 19, 26, 0.08);
+  --shadow-float: 0 6px 18px rgba(16, 19, 26, 0.12);
+  --shadow-dock: 0 12px 28px rgba(16, 19, 26, 0.13);
+  --pop-shadow: 0 0 0 1px rgba(16, 19, 26, 0.08), 0 16px 40px rgba(16, 19, 26, 0.14);
 
-  --scroll-thumb-idle: rgba(38, 31, 24, 0.09);
-  --scroll-thumb: rgba(38, 31, 24, 0.2);
-  --scroll-thumb-hover: rgba(38, 31, 24, 0.36);
-  --scroll-thumb-active: rgba(38, 31, 24, 0.5);
+  --scroll-thumb-idle: rgba(16, 19, 26, 0.09);
+  --scroll-thumb: rgba(16, 19, 26, 0.2);
+  --scroll-thumb-hover: rgba(16, 19, 26, 0.36);
+  --scroll-thumb-active: rgba(16, 19, 26, 0.5);
 }
 
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
     color-scheme: light;
-    --bg: #f7f5f0;
-    --rail: #efece5;
-    --surface: #ffffff;
-    --raised: #e7e3da;
-    --hover: #ece8df;
-    --line: rgba(38, 31, 24, 0.09);
-    --line-2: rgba(38, 31, 24, 0.16);
-    --line-focus: rgba(38, 31, 24, 0.34);
-    --t1: #1c1917;
-    --t2: #575049;
-    --t3: #7d746a;
+    --bg: #fbfbfc;
+    --side: #f3f4f6;
+    --panel: #ffffff;
+    --raised: #eef0f3;
+    --hover: #f4f5f7;
+    --sunken: #f1f2f5;
+    --line: rgba(16, 19, 26, 0.07);
+    --line-2: rgba(16, 19, 26, 0.11);
+    --line-3: rgba(16, 19, 26, 0.18);
+    --line-focus: rgba(181, 112, 63, 0.48);
+    --t1: #16181c;
+    --t2: #565b65;
+    --t3: #8b909a;
+    --t4: #b6bac2;
 
-    --btn-light-hover: #2f2a25;
-    --key-on-light: rgba(255, 255, 255, 0.18);
+    --acc: #b5703f;
+    --acc-2: #9e5c2d;
+    --acc-soft: rgba(181, 112, 63, 0.11);
+    --acc-line: rgba(181, 112, 63, 0.40);
+    --acc-ink: #ffffff;
+
+    --btn-light-hover: #9e5c2d;
+    --key-on-light: rgba(255, 255, 255, 0.22);
 
     --s-intake: #695fb0;
-    --s-impl: #1f7f91;
+    --s-plan: #6f64b5;
     --s-research: #2b72a8;
-    --s-verify: #2f7d53;
+    --s-impl: #1f7f91;
+    --s-test: #1f8a7c;
+    --s-verify: #1f8a7c;
     --s-review: #4668bd;
     --s-accept: #9e5684;
     --s-advise: #916d27;
     --s-deliver: #686f77;
 
-    --ask: #b47412;
-    --bad: #c03e37;
-    --ok: #2e7d52;
-    --live-fg: #c2570c;
-    --ok-fg: #246b45;
-    --bad-fg: #b5352e;
+    --ask: #a87412;
+    --ask-soft: rgba(168, 116, 18, 0.10);
+    --bad: #c9443a;
+    --bad-soft: rgba(201, 68, 58, 0.09);
+    --ok: #1f8a7c;
+    --ok-soft: rgba(31, 138, 124, 0.10);
+    --live-fg: var(--acc-2);
+    --ok-fg: #187266;
+    --bad-fg: #b8372e;
     --bad-strong-fg: #a62b24;
-    --ask-strong-fg: #9c6109;
+    --ask-strong-fg: #8c5f0d;
 
-    --code-bg: #f1eee7;
-    --code-inline-bg: rgba(38, 31, 24, 0.07);
-    --code-inline-fg: #2d261f;
-    --file-pill-bg: rgba(38, 31, 24, 0.045);
-    --file-pill-border: rgba(38, 31, 24, 0.13);
-    --file-pill-fg: #3d342b;
-    --file-pill-hover: rgba(38, 31, 24, 0.085);
-    --file-pill-sep: rgba(38, 31, 24, 0.11);
-    --table-stripe: rgba(38, 31, 24, 0.024);
+    --code-bg: var(--sunken);
+    --code-inline-bg: rgba(16, 19, 26, 0.065);
+    --code-inline-fg: #262930;
+    --file-pill-bg: rgba(16, 19, 26, 0.045);
+    --file-pill-border: rgba(16, 19, 26, 0.12);
+    --file-pill-fg: #343842;
+    --file-pill-hover: rgba(16, 19, 26, 0.08);
+    --file-pill-sep: rgba(16, 19, 26, 0.10);
+    --table-stripe: rgba(16, 19, 26, 0.024);
     --link-fg: #1d5ea8;
     --link-hover: #12437d;
 
-    --tok-cmt: #7b7369;
+    --tok-cmt: #7b808a;
     --tok-str: #3e6b2c;
     --tok-kw: #9f4f17;
     --tok-num: #8f5e0c;
     --tok-key: #235c8c;
-    --tok-add: #216b42;
-    --tok-add-bg: rgba(46, 125, 82, 0.11);
+    --tok-add: #1c7265;
+    --tok-add-bg: rgba(31, 138, 124, 0.10);
     --tok-del: #b3342d;
-    --tok-del-bg: rgba(192, 62, 55, 0.1);
+    --tok-del-bg: rgba(201, 68, 58, 0.10);
     --tok-hunk: #3659a3;
 
-    --mask-bg: rgba(24, 20, 16, 0.34);
-    --shadow-float: 0 6px 18px rgba(34, 28, 22, 0.14);
-    --shadow-dock: 0 12px 28px rgba(34, 28, 22, 0.14);
+    --mask-bg: rgba(20, 24, 32, 0.24);
+    --card-shadow: 0 1px 2px rgba(16, 19, 26, 0.05);
+    --sh-1: 0 1px 2px rgba(16, 19, 26, 0.045);
+    --sh-2: 0 4px 12px rgba(16, 19, 26, 0.08);
+    --shadow-float: 0 6px 18px rgba(16, 19, 26, 0.12);
+    --shadow-dock: 0 12px 28px rgba(16, 19, 26, 0.13);
+    --pop-shadow: 0 0 0 1px rgba(16, 19, 26, 0.08), 0 16px 40px rgba(16, 19, 26, 0.14);
 
-    --scroll-thumb-idle: rgba(38, 31, 24, 0.09);
-    --scroll-thumb: rgba(38, 31, 24, 0.2);
-    --scroll-thumb-hover: rgba(38, 31, 24, 0.36);
-    --scroll-thumb-active: rgba(38, 31, 24, 0.5);
+    --scroll-thumb-idle: rgba(16, 19, 26, 0.09);
+    --scroll-thumb: rgba(16, 19, 26, 0.2);
+    --scroll-thumb-hover: rgba(16, 19, 26, 0.36);
+    --scroll-thumb-active: rgba(16, 19, 26, 0.5);
   }
 }

@@ -1,4 +1,4 @@
-import { useKilnStore } from "../state/store";
+import { isProjectSpace, useKilnStore } from "../state/store";
 import {
   BoardIcon,
   BrandIcon,
@@ -6,7 +6,9 @@ import {
   FeedIcon,
   InboxIcon,
   LedgerIcon,
+  LineupIcon,
   MoonIcon,
+  PinIcon,
   SettingsIcon,
   SunIcon,
   SystemThemeIcon,
@@ -40,7 +42,14 @@ export function Sidebar() {
       ...Object.keys(spaces),
       ...tasks.map((t) => t.space),
     ]),
-  ).sort();
+  ).sort((a, b) => {
+    const pinA = Boolean(spaces[a]?.pinned);
+    const pinB = Boolean(spaces[b]?.pinned);
+    if (pinA !== pinB) return pinA ? -1 : 1;
+    if (a === "local" && b !== "local") return 1;
+    if (b === "local" && a !== "local") return -1;
+    return a.localeCompare(b);
+  });
 
   return (
     <aside className="side-nav" aria-label="主导航">
@@ -129,6 +138,18 @@ export function Sidebar() {
           </span>
           <span className="nav-count" id="nBoard">
             {nonCancelledCount || ""}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          className={`nav-btn ${view === "lineup" ? "on" : ""}`}
+          data-nav="lineup"
+          onClick={() => store.go("lineup")}
+        >
+          <span className="nav-l">
+            <LineupIcon />
+            <span>编排与阵容</span>
           </span>
         </button>
 
@@ -240,29 +261,45 @@ export function Sidebar() {
           </button>
 
           {spaceIds.map((spId) => {
-            const label = spaces[spId]?.name ?? spId;
+            const sp = spaces[spId];
+            const label = sp?.name ?? spId;
             const runCount = runningBySpace[spId] ?? 0;
+            const canPin = isProjectSpace(sp);
+            const isPinned = Boolean(sp?.pinned);
+            const isActive = spaceFilter === spId && view === "board";
+
             return (
-              <button
+              <div
                 key={spId}
-                type="button"
-                className={`nav-btn ${spaceFilter === spId && view === "board" ? "on" : ""}`}
-                onClick={() => store.go("board", { space: spId })}
+                className={`space-row ${isActive ? "on" : ""}`}
+                data-space-row={spId}
               >
-                <span className="nav-l">
-                  <span
-                    className="dot"
-                    style={{
-                      background: runCount ? "var(--ember-2)" : "var(--line-2)",
-                      margin: "0 5px",
-                    }}
-                  />
+                <button
+                  type="button"
+                  className="space-main"
+                  onClick={() => store.go("board", { space: spId })}
+                >
+                  <span className="space-glyph" aria-hidden="true">
+                    {label.slice(0, 1).toUpperCase()}
+                  </span>
                   <span>{label}</span>
-                </span>
-                <span className="nav-count">
-                  {runCount > 0 ? `${runCount} 在跑` : ""}
-                </span>
-              </button>
+                </button>
+                {runCount > 0 ? (
+                  <span className="space-live">{runCount} 在跑</span>
+                ) : null}
+                {canPin ? (
+                  <button
+                    type="button"
+                    className={`space-pin ${isPinned ? "pinned" : ""}`}
+                    data-space-pin={spId}
+                    aria-label={isPinned ? "取消置顶项目" : "置顶项目"}
+                    title={isPinned ? "取消置顶" : "置顶项目"}
+                    onClick={() => void store.toggleSpacePin(spId)}
+                  >
+                    <PinIcon />
+                  </button>
+                ) : null}
+              </div>
             );
           })}
         </div>

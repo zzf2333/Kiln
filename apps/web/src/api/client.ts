@@ -17,15 +17,24 @@ import type {
   ChatMessage,
   ChatResponsePayload,
   CommitDraftPayload,
+  CommitPrActionRequest,
+  CommitSplitCardsResponse,
+  DeliverGitResponse,
   DiscoverSpacesResponse,
+  DraftAttachmentUploadPayload,
+  DraftAttachmentUploadResponse,
   HostBackupManifestInfo,
   HostRestoreConflictDetail,
   InspectSpaceResult,
+  ListScriptsResponse,
   LogoutResponse,
   OpenRunTuiResponse,
   PairAuthResponse,
   PairCompleteRequest,
   PickDirectoryResponse,
+  PrDraftResponse,
+  ProviderSettingsResponse,
+  ProvidersStatusResponse,
   RemoteAuthStatusResponse,
   RemoteConfig,
   RemoteDevicesResponse,
@@ -36,13 +45,21 @@ import type {
   RestoreHostBackupResult,
   RevokeAllDevicesResponse,
   RevokeDeviceResponse,
+  RollbackCheckpointRequest,
+  RollbackCheckpointResponse,
+  RosterSettingsResponse,
+  RunSpaceScriptRequest,
+  RunSpaceScriptResponse,
   SettingsSectionMap,
   SpaceFilesResponse,
+  SplitCardPlanItem,
   SubmitDecisionPayload,
   SyncPricingRequest,
   SyncPricingResponse,
   TailscaleStatusResponse,
+  TaskCheckpointsResponse,
   TaskDetailResponse,
+  TestProviderResponse,
   UpdateRemoteSettingsResponse,
   UpsertDraftPayload,
   UpsertSpacePayload,
@@ -713,6 +730,146 @@ export async function fetchSpaceFiles(
   );
 }
 
+export async function fetchProviders(): Promise<ProvidersStatusResponse> {
+  return await requestJson<ProvidersStatusResponse>("/api/providers");
+}
+
+export async function testProvider(providerId: string): Promise<TestProviderResponse> {
+  return await requestJson<TestProviderResponse>(
+    `/api/providers/${encodeURIComponent(providerId)}/test`,
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+    },
+  );
+}
+
+export async function fetchProvidersSettings(): Promise<ProviderSettingsResponse> {
+  return await requestJson<ProviderSettingsResponse>("/api/settings/providers");
+}
+
+export async function fetchRosterSettings(): Promise<RosterSettingsResponse> {
+  return await requestJson<RosterSettingsResponse>("/api/settings/roster");
+}
+
+export async function fetchTaskCheckpoints(
+  taskId: string,
+): Promise<TaskCheckpointsResponse> {
+  return await requestJson<TaskCheckpointsResponse>(
+    `/api/tasks/${encodeURIComponent(taskId)}/checkpoints`,
+  );
+}
+
+export async function rollbackTaskCheckpoint(
+  taskId: string,
+  payload: RollbackCheckpointRequest,
+): Promise<RollbackCheckpointResponse> {
+  return await requestJson<RollbackCheckpointResponse>(
+    `/api/tasks/${encodeURIComponent(taskId)}/checkpoints/rollback`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export async function runSpaceScript(
+  spaceId: string,
+  payload: RunSpaceScriptRequest,
+): Promise<RunSpaceScriptResponse> {
+  return await requestJson<RunSpaceScriptResponse>(
+    `/api/spaces/${encodeURIComponent(spaceId)}/scripts/run`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export async function fetchScriptRuns(params?: {
+  spaceId?: string;
+  taskId?: string;
+}): Promise<ListScriptsResponse> {
+  const qs = new URLSearchParams();
+  if (params?.spaceId) qs.set("spaceId", params.spaceId);
+  if (params?.taskId) qs.set("taskId", params.taskId);
+  const query = qs.toString();
+  return await requestJson<ListScriptsResponse>(
+    `/api/scripts${query ? `?${query}` : ""}`,
+  );
+}
+
+export async function stopScriptRun(
+  scriptRunId: string,
+): Promise<{ ok: true; scriptRunId: string; stopped: boolean }> {
+  return await requestJson<{ ok: true; scriptRunId: string; stopped: boolean }>(
+    `/api/scripts/${encodeURIComponent(scriptRunId)}/stop`,
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+    },
+  );
+}
+
+export async function fetchPrDraft(taskId: string): Promise<PrDraftResponse> {
+  return await requestJson<PrDraftResponse>(
+    `/api/tasks/${encodeURIComponent(taskId)}/deliver/pr-draft`,
+  );
+}
+
+export async function executeGitDeliver(
+  taskId: string,
+  payload: CommitPrActionRequest,
+): Promise<DeliverGitResponse> {
+  return await requestJson<DeliverGitResponse>(
+    `/api/tasks/${encodeURIComponent(taskId)}/deliver/git`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export async function uploadDraftAttachment(
+  draftId: string,
+  payload: DraftAttachmentUploadPayload,
+): Promise<DraftAttachmentUploadResponse> {
+  return await requestJson<DraftAttachmentUploadResponse>(
+    `/api/drafts/${encodeURIComponent(draftId)}/attachments`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export async function deleteDraftAttachment(
+  draftId: string,
+  attachmentId: string,
+): Promise<{ ok: true; deleted: boolean; draft: DraftAttachmentUploadResponse["draft"] }> {
+  return await requestJson<{
+    ok: true;
+    deleted: boolean;
+    draft: DraftAttachmentUploadResponse["draft"];
+  }>(
+    `/api/drafts/${encodeURIComponent(draftId)}/attachments/${encodeURIComponent(attachmentId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function commitSplitDraft(
+  draftId: string,
+  cards: SplitCardPlanItem[],
+): Promise<CommitSplitCardsResponse> {
+  return await requestJson<CommitSplitCardsResponse>(
+    `/api/drafts/${encodeURIComponent(draftId)}/commit-split`,
+    {
+      method: "POST",
+      body: JSON.stringify({ cards }),
+    },
+  );
+}
+
 export interface SseSubscriptionHandlers {
   onEvent: (event: SseEvent) => void;
   onStatusChange?: (status: "connected" | "reconnecting" | "closed") => void;
@@ -741,6 +898,8 @@ export function subscribeSseEvents(handlers: SseSubscriptionHandlers): () => voi
     "decision.requested",
     "run.event",
     "intake.progress",
+    "script.output",
+    "provider.status",
   ];
 
   const listener = (ev: Event): void => {

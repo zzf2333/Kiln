@@ -1,15 +1,20 @@
-import { useEffect, useState } from "react";
+import { Dialog } from "radix-ui";
+import { useEffect, useRef, useState } from "react";
 import {
   REASONING_EFFORTS,
   ROLE_IDS,
   type LimitsConfig,
   type PricingSyncSource,
+  type ProviderEntry,
+  type ProvidersConfig,
   type ReasoningEffort,
   type RoleAssignment,
   type RoleId,
   type RolesConfig,
 } from "@kiln/protocol/web";
 import type { AgentDescriptorInfo, AgentModeInfo } from "../api/types";
+import { CloseIcon, PinIcon, PlusIcon, RefreshIcon, TrashIcon } from "../components/Icons";
+import { ProviderAvatar, formatAdapterLabel } from "../components/ProviderAvatar";
 import { RemoteSettingsPanel } from "../components/RemoteSettingsPanel";
 import { ViewFrame } from "../components/ViewFrame";
 import { fmtTime } from "../state/format";
@@ -90,14 +95,76 @@ function modelsForAgent(
   return result;
 }
 
+const BUILTIN_PROVIDER_IDS = new Set([
+  "codex",
+  "pi",
+  "agy",
+  "claude",
+  "gemini",
+  "opencode",
+  "paseo",
+]);
+
+function cloneProvidersConfig(cfg: ProvidersConfig | null): ProvidersConfig {
+  if (!cfg) {
+    return { schema_version: 1, providers: [] };
+  }
+  return {
+    schema_version: 1,
+    providers: cfg.providers.map((p) => ({
+      ...p,
+      args: [...(p.args ?? [])],
+      env: { ...(p.env ?? {}) },
+      custom_models: [...(p.custom_models ?? [])],
+      ...(p.usage_rule ? { usage_rule: { ...p.usage_rule } } : {}),
+      ...(p.quota ? { quota: { ...p.quota } } : {}),
+    })),
+  };
+}
+
+function parseEnvLines(raw: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq <= 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    const val = trimmed.slice(eq + 1);
+    if (key.length > 0) {
+      out[key] = val;
+    }
+  }
+  return out;
+}
+
+function formatEnvLines(env: Record<string, string> | undefined): string {
+  if (!env) return "";
+  return Object.entries(env)
+    .map(([k, v]) => `${k}=${v}`)
+    .join("\n");
+}
+
+function splitArgsString(raw: string): string[] {
+  return raw
+    .trim()
+    .split(/\s+/)
+    .filter((s) => s.length > 0);
+}
+
 export function SettingsView() {
   const { store, state } = useKilnStore();
   const {
     settingsTab,
+    authMode,
     roles,
+    roster,
     limits,
     pricing,
     pricingSyncBusy,
+    providersConfig,
+    providerStatuses,
+    providerTestBusyId,
     spaces,
     agents,
     backends,
@@ -109,6 +176,36 @@ export function SettingsView() {
     heterogeneous_review: roles.heterogeneous_review,
     roles: { ...roles.roles },
   }));
+  const [providersDraft, setProvidersDraft] = useState<ProvidersConfig>(() =>
+    cloneProvidersConfig(providersConfig),
+  );
+  const [providersDirty, setProvidersDirty] = useState(false);
+  const providersDirtyRef = useRef(false);
+  providersDirtyRef.current = providersDirty;
+  const [argsRawByProvider, setArgsRawByProvider] = useState<Record<string, string>>(() =>
+    Object.fromEntries((providersConfig?.providers ?? []).map((p) => [p.id, p.args.join(" ")])),
+  );
+  const [envRawByProvider, setEnvRawByProvider] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      (providersConfig?.providers ?? []).map((p) => [p.id, formatEnvLines(p.env)]),
+    ),
+  );
+  const [quotaRawByProvider, setQuotaRawByProvider] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      (providersConfig?.providers ?? []).map((p) => [
+        p.id,
+        p.quota?.soft_daily_usd !== undefined ? String(p.quota.soft_daily_usd) : "",
+      ]),
+    ),
+  );
+  const [customModelInputs, setCustomModelInputs] = useState<Record<string, string>>({});
+  const [newAcpOpen, setNewAcpOpen] = useState(false);
+  const [newAcpId, setNewAcpId] = useState("");
+  const [newAcpLabel, setNewAcpLabel] = useState("");
+  const [newAcpCmd, setNewAcpCmd] = useState("");
+  const [newAcpArgs, setNewAcpArgs] = useState("acp");
+  const [newAcpModels, setNewAcpModels] = useState("");
+  const [newAcpError, setNewAcpError] = useState<string | null>(null);
   const [limitsDraft, setLimitsDraft] = useState<LimitsConfig>(() => ({
     ...limits,
   }));
@@ -131,11 +228,32 @@ export function SettingsView() {
   }, [roles]);
 
   useEffect(() => {
+    if (providersDirtyRef.current) return;
+    const cloned = cloneProvidersConfig(providersConfig);
+    setProvidersDraft(cloned);
+    setArgsRawByProvider(
+      Object.fromEntries(cloned.providers.map((p) => [p.id, p.args.join(" ")])),
+    );
+    setEnvRawByProvider(
+      Object.fromEntries(cloned.providers.map((p) => [p.id, formatEnvLines(p.env)])),
+    );
+    setQuotaRawByProvider(
+      Object.fromEntries(
+        cloned.providers.map((p) => [
+          p.id,
+          p.quota?.soft_daily_usd !== undefined ? String(p.quota.soft_daily_usd) : "",
+        ]),
+      ),
+    );
+  }, [providersConfig]);
+
+  useEffect(() => {
     setLimitsDraft({ ...limits });
   }, [limits]);
 
   const tabs: Array<[SettingsTab, string]> = [
     ["roles", "角色与模型"],
+    ["providers", "Providers 订阅底座"],
     ["spaces", "项目空间"],
     ["limits", "限额与熔断"],
     ["pricing", "模型单价"],
@@ -189,6 +307,682 @@ export function SettingsView() {
         [roleId]: nextAssignment,
       },
     });
+  };
+
+  const updateProviderDraft = (
+    providerId: string,
+    patch: Partial<ProviderEntry>,
+  ): void => {
+    setProvidersDraft((prev) => ({
+      ...prev,
+      providers: prev.providers.map((p) =>
+        p.id === providerId ? { ...p, ...patch } : p,
+      ),
+    }));
+    setProvidersDirty(true);
+  };
+
+  const renderProvidersTab = () => {
+    const statusMap = new Map(providerStatuses.map((s) => [s.provider_id, s]));
+    const agentMap = new Map(agents.map((a) => [a.id, a]));
+
+    if (authMode === "remote") {
+      return (
+        <div className="remote-readonly-card">
+          <div className="remote-card-head">
+            <h3>仅限本机桌面端管理 Providers 订阅底座</h3>
+            <span className="chip chip-ask">远程只读隔离</span>
+          </div>
+          <p className="muted" style={{ fontSize: "12.5px", lineHeight: 1.6 }}>
+            订阅 CLI 的可执行路径、启动参数与环境变量涉及宿主机进程安全，仅允许在本机{" "}
+            <span className="mono">127.0.0.1:4310</span> 查看、编辑与连通性测试。下方为脱敏后的运行状态快照：
+          </p>
+          <div style={{ marginTop: "14px", display: "flex", flexDirection: "column", gap: "8px" }}>
+            {providerStatuses.length === 0 ? (
+              <p className="muted" style={{ fontSize: "12.5px" }}>
+                暂无订阅运行状态快照
+              </p>
+            ) : (
+              providerStatuses.map((ps) => (
+                <div key={ps.provider_id} className="group" style={{ marginBottom: 0 }}>
+                  <div className="group-h">
+                    <ProviderAvatar providerId={ps.provider_id} />
+                    <b>{ps.label}</b>
+                    <small>{formatAdapterLabel(ps.adapter)}</small>
+                    <span className="sp" />
+                    <span
+                      className={`chip ${
+                        ps.status === "ready"
+                          ? "chip-ok"
+                          : ps.status === "cooldown"
+                            ? "chip-ask"
+                            : "chip-bad"
+                      }`}
+                    >
+                      {ps.status === "ready"
+                        ? "已就绪"
+                        : ps.status === "cooldown"
+                          ? "429 冷却中"
+                          : ps.status === "auth_required"
+                            ? "需登录"
+                            : "不可用"}
+                    </span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    const handleAddCustomModel = (providerId: string): void => {
+      const modelId = (customModelInputs[providerId] ?? "").trim();
+      if (!modelId) return;
+      const target = providersDraft.providers.find((p) => p.id === providerId);
+      if (!target) return;
+      if (target.custom_models.includes(modelId)) {
+        store.showToast(`模型 ${modelId} 已存在`);
+        return;
+      }
+      updateProviderDraft(providerId, {
+        custom_models: [...target.custom_models, modelId],
+      });
+      setCustomModelInputs((prev) => ({ ...prev, [providerId]: "" }));
+    };
+
+    const handleCreateCustomAcp = (): void => {
+      const id = newAcpId.trim();
+      const label = newAcpLabel.trim();
+      const cmd = newAcpCmd.trim();
+      if (!/^[a-z0-9][a-z0-9_-]{0,47}$/.test(id)) {
+        setNewAcpError("ID 需为小写字母、数字、_ 或 -（1~48 位）");
+        return;
+      }
+      if (providersDraft.providers.some((p) => p.id === id)) {
+        setNewAcpError(`Provider "${id}" 已存在`);
+        return;
+      }
+      if (!label || !cmd) {
+        setNewAcpError("请填写显示名称与可执行命令");
+        return;
+      }
+      const nextEntry: ProviderEntry = {
+        id,
+        label,
+        adapter: "acp",
+        enabled: true,
+        command: cmd,
+        args: splitArgsString(newAcpArgs),
+        env: {},
+        custom_models: newAcpModels
+          .split(/[\n,]+/)
+          .map((s) => s.trim())
+          .filter(Boolean),
+      };
+      setProvidersDraft((prev) => ({
+        ...prev,
+        providers: [...prev.providers, nextEntry],
+      }));
+      setArgsRawByProvider((prev) => ({ ...prev, [id]: newAcpArgs }));
+      setEnvRawByProvider((prev) => ({ ...prev, [id]: "" }));
+      setQuotaRawByProvider((prev) => ({ ...prev, [id]: "" }));
+      setProvidersDirty(true);
+      setNewAcpOpen(false);
+      store.showToast(`已添加自定义 ACP「${label}」，请点击保存生效`);
+    };
+
+    const sanitizeForSave = (cfg: ProvidersConfig): ProvidersConfig => ({
+      schema_version: 1,
+      providers: cfg.providers.map((p) => {
+        const rawArgs = argsRawByProvider[p.id];
+        const parsedArgs =
+          rawArgs !== undefined ? splitArgsString(rawArgs) : p.args.filter((a) => a.length > 0);
+        const rawEnv = envRawByProvider[p.id];
+        const parsedEnv =
+          rawEnv !== undefined
+            ? parseEnvLines(rawEnv)
+            : Object.fromEntries(
+                Object.entries(p.env ?? {}).filter(([k]) => k.trim().length > 0),
+              );
+        const rawQuota = quotaRawByProvider[p.id];
+        let nextQuota = p.quota ? { ...p.quota } : undefined;
+        if (rawQuota !== undefined) {
+          const trimmedQuota = rawQuota.trim();
+          if (!trimmedQuota) {
+            if (nextQuota) {
+              delete nextQuota.soft_daily_usd;
+            }
+          } else {
+            const num = Number(trimmedQuota);
+            if (Number.isFinite(num) && num > 0) {
+              nextQuota = { ...(nextQuota ?? {}), soft_daily_usd: num };
+            }
+          }
+        }
+        const hasQuota = Boolean(
+          nextQuota &&
+            (nextQuota.soft_daily_usd ||
+              nextQuota.soft_weekly_usd ||
+              nextQuota.soft_monthly_usd),
+        );
+        const entry: ProviderEntry = {
+          id: p.id,
+          label: p.label.trim() || p.id,
+          adapter: p.adapter,
+          enabled: p.enabled,
+          args: parsedArgs,
+          env: parsedEnv,
+          custom_models: p.custom_models.map((m) => m.trim()).filter(Boolean),
+          ...(p.command && p.command.trim().length > 0
+            ? { command: p.command.trim() }
+            : {}),
+          ...(p.usage_rule ? { usage_rule: p.usage_rule } : {}),
+          ...(hasQuota && nextQuota ? { quota: nextQuota } : {}),
+          ...(p.paseo_url && p.paseo_url.trim().length > 0
+            ? { paseo_url: p.paseo_url.trim() }
+            : {}),
+        };
+        return entry;
+      }),
+    });
+
+    return (
+      <>
+        <div className="sync-line">
+          <span>
+            管理本机订阅 CLI 与标准 ACP Agent。这里登记的 `custom_models` 与可用状态会同步出现在「编排与阵容」可选列表。
+          </span>
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              disabled={refreshBusy}
+              onClick={async () => {
+                setRefreshBusy(true);
+                try {
+                  await Promise.all([
+                    store.refreshProviders(),
+                    store.refreshProvidersConfig(),
+                    store.refreshAgents(true),
+                  ]);
+                } finally {
+                  setRefreshBusy(false);
+                }
+              }}
+            >
+              <RefreshIcon />
+              <span>{refreshBusy ? "探测中…" : "重新探测"}</span>
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => {
+                setNewAcpId("");
+                setNewAcpLabel("");
+                setNewAcpCmd("");
+                setNewAcpArgs("acp");
+                setNewAcpModels("");
+                setNewAcpError(null);
+                setNewAcpOpen(true);
+              }}
+            >
+              <PlusIcon />
+              <span>注册自定义 ACP</span>
+            </button>
+            <button
+              type="button"
+              className={`btn btn-sm ${providersDirty ? "btn-light" : ""}`}
+              onClick={async () => {
+                const ok = await store.saveSettingsSection(
+                  "providers",
+                  sanitizeForSave(providersDraft),
+                );
+                if (ok) {
+                  setProvidersDirty(false);
+                }
+              }}
+            >
+              {providersDirty ? "保存 Providers *" : "保存 Providers"}
+            </button>
+          </div>
+        </div>
+
+        {providersDraft.providers.length === 0 ? (
+          <div className="empty">
+            正在读取 `config/providers.yaml`，或点击上方「重新探测」。
+          </div>
+        ) : (
+          providersDraft.providers.map((p) => {
+            const st = statusMap.get(p.id);
+            const agentDesc = agentMap.get(p.id);
+            const discoveredModels = (agentDesc?.models ?? []).map((m) =>
+              typeof m === "string" ? m : m.id,
+            );
+            const isTesting = providerTestBusyId === p.id;
+            const statusChip =
+              !p.enabled
+                ? { cls: "", label: "已禁用" }
+                : st?.status === "ready"
+                  ? { cls: "chip-ok", label: "已就绪" }
+                  : st?.status === "cooldown"
+                    ? { cls: "chip-ask", label: "429 冷却中" }
+                    : st?.status === "auth_required"
+                      ? { cls: "chip-bad", label: "需登录认证" }
+                      : st?.status === "unavailable"
+                        ? { cls: "chip-bad", label: "不可用" }
+                        : { cls: "", label: "待检测" };
+
+            const cap = (ok: boolean | undefined, yesText: string, noText: string) => (
+              <span className={`cap ${ok ? "ok" : ""}`}>
+                {ok ? yesText : noText}
+              </span>
+            );
+
+            return (
+              <section
+                key={p.id}
+                className={`group ${!p.enabled || st?.status === "unavailable" ? "is-dim" : ""}`}
+                data-provider-card={p.id}
+              >
+                <div className="group-h">
+                  <ProviderAvatar providerId={p.id} large />
+                  <div style={{ minWidth: 0 }}>
+                    <b>{p.label}</b>
+                    <small>
+                      {formatAdapterLabel(p.adapter)}
+                      {st?.version ? ` · v${st.version}` : ""}
+                    </small>
+                  </div>
+                  <span className="sp" />
+                  <span className={`chip ${statusChip.cls}`}>{statusChip.label}</span>
+                  <label className="switch" title={p.enabled ? "已启用" : "已停用"}>
+                    <input
+                      type="checkbox"
+                      aria-label={`启用 ${p.label}`}
+                      checked={p.enabled}
+                      onChange={(e) =>
+                        updateProviderDraft(p.id, {
+                          enabled: (e.currentTarget as HTMLInputElement).checked,
+                        })
+                      }
+                    />
+                    <span />
+                  </label>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    disabled={isTesting}
+                    onClick={() => void store.testProvider(p.id)}
+                  >
+                    {isTesting ? "测试中…" : "测试连通"}
+                  </button>
+                  {!BUILTIN_PROVIDER_IDS.has(p.id) ? (
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-danger"
+                      aria-label={`移除 ${p.label}`}
+                      onClick={() => {
+                        setProvidersDraft((prev) => ({
+                          ...prev,
+                          providers: prev.providers.filter((item) => item.id !== p.id),
+                        }));
+                        setProvidersDirty(true);
+                      }}
+                    >
+                      <TrashIcon />
+                    </button>
+                  ) : null}
+                </div>
+
+                {st?.detail ? (
+                  <div className="g-stack">
+                    <span className="muted" style={{ fontSize: "12px" }}>
+                      {st.detail}
+                    </span>
+                  </div>
+                ) : null}
+
+                {agentDesc ? (
+                  <div className="g-stack">
+                    <div className="cap-badges">
+                      {cap(agentDesc.capabilities.mcpInjection, "MCP 注入", "补丁回执协议")}
+                      {cap(agentDesc.capabilities.readOnlySandbox, "只读硬拦截", "沙盒 + 门禁兜底")}
+                      {cap(agentDesc.capabilities.imageInput, "多模态图片", "纯文本输入")}
+                      {cap(agentDesc.capabilities.cacheWriteTelemetry, "上报缓存写入", "仅上报缓存读取")}
+                      {cap(agentDesc.capabilities.contextWindowTelemetry, "上下文水位", "无实时水位")}
+                      <span className="cap">
+                        {agentDesc.capabilities.nativeQuotaWindow ? "官方额度窗口" : "本机统计 + 软预算"}
+                      </span>
+                    </div>
+                  </div>
+                ) : null}
+
+                {p.adapter !== "paseo" ? (
+                  <>
+                    <div className="g-row2">
+                      <div className="lbl">
+                        <b>可执行命令</b>
+                        <p>二进制名称或绝对路径，留空按 Provider ID 查找</p>
+                      </div>
+                      <input
+                        className="input mono input-sm"
+                        aria-label={`${p.label} 命令`}
+                        placeholder={p.id}
+                        value={p.command ?? ""}
+                        onChange={(e) =>
+                          updateProviderDraft(p.id, {
+                            command: (e.currentTarget as HTMLInputElement).value,
+                          })
+                        }
+                      />
+                    </div>
+
+                    <div className="g-row2">
+                      <div className="lbl">
+                        <b>启动参数</b>
+                        <p>空格分隔，如 acp --stdio</p>
+                      </div>
+                      <input
+                        className="input mono input-sm"
+                        aria-label={`${p.label} 参数`}
+                        value={argsRawByProvider[p.id] ?? p.args.join(" ")}
+                        onChange={(e) => {
+                          const raw = (e.currentTarget as HTMLInputElement).value;
+                          setArgsRawByProvider((prev) => ({ ...prev, [p.id]: raw }));
+                          if (raw !== p.args.join(" ")) {
+                            setProvidersDirty(true);
+                          }
+                        }}
+                        onBlur={() => {
+                          const raw = argsRawByProvider[p.id];
+                          if (raw === undefined) return;
+                          const nextArgs = splitArgsString(raw);
+                          if (
+                            nextArgs.length !== p.args.length ||
+                            nextArgs.some((v, i) => v !== p.args[i])
+                          ) {
+                            updateProviderDraft(p.id, { args: nextArgs });
+                          }
+                        }}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <div className="g-row2">
+                    <div className="lbl">
+                      <b>Paseo URL</b>
+                      <p>仅作历史兼容桥接，推荐优先使用自建 ACP 与 CLI 直连</p>
+                    </div>
+                    <input
+                      className="input mono input-sm"
+                      aria-label={`${p.label} URL`}
+                      placeholder="http://127.0.0.1:..."
+                      value={p.paseo_url ?? ""}
+                      onChange={(e) =>
+                        updateProviderDraft(p.id, {
+                          paseo_url: (e.currentTarget as HTMLInputElement).value,
+                        })
+                      }
+                    />
+                  </div>
+                )}
+
+                <div className="g-row2">
+                  <div className="lbl">
+                    <b>日软预算上限 ($ USD)</b>
+                    <p>仅作本地统计对比提示，不会强制阻断执行</p>
+                  </div>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    className="input mono input-sm"
+                    aria-label={`${p.label} 日软预算`}
+                    placeholder="不限制"
+                    value={
+                      quotaRawByProvider[p.id] ??
+                      (p.quota?.soft_daily_usd !== undefined
+                        ? String(p.quota.soft_daily_usd)
+                        : "")
+                    }
+                    onChange={(e) => {
+                      const raw = (e.currentTarget as HTMLInputElement).value;
+                      setQuotaRawByProvider((prev) => ({ ...prev, [p.id]: raw }));
+                      const initialStr =
+                        p.quota?.soft_daily_usd !== undefined
+                          ? String(p.quota.soft_daily_usd)
+                          : "";
+                      if (raw !== initialStr) {
+                        setProvidersDirty(true);
+                      }
+                    }}
+                    onBlur={() => {
+                      const raw = (quotaRawByProvider[p.id] ?? "").trim();
+                      const prevVal = p.quota?.soft_daily_usd;
+                      if (!raw) {
+                        if (prevVal === undefined) return;
+                        const nextQuota = { ...(p.quota ?? {}) };
+                        delete nextQuota.soft_daily_usd;
+                        updateProviderDraft(p.id, { quota: nextQuota });
+                        return;
+                      }
+                      const num = Number(raw);
+                      if (Number.isFinite(num) && num > 0 && num !== prevVal) {
+                        updateProviderDraft(p.id, {
+                          quota: { ...(p.quota ?? {}), soft_daily_usd: num },
+                        });
+                      }
+                    }}
+                  />
+                </div>
+
+                <div className="g-stack">
+                  <div className="lbl">
+                    <b>环境变量（每行 KEY=VALUE）</b>
+                  </div>
+                  <textarea
+                    className="role-trait-in mono"
+                    style={{ minHeight: "48px", fontSize: "11.5px" }}
+                    aria-label={`${p.label} 环境变量`}
+                    placeholder="例如：ANTHROPIC_BASE_URL=https://..."
+                    value={envRawByProvider[p.id] ?? formatEnvLines(p.env)}
+                    onChange={(e) => {
+                      const raw = (e.currentTarget as HTMLTextAreaElement).value;
+                      setEnvRawByProvider((prev) => ({ ...prev, [p.id]: raw }));
+                      if (raw !== formatEnvLines(p.env)) {
+                        setProvidersDirty(true);
+                      }
+                    }}
+                    onBlur={() => {
+                      const raw = envRawByProvider[p.id];
+                      if (raw === undefined) return;
+                      const nextEnv = parseEnvLines(raw);
+                      const prevEntries = Object.entries(p.env ?? {});
+                      const nextEntries = Object.entries(nextEnv);
+                      const changed =
+                        prevEntries.length !== nextEntries.length ||
+                        nextEntries.some(([k, v]) => p.env?.[k] !== v);
+                      if (changed) {
+                        updateProviderDraft(p.id, { env: nextEnv });
+                      }
+                    }}
+                  />
+                </div>
+
+                <div className="g-stack">
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", color: "var(--t3)" }}>
+                    <span>可用与自定义模型</span>
+                    <span className="mono">
+                      发现 {discoveredModels.length} + 自定义 {p.custom_models.length}
+                    </span>
+                  </div>
+                  <div className="tag-list">
+                    {discoveredModels.map((m) => (
+                      <span key={`disc-${m}`} className="tag-pill">
+                        {m}
+                      </span>
+                    ))}
+                    {p.custom_models.map((m) => (
+                      <span key={`cust-${m}`} className="tag-pill custom">
+                        {m}
+                        <button
+                          type="button"
+                          aria-label={`删除模型 ${m}`}
+                          onClick={() =>
+                            updateProviderDraft(p.id, {
+                              custom_models: p.custom_models.filter((item) => item !== m),
+                            })
+                          }
+                        >
+                          <CloseIcon />
+                        </button>
+                      </span>
+                    ))}
+                    <input
+                      className="input mono input-sm"
+                      style={{ width: "170px" }}
+                      aria-label={`${p.label} 新增自定义模型`}
+                      placeholder="自定义模型 ID"
+                      value={customModelInputs[p.id] ?? ""}
+                      onChange={(e) => {
+                        const v = (e.currentTarget as HTMLInputElement).value;
+                        setCustomModelInputs((prev) => ({ ...prev, [p.id]: v }));
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          handleAddCustomModel(p.id);
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => handleAddCustomModel(p.id)}
+                    >
+                      添加
+                    </button>
+                  </div>
+                </div>
+              </section>
+            );
+          })
+        )}
+
+        <Dialog.Root open={newAcpOpen} onOpenChange={setNewAcpOpen}>
+          <Dialog.Portal>
+            <Dialog.Overlay className="palette-mask open">
+              <Dialog.Content
+                className="modal-card"
+                aria-label="注册自定义 ACP"
+                aria-describedby={undefined}
+              >
+                <div className="modal-head">
+                  <Dialog.Title asChild>
+                    <h2>注册自定义 ACP Agent</h2>
+                  </Dialog.Title>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setNewAcpOpen(false)}
+                  >
+                    关闭
+                  </button>
+                </div>
+                <div className="modal-body">
+                  <div className="modal-grid">
+                    <label className="modal-field">
+                      <span>Provider ID</span>
+                      <input
+                        aria-label="自定义 ACP ID"
+                        className="input mono"
+                        placeholder="如 cursor"
+                        value={newAcpId}
+                        onChange={(e) =>
+                          setNewAcpId((e.currentTarget as HTMLInputElement).value)
+                        }
+                      />
+                    </label>
+                    <label className="modal-field">
+                      <span>显示名称</span>
+                      <input
+                        aria-label="自定义 ACP 名称"
+                        className="input"
+                        placeholder="如 Cursor Agent"
+                        value={newAcpLabel}
+                        onChange={(e) =>
+                          setNewAcpLabel((e.currentTarget as HTMLInputElement).value)
+                        }
+                      />
+                    </label>
+                  </div>
+                  <div className="modal-grid">
+                    <label className="modal-field">
+                      <span>命令</span>
+                      <input
+                        aria-label="自定义 ACP 命令"
+                        className="input mono"
+                        placeholder="如 cursor-agent"
+                        value={newAcpCmd}
+                        onChange={(e) =>
+                          setNewAcpCmd((e.currentTarget as HTMLInputElement).value)
+                        }
+                      />
+                    </label>
+                    <label className="modal-field">
+                      <span>启动参数</span>
+                      <input
+                        aria-label="自定义 ACP 参数"
+                        className="input mono"
+                        placeholder="acp --stdio"
+                        value={newAcpArgs}
+                        onChange={(e) =>
+                          setNewAcpArgs((e.currentTarget as HTMLInputElement).value)
+                        }
+                      />
+                    </label>
+                  </div>
+                  <label className="modal-field">
+                    <span>预登记模型（逗号或换行分隔，可选）</span>
+                    <input
+                      aria-label="自定义 ACP 模型"
+                      className="input mono"
+                      placeholder="如 claude-sonnet-4-6, gpt-5.4"
+                      value={newAcpModels}
+                      onChange={(e) =>
+                        setNewAcpModels((e.currentTarget as HTMLInputElement).value)
+                      }
+                    />
+                  </label>
+                  {newAcpError ? (
+                    <p className="warn-line" role="alert">
+                      {newAcpError}
+                    </p>
+                  ) : null}
+                </div>
+                <div className="modal-foot">
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => setNewAcpOpen(false)}
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-light"
+                    onClick={handleCreateCustomAcp}
+                  >
+                    确认添加
+                  </button>
+                </div>
+              </Dialog.Content>
+            </Dialog.Overlay>
+          </Dialog.Portal>
+        </Dialog.Root>
+      </>
+    );
   };
 
   const renderRolesTab = () => {
@@ -549,13 +1343,18 @@ export function SettingsView() {
   const renderSpacesTab = () => {
     const customSpaces = Object.values(spaces)
       .filter((sp) => sp.id !== "local")
-      .sort((a, b) => a.id.localeCompare(b.id));
+      .sort((a, b) => {
+        const pinA = Boolean(a.pinned);
+        const pinB = Boolean(b.pinned);
+        if (pinA !== pinB) return pinA ? -1 : 1;
+        return a.id.localeCompare(b.id);
+      });
 
     return (
       <>
         <div className="sync-line">
           <span>
-            项目空间决定代码任务的仓库路径、工作树基准分支与默认验收命令，立项对话将直接进入对应仓库目录探索。
+            项目空间决定代码任务的仓库路径、工作树基准分支、默认验收命令与结构化脚本（setup 在新建工作树时自动运行），立项对话将直接进入对应仓库目录探索。
           </span>
           <button
             type="button"
@@ -587,20 +1386,32 @@ export function SettingsView() {
           <table className="t" style={{ marginTop: "8px" }}>
             <thead>
               <tr>
-                <th style={{ width: "20%" }}>空间</th>
+                <th style={{ width: "22%" }}>空间</th>
                 <th>仓库路径</th>
-                <th style={{ width: "100px" }}>默认分支</th>
-                <th style={{ width: "160px" }}>默认验收命令</th>
-                <th style={{ width: "140px" }}>操作</th>
+                <th style={{ width: "96px" }}>默认分支</th>
+                <th style={{ width: "160px" }}>验收 / 脚本</th>
+                <th style={{ width: "176px" }}>操作</th>
               </tr>
             </thead>
             <tbody>
               {customSpaces.map((sp) => {
                 const validRepo = isProjectSpace(sp);
+                const scriptKeys = sp.scripts
+                  ? Object.entries(sp.scripts)
+                      .filter(([, cmd]) => Boolean(cmd && cmd.trim()))
+                      .map(([k]) => k)
+                  : [];
                 return (
                   <tr key={sp.id}>
                     <td>
-                      <div className="role-name">{sp.name}</div>
+                      <div className="role-name" style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                        <span>{sp.name}</span>
+                        {sp.pinned ? (
+                          <span className="chip chip-live" style={{ height: "18px", fontSize: "10.5px" }}>
+                            置顶
+                          </span>
+                        ) : null}
+                      </div>
                       <div className="role-desc mono">{sp.id}</div>
                     </td>
                     <td className="mono" style={{ fontSize: "12px", wordBreak: "break-all" }}>
@@ -614,10 +1425,26 @@ export function SettingsView() {
                     </td>
                     <td className="mono">{sp.default_branch}</td>
                     <td className="mono" style={{ fontSize: "12px" }}>
-                      {sp.default_accept_cmd || <span className="muted">—</span>}
+                      <div>{sp.default_accept_cmd || <span className="muted">—</span>}</div>
+                      {scriptKeys.length > 0 ? (
+                        <div className="muted" style={{ fontSize: "11px", marginTop: "2px" }}>
+                          脚本: {scriptKeys.join(" · ")}
+                        </div>
+                      ) : null}
                     </td>
                     <td>
                       <div style={{ display: "flex", gap: "6px" }}>
+                        {validRepo ? (
+                          <button
+                            type="button"
+                            className={`btn btn-sm ${sp.pinned ? "on" : ""}`}
+                            title={sp.pinned ? "取消置顶" : "置顶"}
+                            aria-label={sp.pinned ? `取消置顶 ${sp.name}` : `置顶 ${sp.name}`}
+                            onClick={() => void store.toggleSpacePin(sp.id)}
+                          >
+                            <PinIcon />
+                          </button>
+                        ) : null}
                         <button
                           type="button"
                           className="btn btn-sm"
@@ -810,6 +1637,14 @@ export function SettingsView() {
         );
       }
     }
+    for (const rKey of Object.keys(roster.roster)) {
+      const entry = roster.roster[rKey];
+      if (!entry || !entry.enabled || entry.mode !== "agent") continue;
+      recordRoleModel(entry.primary?.model, entry.name);
+      for (const fb of entry.fallbacks ?? []) {
+        recordRoleModel(fb.model, `${entry.name}·备选`);
+      }
+    }
 
     const customModels = new Set(pricing.custom_models ?? []);
     const configuredModelIds = Array.from(roleUsageByModel.keys()).sort();
@@ -843,10 +1678,15 @@ export function SettingsView() {
 
     const handlePriceInput = (
       modelId: string,
-      field: "in" | "cached" | "out",
+      field: "in" | "cached" | "cache_write" | "out",
       rawStr: string,
     ): void => {
-      if (rawStr.trim() === "") return;
+      if (rawStr.trim() === "") {
+        if (field === "cache_write") {
+          store.updatePricingLocal(modelId, "cache_write", undefined);
+        }
+        return;
+      }
       const num = Number(rawStr);
       if (Number.isFinite(num) && num >= 0) {
         store.updatePricingLocal(modelId, field, num);
@@ -882,9 +1722,10 @@ export function SettingsView() {
           <thead>
             <tr>
               <th>模型标识</th>
-              <th style={{ width: "140px" }}>输入单价 ($/1M)</th>
-              <th style={{ width: "140px" }}>缓存命中 ($/1M)</th>
-              <th style={{ width: "140px" }}>输出单价 ($/1M)</th>
+              <th style={{ width: "120px" }}>输入单价 ($/1M)</th>
+              <th style={{ width: "120px" }}>缓存命中 ($/1M)</th>
+              <th style={{ width: "120px" }}>缓存写 ($/1M)</th>
+              <th style={{ width: "120px" }}>输出单价 ($/1M)</th>
             </tr>
           </thead>
           <tbody>
@@ -892,6 +1733,11 @@ export function SettingsView() {
               const p = pricing.models[m];
               const isCustom = customModels.has(m);
               const roleTags = roleUsageByModel.get(m) ?? [];
+              const writePlaceholder = p
+                ? /claude/i.test(m)
+                  ? "默认 1.25×"
+                  : "同输入"
+                : "可选";
               return (
                 <tr key={m}>
                   <td>
@@ -956,6 +1802,24 @@ export function SettingsView() {
                         handlePriceInput(
                           m,
                           "cached",
+                          (e.currentTarget as HTMLInputElement).value,
+                        )
+                      }
+                    />
+                  </td>
+                  <td>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      className="input mono"
+                      aria-label={`${m} 缓存写`}
+                      placeholder={writePlaceholder}
+                      value={p?.cache_write !== undefined ? p.cache_write : ""}
+                      onChange={(e) =>
+                        handlePriceInput(
+                          m,
+                          "cache_write",
                           (e.currentTarget as HTMLInputElement).value,
                         )
                       }
@@ -1172,15 +2036,17 @@ export function SettingsView() {
           </div>
           {settingsTab === "roles"
             ? renderRolesTab()
-            : settingsTab === "spaces"
-              ? renderSpacesTab()
-              : settingsTab === "limits"
-                ? renderLimitsTab()
-                : settingsTab === "pricing"
-                  ? renderPricingTab()
-                  : settingsTab === "remote"
-                    ? <RemoteSettingsPanel />
-                    : renderConnTab()}
+            : settingsTab === "providers"
+              ? renderProvidersTab()
+              : settingsTab === "spaces"
+                ? renderSpacesTab()
+                : settingsTab === "limits"
+                  ? renderLimitsTab()
+                  : settingsTab === "pricing"
+                    ? renderPricingTab()
+                    : settingsTab === "remote"
+                      ? <RemoteSettingsPanel />
+                      : renderConnTab()}
         </div>
       </div>
     </ViewFrame>

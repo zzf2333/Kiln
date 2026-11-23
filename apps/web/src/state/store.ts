@@ -34,6 +34,9 @@ import {
   fetchBootstrap as apiFetchBootstrap,
   fetchDraftChat as apiFetchDraftChat,
   fetchLedgers as apiFetchLedgers,
+  fetchProviders as apiFetchProviders,
+  fetchProvidersSettings as apiFetchProvidersSettings,
+  fetchRosterSettings as apiFetchRosterSettings,
   fetchTaskChat as apiFetchTaskChat,
   fetchTaskDetail as apiFetchTaskDetail,
   inspectSpacePath as apiInspectSpacePath,
@@ -51,6 +54,7 @@ import {
   submitDecision as apiSubmitDecision,
   subscribeSseEvents,
   syncModelPricing as apiSyncModelPricing,
+  testProvider as apiTestProvider,
   updatePriority as apiUpdatePriority,
   updateSettings as apiUpdateSettings,
   upsertDraft as apiUpsertDraft,
@@ -67,10 +71,14 @@ import type {
   DraftCardWithBrief,
   InspectSpaceResult,
   PairCompleteRequest,
+  ProviderRuntimeStatus,
+  ProvidersConfig,
   PublicPairedDevice,
   RawProviderUsageEntry,
   RestoreHostBackupResult,
+  RosterConfig,
   SettingsSectionMap,
+  SpaceScriptKey,
   SubmitDecisionPayload,
   SyncPricingRequest,
   TaskDetailResponse,
@@ -89,6 +97,7 @@ import {
 
 export type MvpView =
   | "board"
+  | "lineup"
   | "detail"
   | "inbox"
   | "intake"
@@ -97,7 +106,14 @@ export type MvpView =
   | "ledger"
   | "settings";
 
-export type SettingsTab = "roles" | "spaces" | "limits" | "pricing" | "remote" | "conn";
+export type SettingsTab =
+  | "roles"
+  | "providers"
+  | "spaces"
+  | "limits"
+  | "pricing"
+  | "remote"
+  | "conn";
 export type PeriodFilter = "week" | "month" | "year" | "all";
 export type IntakeMode = "project" | "local";
 export type IntakeRightTab = "brief" | "settings";
@@ -155,6 +171,24 @@ export function resolveFormEffectiveWorkflow(form: IntakeFormState): WorkflowBlu
   });
 }
 
+export interface ScriptRunBuffer {
+  scriptRunId: string;
+  spaceId: string;
+  taskId?: string;
+  scriptKey: SpaceScriptKey;
+  lines: string[];
+  done: boolean;
+  exitCode: number | null;
+  updatedAt: string;
+}
+
+export interface ContextWindowSnapshot {
+  usedTokens: number;
+  contextWindowTokens: number;
+  percent: number;
+  at: string;
+}
+
 export interface KilnStoreState {
   view: MvpView;
   taskId: string | null;
@@ -165,6 +199,7 @@ export interface KilnStoreState {
   priorityFilter: "all" | Priority;
   showParentSlices: boolean;
   navOpen: boolean;
+  sidebarCollapsed: boolean;
   draftOpen: boolean;
   desktopDraftCollapsed: boolean;
   paletteOpen: boolean;
@@ -189,6 +224,11 @@ export interface KilnStoreState {
   drafts: DraftCard[];
   spaces: Record<string, SpaceConfig>;
   roles: RolesConfig;
+  roster: RosterConfig;
+  providersConfig: ProvidersConfig | null;
+  providersConfigLoaded: boolean;
+  providerStatuses: ProviderRuntimeStatus[];
+  providerTestBusyId: string | null;
   limits: LimitsConfig;
   pricing: PricingConfig;
   usage: UsageSnapshot;
@@ -209,6 +249,8 @@ export interface KilnStoreState {
   taskDetailLoading: boolean;
   taskDetailError: string | null;
   restoreResult: RestoreHostBackupResult | null;
+  scriptRuns: Record<string, ScriptRunBuffer>;
+  contextWindowByTask: Record<string, ContextWindowSnapshot>;
 
   intakeDraftId: string | null;
   intakeForm: IntakeFormState;
@@ -236,6 +278,7 @@ export interface KilnStoreState {
 
 const VALID_VIEWS = new Set<MvpView>([
   "board",
+  "lineup",
   "detail",
   "inbox",
   "intake",
@@ -247,6 +290,7 @@ const VALID_VIEWS = new Set<MvpView>([
 
 const VALID_SETTINGS_TABS = new Set<SettingsTab>([
   "roles",
+  "providers",
   "spaces",
   "limits",
   "pricing",
@@ -269,6 +313,18 @@ const DEFAULT_ROLES: RolesConfig = {
   schema_version: 1,
   heterogeneous_review: true,
   roles: {},
+};
+
+const DEFAULT_ROSTER: RosterConfig = {
+  schema_version: 2,
+  heterogeneous_review: true,
+  pm_orchestration: {
+    enabled: true,
+    allow_auto_tester: true,
+    prefer_unthrottled: true,
+    require_review_for_core: true,
+  },
+  roster: {},
 };
 
 const DEFAULT_PRICING: PricingConfig = {
@@ -650,6 +706,7 @@ export class KilnWebStore {
       priorityFilter: "all",
       showParentSlices: false,
       navOpen: false,
+      sidebarCollapsed: false,
       draftOpen: false,
       desktopDraftCollapsed: false,
       paletteOpen: false,
@@ -674,6 +731,15 @@ export class KilnWebStore {
       drafts: [],
       spaces: {},
       roles: { ...DEFAULT_ROLES, roles: {} },
+      roster: {
+        ...DEFAULT_ROSTER,
+        pm_orchestration: { ...DEFAULT_ROSTER.pm_orchestration },
+        roster: {},
+      },
+      providersConfig: null,
+      providersConfigLoaded: false,
+      providerStatuses: [],
+      providerTestBusyId: null,
       limits: { ...DEFAULT_LIMITS },
       pricing: { ...DEFAULT_PRICING, models: {} },
       usage: { ...EMPTY_USAGE },
@@ -694,6 +760,8 @@ export class KilnWebStore {
       taskDetailLoading: false,
       taskDetailError: null,
       restoreResult: null,
+      scriptRuns: {},
+      contextWindowByTask: {},
 
       intakeDraftId: null,
       intakeForm: createDefaultIntakeForm({}),
@@ -864,6 +932,11 @@ export class KilnWebStore {
       resolveMessagesByTask: {},
       ratesByTask: {},
       liveTotals: null,
+      providersConfig: null,
+      providersConfigLoaded: false,
+      providerStatuses: [],
+      scriptRuns: {},
+      contextWindowByTask: {},
       sseStatus: "closed",
     });
   }
@@ -1106,6 +1179,12 @@ export class KilnWebStore {
       try {
         const data = await apiFetchBootstrap();
         const roles = data.settings?.roles ?? data.roles ?? { ...DEFAULT_ROLES, roles: {} };
+        const roster = data.settings?.roster ?? data.roster ?? this.state.roster;
+        const providersConfig = data.settings?.providers ?? this.state.providersConfig;
+        const providersConfigLoaded =
+          data.settings?.providers !== undefined
+            ? true
+            : this.state.providersConfigLoaded;
         const limits = data.settings?.limits ?? data.limits ?? { ...DEFAULT_LIMITS };
         const pricing = data.settings?.pricing ?? data.pricing ?? { ...DEFAULT_PRICING, models: {} };
         const nextRates = data.liveRates?.rates
@@ -1199,6 +1278,10 @@ export class KilnWebStore {
           intakeActiveOpen: nextIntakeActiveOpen,
           intakeHasUnreadReply: nextIntakeHasUnread,
           roles,
+          roster,
+          providersConfig,
+          providersConfigLoaded,
+          ...(data.providers !== undefined ? { providerStatuses: data.providers } : {}),
           limits,
           pricing,
           usage: data.usage ?? { ...EMPTY_USAGE },
@@ -1235,6 +1318,15 @@ export class KilnWebStore {
           void this.refreshLedgers();
         } else if (this.state.view === "settings" && this.state.agents.length === 0) {
           void this.refreshAgents();
+        }
+
+        if (
+          (this.state.view === "lineup" ||
+            (this.state.view === "settings" && this.state.settingsTab === "providers")) &&
+          this.state.authMode === "local" &&
+          !this.state.providersConfigLoaded
+        ) {
+          void this.refreshProvidersConfig();
         }
       } catch (err) {
         if (err instanceof ApiError && err.status === 401 && this.state.authMode === "remote") {
@@ -1342,7 +1434,98 @@ export class KilnWebStore {
       return;
     }
 
+    if (event.type === "provider.status") {
+      const idx = this.state.providerStatuses.findIndex(
+        (p) => p.provider_id === event.providerId,
+      );
+      if (idx >= 0) {
+        const nextStatuses = this.state.providerStatuses.map((p, i) =>
+          i === idx
+            ? {
+                ...p,
+                status: event.status,
+                ...(event.cooldownUntil !== undefined
+                  ? { cooldown_until: event.cooldownUntil }
+                  : { cooldown_until: null }),
+                ...(event.detail !== undefined ? { detail: event.detail } : {}),
+              }
+            : p,
+        );
+        this.setState({ providerStatuses: nextStatuses });
+      } else {
+        void this.refreshProviders();
+      }
+      return;
+    }
+
+    if (event.type === "script.output") {
+      const existing = this.state.scriptRuns[event.scriptRunId] ?? {
+        scriptRunId: event.scriptRunId,
+        spaceId: event.spaceId,
+        ...(event.taskId ? { taskId: event.taskId } : {}),
+        scriptKey: event.scriptKey,
+        lines: [],
+        done: false,
+        exitCode: null,
+        updatedAt: event.at,
+      };
+      const newLines = event.chunk ? event.chunk.split(/\r?\n/) : [];
+      const merged = [...existing.lines, ...newLines].slice(-500);
+      this.setState({
+        scriptRuns: {
+          ...this.state.scriptRuns,
+          [event.scriptRunId]: {
+            ...existing,
+            lines: merged,
+            done: Boolean(event.done),
+            exitCode: event.exitCode ?? existing.exitCode,
+            updatedAt: event.at,
+          },
+        },
+      });
+      return;
+    }
+
     if (event.type === "run.event") {
+      if (event.event.kind === "context_window") {
+        const percent =
+          event.event.percent ??
+          Math.min(
+            100,
+            Math.round(
+              (event.event.usedTokens / Math.max(1, event.event.contextWindowTokens)) * 100,
+            ),
+          );
+        this.setState({
+          contextWindowByTask: {
+            ...this.state.contextWindowByTask,
+            [event.taskId]: {
+              usedTokens: event.event.usedTokens,
+              contextWindowTokens: event.event.contextWindowTokens,
+              percent,
+              at: event.event.at,
+            },
+          },
+        });
+      } else if (event.event.kind === "rate_limited") {
+        const provId = event.event.provider;
+        const idx = this.state.providerStatuses.findIndex((p) => p.provider_id === provId);
+        if (idx >= 0) {
+          const nextStatuses = this.state.providerStatuses.map((p, i) =>
+            i === idx
+              ? {
+                  ...p,
+                  status: "cooldown" as const,
+                  cooldown_until: event.event.kind === "rate_limited" ? (event.event.until ?? null) : null,
+                  ...(event.event.kind === "rate_limited" && event.event.detail
+                    ? { detail: event.event.detail }
+                    : {}),
+                }
+              : p,
+          );
+          this.setState({ providerStatuses: nextStatuses });
+        }
+      }
       const detail = this.state.taskDetails[event.taskId];
       if (detail) {
         const nextRuns = detail.runs.map((run) => {
@@ -1398,8 +1581,29 @@ export class KilnWebStore {
     this.syncHashFromState();
     if (view === "ledger" && Object.keys(this.state.ledgers).length === 0) {
       void this.refreshLedgers();
-    } else if (view === "settings" && this.state.agents.length === 0) {
+    } else if (
+      (view === "settings" || view === "lineup") &&
+      this.state.agents.length === 0
+    ) {
       void this.refreshAgents();
+    }
+    if (view === "lineup") {
+      if (Object.keys(this.state.roster.roster).length === 0) {
+        void this.refreshRoster();
+      }
+      if (this.state.providerStatuses.length === 0) {
+        void this.refreshProviders();
+      }
+      if (this.state.authMode === "local" && !this.state.providersConfigLoaded) {
+        void this.refreshProvidersConfig();
+      }
+    } else if (
+      view === "settings" &&
+      (options?.settingsTab ?? this.state.settingsTab) === "providers" &&
+      this.state.authMode === "local" &&
+      !this.state.providersConfigLoaded
+    ) {
+      void this.refreshProvidersConfig();
     }
   }
 
@@ -1435,6 +1639,17 @@ export class KilnWebStore {
   setSettingsTab(tab: SettingsTab): void {
     this.setState({ settingsTab: tab });
     this.syncHashFromState();
+    if (
+      tab === "providers" &&
+      this.state.authMode === "local" &&
+      !this.state.providersConfigLoaded
+    ) {
+      void this.refreshProvidersConfig();
+    }
+  }
+
+  toggleSidebar(): void {
+    this.setState({ sidebarCollapsed: !this.state.sidebarCollapsed });
   }
 
   setSpaceFilter(space: string): void {
@@ -2406,13 +2621,29 @@ export class KilnWebStore {
     }
   }
 
-  updatePricingLocal(modelName: string, field: "in" | "cached" | "out", val: number): void {
-    if (!Number.isFinite(val) || val < 0) return;
+  updatePricingLocal(
+    modelName: string,
+    field: "in" | "cached" | "cache_write" | "out",
+    val: number | undefined,
+  ): void {
     const existing = this.state.pricing.models[modelName] ?? {
       in: 0,
       cached: 0,
       out: 0,
     };
+    const nextPrice = { ...existing };
+    if (field === "cache_write") {
+      if (val === undefined) {
+        delete nextPrice.cache_write;
+      } else if (Number.isFinite(val) && val >= 0) {
+        nextPrice.cache_write = val;
+      } else {
+        return;
+      }
+    } else {
+      if (val === undefined || !Number.isFinite(val) || val < 0) return;
+      nextPrice[field] = val;
+    }
     const prevCustom = this.state.pricing.custom_models ?? [];
     const nextCustom = prevCustom.includes(modelName)
       ? prevCustom
@@ -2422,10 +2653,7 @@ export class KilnWebStore {
         ...this.state.pricing,
         models: {
           ...this.state.pricing.models,
-          [modelName]: {
-            ...existing,
-            [field]: val,
-          },
+          [modelName]: nextPrice,
         },
         custom_models: nextCustom,
       },
@@ -2481,12 +2709,112 @@ export class KilnWebStore {
         this.setState({ limits: res.data as LimitsConfig });
       } else if (section === "pricing") {
         this.setState({ pricing: res.data as PricingConfig });
+      } else if (section === "providers") {
+        this.setState({
+          providersConfig: res.data as ProvidersConfig,
+          providersConfigLoaded: true,
+        });
+        void this.refreshProviders();
+        void this.refreshAgents(true);
+      } else if (section === "roster") {
+        this.setState({ roster: res.data as RosterConfig });
+        void this.bootstrap();
       }
       this.showToast(`已保存 config/${section}.yaml`);
       return true;
     } catch (err) {
       this.showToast(err instanceof Error ? err.message : "保存设置失败");
       return false;
+    }
+  }
+
+  async refreshProviders(): Promise<void> {
+    try {
+      const res = await apiFetchProviders();
+      this.setState({ providerStatuses: res.providers });
+    } catch {
+      // Best-effort refresh; keep current snapshot on transient error
+    }
+  }
+
+  async refreshProvidersConfig(): Promise<void> {
+    if (this.state.authMode !== "local") return;
+    try {
+      const res = await apiFetchProvidersSettings();
+      this.setState({
+        providersConfig: res.data,
+        providersConfigLoaded: true,
+      });
+    } catch (err) {
+      this.showToast(err instanceof Error ? err.message : "读取 Providers 配置失败");
+    }
+  }
+
+  async refreshRoster(): Promise<void> {
+    try {
+      const res = await apiFetchRosterSettings();
+      this.setState({ roster: res.data });
+    } catch {
+      // Ignore if endpoint is absent in legacy mock servers
+    }
+  }
+
+  async testProvider(providerId: string): Promise<void> {
+    if (this.state.authMode !== "local" || this.state.providerTestBusyId) return;
+    this.setState({ providerTestBusyId: providerId });
+    try {
+      const res = await apiTestProvider(providerId);
+      const next = res.status;
+      const exists = this.state.providerStatuses.some(
+        (p) => p.provider_id === next.provider_id,
+      );
+      const nextStatuses = exists
+        ? this.state.providerStatuses.map((p) =>
+            p.provider_id === next.provider_id ? next : p,
+          )
+        : [...this.state.providerStatuses, next];
+      this.setState({
+        providerStatuses: nextStatuses,
+        providerTestBusyId: null,
+      });
+      const label = next.label || providerId;
+      if (next.status === "ready") {
+        this.showToast(`${label} 已就绪${next.version ? ` (v${next.version})` : ""}`);
+      } else {
+        this.showToast(`${label}：${next.detail ?? next.status}`);
+      }
+      void this.refreshAgents(true);
+    } catch (err) {
+      this.setState({ providerTestBusyId: null });
+      this.showToast(err instanceof Error ? err.message : `检测 ${providerId} 失败`);
+    }
+  }
+
+  async toggleSpacePin(spaceId: string): Promise<void> {
+    const sp = this.state.spaces[spaceId];
+    if (!isProjectSpace(sp)) return;
+    const nextPinned = !Boolean(sp.pinned);
+    try {
+      const res = await apiUpsertSpace(spaceId, {
+        name: sp.name,
+        repo_path: sp.repo_path!,
+        default_branch: sp.default_branch,
+        copy_untracked: sp.copy_untracked,
+        clone_deps: sp.clone_deps,
+        ...(sp.default_accept_cmd ? { default_accept_cmd: sp.default_accept_cmd } : {}),
+        freeze_patterns: sp.freeze_patterns,
+        pinned: nextPinned,
+        ...(sp.scripts ? { scripts: sp.scripts } : {}),
+      });
+      this.setState({
+        spaces: {
+          ...this.state.spaces,
+          [spaceId]: res.space,
+        },
+      });
+      this.showToast(nextPinned ? `已置顶项目 ${sp.name}` : `已取消置顶 ${sp.name}`);
+    } catch (err) {
+      this.showToast(err instanceof Error ? err.message : "更新项目置顶状态失败");
     }
   }
 

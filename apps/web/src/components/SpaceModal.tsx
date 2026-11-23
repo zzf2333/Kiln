@@ -29,6 +29,11 @@ export function SpaceModal() {
   const [defaultAcceptCmd, setDefaultAcceptCmd] = useState("");
   const [copyUntracked, setCopyUntracked] = useState("");
   const [cloneDeps, setCloneDeps] = useState("");
+  const [scriptSetup, setScriptSetup] = useState("");
+  const [scriptDev, setScriptDev] = useState("");
+  const [scriptTest, setScriptTest] = useState("");
+  const [scriptLint, setScriptLint] = useState("");
+  const [scriptDeliver, setScriptDeliver] = useState("");
   const [idTouched, setIdTouched] = useState(false);
   const [nameTouched, setNameTouched] = useState(false);
   const [inspectBusy, setInspectBusy] = useState(false);
@@ -95,6 +100,11 @@ export function SpaceModal() {
       setDefaultAcceptCmd(editingSpace.default_accept_cmd ?? "");
       setCopyUntracked(editingSpace.copy_untracked.join(", "));
       setCloneDeps(editingSpace.clone_deps.join(", "));
+      setScriptSetup(editingSpace.scripts?.setup ?? "");
+      setScriptDev(editingSpace.scripts?.dev ?? "");
+      setScriptTest(editingSpace.scripts?.test ?? "");
+      setScriptLint(editingSpace.scripts?.lint ?? "");
+      setScriptDeliver(editingSpace.scripts?.deliver ?? "");
       setIdTouched(true);
       setNameTouched(true);
       return;
@@ -107,6 +117,11 @@ export function SpaceModal() {
     setDefaultAcceptCmd("");
     setCopyUntracked("");
     setCloneDeps("");
+    setScriptSetup("");
+    setScriptDev("");
+    setScriptTest("");
+    setScriptLint("");
+    setScriptDeliver("");
     setIdTouched(false);
     setNameTouched(false);
 
@@ -168,6 +183,15 @@ export function SpaceModal() {
         .map((s) => s.trim())
         .filter(Boolean);
 
+    const cleanScripts = {
+      ...(scriptSetup.trim() ? { setup: scriptSetup.trim() } : {}),
+      ...(scriptDev.trim() ? { dev: scriptDev.trim() } : {}),
+      ...(scriptTest.trim() ? { test: scriptTest.trim() } : {}),
+      ...(scriptLint.trim() ? { lint: scriptLint.trim() } : {}),
+      ...(scriptDeliver.trim() ? { deliver: scriptDeliver.trim() } : {}),
+    };
+    const hasScripts = Object.keys(cleanScripts).length > 0;
+
     setSaveBusy(true);
     setErrorMsg(null);
     try {
@@ -181,6 +205,8 @@ export function SpaceModal() {
           ? { default_accept_cmd: defaultAcceptCmd.trim() }
           : {}),
         freeze_patterns: editingSpace?.freeze_patterns ?? [],
+        ...(editingSpace?.pinned !== undefined ? { pinned: editingSpace.pinned } : {}),
+        ...(hasScripts ? { scripts: cleanScripts } : {}),
       });
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : "保存项目空间失败");
@@ -455,7 +481,7 @@ export function SpaceModal() {
           </div>
 
           <details className="modal-advanced">
-            <summary>高级设置（环境文件与依赖克隆）</summary>
+            <summary>高级设置（环境文件、依赖克隆与项目脚本）</summary>
             <div className="modal-grid" style={{ marginTop: "10px" }}>
               <label className="modal-field">
                 <span>复制未跟踪文件</span>
@@ -479,6 +505,69 @@ export function SpaceModal() {
                   value={cloneDeps}
                   onChange={(e) =>
                     setCloneDeps((e.currentTarget as HTMLInputElement).value)
+                  }
+                />
+              </label>
+            </div>
+
+            <div className="script-grid" style={{ marginTop: "12px" }}>
+              <label className="modal-field">
+                <span>setup 脚本（创建工作树自动跑）</span>
+                <input
+                  aria-label="setup 脚本"
+                  className="input mono"
+                  placeholder="如 pnpm install --frozen-lockfile"
+                  value={scriptSetup}
+                  onChange={(e) =>
+                    setScriptSetup((e.currentTarget as HTMLInputElement).value)
+                  }
+                />
+              </label>
+              <label className="modal-field">
+                <span>dev 脚本</span>
+                <input
+                  aria-label="dev 脚本"
+                  className="input mono"
+                  placeholder="如 pnpm dev"
+                  value={scriptDev}
+                  onChange={(e) =>
+                    setScriptDev((e.currentTarget as HTMLInputElement).value)
+                  }
+                />
+              </label>
+              <label className="modal-field">
+                <span>test 脚本</span>
+                <input
+                  aria-label="test 脚本"
+                  className="input mono"
+                  placeholder="如 pnpm test"
+                  value={scriptTest}
+                  onChange={(e) =>
+                    setScriptTest((e.currentTarget as HTMLInputElement).value)
+                  }
+                />
+              </label>
+              <label className="modal-field">
+                <span>lint 脚本</span>
+                <input
+                  aria-label="lint 脚本"
+                  className="input mono"
+                  placeholder="如 pnpm typecheck"
+                  value={scriptLint}
+                  onChange={(e) =>
+                    setScriptLint((e.currentTarget as HTMLInputElement).value)
+                  }
+                />
+              </label>
+              <label className="modal-field">
+                <span>deliver 脚本</span>
+                <input
+                  aria-label="deliver 脚本"
+                  className="input mono"
+                  placeholder="可选交付后置命令"
+                  value={scriptDeliver}
+                  onChange={(e) =>
+                    setScriptDeliver((e.currentTarget as HTMLInputElement).value)
                   }
                 />
               </label>

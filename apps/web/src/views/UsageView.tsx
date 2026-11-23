@@ -1,13 +1,17 @@
 import { Fragment, useState } from "react";
+import { RefreshIcon } from "../components/Icons";
+import { ProviderAvatar } from "../components/ProviderAvatar";
 import { ViewFrame } from "../components/ViewFrame";
 import { fmtTokens, fmtUsd } from "../state/format";
 import {
   computeAgentCostUsd,
   computeBucketCostUsd,
+  computeBucketSavedUsd,
   computeGrandSavedUsd,
   computeGrandTotalCostUsd,
   computeTaskCostUsd,
-  extractAgentQuotas,
+  extractEffectiveQuotas,
+  formatModelPricingSummary,
   quotaClassName,
 } from "../state/pricing";
 import { useKilnStore } from "../state/store";
@@ -38,7 +42,9 @@ export function UsageView() {
   const {
     usage,
     pricing,
+    pricingSyncBusy,
     providerUsage,
+    providerStatuses,
     ratesByTask,
     liveTotals,
     tasks,
@@ -54,6 +60,8 @@ export function UsageView() {
       ? computeGrandTotalCostUsd(usage, pricing)
       : (liveTotals?.costUsd ?? usage.costUsd);
   const savedUsd = computeGrandSavedUsd(usage, pricing);
+  const totalCacheWrite = usage.cacheWriteTokens ?? 0;
+  const totalUncachedIn = Math.max(0, usage.inputTokens - usage.cachedInputTokens);
   const cacheHitRate =
     usage.inputTokens > 0
       ? Math.round((usage.cachedInputTokens / usage.inputTokens) * 100)
@@ -78,7 +86,10 @@ export function UsageView() {
     }
   }
 
-  const quotas = extractAgentQuotas(providerUsage);
+  const statusByProvider = new Map(
+    providerStatuses.map((p) => [p.provider_id, p]),
+  );
+  const quotas = extractEffectiveQuotas(providerStatuses, providerUsage);
   const agentNames = Array.from(
     new Set([...Object.keys(usage.byAgent), ...Object.keys(quotas)]),
   );
@@ -109,23 +120,34 @@ export function UsageView() {
         <>
           <h1 className="tb-title">用量与费用</h1>
           <span className="tb-sub">
-            按 Agent 和模型拆分，费用一律按 API 标价折算
+            按 API 标价折算（入·读·写·出）· 不伪造官方余额
           </span>
         </>
       }
       right={
-        <div className="seg" role="group" aria-label="统计区间">
-          {USAGE_PERIODS.map(([k, label]) => (
-            <button
-              key={k}
-              type="button"
-              className={usagePeriod === k ? "on" : ""}
-              onClick={() => setUsagePeriod(k)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            disabled={pricingSyncBusy}
+            onClick={() => void store.syncPricing({ force: true })}
+          >
+            <RefreshIcon />
+            <span>{pricingSyncBusy ? "同步中…" : "同步单价"}</span>
+          </button>
+          <div className="seg" role="group" aria-label="统计区间">
+            {USAGE_PERIODS.map(([k, label]) => (
+              <button
+                key={k}
+                type="button"
+                className={usagePeriod === k ? "on" : ""}
+                onClick={() => setUsagePeriod(k)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </>
       }
     >
       <div className="page">
@@ -133,20 +155,20 @@ export function UsageView() {
           <div className="stat">
             <dt>折算总费用</dt>
             <dd>{fmtUsd(totalCostUsd)}</dd>
-            <p>按 API 标价折算</p>
+            <p>按 API 标价折算（含缓存写溢价）</p>
           </div>
           <div className="stat">
             <dt>Token 合计</dt>
             <dd>{fmtTokens(usage.totalTokens)}</dd>
             <p>
-              输入 {fmtTokens(usage.inputTokens)} · 输出{" "}
-              {fmtTokens(usage.outputTokens)}
+              新 {fmtTokens(totalUncachedIn)} · 读 {fmtTokens(usage.cachedInputTokens)} ·
+              写 {fmtTokens(totalCacheWrite)} · 出 {fmtTokens(usage.outputTokens)}
             </p>
           </div>
           <div className="stat">
             <dt>缓存命中率</dt>
             <dd>{cacheHitRate}%</dd>
-            <p>缓存省下约 {fmtUsd(savedUsd)}</p>
+            <p>缓存省下约 {fmtUsd(savedUsd)}（已扣写溢价）</p>
           </div>
           <div className="stat">
             <dt>当前输出</dt>
@@ -170,12 +192,13 @@ export function UsageView() {
                 <tr>
                   <th>Agent / 模型</th>
                   <th>实时</th>
-                  <th>输入</th>
-                  <th>其中缓存</th>
+                  <th>新输入</th>
+                  <th>缓存读</th>
+                  <th>缓存写</th>
                   <th>输出</th>
-                  <th>命中率</th>
+                  <th>命中 · 净省</th>
                   <th>费用</th>
-                  <th>额度 / 单价（每百万：输入 / 缓存 / 输出）</th>
+                  <th>额度 / 单价（入·读·写·出）</th>
                 </tr>
               </thead>
               <tbody>
@@ -183,10 +206,13 @@ export function UsageView() {
                   const bucket = usage.byAgent[agent] ?? {
                     inputTokens: 0,
                     cachedInputTokens: 0,
+                    cacheWriteTokens: 0,
                     outputTokens: 0,
                     totalTokens: 0,
                     costUsd: 0,
                   };
+                  const uncached = Math.max(0, bucket.inputTokens - bucket.cachedInputTokens);
+                  const cacheWrite = bucket.cacheWriteTokens ?? 0;
                   const agentCost = computeAgentCostUsd(agent, usage, pricing);
                   const agentHit =
                     bucket.inputTokens > 0
@@ -194,32 +220,40 @@ export function UsageView() {
                       : "—";
                   const liveRate = Math.round(liveRateByAgent[agent] ?? 0);
                   const quota = quotas[agent];
+                  const provStatus = statusByProvider.get(agent);
+                  const isCooldown = provStatus?.status === "cooldown";
                   const modelMap = usage.byAgentModel?.[agent] ?? {};
 
                   return (
                     <Fragment key={`agent-group-${agent}`}>
                       <tr key={`agent-${agent}`} className="agent">
                         <td>
-                          {agent}
-                          {quota?.note ? (
-                            <span
-                              className="muted"
-                              style={{ marginLeft: "8px", fontSize: "12px" }}
-                            >
-                              {quota.note}
-                            </span>
-                          ) : null}
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
+                            <ProviderAvatar providerId={agent} />
+                            <span>{agent}</span>
+                            {quota?.note ? (
+                              <span className="muted" style={{ fontSize: "12px" }}>
+                                {quota.note}
+                              </span>
+                            ) : null}
+                          </span>
                         </td>
                         <td className={liveRate > 0 ? "live" : ""}>
                           {liveRate > 0 ? `${liveRate} tok/s` : "—"}
                         </td>
-                        <td>{fmtTokens(bucket.inputTokens)}</td>
+                        <td>{fmtTokens(uncached)}</td>
                         <td>{fmtTokens(bucket.cachedInputTokens)}</td>
+                        <td>{fmtTokens(cacheWrite)}</td>
                         <td>{fmtTokens(bucket.outputTokens)}</td>
                         <td>{agentHit}</td>
                         <td>{fmtUsd(agentCost)}</td>
                         <td>
-                          {quota ? (
+                          {isCooldown ? (
+                            <span className="chip chip-ask">
+                              429 冷却中
+                              {provStatus?.cooldown_until ? ` · ${provStatus.cooldown_until}` : ""}
+                            </span>
+                          ) : quota ? (
                             <div className="quota-cell">
                               <span className="muted" style={{ fontSize: "11.5px" }}>
                                 {quota.label}
@@ -244,21 +278,42 @@ export function UsageView() {
                       </tr>
                       {Object.entries(modelMap).map(([mName, mBucket]) => {
                         const p = pricing.models[mName];
+                        const mUncached = Math.max(
+                          0,
+                          mBucket.inputTokens - mBucket.cachedInputTokens,
+                        );
+                        const mWrite = mBucket.cacheWriteTokens ?? 0;
                         const mHit =
                           mBucket.inputTokens > 0
                             ? `${Math.round((mBucket.cachedInputTokens / mBucket.inputTokens) * 100)}%`
                             : "—";
+                        const mSaved = p ? computeBucketSavedUsd(mName, mBucket, pricing) : null;
                         return (
                           <tr key={`am-${agent}-${mName}`} className="model">
                             <td>{mName}</td>
                             <td>—</td>
-                            <td>{fmtTokens(mBucket.inputTokens)}</td>
+                            <td>{fmtTokens(mUncached)}</td>
                             <td>{fmtTokens(mBucket.cachedInputTokens)}</td>
+                            <td>{fmtTokens(mWrite)}</td>
                             <td>{fmtTokens(mBucket.outputTokens)}</td>
-                            <td>{mHit}</td>
+                            <td>
+                              {mSaved !== null ? `${mHit} · ${fmtUsd(mSaved)}` : mHit}
+                            </td>
                             <td>{fmtUsd(computeBucketCostUsd(mName, mBucket, pricing))}</td>
                             <td className="muted" style={{ fontSize: "11.5px" }}>
-                              {p ? `$${p.in} / $${p.cached} / $${p.out}` : "未配置单价"}
+                              {p ? (
+                                formatModelPricingSummary(mName, p)
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="link"
+                                  onClick={() =>
+                                    store.go("settings", { settingsTab: "pricing" })
+                                  }
+                                >
+                                  未配置单价 · 补录
+                                </button>
+                              )}
                             </td>
                           </tr>
                         );
@@ -270,21 +325,40 @@ export function UsageView() {
                 {!usage.byAgentModel &&
                   Object.entries(usage.byModel).map(([mName, mBucket]) => {
                     const p = pricing.models[mName];
+                    const mUncached = Math.max(
+                      0,
+                      mBucket.inputTokens - mBucket.cachedInputTokens,
+                    );
+                    const mWrite = mBucket.cacheWriteTokens ?? 0;
                     const mHit =
                       mBucket.inputTokens > 0
                         ? `${Math.round((mBucket.cachedInputTokens / mBucket.inputTokens) * 100)}%`
                         : "—";
+                    const mSaved = p ? computeBucketSavedUsd(mName, mBucket, pricing) : null;
                     return (
                       <tr key={`model-${mName}`} className="model">
                         <td>{mName}</td>
                         <td>—</td>
-                        <td>{fmtTokens(mBucket.inputTokens)}</td>
+                        <td>{fmtTokens(mUncached)}</td>
                         <td>{fmtTokens(mBucket.cachedInputTokens)}</td>
+                        <td>{fmtTokens(mWrite)}</td>
                         <td>{fmtTokens(mBucket.outputTokens)}</td>
-                        <td>{mHit}</td>
+                        <td>{mSaved !== null ? `${mHit} · ${fmtUsd(mSaved)}` : mHit}</td>
                         <td>{fmtUsd(computeBucketCostUsd(mName, mBucket, pricing))}</td>
                         <td className="muted" style={{ fontSize: "11.5px" }}>
-                          {p ? `$${p.in} / $${p.cached} / $${p.out}` : "未配置单价"}
+                          {p ? (
+                            formatModelPricingSummary(mName, p)
+                          ) : (
+                            <button
+                              type="button"
+                              className="link"
+                              onClick={() =>
+                                store.go("settings", { settingsTab: "pricing" })
+                              }
+                            >
+                              未配置单价 · 补录
+                            </button>
+                          )}
                         </td>
                       </tr>
                     );
@@ -341,8 +415,8 @@ export function UsageView() {
         </section>
 
         <p className="footnote">
-          所有费用一律按 API 标价折算：（输入 − 缓存）× 输入单价 + 缓存 × 缓存单价 +
-          输出 × 输出单价。若后端未提供订阅额度窗口数据，仅显示 API 折算费用。
+          所有费用一律按 API 标价折算：新输入 × 输入单价 + 缓存读 × 缓存单价 +
+          缓存写 × 写缓存单价（Claude 默认 1.25×） + 输出 × 输出单价。若后端未提供订阅额度窗口数据，仅显示 API 折算费用。
         </p>
       </div>
     </ViewFrame>

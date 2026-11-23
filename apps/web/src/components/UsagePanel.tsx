@@ -2,7 +2,7 @@ import { fmtUsd } from "../state/format";
 import {
   computeAgentCostUsd,
   computeGrandTotalCostUsd,
-  extractAgentQuotas,
+  extractEffectiveQuotas,
   quotaClassName,
 } from "../state/pricing";
 import { useKilnStore } from "../state/store";
@@ -13,6 +13,7 @@ export function UsagePanel() {
     usage,
     pricing,
     providerUsage,
+    providerStatuses,
     ratesByTask,
     liveTotals,
     tasks,
@@ -51,24 +52,29 @@ export function UsagePanel() {
     }
   }
 
-  const quotas = extractAgentQuotas(providerUsage);
+  const quotas = extractEffectiveQuotas(providerStatuses, providerUsage);
   const agentNames = Array.from(
     new Set([...Object.keys(usage.byAgent), ...Object.keys(quotas)]),
   );
 
+  const readyProvidersCount = providerStatuses.filter(
+    (p) => p.status === "ready",
+  ).length;
   const paseoConnected = backends.some(
     (b) => (b.backendId ?? b.id ?? "").toLowerCase().includes("paseo") && b.connected,
   );
   const connLabel =
-    backends.length > 0
-      ? paseoConnected
-        ? "Paseo 已连接"
-        : "底座离线"
-      : sseStatus === "connected"
-        ? "实时流已连接"
-        : sseStatus === "reconnecting"
-          ? "实时流重连中"
-          : "本地工作台";
+    readyProvidersCount > 0
+      ? `${readyProvidersCount} 份订阅就绪`
+      : backends.length > 0
+        ? paseoConnected
+          ? "Paseo 已连接"
+          : "底座离线"
+        : sseStatus === "connected"
+          ? "实时流已连接"
+          : sseStatus === "reconnecting"
+            ? "实时流重连中"
+            : "本地工作台";
 
   return (
     <div id="usagePanel" className="side-bottom">
