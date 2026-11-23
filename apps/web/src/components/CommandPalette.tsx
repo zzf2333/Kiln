@@ -76,6 +76,19 @@ export function CommandPalette() {
       if (!typing && !e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === "n") {
         e.preventDefault();
         store.go("intake");
+        return;
+      }
+
+      if (
+        !typing &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        e.key.toLowerCase() === "j" &&
+        store.getState().view === "detail"
+      ) {
+        e.preventDefault();
+        store.toggleScriptDrawer();
       }
     };
 
@@ -95,6 +108,17 @@ export function CommandPalette() {
   };
 
   const actions: PaletteAction[] = [
+    ...(state.view === "detail" && state.taskId
+      ? [
+          {
+            label: "当前任务：开关脚本输出 (J)",
+            run: () => {
+              store.setPaletteOpen(false);
+              store.toggleScriptDrawer();
+            },
+          },
+        ]
+      : []),
     { label: "新需求", run: nav("intake") },
     { label: "总览", run: nav("board") },
     { label: "编排与阵容", run: nav("lineup") },

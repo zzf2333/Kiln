@@ -1,16 +1,24 @@
 import { useState } from "react";
 import {
   extractWorkflowToggles,
+  flattenWorkflowSteps,
+  validateBlueprintAgainstRoster,
   type Priority,
   type Track,
+  type WorkflowAgentNode,
   type WorkflowPreset,
+  type WorkspaceMode,
 } from "@kiln/protocol/web";
+import type { TaskAttachment } from "../api/types";
+import { AttachmentLightbox } from "../components/AttachmentLightbox";
 import { ChatComposer } from "../components/ChatComposer";
 import { ChatTimeline } from "../components/ChatTimeline";
-import { CheckIcon } from "../components/Icons";
+import { CheckIcon, CloseIcon, GitPrIcon } from "../components/Icons";
 import { MarkdownContent } from "../components/MarkdownContent";
+import { RosterRolePicker } from "../components/RosterRolePicker";
+import { SplitCardsPanel } from "../components/SplitCardsPanel";
 import { ViewFrame } from "../components/ViewFrame";
-import { WORKFLOW_PRESET_LABEL, fmtTime } from "../state/format";
+import { WORKFLOW_PRESET_LABEL, fmtTime, stageMeta } from "../state/format";
 import {
   getProjectSpaces,
   isProjectSpace,
@@ -45,6 +53,9 @@ export function IntakeView() {
   const [chatInput, setChatInput] = useState("");
   const [editingBriefRaw, setEditingBriefRaw] = useState(false);
   const [contractEditOpen, setContractEditOpen] = useState(false);
+  const [newNonGoalInput, setNewNonGoalInput] = useState("");
+  const [lightboxAttachment, setLightboxAttachment] =
+    useState<TaskAttachment | null>(null);
 
   const {
     intakeDraftId,
@@ -106,6 +117,25 @@ export function IntakeView() {
   const hasBrief = intakeForm.brief_markdown.trim().length > 0;
   const openQuestions = intakeForm.open_questions;
   const effectiveWorkflow = resolveFormEffectiveWorkflow(intakeForm);
+  const effectiveWorkspaceMode: Exclude<WorkspaceMode, "external_only"> =
+    isProjectMode
+      ? "git_worktree"
+      : intakeForm.workspace_mode === "host_scoped"
+        ? "host_scoped"
+        : "scratch_dir";
+  const rosterValidation = validateBlueprintAgainstRoster(
+    effectiveWorkflow,
+    state.roster.roster,
+    { workspaceMode: effectiveWorkspaceMode },
+  );
+  const agentStepNodes = flattenWorkflowSteps(effectiveWorkflow).filter(
+    (node): node is WorkflowAgentNode => node.kind === "agent",
+  );
+  const isSplitMode = intakeForm.split_cards.length > 0;
+  const draftAttachmentUrl = (att: TaskAttachment): string =>
+    intakeDraftId
+      ? `/api/drafts/${encodeURIComponent(intakeDraftId)}/attachments/${encodeURIComponent(att.id)}`
+      : "";
   const wfToggles = extractWorkflowToggles(effectiveWorkflow);
   const workflowPreviewParts: string[] = ["立项"];
   if (wfToggles.includePlan) {
@@ -147,7 +177,7 @@ export function IntakeView() {
 
   const handleSend = async (): Promise<void> => {
     const val = chatInput.trim();
-    if (!val || intakeBusy) return;
+    if (!val || intakeBusy || state.attachmentUploadBusy) return;
     if (val.toLowerCase() === "/new") {
       setChatInput("");
       store.startNewIntake();
@@ -182,7 +212,7 @@ export function IntakeView() {
             <button
               type="button"
               className="btn btn-ghost"
-              disabled={intakeBusy}
+              disabled={intakeBusy || state.attachmentUploadBusy}
               onClick={() => void store.closeIntakeSession()}
             >
               关闭对话
@@ -192,7 +222,7 @@ export function IntakeView() {
             <button
               type="button"
               className="btn btn-ghost"
-              disabled={intakeBusy}
+              disabled={intakeBusy || state.attachmentUploadBusy}
               onClick={() => store.startNewIntake()}
             >
               新建需求
@@ -221,6 +251,7 @@ export function IntakeView() {
                   <button
                     type="button"
                     className="btn btn-sm"
+                    disabled={intakeBusy || state.attachmentUploadBusy}
                     onClick={() => {
                       setEditingBriefRaw(false);
                       void store.loadDraftIntoIntake(d);
@@ -234,7 +265,7 @@ export function IntakeView() {
                     className="draft-del"
                     aria-label={`删除草稿 ${d.title || d.id}`}
                     title="删除草稿"
-                    disabled={intakeBusy}
+                    disabled={intakeBusy || state.attachmentUploadBusy}
                     onClick={() => void store.deleteIntakeDraft(d.id)}
                   >
                     ×
@@ -407,11 +438,17 @@ export function IntakeView() {
               projectBlocked
                 ? "请先添加或选择项目空间"
                 : isProjectMode && selectedProject
-                  ? `描述「${selectedProject.name}」需求（/ 调用指令或技能，@ 选择文件、MCP 或任务）`
-                  : "描述本机或临时任务需求（/ 调用指令或技能，@ 选择当前目录文件、MCP 或任务）"
+                  ? `描述「${selectedProject.name}」需求（/ 调用指令或技能，@ 选择文件、MCP 或任务，可粘贴截图）`
+                  : "描述本机或临时任务需求（/ 调用指令或技能，@ 选择当前目录文件、MCP 或任务，可粘贴截图）"
             }
             onChange={setChatInput}
             onSend={() => void handleSend()}
+            attachments={intakeForm.attachments}
+            attachmentUrlFor={draftAttachmentUrl}
+            attachmentBusy={state.attachmentUploadBusy}
+            onUploadImageFiles={(files) => void store.uploadIntakeAttachments(files)}
+            onRemoveAttachment={(attId) => void store.deleteIntakeAttachment(attId)}
+            onPreviewAttachment={(att) => setLightboxAttachment(att)}
             onClientCommand={(action) => {
               if (action === "new_draft") {
                 store.startNewIntake();
@@ -527,7 +564,62 @@ export function IntakeView() {
                     </button>
                   </div>
                 )}
+
+                {effectiveWorkflow.pm_rationale ||
+                intakeForm.non_goals.length > 0 ||
+                intakeForm.attachments.length > 0 ||
+                isSplitMode ? (
+                  <div className="pm-assign" aria-label="立项约束摘要">
+                    {isSplitMode ? (
+                      <div className="contract-head">
+                        <span className="chip chip-live">
+                          已生成 {intakeForm.split_cards.length} 张拆卡方案
+                        </span>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-light"
+                          onClick={() => store.setIntakeRightTab("settings")}
+                        >
+                          查看拆卡 DAG
+                        </button>
+                      </div>
+                    ) : null}
+                    {effectiveWorkflow.pm_rationale ? (
+                      <div className="pm-rationale">
+                        <b>PM 排兵：</b>
+                        {effectiveWorkflow.pm_rationale}
+                      </div>
+                    ) : null}
+                    {intakeForm.non_goals.length > 0 ? (
+                      <div className="ng-list">
+                        {intakeForm.non_goals.map((item) => (
+                          <span key={item} className="ng-tag">
+                            不做: {item}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    {intakeForm.attachments.length > 0 ? (
+                      <span className="muted" style={{ fontSize: "11.5px" }}>
+                        已附 {intakeForm.attachments.length} 张截图，提交后随卡片保存
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
+            ) : isSplitMode ? (
+              <SplitCardsPanel
+                cards={intakeForm.split_cards}
+                roster={state.roster}
+                busy={intakeBusy || state.attachmentUploadBusy}
+                onUpdateCard={(idx, patch) => store.updateSplitCard(idx, patch)}
+                onAddCard={() => store.addSplitCard()}
+                onRemoveCard={(idx) => store.removeSplitCard(idx)}
+                onCommit={() =>
+                  void store.commitSplitIntakeTasks(intakeForm.split_cards)
+                }
+                onCancel={() => store.clearSplitCards()}
+              />
             ) : (
               <div className="settings-panel" role="tabpanel" aria-label="立项设置">
                 <dl className="draft-fields">
@@ -735,6 +827,60 @@ export function IntakeView() {
                   </div>
                 </dl>
 
+                <div className="pm-assign" aria-label="PM 排兵点将">
+                  <div className="contract-head">
+                    <span className="contract-title">PM 排兵点将</span>
+                    <span
+                      className={`chip ${
+                        rosterValidation.ok ? "chip-ok" : "chip-bad"
+                      }`}
+                    >
+                      {rosterValidation.ok
+                        ? "权限校验通过"
+                        : `红线拦截 (${rosterValidation.errors.length})`}
+                    </span>
+                  </div>
+                  {effectiveWorkflow.pm_rationale ? (
+                    <div className="pm-rationale">
+                      <b>为什么这样排：</b>
+                      {effectiveWorkflow.pm_rationale}
+                    </div>
+                  ) : null}
+                  <div className="assign-list">
+                    {agentStepNodes.map((node, nodeIdx) => (
+                      <div
+                        key={`${node.stage}-${nodeIdx}`}
+                        className="assign-row"
+                      >
+                        <div className="assign-stage">
+                          <b>{stageMeta(node.stage).label}</b>
+                          {node.rationale ? (
+                            <small title={node.rationale}>{node.rationale}</small>
+                          ) : (
+                            <small>{node.role}</small>
+                          )}
+                        </div>
+                        <RosterRolePicker
+                          stage={node.stage}
+                          workspaceMode={effectiveWorkspaceMode}
+                          selectedRoleId={node.roster_role}
+                          roster={state.roster}
+                          providerStatuses={state.providerStatuses}
+                          disabled={intakeBusy}
+                          onSelect={(roleId) =>
+                            store.setIntakeStepRosterRole(node.stage, roleId)
+                          }
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  {!rosterValidation.ok ? (
+                    <div className="note note-bad" role="alert">
+                      {rosterValidation.errors.join("；")}
+                    </div>
+                  ) : null}
+                </div>
+
                 <div className="contract-card">
                   <div className="contract-head">
                     <div>
@@ -744,6 +890,15 @@ export function IntakeView() {
                       </span>
                     </div>
                     <div className="contract-actions">
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        disabled={intakeBusy || projectBlocked}
+                        onClick={() => store.initSplitCardsFromDraft()}
+                      >
+                        <GitPrIcon />
+                        <span>拆分为多卡 DAG</span>
+                      </button>
                       <button
                         type="button"
                         className="btn btn-sm btn-light"
@@ -915,28 +1070,98 @@ export function IntakeView() {
                       </div>
                     </dl>
                   )}
+
+                  <div className="ng-box" aria-label="明确不做边界">
+                    <span className="contract-title" style={{ fontSize: "12px" }}>
+                      明确不做（non_goals）
+                    </span>
+                    {intakeForm.non_goals.length > 0 ? (
+                      <div className="ng-list">
+                        {intakeForm.non_goals.map((item, idx) => (
+                          <span key={`${item}-${idx}`} className="ng-tag">
+                            <span>{item}</span>
+                            <button
+                              type="button"
+                              aria-label={`移除排除项 ${item}`}
+                              onClick={() => store.removeIntakeNonGoal(idx)}
+                            >
+                              <CloseIcon />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="muted" style={{ fontSize: "11.5px" }}>
+                        尚未添加排除项（PM 梳理后也会自动锁定）
+                      </span>
+                    )}
+                    <div className="ng-add-row">
+                      <input
+                        aria-label="新增明确不做项"
+                        className="input"
+                        placeholder="如：不引入新第三方依赖"
+                        value={newNonGoalInput}
+                        onChange={(e) => setNewNonGoalInput(e.currentTarget.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            if (newNonGoalInput.trim()) {
+                              store.addIntakeNonGoal(newNonGoalInput);
+                              setNewNonGoalInput("");
+                            }
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        disabled={!newNonGoalInput.trim()}
+                        onClick={() => {
+                          if (newNonGoalInput.trim()) {
+                            store.addIntakeNonGoal(newNonGoalInput);
+                            setNewNonGoalInput("");
+                          }
+                        }}
+                      >
+                        添加排除项
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
           </div>
 
           <div className="draft-foot">
-            <button
-              type="button"
-              className="btn btn-light"
-              id="btnCreateTask"
-              style={{ height: "36px", justifyContent: "center" }}
-              disabled={!ready || intakeBusy || projectBlocked}
-              onClick={() => void store.commitIntakeTask()}
-            >
-              开始推进
-            </button>
+            {!isSplitMode ? (
+              <button
+                type="button"
+                className="btn btn-light"
+                id="btnCreateTask"
+                style={{ height: "36px", justifyContent: "center" }}
+                disabled={
+                  !ready ||
+                  !rosterValidation.ok ||
+                  intakeBusy ||
+                  state.attachmentUploadBusy ||
+                  projectBlocked
+                }
+                onClick={() => void store.commitIntakeTask()}
+              >
+                开始推进
+              </button>
+            ) : null}
             <button
               type="button"
               className="btn"
               id="btnSaveDraft"
               style={{ height: "32px", justifyContent: "center" }}
-              disabled={!intakeForm.title.trim() || intakeBusy || projectBlocked}
+              disabled={
+                !intakeForm.title.trim() ||
+                intakeBusy ||
+                state.attachmentUploadBusy ||
+                projectBlocked
+              }
               onClick={() => void store.saveIntakeDraft()}
             >
               先存为草稿
@@ -944,17 +1169,29 @@ export function IntakeView() {
             <span className="note" id="draftNote">
               {projectBlocked
                 ? "请先添加或选择目标项目空间"
-                : ready
-                  ? openQuestions.length > 0
-                    ? `契约已齐，但仍有 ${openQuestions.length} 项待拍板；也可直接点击开始推进`
-                    : hasBrief
-                      ? "《产品方案》与契约已就绪，确认后写入 card.yaml 和 BRIEF.md"
-                      : "确认后写入 card.yaml 和 BRIEF.md，进入队列调度"
-                  : `还差 ${8 - doneCount} 项，继续对话或点「让立项助手补全」`}
+                : !rosterValidation.ok
+                  ? rosterValidation.errors[0]
+                  : isSplitMode
+                    ? "当前处于多卡拆片 DAG 模式，请核对上方拓扑依赖后点击「批量立项」"
+                    : ready
+                      ? openQuestions.length > 0
+                        ? `契约已齐，但仍有 ${openQuestions.length} 项待拍板；也可直接点击开始推进`
+                        : hasBrief
+                          ? "《产品方案》与契约已就绪，确认后写入 card.yaml 和 BRIEF.md"
+                          : "确认后写入 card.yaml 和 BRIEF.md，进入队列调度"
+                      : `还差 ${8 - doneCount} 项，继续对话或点「让立项助手补全」`}
             </span>
           </div>
         </aside>
       </div>
+
+      <AttachmentLightbox
+        attachment={lightboxAttachment}
+        imageUrl={
+          lightboxAttachment ? draftAttachmentUrl(lightboxAttachment) : null
+        }
+        onClose={() => setLightboxAttachment(null)}
+      />
     </ViewFrame>
   );
 }

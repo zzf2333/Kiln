@@ -1,11 +1,24 @@
-import { useState } from "react";
+import { Dialog } from "radix-ui";
+import { useEffect, useState } from "react";
 import type { GateReport, StageId } from "@kiln/protocol/web";
-import type { TaskRunDetail } from "../api/types";
+import type { TaskAttachment, TaskRunDetail } from "../api/types";
+import { AttachmentLightbox } from "../components/AttachmentLightbox";
+import { CheckpointPopover } from "../components/CheckpointPopover";
 import { DecisionBox } from "../components/DecisionBox";
+import { DeliverPrModal } from "../components/DeliverPrModal";
 import { FlameCanvas } from "../components/FlameCanvas";
-import { CheckIcon } from "../components/Icons";
+import {
+  CheckIcon,
+  CloseIcon,
+  FileTextIcon,
+  GitPrIcon,
+  ShieldIcon,
+  TerminalIcon,
+} from "../components/Icons";
 import { MarkdownContent } from "../components/MarkdownContent";
 import { PrioritySelect } from "../components/PrioritySelect";
+import { ProviderAvatar } from "../components/ProviderAvatar";
+import { ScriptDrawer } from "../components/ScriptDrawer";
 import { ViewFrame } from "../components/ViewFrame";
 import { HostStagedDiffSection } from "./ResolveView";
 import {
@@ -23,8 +36,8 @@ import {
   splitFrontmatter,
   stageMeta,
 } from "../state/format";
-import { computeTurnsCostUsd } from "../state/pricing";
-import { useKilnStore } from "../state/store";
+import { computeGrandSavedUsd, computeTurnsCostUsd } from "../state/pricing";
+import { isProjectSpace, useKilnStore } from "../state/store";
 
 type RunVisualState = "active" | "paused" | "paused_manual" | "returned" | "done";
 
@@ -85,12 +98,33 @@ export function DetailView() {
   const { store, state } = useKilnStore();
   const [showHandoff, setShowHandoff] = useState(false);
   const [showRawEvents, setShowRawEvents] = useState(false);
+  const [deliverPrOpen, setDeliverPrOpen] = useState(false);
+  const [briefModalOpen, setBriefModalOpen] = useState(false);
+  const [lightboxAttachment, setLightboxAttachment] =
+    useState<TaskAttachment | null>(null);
 
   const taskId = state.taskId;
   const detail = taskId ? state.taskDetails[taskId] : undefined;
   const taskSummary = taskId
     ? state.tasks.find((t) => t.id === taskId)
     : undefined;
+
+  useEffect(() => {
+    setShowHandoff(false);
+    setShowRawEvents(false);
+    setDeliverPrOpen(false);
+    setBriefModalOpen(false);
+    setLightboxAttachment(null);
+  }, [taskId]);
+
+  const detailSpaceId = detail?.card.space;
+  const detailTaskId = detail?.card.id;
+  useEffect(() => {
+    if (!detailTaskId || !detailSpaceId) return;
+    if (state.scriptDrawerOpen || isProjectSpace(state.spaces[detailSpaceId])) {
+      void store.loadScriptRunsForTask(detailSpaceId, detailTaskId);
+    }
+  }, [detailTaskId, detailSpaceId, state.scriptDrawerOpen]);
 
   if (!taskId) {
     return null;
@@ -355,6 +389,150 @@ export function DetailView() {
     detail.usage.costUsd,
     state.pricing,
   );
+  const taskSavedUsd = computeGrandSavedUsd(detail.usage, state.pricing);
+
+  const spaceObj = state.spaces[card.space];
+  const spaceScripts = spaceObj?.scripts;
+  const hasConfiguredScripts = Boolean(
+    spaceScripts &&
+      Object.values(spaceScripts).some(
+        (cmd) => typeof cmd === "string" && cmd.trim().length > 0,
+      ),
+  );
+  const canToggleScriptDrawer = isProjectSpace(spaceObj) || hasConfiguredScripts;
+  const hasRunningScript = Object.values(state.scriptRuns).some(
+    (run) =>
+      run.spaceId === card.space &&
+      (run.taskId === card.id || !run.taskId) &&
+      !run.done,
+  );
+
+  // Latest context window telemetry: prefer live SSE snapshot, fallback to run events.
+  const contextWindowInfo = (() => {
+    const live = state.contextWindowByTask[card.id];
+    if (live) return live;
+    for (let i = detail.runs.length - 1; i >= 0; i -= 1) {
+      const evs = detail.runs[i]!.events;
+      for (let j = evs.length - 1; j >= 0; j -= 1) {
+        const ev = evs[j]!;
+        if (ev.kind === "context_window") {
+          const percent =
+            ev.percent ??
+            Math.min(
+              100,
+              Math.round((ev.usedTokens / Math.max(1, ev.contextWindowTokens)) * 100),
+            );
+          return {
+            usedTokens: ev.usedTokens,
+            contextWindowTokens: ev.contextWindowTokens,
+            percent,
+            at: ev.at,
+          };
+        }
+      }
+    }
+    return null;
+  })();
+
+  // Derive 4-Gate Anti-Drift indicators cleanly from deterministic gate & run records.
+  const latestGate = (() => {
+    for (let i = detail.runs.length - 1; i >= 0; i -= 1) {
+      if (detail.runs[i]!.gate) return detail.runs[i]!.gate!;
+    }
+    return null;
+  })();
+  const latestImplMeta = (() => {
+    for (let i = normalizedRuns.length - 1; i >= 0; i -= 1) {
+      if (normalizedRuns[i]!.stage === "implement" && normalizedRuns[i]!.raw.meta) {
+        return normalizedRuns[i]!.raw.meta!;
+      }
+    }
+    return null;
+  })();
+  const latestReviewMeta = (() => {
+    for (let i = normalizedRuns.length - 1; i >= 0; i -= 1) {
+      if (normalizedRuns[i]!.stage === "review" && normalizedRuns[i]!.raw.meta) {
+        return normalizedRuns[i]!.raw.meta!;
+      }
+    }
+    return null;
+  })();
+
+  const antiDriftGates: Array<{
+    label: string;
+    text: string;
+    tone: "ok" | "warn" | "bad";
+  }> = [
+    latestGate
+      ? {
+          label: "范围门禁",
+          text: latestGate.scope_ok
+            ? "0 越界"
+            : `${latestGate.out_of_scope_paths.length} 越界`,
+          tone: latestGate.scope_ok ? "ok" : "bad",
+        }
+      : card.workspace_mode === "scratch_dir"
+        ? { label: "沙盒隔离", text: "仅 scratch_dir", tone: "ok" }
+        : {
+            label: "范围门禁",
+            text: `已锁 ${card.contract.scope.length} 项`,
+            tone: "ok",
+          },
+    latestGate
+      ? {
+          label: "冻结测试",
+          text:
+            latestGate.frozen_files_changed.length === 0
+              ? "SHA256 一致"
+              : `${latestGate.frozen_files_changed.length} 处改动`,
+          tone: latestGate.frozen_files_changed.length === 0 ? "ok" : "bad",
+        }
+      : {
+          label: "冻结测试",
+          text:
+            card.contract.accept_files_hash === "pending"
+              ? "待锁定"
+              : "SHA256 就绪",
+          tone: card.contract.accept_files_hash === "pending" ? "warn" : "ok",
+        },
+    latestImplMeta && latestReviewMeta
+      ? {
+          label: "异构审查",
+          text: `${latestImplMeta.agent} ${
+            latestImplMeta.agent === latestReviewMeta.agent &&
+            latestImplMeta.model === latestReviewMeta.model
+              ? "="
+              : "≠"
+          } ${latestReviewMeta.agent}`,
+          tone:
+            latestImplMeta.agent === latestReviewMeta.agent &&
+            latestImplMeta.model === latestReviewMeta.model
+              ? "bad"
+              : "ok",
+        }
+      : !pipelineStages.includes("review")
+        ? { label: "流程模式", text: "直出短链", tone: "ok" }
+        : {
+            label: "异构审查",
+            text: state.roster.heterogeneous_review ? "异构开启" : "同家族允许",
+            tone: state.roster.heterogeneous_review ? "ok" : "warn",
+          },
+    latestGate
+      ? {
+          label: "验收门禁",
+          text: `exit ${latestGate.accept_exit_code}`,
+          tone: latestGate.accept_exit_code === 0 ? "ok" : "bad",
+        }
+      : { label: "验收门禁", text: "待运行", tone: "warn" },
+  ];
+
+  const alignHeadline =
+    normalizedRuns[normalizedRuns.length - 1]?.raw.antiDriftSummary?.output ??
+    card.workflow?.pm_rationale ??
+    card.contract.goal;
+
+  const taskAttachmentUrl = (att: TaskAttachment): string =>
+    `/api/tasks/${encodeURIComponent(card.id)}/attachments/${encodeURIComponent(att.id)}`;
 
   const handleExportHandoff = async (): Promise<void> => {
     const content = [
@@ -455,6 +633,36 @@ export function DetailView() {
               在 Paseo 中打开
             </a>
           ) : null}
+          {card.workspace_mode === "git_worktree" ? (
+            <>
+              <CheckpointPopover
+                taskId={card.id}
+                checkpoints={detail.checkpoints ?? []}
+                isRunning={taskState.status === "running"}
+              />
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setDeliverPrOpen(true)}
+              >
+                <GitPrIcon />
+                <span>提交 / PR</span>
+              </button>
+            </>
+          ) : null}
+          {canToggleScriptDrawer ? (
+            <button
+              type="button"
+              className={`btn ${state.scriptDrawerOpen ? "btn-light" : ""}`}
+              aria-pressed={state.scriptDrawerOpen}
+              title="开关脚本输出 (J)"
+              onClick={() => store.toggleScriptDrawer()}
+            >
+              <TerminalIcon />
+              <span>脚本</span>
+              {hasRunningScript ? <span className="dot dot-run" /> : null}
+            </button>
+          ) : null}
           <button
             type="button"
             className="btn"
@@ -510,6 +718,47 @@ export function DetailView() {
             ) : null}
           </div>
         </div>
+
+        <section className="align-panel" aria-label="防跑偏门禁状态">
+          <div className="align-top">
+            <span className="align-shield">
+              <ShieldIcon />
+            </span>
+            <b>防跑偏对齐</b>
+            <span className="align-txt" title={alignHeadline}>
+              {alignHeadline}
+            </span>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => setBriefModalOpen(true)}
+            >
+              <FileTextIcon />
+              <span>BRIEF.md</span>
+            </button>
+          </div>
+          <div className="align-gates">
+            {antiDriftGates.map((g) => (
+              <div key={g.label} className={`align-gate ${g.tone}`}>
+                <span className="align-gate-l">
+                  <span
+                    className={`dot ${
+                      g.tone === "ok"
+                        ? "dot-ok"
+                        : g.tone === "bad"
+                          ? "dot-bad"
+                          : "dot-ask"
+                    }`}
+                  />
+                  <span>{g.label}</span>
+                </span>
+                <span className="align-gate-v" title={g.text}>
+                  {g.text}
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
 
         <ol className="stations">
           {pipelineStages.map((st) => {
@@ -809,7 +1058,12 @@ export function DetailView() {
                                 {meta.label}
                                 {r.round > 1 ? ` · 第 ${r.round} 轮` : ""}
                               </strong>
-                              {r.raw.meta?.role ? (
+                              {r.raw.meta?.roster_role ? (
+                                <span className="chip">
+                                  {state.roster.roster[r.raw.meta.roster_role]?.name ??
+                                    r.raw.meta.roster_role}
+                                </span>
+                              ) : r.raw.meta?.role ? (
                                 <span className="chip">{r.raw.meta.role}</span>
                               ) : null}
                               <button
@@ -821,12 +1075,22 @@ export function DetailView() {
                                   void store.openRunTui(card.id, r.raw.dirName)
                                 }
                               >
+                                <ProviderAvatar providerId={agentName} />
                                 <span>{agentName}</span>
                                 <span className="mono">{sessionBadge}</span>
                                 {canOpenTui ? (
                                   <span className="session-open-hint">打开 TUI</span>
                                 ) : null}
                               </button>
+                              {r.raw.meta?.checkpoint_ref ? (
+                                <span
+                                  className="mono muted"
+                                  style={{ fontSize: "11px" }}
+                                  title={r.raw.meta.checkpoint_ref}
+                                >
+                                  快照:{r.raw.meta.checkpoint_ref.split("/").pop()}
+                                </span>
+                              ) : null}
                             </div>
                             <div className="session-card-meta">
                               <span className="mono">{fmtDurationMs(runDurMs)}</span>
@@ -879,6 +1143,61 @@ export function DetailView() {
                               </div>
                             </div>
                           </div>
+
+                          {r.raw.antiDriftSummary ? (
+                            <div className="anti-drift-box">
+                              <div className="anti-drift-head">
+                                <b>防跑偏对齐</b>
+                                <div className="gate-proof-row">
+                                  <span
+                                    className={`gate-proof-pill ${
+                                      r.raw.antiDriftSummary.gate_proof.schema_ok
+                                        ? "is-ok"
+                                        : "is-bad"
+                                    }`}
+                                  >
+                                    Schema
+                                  </span>
+                                  <span
+                                    className={`gate-proof-pill ${
+                                      r.raw.antiDriftSummary.gate_proof.scope_ok
+                                        ? "is-ok"
+                                        : "is-bad"
+                                    }`}
+                                  >
+                                    范围
+                                  </span>
+                                  <span
+                                    className={`gate-proof-pill ${
+                                      r.raw.antiDriftSummary.gate_proof.frozen_ok
+                                        ? "is-ok"
+                                        : "is-bad"
+                                    }`}
+                                  >
+                                    冻结
+                                  </span>
+                                  <span
+                                    className={`gate-proof-pill ${
+                                      r.raw.antiDriftSummary.gate_proof.accept_ok
+                                        ? "is-ok"
+                                        : "is-bad"
+                                    }`}
+                                  >
+                                    验收
+                                  </span>
+                                </div>
+                              </div>
+                              {r.raw.antiDriftSummary.alignment_points.length > 0 ? (
+                                <ul className="anti-drift-points">
+                                  {r.raw.antiDriftSummary.alignment_points.map(
+                                    (pt, ptIdx) => (
+                                      <li key={ptIdx}>{pt}</li>
+                                    ),
+                                  )}
+                                </ul>
+                              ) : null}
+                            </div>
+                          ) : null}
 
                           <div className="session-card-foot">
                             <button
@@ -1117,14 +1436,55 @@ export function DetailView() {
                   </dt>
                   <dd className="mono">{card.contract.scope.join("\n")}</dd>
                 </div>
+                {card.contract.non_goals && card.contract.non_goals.length > 0 ? (
+                  <div>
+                    <dt>明确不做</dt>
+                    <dd>{card.contract.non_goals.join("；")}</dd>
+                  </div>
+                ) : null}
+                {card.workflow?.pm_rationale ? (
+                  <div>
+                    <dt>PM 排兵理由</dt>
+                    <dd>{card.workflow.pm_rationale}</dd>
+                  </div>
+                ) : null}
               </dl>
             </section>
+
+            {detail.research && detail.research.trim().length > 0 ? (
+              <section>
+                <h3>技术调研报告（RESEARCH.md）</h3>
+                <div style={{ maxHeight: "240px", overflowY: "auto" }}>
+                  <MarkdownContent text={detail.research} />
+                </div>
+              </section>
+            ) : null}
 
             {detail.plan && detail.plan.trim().length > 0 ? (
               <section>
                 <h3>技术实施方案（PLAN.md）</h3>
                 <div style={{ maxHeight: "260px", overflowY: "auto" }}>
                   <MarkdownContent text={detail.plan} />
+                </div>
+              </section>
+            ) : null}
+
+            {detail.attachments && detail.attachments.length > 0 ? (
+              <section aria-label="任务附件截图">
+                <h3>附件截图（{detail.attachments.length}）</h3>
+                <div className="att-grid">
+                  {detail.attachments.map((att) => (
+                    <button
+                      key={att.id}
+                      type="button"
+                      className="att-thumb"
+                      title={`点击预览 ${att.filename}`}
+                      onClick={() => setLightboxAttachment(att)}
+                    >
+                      <img src={taskAttachmentUrl(att)} alt={att.filename} />
+                      <span>{att.filename}</span>
+                    </button>
+                  ))}
                 </div>
               </section>
             ) : null}
@@ -1196,10 +1556,108 @@ export function DetailView() {
                   </dd>
                 </div>
               </dl>
+              <div className="ctx-meter" aria-label="上下文窗口水位">
+                {contextWindowInfo ? (
+                  <>
+                    <div className="ctx-row">
+                      <span>上下文水位</span>
+                      <span className="mono">
+                        {fmtTokens(contextWindowInfo.usedTokens)} /{" "}
+                        {fmtTokens(contextWindowInfo.contextWindowTokens)}（
+                        {contextWindowInfo.percent}%）
+                      </span>
+                    </div>
+                    <div className="meter">
+                      <i
+                        className={
+                          contextWindowInfo.percent >= 85
+                            ? "bad"
+                            : contextWindowInfo.percent >= 70
+                              ? "warn"
+                              : "ok"
+                        }
+                        style={{ width: `${contextWindowInfo.percent}%` }}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <div className="ctx-row">
+                    <span>上下文水位</span>
+                    <span className="muted">等待执行器上报上下文水位</span>
+                  </div>
+                )}
+                <div className="ctx-row">
+                  <span className="muted">
+                    缓存读 {fmtTokens(detail.usage.cachedInputTokens)} · 写{" "}
+                    {fmtTokens(detail.usage.cacheWriteTokens ?? 0)}
+                  </span>
+                  <span className="mono ctx-ok-val">
+                    净省 {fmtUsd(taskSavedUsd)}
+                  </span>
+                </div>
+              </div>
             </section>
           </aside>
         </div>
+
+        <ScriptDrawer
+          spaceId={card.space}
+          taskId={card.id}
+          scripts={spaceScripts}
+        />
       </div>
+
+      <DeliverPrModal
+        taskId={card.id}
+        taskStatus={taskState.status}
+        open={deliverPrOpen}
+        onOpenChange={setDeliverPrOpen}
+      />
+
+      <AttachmentLightbox
+        attachment={lightboxAttachment}
+        imageUrl={
+          lightboxAttachment ? taskAttachmentUrl(lightboxAttachment) : null
+        }
+        onClose={() => setLightboxAttachment(null)}
+      />
+
+      {briefModalOpen ? (
+        <Dialog.Root open={briefModalOpen} onOpenChange={setBriefModalOpen}>
+          <Dialog.Portal>
+            <Dialog.Overlay
+              className="palette-mask open"
+              onClick={(e) => {
+                if (e.target === e.currentTarget) setBriefModalOpen(false);
+              }}
+            >
+              <Dialog.Content
+                className="modal-card modal-card-wide"
+                aria-describedby={undefined}
+                onEscapeKeyDown={(e) => {
+                  e.preventDefault();
+                  setBriefModalOpen(false);
+                }}
+              >
+                <div className="modal-head">
+                  <Dialog.Title>立项方案原文（BRIEF.md）</Dialog.Title>
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    aria-label="关闭 BRIEF 弹窗"
+                    onClick={() => setBriefModalOpen(false)}
+                  >
+                    <CloseIcon />
+                  </button>
+                </div>
+                <div className="modal-body">
+                  <MarkdownContent text={brief || card.contract.goal} />
+                </div>
+              </Dialog.Content>
+            </Dialog.Overlay>
+          </Dialog.Portal>
+        </Dialog.Root>
+      ) : null}
     </ViewFrame>
   );
 }

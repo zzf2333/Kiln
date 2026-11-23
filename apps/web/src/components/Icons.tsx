@@ -244,3 +244,53 @@ export function SidebarToggleIcon() {
     </svg>
   );
 }
+
+export function HistoryIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+      <path d="M3 3v5h5" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+  );
+}
+
+export function TerminalIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="2.5" />
+      <path d="M7.5 10l2.5 2-2.5 2M12.5 14.5H16" />
+    </svg>
+  );
+}
+
+export function GitPrIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="6.5" cy="5.5" r="2" />
+      <circle cx="6.5" cy="18.5" r="2" />
+      <circle cx="17.5" cy="18.5" r="2" />
+      <path d="M6.5 7.5v9M17.5 16.5V9a2.5 2.5 0 0 0-2.5-2.5h-4M12.5 4.5l-2 2 2 2" />
+    </svg>
+  );
+}
+
+export function ImageIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+      <circle cx="9" cy="10" r="1.6" />
+      <path d="M20.5 15.5l-5-5-10 9" />
+    </svg>
+  );
+}
+
+export function FileTextIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M7 3.5h7l4.5 4.5v12.5H7z" />
+      <path d="M14 3.5V8h4.5" />
+      <path d="M10 12h5M10 16h5" />
+    </svg>
+  );
+}

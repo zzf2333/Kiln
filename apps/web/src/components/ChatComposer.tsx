@@ -5,8 +5,10 @@ import type {
   ChatCommandItem,
   ChatMcpServerItem,
   SpaceFileEntry,
+  TaskAttachment,
 } from "../api/types";
 import { useKilnStore } from "../state/store";
+import { CloseIcon, ImageIcon } from "./Icons";
 
 export interface ComposerTrigger {
   kind: "/" | "@";
@@ -161,6 +163,12 @@ export interface ChatComposerProps {
   onChange: (nextValue: string) => void;
   onSend: (textToSend?: string) => void;
   onClientCommand?: (action: ChatCommandAction) => boolean;
+  attachments?: TaskAttachment[];
+  attachmentUrlFor?: (attachment: TaskAttachment) => string;
+  attachmentBusy?: boolean;
+  onUploadImageFiles?: (files: File[]) => void;
+  onRemoveAttachment?: (attachmentId: string) => void;
+  onPreviewAttachment?: (attachment: TaskAttachment) => void;
 }
 
 interface CachedExtensionsPayload {
@@ -181,9 +189,16 @@ export function ChatComposer({
   onChange,
   onSend,
   onClientCommand,
+  attachments,
+  attachmentUrlFor,
+  attachmentBusy = false,
+  onUploadImageFiles,
+  onRemoveAttachment,
+  onPreviewAttachment,
 }: ChatComposerProps) {
   const { state } = useKilnStore();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const popupListRef = useRef<HTMLDivElement | null>(null);
   const commandsCacheRef = useRef<Map<string, CachedExtensionsPayload>>(new Map());
   const fileReqSeqRef = useRef(0);
@@ -192,6 +207,7 @@ export function ChatComposer({
   const [caretPos, setCaretPos] = useState(value.length);
   const [dismissedAnchor, setDismissedAnchor] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [dragOver, setDragOver] = useState(false);
 
   const activeRoleAssignment = state.roles.roles[role];
   const activeAgent = activeRoleAssignment?.agent ?? "";
@@ -456,6 +472,9 @@ export function ChatComposer({
   ): void => {
     if (!trigger) return;
     if (entry.type === "command" && entry.item.action === "new_draft") {
+      if (disabled || attachmentBusy) {
+        return;
+      }
       if (onClientCommand?.("new_draft")) {
         onChange("");
         setCaretPos(0);
@@ -617,8 +636,58 @@ export function ChatComposer({
   };
 
   return (
-    <div className="composer">
+    <div
+      className={`composer ${dragOver ? "is-drag-over" : ""}`}
+      onDragOver={(e) => {
+        if (!onUploadImageFiles || disabled) return;
+        e.preventDefault();
+        setDragOver(true);
+      }}
+      onDragLeave={() => {
+        if (dragOver) setDragOver(false);
+      }}
+      onDrop={(e) => {
+        if (!onUploadImageFiles || disabled) return;
+        e.preventDefault();
+        setDragOver(false);
+        const files = Array.from(e.dataTransfer?.files ?? []);
+        if (files.length > 0) {
+          onUploadImageFiles(files);
+        }
+      }}
+    >
       <div className="composer-stack">
+        {attachments && attachments.length > 0 ? (
+          <div className="composer-atts" aria-label="已附图片">
+            {attachments.map((att) => {
+              const url = attachmentUrlFor?.(att);
+              return (
+                <div key={att.id} className="att-chip">
+                  <button
+                    type="button"
+                    className="att-chip-preview"
+                    title={`预览 ${att.filename}`}
+                    onClick={() => onPreviewAttachment?.(att)}
+                  >
+                    {url ? <img src={url} alt={att.filename} /> : <ImageIcon />}
+                    <span className="att-chip-name">{att.filename}</span>
+                  </button>
+                  {onRemoveAttachment ? (
+                    <button
+                      type="button"
+                      className="att-chip-del"
+                      aria-label={`删除附件 ${att.filename}`}
+                      disabled={disabled || attachmentBusy}
+                      onClick={() => onRemoveAttachment(att.id)}
+                    >
+                      <CloseIcon />
+                    </button>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
         <div className="composer-inner">
           {showPopup ? (
             <div
@@ -747,6 +816,34 @@ export function ChatComposer({
             </div>
           ) : null}
 
+          {onUploadImageFiles ? (
+            <>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                multiple
+                hidden
+                onChange={(e) => {
+                  const files = Array.from(e.currentTarget.files ?? []);
+                  e.currentTarget.value = "";
+                  if (files.length > 0) {
+                    onUploadImageFiles(files);
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="btn btn-sm composer-att-btn"
+                title="上传图片截图"
+                aria-label="上传图片截图"
+                disabled={disabled || attachmentBusy}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <ImageIcon />
+              </button>
+            </>
+          ) : null}
           <textarea
             ref={textareaRef}
             id={id}
@@ -756,6 +853,34 @@ export function ChatComposer({
             value={value}
             disabled={disabled}
             aria-autocomplete={showPopup ? "list" : "none"}
+            onPaste={(e) => {
+              if (!onUploadImageFiles || disabled) return;
+              const files: File[] = [];
+              const items = e.clipboardData?.items;
+              if (items) {
+                for (let i = 0; i < items.length; i += 1) {
+                  const item = items[i];
+                  if (item && item.kind === "file") {
+                    const file = item.getAsFile();
+                    if (file && file.type.startsWith("image/")) {
+                      files.push(file);
+                    }
+                  }
+                }
+              }
+              if (files.length === 0 && e.clipboardData?.files) {
+                for (let i = 0; i < e.clipboardData.files.length; i += 1) {
+                  const file = e.clipboardData.files[i];
+                  if (file && file.type.startsWith("image/")) {
+                    files.push(file);
+                  }
+                }
+              }
+              if (files.length > 0) {
+                e.preventDefault();
+                onUploadImageFiles(files);
+              }
+            }}
             onCompositionStart={() => {
               composingRef.current = true;
             }}
@@ -817,14 +942,16 @@ export function ChatComposer({
 
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                onSend();
+                if (!disabled && !attachmentBusy) {
+                  onSend();
+                }
               }
             }}
           />
           <button
             type="button"
             className="btn btn-light"
-            disabled={disabled || !value.trim()}
+            disabled={disabled || attachmentBusy || !value.trim()}
             onClick={() => onSend()}
           >
             发送

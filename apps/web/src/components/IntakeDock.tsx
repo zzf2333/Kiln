@@ -80,6 +80,7 @@ export function IntakeDock() {
         className="intake-dock-close"
         aria-label="关闭未完成的新需求对话"
         title="关闭对话"
+        disabled={state.attachmentUploadBusy}
         onClick={() => void store.closeIntakeSession()}
       >
         ×

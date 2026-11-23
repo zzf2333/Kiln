@@ -1,9 +1,15 @@
 import { createContext } from "react";
 import { useContext, useEffect, useState } from "react";
 import {
+  ATTACHMENT_MIME_TYPES,
+  MAX_ATTACHMENT_BYTES,
+  WORKFLOW_PRESETS,
   buildCustomWorkflow,
   buildWorkflowPreset,
   extractWorkflowToggles,
+  validateSplitCardsDag,
+  validateWorkflowBlueprint,
+  type AttachmentMimeType,
   type ComposableWorkflowOptions,
   type DraftCard,
   type LedgerEntry,
@@ -17,27 +23,36 @@ import {
   type SseEvent,
   type StageId,
   type Track,
+  type WorkflowAgentNode,
+  type WorkflowAgentStage,
   type WorkflowBlueprint,
   type WorkflowPreset,
+  type WorkflowStep,
   type WorkspaceMode,
 } from "@kiln/protocol/web";
 import {
   ApiError,
   cancelTask as apiCancelTask,
   commitDraft as apiCommitDraft,
+  commitSplitDraft as apiCommitSplitDraft,
   completeTask as apiCompleteTask,
   deleteDraft as apiDeleteDraft,
+  deleteDraftAttachment as apiDeleteDraftAttachment,
   deleteSpace as apiDeleteSpace,
   discoverSpaces as apiDiscoverSpaces,
+  executeGitDeliver as apiExecuteGitDeliver,
   fetchAgents as apiFetchAgents,
   fetchAuthStatus as apiFetchAuthStatus,
   fetchBootstrap as apiFetchBootstrap,
   fetchDraftChat as apiFetchDraftChat,
   fetchLedgers as apiFetchLedgers,
+  fetchPrDraft as apiFetchPrDraft,
   fetchProviders as apiFetchProviders,
   fetchProvidersSettings as apiFetchProvidersSettings,
   fetchRosterSettings as apiFetchRosterSettings,
+  fetchScriptRuns as apiFetchScriptRuns,
   fetchTaskChat as apiFetchTaskChat,
+  fetchTaskCheckpoints as apiFetchTaskCheckpoints,
   fetchTaskDetail as apiFetchTaskDetail,
   inspectSpacePath as apiInspectSpacePath,
   logoutRemoteDevice as apiLogoutRemoteDevice,
@@ -48,15 +63,19 @@ import {
   restoreHostBackup as apiRestoreHostBackup,
   resumeTask as apiResumeTask,
   revealLocalPath as apiRevealLocalPath,
+  rollbackTaskCheckpoint as apiRollbackTaskCheckpoint,
+  runSpaceScript as apiRunSpaceScript,
   sendIntakeChat as apiSendIntakeChat,
   sendResolveChat as apiSendResolveChat,
   setUnauthorizedHandler,
+  stopScriptRun as apiStopScriptRun,
   submitDecision as apiSubmitDecision,
   subscribeSseEvents,
   syncModelPricing as apiSyncModelPricing,
   testProvider as apiTestProvider,
   updatePriority as apiUpdatePriority,
   updateSettings as apiUpdateSettings,
+  uploadDraftAttachment as apiUploadDraftAttachment,
   upsertDraft as apiUpsertDraft,
   upsertSpace as apiUpsertSpace,
 } from "../api/client";
@@ -66,11 +85,15 @@ import type {
   BootstrapResponse,
   BootstrapTask,
   ChatMessage,
+  CheckpointRecord,
   CommitDraftPayload,
+  CommitPrActionRequest,
+  DeliverGitResponse,
   DiscoveredGitRepo,
   DraftCardWithBrief,
   InspectSpaceResult,
   PairCompleteRequest,
+  PrDraftInfo,
   ProviderRuntimeStatus,
   ProvidersConfig,
   PublicPairedDevice,
@@ -79,8 +102,10 @@ import type {
   RosterConfig,
   SettingsSectionMap,
   SpaceScriptKey,
+  SplitCardPlanItem,
   SubmitDecisionPayload,
   SyncPricingRequest,
+  TaskAttachment,
   TaskDetailResponse,
   UpsertSpacePayload,
   UsageSnapshot,
@@ -145,9 +170,104 @@ export interface IntakeFormState {
   accept_cmd: string;
   deliver_cmd: string;
   scope: string;
+  non_goals: string[];
+  attachments: TaskAttachment[];
+  split_cards: SplitCardPlanItem[];
   depends_on: string;
   open_questions: string[];
   brief_markdown: string;
+}
+
+function collectAgentAssignmentsByStage(
+  workflow: WorkflowBlueprint | undefined,
+): Map<WorkflowAgentStage, WorkflowAgentNode> {
+  const map = new Map<WorkflowAgentStage, WorkflowAgentNode>();
+  if (!workflow) return map;
+  for (const step of workflow.steps) {
+    if (step.kind === "agent") {
+      map.set(step.stage, step);
+    } else if (step.kind === "loop") {
+      for (const inner of step.steps) {
+        if (inner.kind === "agent") {
+          map.set(inner.stage, inner);
+        }
+      }
+    }
+  }
+  return map;
+}
+
+function hasResearchStep(workflow: WorkflowBlueprint): boolean {
+  return workflow.steps.some(
+    (s) =>
+      (s.kind === "agent" && s.stage === "research") ||
+      (s.kind === "loop" && s.steps.some((inner) => inner.kind === "agent" && inner.stage === "research")),
+  );
+}
+
+function preserveWorkflowAssignments(
+  prev: WorkflowBlueprint | undefined,
+  next: WorkflowBlueprint,
+  options?: {
+    preserveResearch?: boolean;
+    dropRosterRoles?: ReadonlySet<string>;
+  },
+): WorkflowBlueprint {
+  if (!prev) return next;
+  const prevByStage = collectAgentAssignmentsByStage(prev);
+  const dropSet = options?.dropRosterRoles;
+  const mapAgentNode = (node: WorkflowAgentNode): WorkflowAgentNode => {
+    const old = prevByStage.get(node.stage);
+    const mergedRole = node.roster_role ?? old?.roster_role;
+    const effectiveRole =
+      mergedRole && dropSet?.has(mergedRole) ? undefined : mergedRole;
+    const effectiveRationale = node.rationale ?? old?.rationale;
+    return {
+      ...node,
+      ...(effectiveRole !== undefined ? { roster_role: effectiveRole } : {}),
+      ...(effectiveRationale !== undefined ? { rationale: effectiveRationale } : {}),
+    };
+  };
+
+  let steps: WorkflowStep[] = next.steps.map((step) => {
+    if (step.kind === "agent") {
+      return mapAgentNode(step);
+    }
+    if (step.kind === "loop") {
+      return {
+        ...step,
+        steps: step.steps.map((inner) =>
+          inner.kind === "agent" ? mapAgentNode(inner) : inner,
+        ),
+      };
+    }
+    return step;
+  });
+
+  if (options?.preserveResearch && !hasResearchStep(next)) {
+    const prevResearch = prevByStage.get("research");
+    if (prevResearch) {
+      const researchNode = mapAgentNode(prevResearch);
+      const implIdx = steps.findIndex(
+        (s) =>
+          (s.kind === "agent" && s.stage === "implement") ||
+          s.kind === "loop",
+      );
+      const insertAt = implIdx >= 0 ? implIdx : steps.length;
+      steps = [
+        ...steps.slice(0, insertAt),
+        researchNode,
+        ...steps.slice(insertAt),
+      ];
+    }
+  }
+
+  const pmRationale = next.pm_rationale ?? prev.pm_rationale;
+  return {
+    ...next,
+    steps,
+    ...(pmRationale !== undefined ? { pm_rationale: pmRationale } : {}),
+  };
 }
 
 export function resolveFormEffectiveWorkflow(form: IntakeFormState): WorkflowBlueprint {
@@ -164,10 +284,13 @@ export function resolveFormEffectiveWorkflow(form: IntakeFormState): WorkflowBlu
   if (toggles.hasDeliverCmd === hasDeliverCmd) {
     return base;
   }
-  return buildCustomWorkflow({
+  const rebuilt = buildCustomWorkflow({
     ...toggles,
     preset: base.preset,
     hasDeliverCmd,
+  });
+  return preserveWorkflowAssignments(form.workflow, rebuilt, {
+    preserveResearch: true,
   });
 }
 
@@ -176,6 +299,10 @@ export interface ScriptRunBuffer {
   spaceId: string;
   taskId?: string;
   scriptKey: SpaceScriptKey;
+  command?: string;
+  cwd?: string;
+  startedAt?: string;
+  endedAt?: string | null;
   lines: string[];
   done: boolean;
   exitCode: number | null;
@@ -250,6 +377,7 @@ export interface KilnStoreState {
   taskDetailError: string | null;
   restoreResult: RestoreHostBackupResult | null;
   scriptRuns: Record<string, ScriptRunBuffer>;
+  scriptDrawerOpen: boolean;
   contextWindowByTask: Record<string, ContextWindowSnapshot>;
 
   intakeDraftId: string | null;
@@ -258,6 +386,7 @@ export interface KilnStoreState {
   intakeProgressLogs: IntakeProgressItem[];
   intakeMessages: ChatMessage[];
   intakeBusy: boolean;
+  attachmentUploadBusy: boolean;
   intakeActiveOpen: boolean;
   intakeHasUnreadReply: boolean;
 
@@ -374,6 +503,9 @@ export function createDefaultIntakeForm(
       accept_cmd: "",
       deliver_cmd: "",
       scope: "",
+      non_goals: [],
+      attachments: [],
+      split_cards: [],
       depends_on: "",
       open_questions: [],
       brief_markdown: "",
@@ -397,6 +529,9 @@ export function createDefaultIntakeForm(
     accept_cmd: chosen?.default_accept_cmd ?? "",
     deliver_cmd: "",
     scope: "",
+    non_goals: [],
+    attachments: [],
+    split_cards: [],
     depends_on: "",
     open_questions: [],
     brief_markdown: "",
@@ -457,6 +592,9 @@ function normalizeIntakeForm(form: IntakeFormState): IntakeFormState {
   return {
     ...form,
     deliver_cmd: typeof form.deliver_cmd === "string" ? form.deliver_cmd : "",
+    non_goals: Array.isArray(form.non_goals) ? form.non_goals : [],
+    attachments: Array.isArray(form.attachments) ? form.attachments : [],
+    split_cards: Array.isArray(form.split_cards) ? form.split_cards : [],
     open_questions: Array.isArray(form.open_questions) ? form.open_questions : [],
     brief_markdown: typeof form.brief_markdown === "string" ? form.brief_markdown : "",
   };
@@ -513,10 +651,74 @@ function draftToIntakeForm(draft: DraftCardWithBrief): IntakeFormState {
     deliver_cmd:
       draft.contract.deliver?.mode === "run_cmd" ? draft.contract.deliver.cmd : "",
     scope: (draft.contract.scope ?? []).join("\n"),
+    non_goals: Array.isArray(draft.contract.non_goals)
+      ? [...draft.contract.non_goals]
+      : [],
+    attachments: Array.isArray(draft.attachments) ? [...draft.attachments] : [],
+    split_cards: [],
     depends_on: draft.depends_on.join(", "),
     open_questions: Array.isArray(draft.open_questions) ? draft.open_questions : [],
     brief_markdown: typeof draft.brief_markdown === "string" ? draft.brief_markdown : "",
   };
+}
+
+async function fileToBase64(file: File): Promise<string> {
+  if (typeof file.arrayBuffer === "function") {
+    const buf = await file.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    const chunkSize = 8192;
+    const parts: string[] = [];
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      parts.push(String.fromCharCode(...bytes.subarray(i, i + chunkSize)));
+    }
+    return btoa(parts.join(""));
+  }
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const raw = typeof reader.result === "string" ? reader.result : "";
+      const idx = raw.indexOf(",");
+      resolve(idx >= 0 ? raw.slice(idx + 1) : raw);
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("读取图片文件失败"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function extractRawSplitCardsFromReply(
+  text: string,
+): Array<Record<string, unknown>> | null {
+  const match = text.match(/```kiln-split-cards[ \t]*\r?\n([\s\S]*?)\r?\n```/i);
+  if (!match?.[1]) return null;
+  try {
+    const parsed = JSON.parse(match[1]) as unknown;
+    const rawCards = Array.isArray(parsed)
+      ? parsed
+      : parsed &&
+          typeof parsed === "object" &&
+          Array.isArray((parsed as { cards?: unknown }).cards)
+        ? (parsed as { cards: unknown[] }).cards
+        : null;
+    if (!rawCards || rawCards.length < 2 || rawCards.length > 12) return null;
+    const valid = rawCards.filter(
+      (item): item is Record<string, unknown> => {
+        if (!item || typeof item !== "object") return false;
+        const rec = item as Record<string, unknown>;
+        if (typeof rec.temp_id !== "string" || !rec.temp_id.trim()) return false;
+        if (typeof rec.title !== "string" || !rec.title.trim()) return false;
+        if (
+          rec.contract !== undefined &&
+          (rec.contract === null || typeof rec.contract !== "object")
+        ) {
+          return false;
+        }
+        return true;
+      },
+    );
+    return valid.length === rawCards.length ? valid : null;
+  } catch {
+    return null;
+  }
 }
 
 function findSpaceByRepoPath(
@@ -663,10 +865,14 @@ function normalizeLedgers(
 function stripHostTwoPhaseWorkflow(
   workflow: WorkflowBlueprint,
   hasDeliverCmd: boolean,
+  dropRosterRoles?: ReadonlySet<string>,
 ): WorkflowBlueprint {
   const toggles = extractWorkflowToggles(workflow);
   if (!toggles.hostTwoPhase) {
-    return workflow;
+    return preserveWorkflowAssignments(workflow, workflow, {
+      preserveResearch: true,
+      ...(dropRosterRoles ? { dropRosterRoles } : {}),
+    });
   }
   const nextPreset: WorkflowPreset =
     toggles.preset === "host_op"
@@ -674,12 +880,16 @@ function stripHostTwoPhaseWorkflow(
         ? "standard_dev"
         : "quick"
       : (toggles.preset ?? workflow.preset);
-  return buildCustomWorkflow({
+  const rebuilt = buildCustomWorkflow({
     ...toggles,
     preset: nextPreset,
     hostTwoPhase: false,
     deliverApproval: hasDeliverCmd ? toggles.deliverApproval : false,
     hasDeliverCmd,
+  });
+  return preserveWorkflowAssignments(workflow, rebuilt, {
+    preserveResearch: true,
+    ...(dropRosterRoles ? { dropRosterRoles } : {}),
   });
 }
 
@@ -761,6 +971,7 @@ export class KilnWebStore {
       taskDetailError: null,
       restoreResult: null,
       scriptRuns: {},
+      scriptDrawerOpen: false,
       contextWindowByTask: {},
 
       intakeDraftId: null,
@@ -769,6 +980,7 @@ export class KilnWebStore {
       intakeProgressLogs: [],
       intakeMessages: defaultWelcomeIntakeMessages(),
       intakeBusy: false,
+      attachmentUploadBusy: false,
       intakeActiveOpen: false,
       intakeHasUnreadReply: false,
 
@@ -936,6 +1148,8 @@ export class KilnWebStore {
       providersConfigLoaded: false,
       providerStatuses: [],
       scriptRuns: {},
+      scriptDrawerOpen: false,
+      attachmentUploadBusy: false,
       contextWindowByTask: {},
       sseStatus: "closed",
     });
@@ -1179,7 +1393,14 @@ export class KilnWebStore {
       try {
         const data = await apiFetchBootstrap();
         const roles = data.settings?.roles ?? data.roles ?? { ...DEFAULT_ROLES, roles: {} };
-        const roster = data.settings?.roster ?? data.roster ?? this.state.roster;
+        const rawRoster = data.settings?.roster ?? data.roster;
+        const roster =
+          rawRoster &&
+          typeof rawRoster === "object" &&
+          rawRoster.roster &&
+          typeof rawRoster.roster === "object"
+            ? rawRoster
+            : this.state.roster;
         const providersConfig = data.settings?.providers ?? this.state.providersConfig;
         const providersConfigLoaded =
           data.settings?.providers !== undefined
@@ -1469,16 +1690,19 @@ export class KilnWebStore {
         exitCode: null,
         updatedAt: event.at,
       };
-      const newLines = event.chunk ? event.chunk.split(/\r?\n/) : [];
-      const merged = [...existing.lines, ...newLines].slice(-500);
+      const rawLines = event.chunk ? event.chunk.split(/\r?\n/) : [];
+      if (rawLines.length > 0 && rawLines[rawLines.length - 1] === "") {
+        rawLines.pop();
+      }
+      const merged = [...existing.lines, ...rawLines].slice(-500);
       this.setState({
         scriptRuns: {
           ...this.state.scriptRuns,
           [event.scriptRunId]: {
             ...existing,
             lines: merged,
-            done: Boolean(event.done),
-            exitCode: event.exitCode ?? existing.exitCode,
+            done: event.done !== undefined ? Boolean(event.done) : existing.done,
+            exitCode: event.exitCode !== undefined ? event.exitCode : existing.exitCode,
             updatedAt: event.at,
           },
         },
@@ -1569,6 +1793,7 @@ export class KilnWebStore {
       draftOpen: false,
       paletteOpen: false,
       restoreResult: null,
+      scriptDrawerOpen: false,
       ...(view === "intake" ? { intakeHasUnreadReply: false } : {}),
       ...(view !== "detail" && view !== "resolve" ? { taskId: null, selectedRunIdx: null } : {}),
       ...(options?.space !== undefined ? { spaceFilter: options.space } : {}),
@@ -1586,6 +1811,9 @@ export class KilnWebStore {
       this.state.agents.length === 0
     ) {
       void this.refreshAgents();
+    }
+    if (view === "intake" && Object.keys(this.state.roster.roster).length === 0) {
+      void this.refreshRoster();
     }
     if (view === "lineup") {
       if (Object.keys(this.state.roster.roster).length === 0) {
@@ -1616,6 +1844,7 @@ export class KilnWebStore {
       draftOpen: false,
       paletteOpen: false,
       restoreResult: null,
+      scriptDrawerOpen: false,
       taskDetailError: null,
     });
     this.syncHashFromState();
@@ -1699,6 +1928,214 @@ export class KilnWebStore {
 
   clearRestoreResult(): void {
     this.setState({ restoreResult: null });
+  }
+
+  setScriptDrawerOpen(open: boolean): void {
+    this.setState({ scriptDrawerOpen: open });
+  }
+
+  toggleScriptDrawer(): void {
+    this.setState({ scriptDrawerOpen: !this.state.scriptDrawerOpen });
+  }
+
+  async loadScriptRunsForTask(spaceId: string, taskId: string): Promise<void> {
+    try {
+      const res = await apiFetchScriptRuns({ spaceId, taskId });
+      const next = { ...this.state.scriptRuns };
+      for (const item of res.runs) {
+        const existing = next[item.scriptRunId];
+        const serverLines = item.outputTail ? item.outputTail.split(/\r?\n/) : [];
+        if (serverLines.length > 0 && serverLines[serverLines.length - 1] === "") {
+          serverLines.pop();
+        }
+        const useServerLines = !existing || serverLines.length > existing.lines.length;
+        next[item.scriptRunId] = {
+          scriptRunId: item.scriptRunId,
+          spaceId: item.spaceId,
+          ...(item.taskId ? { taskId: item.taskId } : {}),
+          scriptKey: item.script,
+          command: item.command,
+          cwd: item.cwd,
+          startedAt: item.startedAt,
+          endedAt: item.endedAt,
+          lines: useServerLines ? serverLines : existing.lines,
+          done: existing?.done ? true : !item.running,
+          exitCode: item.exitCode ?? existing?.exitCode ?? null,
+          updatedAt: item.endedAt ?? existing?.updatedAt ?? item.startedAt,
+        };
+      }
+      this.setState({ scriptRuns: next });
+    } catch {
+      // Best-effort script run hydration
+    }
+  }
+
+  async startSpaceScript(
+    spaceId: string,
+    script: SpaceScriptKey,
+    taskId?: string,
+  ): Promise<string | null> {
+    try {
+      const res = await apiRunSpaceScript(spaceId, {
+        script,
+        ...(taskId ? { taskId } : {}),
+      });
+      const existing = this.state.scriptRuns[res.scriptRunId];
+      const nowIso = new Date().toISOString();
+      this.setState({
+        scriptDrawerOpen: true,
+        scriptRuns: {
+          ...this.state.scriptRuns,
+          [res.scriptRunId]: {
+            scriptRunId: res.scriptRunId,
+            spaceId: res.spaceId,
+            ...(taskId ? { taskId } : {}),
+            scriptKey: res.script,
+            command: res.command,
+            cwd: res.cwd,
+            lines:
+              existing && existing.lines.length > 0
+                ? existing.lines
+                : [`$ ${res.command}`],
+            done: existing?.done ?? false,
+            exitCode: existing?.exitCode ?? null,
+            startedAt: existing?.startedAt ?? nowIso,
+            updatedAt: existing?.updatedAt ?? nowIso,
+          },
+        },
+      });
+      this.showToast(`已启动脚本 ${script}`);
+      return res.scriptRunId;
+    } catch (err) {
+      this.showToast(err instanceof Error ? err.message : `启动脚本 ${script} 失败`);
+      return null;
+    }
+  }
+
+  async stopScriptRun(scriptRunId: string): Promise<void> {
+    try {
+      await apiStopScriptRun(scriptRunId);
+      const existing = this.state.scriptRuns[scriptRunId];
+      if (existing) {
+        this.setState({
+          scriptRuns: {
+            ...this.state.scriptRuns,
+            [scriptRunId]: {
+              ...existing,
+              done: true,
+              exitCode: existing.exitCode ?? 143,
+              updatedAt: new Date().toISOString(),
+            },
+          },
+        });
+      }
+      this.showToast("已停止脚本进程");
+    } catch (err) {
+      this.showToast(err instanceof Error ? err.message : "停止脚本失败");
+    }
+  }
+
+  clearScriptRunOutput(scriptRunId: string): void {
+    const existing = this.state.scriptRuns[scriptRunId];
+    if (!existing) return;
+    this.setState({
+      scriptRuns: {
+        ...this.state.scriptRuns,
+        [scriptRunId]: {
+          ...existing,
+          lines: [],
+        },
+      },
+    });
+  }
+
+  async refreshTaskCheckpoints(taskId: string): Promise<CheckpointRecord[]> {
+    try {
+      const res = await apiFetchTaskCheckpoints(taskId);
+      const curDetail = this.state.taskDetails[taskId];
+      if (curDetail) {
+        this.setState({
+          taskDetails: {
+            ...this.state.taskDetails,
+            [taskId]: {
+              ...curDetail,
+              checkpoints: res.checkpoints,
+            },
+          },
+        });
+      }
+      return res.checkpoints;
+    } catch (err) {
+      this.showToast(err instanceof Error ? err.message : "读取快照列表失败");
+      return [];
+    }
+  }
+
+  async rollbackTaskCheckpoint(
+    taskId: string,
+    checkpointRef: string,
+  ): Promise<boolean> {
+    try {
+      const res = await apiRollbackTaskCheckpoint(taskId, {
+        checkpoint_ref: checkpointRef,
+        confirm: true,
+      });
+      this.showToast(`已回滚工作树至快照 (${res.commit_sha.slice(0, 7)})`);
+      await this.bootstrap();
+      if (this.state.taskId === taskId) {
+        await this.loadTaskDetail(taskId);
+      }
+      return true;
+    } catch (err) {
+      this.showToast(err instanceof Error ? err.message : "回滚快照失败");
+      return false;
+    }
+  }
+
+  async fetchPrDraft(taskId: string): Promise<PrDraftInfo | null> {
+    try {
+      const res = await apiFetchPrDraft(taskId);
+      return res.draft;
+    } catch (err) {
+      this.showToast(err instanceof Error ? err.message : "生成 PR 草案失败");
+      return null;
+    }
+  }
+
+  async executeGitDeliver(
+    taskId: string,
+    payload: CommitPrActionRequest,
+  ): Promise<DeliverGitResponse | null> {
+    try {
+      const res = await apiExecuteGitDeliver(taskId, payload);
+      if (res.action === "commit") {
+        this.showToast(
+          res.alreadyClean
+            ? "工作树已是干净状态，无需重复提交"
+            : `已本地提交 ${res.commitSha.slice(0, 7)}`,
+        );
+      } else if (res.action === "push") {
+        this.showToast(
+          res.alreadyUpToDate
+            ? `远端 ${res.branch} 已是最新`
+            : `已推送到 origin/${res.branch}`,
+        );
+      } else {
+        this.showToast(
+          res.alreadyExists
+            ? `已复用已有 PR${res.prNumber ? ` #${res.prNumber}` : ""}`
+            : `已创建 PR${res.prNumber ? ` #${res.prNumber}` : ""}`,
+        );
+      }
+      await this.bootstrap();
+      if (this.state.taskId === taskId) {
+        await this.loadTaskDetail(taskId);
+      }
+      return res;
+    } catch (err) {
+      this.showToast(err instanceof Error ? err.message : "Git 交付操作失败");
+      return null;
+    }
   }
 
   async loadTaskDetail(taskId: string): Promise<void> {
@@ -1859,6 +2296,16 @@ export class KilnWebStore {
     }
   }
 
+  private getHostStagedRoleIds(): Set<string> {
+    const ids = new Set<string>();
+    for (const [id, entry] of Object.entries(this.state.roster.roster)) {
+      if (entry.perm === "host_staged") {
+        ids.add(id);
+      }
+    }
+    return ids;
+  }
+
   setIntakeMode(mode: IntakeMode): void {
     const cur = this.state.intakeForm;
     if (mode === cur.mode) return;
@@ -1881,7 +2328,11 @@ export class KilnWebStore {
       const nextTrack = cur.track || "L2";
       const currentWorkflow = resolveFormEffectiveWorkflow(cur);
       const toggles = extractWorkflowToggles(currentWorkflow);
-      const nextWorkflow = stripHostTwoPhaseWorkflow(currentWorkflow, hasDeliverCmd);
+      const nextWorkflow = stripHostTwoPhaseWorkflow(
+        currentWorkflow,
+        hasDeliverCmd,
+        this.getHostStagedRoleIds(),
+      );
       const resolvedTrack = toggles.hostTwoPhase
         ? toggles.includeReview
           ? "L2"
@@ -1916,11 +2367,19 @@ export class KilnWebStore {
       nextWs === "host_scoped"
         ? curToggles.hostTwoPhase
           ? currentWorkflow
-          : buildWorkflowPreset("host_op", {
-              includePlan: curToggles.includePlan,
-              hasDeliverCmd,
-            })
-        : stripHostTwoPhaseWorkflow(currentWorkflow, hasDeliverCmd);
+          : preserveWorkflowAssignments(
+              cur.workflow,
+              buildWorkflowPreset("host_op", {
+                includePlan: curToggles.includePlan,
+                hasDeliverCmd,
+              }),
+              { preserveResearch: true },
+            )
+        : stripHostTwoPhaseWorkflow(
+            currentWorkflow,
+            hasDeliverCmd,
+            this.getHostStagedRoleIds(),
+          );
     const nextForm: IntakeFormState = {
       ...cur,
       mode: "local",
@@ -1939,7 +2398,7 @@ export class KilnWebStore {
     const cur = this.state.intakeForm;
     const hasDeliverCmd = cur.deliver_cmd.trim().length > 0;
     const toggles = extractWorkflowToggles(resolveFormEffectiveWorkflow(cur));
-    const nextWorkflow =
+    const built =
       track === "L1"
         ? cur.workspace_mode === "host_scoped"
           ? buildWorkflowPreset("host_op", {
@@ -1968,6 +2427,9 @@ export class KilnWebStore {
               cur.workspace_mode === "host_scoped" ? true : toggles.deliverApproval,
             hasDeliverCmd,
           });
+    const nextWorkflow = preserveWorkflowAssignments(cur.workflow, built, {
+      preserveResearch: true,
+    });
     const nextForm: IntakeFormState = {
       ...cur,
       track,
@@ -1988,19 +2450,27 @@ export class KilnWebStore {
       ws === "host_scoped"
         ? toggles.hostTwoPhase
           ? currentWorkflow
-          : toggles.includeReview
-            ? buildCustomWorkflow({
-                ...toggles,
-                preset: "custom",
-                hostTwoPhase: true,
-                deliverApproval: true,
-                hasDeliverCmd,
-              })
-            : buildWorkflowPreset("host_op", {
-                includePlan: toggles.includePlan,
-                hasDeliverCmd,
-              })
-        : stripHostTwoPhaseWorkflow(currentWorkflow, hasDeliverCmd);
+          : preserveWorkflowAssignments(
+              cur.workflow,
+              toggles.includeReview
+                ? buildCustomWorkflow({
+                    ...toggles,
+                    preset: "custom",
+                    hostTwoPhase: true,
+                    deliverApproval: true,
+                    hasDeliverCmd,
+                  })
+                : buildWorkflowPreset("host_op", {
+                    includePlan: toggles.includePlan,
+                    hasDeliverCmd,
+                  }),
+              { preserveResearch: true },
+            )
+        : stripHostTwoPhaseWorkflow(
+            currentWorkflow,
+            hasDeliverCmd,
+            this.getHostStagedRoleIds(),
+          );
     const nextForm: IntakeFormState = {
       ...cur,
       workspace_mode: ws,
@@ -2016,7 +2486,12 @@ export class KilnWebStore {
   selectIntakeWorkflowPreset(preset: Exclude<WorkflowPreset, "custom">): void {
     const cur = this.state.intakeForm;
     const hasDeliverCmd = cur.deliver_cmd.trim().length > 0;
-    const nextWorkflow = buildWorkflowPreset(preset, { hasDeliverCmd });
+    const rawPresetWorkflow = buildWorkflowPreset(preset, { hasDeliverCmd });
+    const dropHostRoles = preset !== "host_op" ? this.getHostStagedRoleIds() : undefined;
+    const nextWorkflow = preserveWorkflowAssignments(cur.workflow, rawPresetWorkflow, {
+      preserveResearch: false,
+      ...(dropHostRoles ? { dropRosterRoles: dropHostRoles } : {}),
+    });
 
     if (preset === "host_op") {
       const prevDefault = this.state.spaces[cur.space]?.default_accept_cmd ?? "";
@@ -2063,7 +2538,11 @@ export class KilnWebStore {
     if (merged.hostTwoPhase) {
       merged.deliverApproval = true;
     }
-    const nextWorkflow = buildCustomWorkflow(merged);
+    const nextWorkflow = preserveWorkflowAssignments(
+      cur.workflow,
+      buildCustomWorkflow(merged),
+      { preserveResearch: true },
+    );
     const nextForm: IntakeFormState = {
       ...cur,
       track: merged.includeReview ? "L2" : "L1",
@@ -2086,6 +2565,7 @@ export class KilnWebStore {
     const nextWorkflow = stripHostTwoPhaseWorkflow(
       currentWorkflow,
       cur.deliver_cmd.trim().length > 0,
+      this.getHostStagedRoleIds(),
     );
     const nextForm: IntakeFormState = {
       ...cur,
@@ -2105,6 +2585,511 @@ export class KilnWebStore {
     this.setState({ intakeForm: nextForm });
     if (this.state.intakeActiveOpen) {
       writeLocalIntakeSnapshot(nextForm, this.state.intakeMessages);
+    }
+  }
+
+  setIntakeStepRosterRole(
+    stage: WorkflowAgentStage,
+    rosterRoleId: string | undefined,
+  ): void {
+    const cur = this.state.intakeForm;
+    const baseWorkflow = resolveFormEffectiveWorkflow(cur);
+    const updateAgent = (node: WorkflowAgentNode): WorkflowAgentNode => {
+      if (node.stage !== stage) return node;
+      if (!rosterRoleId) {
+        const { roster_role: _removed, ...rest } = node;
+        return rest;
+      }
+      return { ...node, roster_role: rosterRoleId };
+    };
+    const nextWorkflow: WorkflowBlueprint = {
+      ...baseWorkflow,
+      steps: baseWorkflow.steps.map((step) => {
+        if (step.kind === "agent") return updateAgent(step);
+        if (step.kind === "loop") {
+          return {
+            ...step,
+            steps: step.steps.map((inner) =>
+              inner.kind === "agent" ? updateAgent(inner) : inner,
+            ),
+          };
+        }
+        return step;
+      }),
+    };
+    this.updateIntakeForm({ workflow: nextWorkflow });
+  }
+
+  addIntakeNonGoal(rawText: string): void {
+    const trimmed = rawText.trim();
+    if (!trimmed) return;
+    const cur = this.state.intakeForm.non_goals;
+    if (cur.includes(trimmed)) return;
+    this.updateIntakeForm({ non_goals: [...cur, trimmed] });
+  }
+
+  removeIntakeNonGoal(index: number): void {
+    const cur = this.state.intakeForm.non_goals;
+    if (index < 0 || index >= cur.length) return;
+    this.updateIntakeForm({
+      non_goals: cur.filter((_, idx) => idx !== index),
+    });
+  }
+
+  private async ensureDraftForIntakeAction(): Promise<string | null> {
+    if (this.state.intakeDraftId) {
+      return this.state.intakeDraftId;
+    }
+    const f = this.state.intakeForm;
+    const { depends_on, scopeList } = this.buildDraftContractFromForm();
+    const effectiveSpace = f.mode === "local" ? "local" : f.space;
+    const effectiveWorkspaceMode: Exclude<WorkspaceMode, "external_only"> =
+      f.mode === "project"
+        ? "git_worktree"
+        : f.workspace_mode === "host_scoped"
+          ? "host_scoped"
+          : "scratch_dir";
+
+    if (f.mode === "project" && !isProjectSpace(this.state.spaces[effectiveSpace])) {
+      this.showToast("请先选择或添加一个项目空间");
+      return null;
+    }
+
+    const contractPatch: Record<string, unknown> = {};
+    if (f.title.trim()) contractPatch.goal = f.title.trim();
+    if (f.end.trim()) contractPatch.end = f.end.trim();
+    if (f.accept_cmd.trim()) contractPatch.accept_cmd = f.accept_cmd.trim();
+    if (scopeList.length > 0) contractPatch.scope = scopeList;
+    if (f.non_goals.length > 0) contractPatch.non_goals = f.non_goals;
+    if (f.deliver_cmd.trim()) {
+      contractPatch.deliver = { mode: "run_cmd" as const, cmd: f.deliver_cmd.trim() };
+    }
+
+    const res = await apiUpsertDraft({
+      ...(f.title.trim() ? { title: f.title.trim() } : {}),
+      space: effectiveSpace,
+      priority: (f.priority || "P2") as Priority,
+      track: (f.track || "L2") as Track,
+      workspace_mode: effectiveWorkspaceMode,
+      depends_on,
+      open_questions: f.open_questions,
+      workflow: resolveFormEffectiveWorkflow(f),
+      ...(f.brief_markdown.trim() ? { brief_markdown: f.brief_markdown } : {}),
+      intake_open: true,
+      ...(Object.keys(contractPatch).length > 0 ? { contract: contractPatch } : {}),
+    });
+    writeStorageItem(ACTIVE_INTAKE_DRAFT_KEY, res.draft.id);
+    this.setState({
+      intakeDraftId: res.draft.id,
+      intakeActiveOpen: true,
+      intakeHasUnreadReply: false,
+    });
+    return res.draft.id;
+  }
+
+  async uploadIntakeAttachments(files: readonly File[]): Promise<void> {
+    if (
+      files.length === 0 ||
+      this.state.attachmentUploadBusy ||
+      this.state.intakeBusy
+    ) {
+      return;
+    }
+    const f = this.state.intakeForm;
+    if (f.mode === "project" && !isProjectSpace(this.state.spaces[f.space])) {
+      this.showToast("请先选择或添加一个项目空间，再上传图片附件");
+      return;
+    }
+
+    const validFiles: File[] = [];
+    let projectedCount = f.attachments.length;
+    for (const file of files) {
+      const mime = file.type.split(";")[0]?.trim().toLowerCase() ?? "";
+      if (!(ATTACHMENT_MIME_TYPES as readonly string[]).includes(mime)) {
+        this.showToast(`仅支持 PNG / JPEG / WebP / GIF 图片（已跳过 ${file.name || "文件"}）`);
+        continue;
+      }
+      if (file.size <= 0) {
+        this.showToast(`图片「${file.name}」为空，已跳过`);
+        continue;
+      }
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        this.showToast(`图片「${file.name}」超过 10 MiB 上限，已跳过`);
+        continue;
+      }
+      if (projectedCount >= 12) {
+        this.showToast("每张任务卡片最多附加 12 张图片");
+        break;
+      }
+      projectedCount += 1;
+      validFiles.push(file);
+    }
+
+    if (validFiles.length === 0) return;
+
+    this.setState({ attachmentUploadBusy: true });
+    let uploadedCount = 0;
+    try {
+      const draftId = await this.ensureDraftForIntakeAction();
+      if (!draftId || this.state.intakeDraftId !== draftId) {
+        return;
+      }
+      for (const file of validFiles) {
+        if (this.state.intakeDraftId !== draftId) {
+          return;
+        }
+        const mime = file.type.split(";")[0]!.trim().toLowerCase() as AttachmentMimeType;
+        const dataBase64 = await fileToBase64(file);
+        if (this.state.intakeDraftId !== draftId) {
+          return;
+        }
+        const res = await apiUploadDraftAttachment(draftId, {
+          filename: file.name || "screenshot.png",
+          mime_type: mime,
+          data_base64: dataBase64,
+        });
+        if (this.state.intakeDraftId !== draftId) {
+          return;
+        }
+        const nextAttachments = res.draft.attachments
+          ? [...res.draft.attachments]
+          : [...this.state.intakeForm.attachments, res.attachment];
+        const nextForm: IntakeFormState = {
+          ...this.state.intakeForm,
+          attachments: nextAttachments,
+        };
+        this.setState({ intakeForm: nextForm });
+        writeLocalIntakeSnapshot(nextForm, this.state.intakeMessages);
+        uploadedCount += 1;
+      }
+      if (uploadedCount > 0) {
+        this.showToast(`已附加 ${uploadedCount} 张图片截图`);
+      }
+    } catch (err) {
+      this.showToast(err instanceof Error ? err.message : "上传图片附件失败");
+    } finally {
+      this.setState({ attachmentUploadBusy: false });
+      if (uploadedCount > 0) {
+        void this.bootstrap();
+      }
+    }
+  }
+
+  async deleteIntakeAttachment(attachmentId: string): Promise<boolean> {
+    if (this.state.attachmentUploadBusy || this.state.intakeBusy) {
+      return false;
+    }
+    const draftId = this.state.intakeDraftId;
+    if (!draftId) {
+      const nextForm: IntakeFormState = {
+        ...this.state.intakeForm,
+        attachments: this.state.intakeForm.attachments.filter(
+          (a) => a.id !== attachmentId,
+        ),
+      };
+      this.setState({ intakeForm: nextForm });
+      return true;
+    }
+    this.setState({ attachmentUploadBusy: true });
+    try {
+      const res = await apiDeleteDraftAttachment(draftId, attachmentId);
+      if (this.state.intakeDraftId !== draftId) {
+        return false;
+      }
+      const nextForm: IntakeFormState = {
+        ...this.state.intakeForm,
+        attachments: res.draft.attachments ? [...res.draft.attachments] : [],
+      };
+      this.setState({ intakeForm: nextForm });
+      if (this.state.intakeActiveOpen) {
+        writeLocalIntakeSnapshot(nextForm, this.state.intakeMessages);
+      }
+      this.showToast("已移除附件");
+      void this.bootstrap();
+      return true;
+    } catch (err) {
+      this.showToast(err instanceof Error ? err.message : "删除附件失败");
+      return false;
+    } finally {
+      this.setState({ attachmentUploadBusy: false });
+    }
+  }
+
+  private buildSplitCardSkeleton(
+    tempId: string,
+    title: string,
+    dependsOnTempIds: string[],
+    formOverride?: IntakeFormState,
+  ): SplitCardPlanItem {
+    const f = formOverride ?? this.state.intakeForm;
+    const { scopeList } = this.buildDraftContractFromForm(f);
+    const effectiveSpace = f.mode === "local" ? "local" : f.space;
+    const effectiveWs: Exclude<WorkspaceMode, "external_only"> =
+      f.mode === "project"
+        ? "git_worktree"
+        : f.workspace_mode === "host_scoped"
+          ? "host_scoped"
+          : "scratch_dir";
+    const workflow = resolveFormEffectiveWorkflow(f);
+    const toggles = extractWorkflowToggles(workflow);
+    const deliver = f.deliver_cmd.trim()
+      ? { mode: "run_cmd" as const, cmd: f.deliver_cmd.trim() }
+      : {
+          mode: (effectiveWs === "git_worktree" ? "merge_main" : "manual") as
+            | "merge_main"
+            | "manual",
+          cmd: null,
+        };
+    return {
+      temp_id: tempId,
+      title,
+      space: effectiveSpace,
+      priority: (f.priority || "P2") as Priority,
+      track: (f.track || "L2") as Track,
+      workspace_mode: effectiveWs,
+      depends_on_temp_ids: dependsOnTempIds,
+      depends_on: [],
+      workflow,
+      contract: {
+        goal: title,
+        end: f.end.trim() || "合入 main，门禁通过",
+        accept_cmd: f.accept_cmd.trim() || "pnpm test",
+        accept_files_hash: "pending",
+        scope: scopeList.length > 0 ? scopeList : ["src/**"],
+        ...(f.non_goals.length > 0 ? { non_goals: [...f.non_goals] } : {}),
+        deliver,
+        human_accept:
+          toggles.includeAccept && toggles.acceptMode === "approval",
+        external_actions: "ask",
+      },
+      brief_markdown: `# ${title}\n\n- 交付终点：${f.end.trim() || "合入 main"}\n- 验收命令：\`${f.accept_cmd.trim() || "pnpm test"}\``,
+    };
+  }
+
+  private normalizeSplitCardsFromReply(
+    text: string,
+    formOverride: IntakeFormState,
+  ): SplitCardPlanItem[] | null {
+    const rawCards = extractRawSplitCardsFromReply(text);
+    if (!rawCards) return null;
+    const toStringArray = (val: unknown): string[] =>
+      Array.isArray(val)
+        ? val
+            .filter((item): item is string => typeof item === "string")
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : [];
+    return rawCards.map((raw) => {
+      const tempId = String(raw.temp_id).trim();
+      const title = String(raw.title).trim();
+      const deps = toStringArray(raw.depends_on_temp_ids);
+      const skeleton = this.buildSplitCardSkeleton(tempId, title, deps, formOverride);
+      const rawContract =
+        raw.contract && typeof raw.contract === "object"
+          ? (raw.contract as Record<string, unknown>)
+          : undefined;
+      const scopeArr = toStringArray(rawContract?.scope);
+      const nonGoalsArr = toStringArray(rawContract?.non_goals);
+      const rawDeliver =
+        rawContract?.deliver && typeof rawContract.deliver === "object"
+          ? (rawContract.deliver as { mode?: unknown; cmd?: unknown })
+          : undefined;
+      let normalizedDeliver: SplitCardPlanItem["contract"]["deliver"] | undefined;
+      if (rawDeliver?.mode === "merge_main") {
+        normalizedDeliver = { mode: "merge_main", cmd: null };
+      } else if (rawDeliver?.mode === "open_pr") {
+        normalizedDeliver = { mode: "open_pr", cmd: null };
+      } else if (rawDeliver?.mode === "manual") {
+        normalizedDeliver = { mode: "manual", cmd: null };
+      } else if (
+        rawDeliver?.mode === "run_cmd" &&
+        typeof rawDeliver.cmd === "string" &&
+        rawDeliver.cmd.trim().length > 0
+      ) {
+        normalizedDeliver = { mode: "run_cmd", cmd: rawDeliver.cmd.trim() };
+      }
+      let rawWf = skeleton.workflow;
+      if (raw.workflow && typeof raw.workflow === "object") {
+        const cand = raw.workflow as Partial<WorkflowBlueprint>;
+        if (
+          cand.schema_version === 1 &&
+          typeof cand.preset === "string" &&
+          (WORKFLOW_PRESETS as readonly string[]).includes(cand.preset) &&
+          Array.isArray(cand.steps)
+        ) {
+          try {
+            const checked = cand as WorkflowBlueprint;
+            if (validateWorkflowBlueprint(checked).ok) {
+              rawWf = checked;
+            }
+          } catch {
+            // Fall back to skeleton workflow if blueprint contains malformed nodes
+          }
+        }
+      }
+
+      return {
+        ...skeleton,
+        ...(typeof raw.space === "string" && raw.space.trim()
+          ? { space: raw.space.trim() }
+          : {}),
+        ...(raw.priority === "P0" ||
+        raw.priority === "P1" ||
+        raw.priority === "P2" ||
+        raw.priority === "P3"
+          ? { priority: raw.priority }
+          : {}),
+        ...(raw.track === "L1" || raw.track === "L2" || raw.track === "L3"
+          ? { track: raw.track }
+          : {}),
+        ...(raw.workspace_mode === "git_worktree" ||
+        raw.workspace_mode === "host_scoped" ||
+        raw.workspace_mode === "scratch_dir"
+          ? { workspace_mode: raw.workspace_mode }
+          : {}),
+        depends_on: toStringArray(raw.depends_on),
+        workflow: rawWf,
+        ...(typeof raw.brief_markdown === "string" && raw.brief_markdown.trim()
+          ? { brief_markdown: raw.brief_markdown }
+          : {}),
+        contract: {
+          ...skeleton.contract,
+          ...(typeof rawContract?.goal === "string" && rawContract.goal.trim()
+            ? { goal: rawContract.goal.trim() }
+            : {}),
+          ...(typeof rawContract?.end === "string" && rawContract.end.trim()
+            ? { end: rawContract.end.trim() }
+            : {}),
+          ...(typeof rawContract?.accept_cmd === "string" &&
+          rawContract.accept_cmd.trim()
+            ? { accept_cmd: rawContract.accept_cmd.trim() }
+            : {}),
+          ...(typeof rawContract?.accept_files_hash === "string" &&
+          rawContract.accept_files_hash.trim()
+            ? { accept_files_hash: rawContract.accept_files_hash.trim() }
+            : {}),
+          ...(scopeArr.length > 0 ? { scope: scopeArr } : {}),
+          ...(Array.isArray(rawContract?.non_goals)
+            ? { non_goals: nonGoalsArr }
+            : {}),
+          ...(normalizedDeliver ? { deliver: normalizedDeliver } : {}),
+          ...(typeof rawContract?.human_accept === "boolean"
+            ? { human_accept: rawContract.human_accept }
+            : {}),
+        },
+      };
+    });
+  }
+
+  initSplitCardsFromDraft(): void {
+    const f = this.state.intakeForm;
+    if (f.split_cards.length >= 2) return;
+    const baseTitle = f.title.trim() || "核心模块";
+    const cards: SplitCardPlanItem[] = [
+      this.buildSplitCardSkeleton("s1", `${baseTitle} · 切片 1（基础契约）`, []),
+      this.buildSplitCardSkeleton("s2", `${baseTitle} · 切片 2（主链路交付）`, ["s1"]),
+    ];
+    this.updateIntakeForm({ split_cards: cards });
+  }
+
+  setSplitCards(cards: SplitCardPlanItem[]): void {
+    this.updateIntakeForm({ split_cards: cards });
+  }
+
+  addSplitCard(): void {
+    const cur = this.state.intakeForm.split_cards;
+    if (cur.length >= 12) {
+      this.showToast("最多支持同时拆分为 12 张关联卡片");
+      return;
+    }
+    const existing = new Set(cur.map((c) => c.temp_id.trim()));
+    let num = cur.length + 1;
+    while (existing.has(`s${num}`)) {
+      num += 1;
+    }
+    const prevTempId = cur[cur.length - 1]?.temp_id.trim();
+    const nextCard = this.buildSplitCardSkeleton(
+      `s${num}`,
+      `切片 ${num}`,
+      prevTempId ? [prevTempId] : [],
+    );
+    this.updateIntakeForm({ split_cards: [...cur, nextCard] });
+  }
+
+  updateSplitCard(index: number, patch: Partial<SplitCardPlanItem>): void {
+    const cur = this.state.intakeForm.split_cards;
+    if (index < 0 || index >= cur.length) return;
+    const next = cur.map((card, i) => (i === index ? { ...card, ...patch } : card));
+    this.updateIntakeForm({ split_cards: next });
+  }
+
+  removeSplitCard(index: number): void {
+    const cur = this.state.intakeForm.split_cards;
+    if (cur.length <= 2 || index < 0 || index >= cur.length) return;
+    const removedId = cur[index]!.temp_id.trim();
+    const next = cur
+      .filter((_, i) => i !== index)
+      .map((c) => ({
+        ...c,
+        depends_on_temp_ids: c.depends_on_temp_ids.filter(
+          (tid) => tid.trim() !== removedId,
+        ),
+      }));
+    this.updateIntakeForm({ split_cards: next });
+  }
+
+  clearSplitCards(): void {
+    this.updateIntakeForm({ split_cards: [] });
+  }
+
+  private guardAttachmentUploadBusy(): boolean {
+    if (!this.state.attachmentUploadBusy) return false;
+    this.showToast("图片附件正在上传，请稍候");
+    return true;
+  }
+
+  async commitSplitIntakeTasks(cards: SplitCardPlanItem[]): Promise<boolean> {
+    if (this.guardAttachmentUploadBusy()) return false;
+    if (cards.length < 2 || cards.length > 12) {
+      this.showToast("批量拆卡数量须在 2–12 张之间");
+      return false;
+    }
+    const dag = validateSplitCardsDag(cards);
+    if (!dag.ok) {
+      this.showToast(`DAG 校验未通过：${dag.errors[0]}`);
+      return false;
+    }
+
+    this.setState({ intakeBusy: true });
+    try {
+      const draftId = await this.ensureDraftForIntakeAction();
+      if (!draftId) {
+        this.setState({ intakeBusy: false });
+        return false;
+      }
+      const res = await apiCommitSplitDraft(draftId, cards);
+      clearActiveIntakePersistence();
+      const preferred =
+        this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
+      this.setState({
+        intakeBusy: false,
+        intakeDraftId: null,
+        intakeForm: createDefaultIntakeForm(this.state.spaces, preferred),
+        intakeRightTab: "brief",
+        intakeProgressLogs: [],
+        intakeMessages: defaultWelcomeIntakeMessages(),
+        draftOpen: false,
+        intakeActiveOpen: false,
+        intakeHasUnreadReply: false,
+      });
+      await this.bootstrap();
+      this.go("board");
+      this.showToast(`已批量立项 ${res.cards.length} 张依赖任务卡`);
+      return true;
+    } catch (err) {
+      this.setState({ intakeBusy: false });
+      this.showToast(err instanceof Error ? err.message : "批量拆卡提交失败");
+      return false;
     }
   }
 
@@ -2148,15 +3133,18 @@ export class KilnWebStore {
   }
 
   startNewIntake(): void {
+    if (this.guardAttachmentUploadBusy()) return;
     void this.resetIntakeSessionState(true);
   }
 
   async closeIntakeSession(): Promise<void> {
+    if (this.guardAttachmentUploadBusy()) return;
     await this.resetIntakeSessionState(true);
     this.showToast("已关闭当前立项对话");
   }
 
   async deleteIntakeDraft(draftId: string): Promise<void> {
+    if (this.guardAttachmentUploadBusy()) return;
     try {
       await apiDeleteDraft(draftId);
       if (this.state.intakeDraftId === draftId) {
@@ -2170,6 +3158,7 @@ export class KilnWebStore {
   }
 
   async loadDraftIntoIntake(draft: DraftCardWithBrief): Promise<void> {
+    if (this.guardAttachmentUploadBusy()) return;
     const nextForm = draftToIntakeForm(draft);
     writeStorageItem(ACTIVE_INTAKE_DRAFT_KEY, draft.id);
     this.setState({
@@ -2187,11 +3176,11 @@ export class KilnWebStore {
     writeLocalIntakeSnapshot(nextForm, nextMessages);
   }
 
-  private buildDraftContractFromForm(): {
+  private buildDraftContractFromForm(formOverride?: IntakeFormState): {
     depends_on: string[];
     scopeList: string[];
   } {
-    const f = this.state.intakeForm;
+    const f = formOverride ?? this.state.intakeForm;
     const scopeList = f.scope
       .split(/[\n,]+/)
       .map((s) => s.trim())
@@ -2204,6 +3193,7 @@ export class KilnWebStore {
   }
 
   async saveIntakeDraft(): Promise<DraftCard | null> {
+    if (this.guardAttachmentUploadBusy()) return null;
     const f = this.state.intakeForm;
     if (!f.title.trim()) return null;
     if (f.mode === "project" && !isProjectSpace(this.state.spaces[f.space])) {
@@ -2239,6 +3229,9 @@ export class KilnWebStore {
           ...(f.end.trim() ? { end: f.end.trim() } : {}),
           ...(f.accept_cmd.trim() ? { accept_cmd: f.accept_cmd.trim() } : {}),
           ...(scopeList.length > 0 ? { scope: scopeList } : {}),
+          ...(this.state.intakeDraftId || f.non_goals.length > 0
+            ? { non_goals: f.non_goals }
+            : {}),
           ...(f.deliver_cmd.trim()
             ? { deliver: { mode: "run_cmd" as const, cmd: f.deliver_cmd.trim() } }
             : {}),
@@ -2284,6 +3277,7 @@ export class KilnWebStore {
   }
 
   async commitIntakeTask(): Promise<boolean> {
+    if (this.guardAttachmentUploadBusy()) return false;
     const f = this.state.intakeForm;
     const { depends_on, scopeList } = this.buildDraftContractFromForm();
     const effectiveSpace = f.mode === "local" ? "local" : f.space;
@@ -2330,12 +3324,35 @@ export class KilnWebStore {
             end: f.end.trim(),
             accept_cmd: f.accept_cmd.trim(),
             scope: scopeList,
+            ...(f.non_goals.length > 0 ? { non_goals: f.non_goals } : {}),
             ...(deliverCmdTrimmed
               ? { deliver: { mode: "run_cmd" as const, cmd: deliverCmdTrimmed } }
               : {}),
           },
         });
         draftId = saved.draft.id;
+      } else {
+        // Ensure form edits such as workflow roster_role or non_goals are synced to draft before commit.
+        await apiUpsertDraft({
+          id: draftId,
+          title: f.title.trim(),
+          space: effectiveSpace,
+          priority: f.priority,
+          track: f.track,
+          workspace_mode: effectiveWorkspaceMode,
+          depends_on,
+          workflow: effectiveWorkflow,
+          contract: {
+            goal: f.title.trim(),
+            end: f.end.trim(),
+            accept_cmd: f.accept_cmd.trim(),
+            scope: scopeList,
+            ...(f.non_goals.length > 0 ? { non_goals: f.non_goals } : {}),
+            ...(deliverCmdTrimmed
+              ? { deliver: { mode: "run_cmd" as const, cmd: deliverCmdTrimmed } }
+              : {}),
+          },
+        });
       }
 
       const taskId = this.generateNextTaskId();
@@ -2366,6 +3383,7 @@ export class KilnWebStore {
           accept_cmd: f.accept_cmd.trim(),
           accept_files_hash: "pending",
           scope: scopeList,
+          ...(f.non_goals.length > 0 ? { non_goals: f.non_goals } : {}),
           deliver: deliverConfig,
           human_accept:
             workflowToggles.includeAccept && workflowToggles.acceptMode === "approval",
@@ -2408,7 +3426,9 @@ export class KilnWebStore {
 
   async sendIntakeChat(text: string): Promise<void> {
     const trimmed = text.trim();
-    if (!trimmed || this.state.intakeBusy) return;
+    if (!trimmed || this.state.intakeBusy || this.guardAttachmentUploadBusy()) {
+      return;
+    }
 
     const f = this.state.intakeForm;
     const effectiveSpace = f.mode === "local" ? "local" : f.space;
@@ -2440,11 +3460,15 @@ export class KilnWebStore {
         end: string;
         accept_cmd: string;
         scope: string[];
+        non_goals: string[];
       }> = {};
       if (f.title.trim()) contractPatch.goal = f.title.trim();
       if (f.end.trim()) contractPatch.end = f.end.trim();
       if (f.accept_cmd.trim()) contractPatch.accept_cmd = f.accept_cmd.trim();
       if (scopeList.length > 0) contractPatch.scope = scopeList;
+      if (this.state.intakeDraftId || f.non_goals.length > 0) {
+        contractPatch.non_goals = f.non_goals;
+      }
 
       const synced = await apiUpsertDraft({
         ...(this.state.intakeDraftId ? { id: this.state.intakeDraftId } : {}),
@@ -2505,12 +3529,28 @@ export class KilnWebStore {
         if (res.draft.contract.scope?.length) {
           nextForm.scope = res.draft.contract.scope.join("\n");
         }
+        if (res.draft.contract.non_goals !== undefined) {
+          nextForm.non_goals = res.draft.contract.non_goals;
+        }
+        if (res.draft.attachments !== undefined) {
+          nextForm.attachments = res.draft.attachments;
+        }
         if (res.draft.depends_on.length) {
           nextForm.depends_on = res.draft.depends_on.join(", ");
         }
         if (res.draft.open_questions !== undefined) {
           nextForm.open_questions = res.draft.open_questions;
         }
+      }
+      const latestAgentText =
+        typeof res.reply === "string"
+          ? res.reply
+          : res.reply?.text ?? nextMsgs[nextMsgs.length - 1]?.text ?? "";
+      const extractedSplit = latestAgentText
+        ? this.normalizeSplitCardsFromReply(latestAgentText, nextForm)
+        : null;
+      if (extractedSplit) {
+        nextForm.split_cards = extractedSplit;
       }
       const nextBrief = res.brief_markdown ?? res.draft?.brief_markdown;
       if (typeof nextBrief === "string") {
@@ -2716,7 +3756,14 @@ export class KilnWebStore {
         });
         void this.refreshProviders();
         void this.refreshAgents(true);
-      } else if (section === "roster") {
+      } else if (
+        section === "roster" &&
+        res?.data &&
+        typeof res.data === "object" &&
+        "roster" in res.data &&
+        (res.data as RosterConfig).roster &&
+        typeof (res.data as RosterConfig).roster === "object"
+      ) {
         this.setState({ roster: res.data as RosterConfig });
         void this.bootstrap();
       }
@@ -2753,7 +3800,14 @@ export class KilnWebStore {
   async refreshRoster(): Promise<void> {
     try {
       const res = await apiFetchRosterSettings();
-      this.setState({ roster: res.data });
+      if (
+        res?.data &&
+        typeof res.data === "object" &&
+        res.data.roster &&
+        typeof res.data.roster === "object"
+      ) {
+        this.setState({ roster: res.data });
+      }
     } catch {
       // Ignore if endpoint is absent in legacy mock servers
     }
