@@ -2,12 +2,31 @@
   "name": "@kiln/desktop",
   "version": "0.0.5",
   "private": true,
+  "type": "module",
+  "main": "dist/main.js",
   "scripts": {
+    "dev": "pnpm build && electron .",
+    "build": "vp pack && node scripts/stage-runtime.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vp test run --root ../.. apps/desktop/src",
+    "pack:dir": "electron-builder --dir",
+    "pack:mac": "electron-builder --mac dmg",
+    "pack:win": "electron-builder --win nsis",
     "tauri:dev": "cargo tauri dev --manifest-path src-tauri/Cargo.toml",
     "tauri:build": "cargo tauri build --manifest-path src-tauri/Cargo.toml",
     "tauri:build:sidecar": "cargo tauri build --manifest-path src-tauri/Cargo.toml --config src-tauri/tauri.sidecar.conf.json",
     "check:rust": "cargo check --manifest-path src-tauri/Cargo.toml",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "test:rust:core": "rustc --test src-tauri/src/model.rs -o /tmp/kiln-desktop-model-test && /tmp/kiln-desktop-model-test && rm -f /tmp/kiln-desktop-model-test"
+  },
+  "devDependencies": {
+    "@kiln/kernel": "workspace:*",
+    "@kiln/mcp": "workspace:*",
+    "@kiln/protocol": "workspace:*",
+    "@kiln/web": "workspace:*",
+    "@types/node": "^22.15.0",
+    "@zzf2333/kiln": "workspace:*",
+    "electron": "^45.4.1",
+    "electron-builder": "^26.18.0"
   }
 }
