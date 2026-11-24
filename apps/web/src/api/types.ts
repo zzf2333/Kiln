@@ -136,6 +136,7 @@ export interface BootstrapTask {
   waiting_reason?: string;
   waiting_since?: string;
   delivered_ref?: string;
+  stall_silent_sec?: number;
   kind?: string;
 }
 
@@ -609,6 +610,7 @@ export interface ScriptRunSummary {
   startedAt: string;
   endedAt: string | null;
   outputTail: string;
+  detectedUrls?: string[];
 }
 
 export interface ListScriptsResponse {

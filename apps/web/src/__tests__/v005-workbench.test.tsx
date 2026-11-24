@@ -2634,4 +2634,244 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
     fireEvent.click(within(mqBar).getByText("Slice B Queue"));
     expect(await screen.findByText("合并队列 #2")).toBeTruthy();
   });
+
+  it("Track 5 [B12.3]: renders ScriptDrawer detected local preview URLs and BoardView attention signals", async () => {
+    const overdueIso = new Date(Date.now() - 45 * 60_000).toISOString();
+    const freshIso = new Date(Date.now() - 60_000).toISOString();
+
+    const boot = makeV3Bootstrap({
+      spaces: {
+        alpha: {
+          schema_version: 1,
+          id: "alpha",
+          name: "Alpha",
+          repo_path: "/tmp/alpha",
+          default_branch: "main",
+          copy_untracked: [],
+          clone_deps: [],
+          freeze_patterns: [],
+          scripts: {
+            dev: "pnpm dev",
+          },
+        },
+      },
+      limits: {
+        schema_version: 1,
+        max_concurrent_slots: 5,
+        p0_extra_slot: true,
+        max_waiting_wip: 1,
+        retries_per_stage: 2,
+        review_rounds: 2,
+        advisor_calls: 1,
+        max_card_tokens: 250_000,
+      },
+      pendingDecisions: [
+        {
+          id: "dec-overdue",
+          task_id: "t-wait-1",
+          contract_version: 1,
+          reason: "budget_exceeded",
+          category: "budget_exceeded",
+          question: "Budget exceeded",
+          options: [
+            {
+              id: "opt-ok",
+              label: "Raise limit",
+              action: "resume",
+              recommended: true,
+            },
+          ],
+          created_at: overdueIso,
+        },
+      ],
+      tasks: [
+        {
+          id: "t-wait-1",
+          space: "alpha",
+          parent_id: null,
+          title: "Waiting Overdue Task",
+          priority: "P1",
+          effective_priority: "P1",
+          track: "L1",
+          workspace_mode: "git_worktree",
+          status: "waiting",
+          stage: "implement",
+          round: 1,
+          active_run_id: null,
+          contract_version: 1,
+          depends_on: [],
+          created_at: overdueIso,
+          updated_at: overdueIso,
+          cost_usd: 0,
+          tokens: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+        },
+        {
+          id: "t-run-stall",
+          space: "alpha",
+          parent_id: null,
+          title: "Running Stall Signal",
+          priority: "P1",
+          effective_priority: "P1",
+          track: "L1",
+          workspace_mode: "git_worktree",
+          status: "running",
+          stage: "implement",
+          round: 1,
+          active_run_id: "r-st1",
+          contract_version: 1,
+          depends_on: [],
+          stall_silent_sec: 630,
+          created_at: freshIso,
+          updated_at: freshIso,
+          cost_usd: 0,
+          tokens: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+        },
+        {
+          id: "t-q-dep",
+          space: "alpha",
+          parent_id: null,
+          title: "Queued On Dep",
+          priority: "P1",
+          effective_priority: "P1",
+          track: "L1",
+          workspace_mode: "git_worktree",
+          status: "queued",
+          stage: "implement",
+          round: 1,
+          active_run_id: null,
+          contract_version: 1,
+          depends_on: ["t-wait-1"],
+          created_at: freshIso,
+          updated_at: freshIso,
+          cost_usd: 0,
+          tokens: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+        },
+        {
+          id: "t-q-wip",
+          space: "alpha",
+          parent_id: null,
+          title: "Queued On Attention Gate",
+          priority: "P2",
+          effective_priority: "P2",
+          track: "L1",
+          workspace_mode: "git_worktree",
+          status: "queued",
+          stage: "implement",
+          round: 1,
+          active_run_id: null,
+          contract_version: 1,
+          depends_on: [],
+          created_at: freshIso,
+          updated_at: freshIso,
+          cost_usd: 0,
+          tokens: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+        },
+      ],
+    });
+    boot.settings!.limits!.max_waiting_wip = 1;
+
+    fetchMock.mockImplementation(async (url) => {
+      if (url === "/api/auth/status") {
+        return jsonResponse({ ok: true, mode: "local", authenticated: true, device: null });
+      }
+      if (url === "/api/bootstrap") {
+        return jsonResponse(boot);
+      }
+      if (String(url).startsWith("/api/scripts")) {
+        return jsonResponse({
+          ok: true,
+          runs: [
+            {
+              scriptRunId: "sr-dev-1",
+              spaceId: "alpha",
+              taskId: "t-run-stall",
+              script: "dev",
+              command: "pnpm dev",
+              cwd: "/tmp/alpha",
+              running: true,
+              exitCode: null,
+              startedAt: freshIso,
+              endedAt: null,
+              outputTail: "Local: http://localhost:5173/app",
+              detectedUrls: ["http://localhost:5173/app"],
+            },
+          ],
+        });
+      }
+      if (url === "/api/tasks/t-run-stall") {
+        return jsonResponse({
+          card: {
+            schema_version: 1,
+            id: "t-run-stall",
+            space: "alpha",
+            title: "Running Stall Signal",
+            track: "L1",
+            priority: "P1",
+            workspace_mode: "git_worktree",
+            parent: null,
+            depends_on: [],
+            contract_version: 1,
+            contract: {
+              goal: "Test B12.3",
+              end: "Done",
+              accept_cmd: "echo ok",
+              accept_files_hash: `sha256:${"a".repeat(64)}`,
+              scope: ["src/**"],
+              non_goals: [],
+              deliver: { mode: "manual", cmd: null },
+              human_accept: false,
+              external_actions: "ask",
+            },
+            limits: {
+              retries_per_stage: 2,
+              review_rounds: 2,
+              advisor_calls: 1,
+              max_tokens: 150_000,
+            },
+            created_at: freshIso,
+            updated_at: freshIso,
+          },
+          state: {
+            status: "running",
+            stage: "implement",
+            round: 1,
+            activeRunId: "r-st1",
+            priority: "P1",
+            effectivePriority: "P1",
+            track: "L1",
+            contractVersion: 1,
+            updatedAt: freshIso,
+          },
+          brief: "# Brief",
+          decisions: "",
+          pendingDecision: null,
+          ledgerProposals: [],
+          runs: [],
+          usageTurns: [],
+          usage: boot.usage,
+        });
+      }
+      return jsonResponse({ ok: true });
+    });
+
+    // 1. BoardView renders waiting category + overdue class, stall chip, and queued block reasons
+    window.location.hash = "#view=board";
+    render(<App />);
+    expect(await screen.findByText("预算熔断")).toBeTruthy();
+    const waitBadge = screen.getByText(/等了 /);
+    expect(waitBadge.className).toContain("is-overdue");
+    expect(screen.getByText("停滞告警 · 630s")).toBeTruthy();
+    expect(screen.getByText("阻塞于前置依赖：t-wait-1")).toBeTruthy();
+    expect(screen.getByText("注意力闸门限流（待决 1/1）")).toBeTruthy();
+
+    // 2. DetailView + ScriptDrawer shows detected loopback preview URL link
+    window.location.hash = "#view=detail&task=t-run-stall";
+    fireEvent.click(await screen.findByRole("button", { name: /脚本/ }));
+    const previewBar = await screen.findByLabelText("探测到的本机预览地址");
+    const link = within(previewBar).getByRole("link", {
+      name: /http:\/\/localhost:5173\/app/,
+    }) as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe("http://localhost:5173/app");
+    expect(link.getAttribute("target")).toBe("_blank");
+  });
 });

@@ -4146,6 +4146,29 @@ button.sb-item:hover { background: var(--hover); color: var(--t1); }
   color: var(--ink-2);
 }
 
+.script-preview-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--rail);
+  font-size: 12px;
+}
+.wait-badge {
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+.wait-badge.is-overdue {
+  color: var(--ember);
+  font-weight: 600;
+}
+.block-reason {
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }

@@ -413,3 +413,43 @@ export const MergeQueueEntrySchema = z.object({
   priority: PrioritySchema,
 });
 export type MergeQueueEntry = z.infer<typeof MergeQueueEntrySchema>;
+
+const ANSI_ESCAPE_RE = /\u001b\[[0-9;]*[a-zA-Z]/g;
+const LOCAL_URL_CANDIDATE_RE =
+  /(https?):\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|\[::\]):(\d{1,5})(\/[^\s"'<>)\]]*)?/gi;
+
+/**
+ * Extracts normalized, validated local preview URLs (`localhost`, `127.0.0.1`, `[::1]`)
+ * from noisy script output (stripping ANSI escapes and normalizing `0.0.0.0` / `[::]`).
+ */
+export function extractLocalPreviewUrls(text: string, maxCount = 6): string[] {
+  if (!text) return [];
+  const clean = text.replace(ANSI_ESCAPE_RE, "");
+
+  const result: string[] = [];
+  const seen = new Set<string>();
+  const re = new RegExp(LOCAL_URL_CANDIDATE_RE.source, "gi");
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(clean)) !== null) {
+    const scheme = match[1]!.toLowerCase();
+    const rawHost = match[2]!.toLowerCase();
+    const portNum = Number.parseInt(match[3]!, 10);
+    if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
+      continue;
+    }
+    const host =
+      rawHost === "0.0.0.0"
+        ? "127.0.0.1"
+        : rawHost === "[::]"
+          ? "localhost"
+          : rawHost;
+    const rawSuffix = (match[4] ?? "").replace(/[.,;:)\]]+$/, "");
+    const suffix = rawSuffix.length > 0 ? rawSuffix : "/";
+    const normalized = `${scheme}://${host}:${portNum}${suffix}`;
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+    if (result.length >= maxCount) break;
+  }
+  return result;
+}

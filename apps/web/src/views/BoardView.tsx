@@ -33,6 +33,36 @@ function isInPeriod(iso: string, period: PeriodFilter): boolean {
   return diffDays <= 366;
 }
 
+function waitingCategoryLabel(categoryOrReason: string | undefined): string {
+  switch (categoryOrReason) {
+    case "budget_exceeded":
+      return "预算熔断";
+    case "deliver_merge_conflict":
+    case "merge_conflict":
+      return "合并冲突";
+    case "deliver_merge_blocked":
+    case "main_repo_not_ready_for_merge":
+    case "worktree_dirty_before_merge":
+    case "refinery_accept_failed":
+      return "合并受阻";
+    case "host_scoped_apply":
+    case "host_scoped_apply_error":
+    case "host_scoped_restore":
+      return "本机写盘审批";
+    case "deliver_approval":
+    case "external_deliver_pr":
+    case "external_deliver_cmd":
+      return "交付审批";
+    case "review_escalation":
+    case "gate_failure_escalation":
+    case "stage_failure_escalation":
+    case "frozen_test_escalation":
+      return "异常升级";
+    default:
+      return "等待决定";
+  }
+}
+
 export function BoardView() {
   const { store, state } = useKilnStore();
   const {
@@ -45,7 +75,13 @@ export function BoardView() {
     showParentSlices,
     ratesByTask,
     pricing,
+    limits,
+    mergeQueue,
   } = state;
+
+  const taskStatusById = new Map(tasks.map((task) => [task.id, task.status]));
+  const globalWaitingCount = tasks.filter((task) => task.status === "waiting").length;
+  const mergeQueueByTaskId = new Map(mergeQueue.map((entry) => [entry.task_id, entry]));
 
   const parentIds = new Set<string>();
   for (const t of tasks) {
@@ -188,6 +224,10 @@ export function BoardView() {
       const dec = decisionByTask.get(t.id);
       const recOpt =
         dec?.options.find((o) => o.recommended) ?? dec?.options[0];
+      const waitAnchorIso = dec?.created_at ?? t.waiting_since ?? t.updated_at;
+      const waitMs = Date.now() - Date.parse(waitAnchorIso);
+      const isOverdue = Number.isFinite(waitMs) && waitMs >= 30 * 60_000;
+      const categoryText = waitingCategoryLabel(dec?.category ?? t.waiting_reason);
       return (
         <article
           key={t.id}
@@ -202,9 +242,10 @@ export function BoardView() {
               />
               <span>{spaceName}</span>
               {t.parent_id ? <span className="mono">· {t.parent_id}</span> : null}
+              <span className="chip">{categoryText}</span>
             </span>
-            <span>
-              等了 {fmtRelativeSince(dec?.created_at ?? t.waiting_since ?? t.updated_at)}
+            <span className={`wait-badge${isOverdue ? " is-overdue" : ""}`}>
+              等了 {fmtRelativeSince(waitAnchorIso)}
             </span>
           </div>
           <h3 className="card-title">{t.title}</h3>
@@ -291,6 +332,13 @@ export function BoardView() {
           </div>
           <h3 className="card-title">{t.title}</h3>
           {t.summary ? <p className="card-desc">{t.summary}</p> : null}
+          {t.stall_silent_sec !== undefined ? (
+            <div style={{ marginBottom: "6px" }}>
+              <span className="chip chip-warn">
+                停滞告警 · {t.stall_silent_sec}s
+              </span>
+            </div>
+          ) : null}
           <div className="live-row">
             <span className="live-stage">
               <span className="dot live-dot" />
@@ -369,6 +417,22 @@ export function BoardView() {
     }
 
     if (t.status === "queued") {
+      const unfinishedDeps = t.depends_on.filter(
+        (depId) => taskStatusById.get(depId) !== "done",
+      );
+      const mqEntry = mergeQueueByTaskId.get(t.id);
+      const attentionBlocked =
+        globalWaitingCount >= limits.max_waiting_wip &&
+        (t.effective_priority === "P2" || t.effective_priority === "P3");
+      const queueReason =
+        unfinishedDeps.length > 0
+          ? `阻塞于前置依赖：${unfinishedDeps.join("、")}`
+          : mqEntry
+            ? `合并队列 #${mqEntry.position} · 等当前合入完成`
+            : attentionBlocked
+              ? `注意力闸门限流（待决 ${globalWaitingCount}/${limits.max_waiting_wip}）`
+              : "等执行槽位";
+
       return (
         <article
           key={t.id}
@@ -386,17 +450,15 @@ export function BoardView() {
               </span>
               {t.parent_id ? <span className="mono">· {t.parent_id}</span> : null}
             </span>
-            <span>排队</span>
+            <span className="wait-badge">
+              排队 · {fmtRelativeSince(t.updated_at || t.created_at)}
+            </span>
           </div>
           <h3 className="card-title">{t.title}</h3>
           {t.summary ? <p className="card-desc">{t.summary}</p> : null}
           <MiniRail track={t.track} workflow={t.workflow} status={t.status} activeStage={t.stage} />
           <div className="card-foot">
-            <span>
-              {t.depends_on.length > 0
-                ? `等 ${t.depends_on.join("、")} 完成后开始`
-                : "等执行槽位"}
-            </span>
+            <span className="block-reason">{queueReason}</span>
           </div>
         </article>
       );

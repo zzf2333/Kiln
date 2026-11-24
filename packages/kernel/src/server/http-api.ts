@@ -462,6 +462,28 @@ function readLatestRunMeta(store: KilnStore, taskId: string): RunMeta | null {
   return null;
 }
 
+function readActiveSoftStallSilentSec(store: KilnStore, taskId: string): number | undefined {
+  const runsDir = store.paths.runsDir(taskId);
+  if (!fs.existsSync(runsDir)) {
+    return undefined;
+  }
+  const dirNames = fs
+    .readdirSync(runsDir, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+    .map((e) => assertSafeSegment(e.name, "runDirName"))
+    .sort((a, b) => a.localeCompare(b));
+  const latestDir = dirNames[dirNames.length - 1];
+  if (!latestDir) {
+    return undefined;
+  }
+  const events = readNdjsonValidated(store.paths.runEventsNdjson(taskId, latestDir), RunEventSchema);
+  const lastEv = events[events.length - 1];
+  if (lastEv?.kind === "stall_warning" && lastEv.phase === "soft_warning") {
+    return lastEv.silentSec;
+  }
+  return undefined;
+}
+
 function readHostBackupManifestOptional(
   store: KilnStore,
   taskId: string,
@@ -1551,6 +1573,10 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       const hasHostBackup =
         card.workspace_mode === "host_scoped" &&
         fs.existsSync(store.paths.backupManifest(row.id));
+      const stallSilentSec =
+        row.status === "running"
+          ? readActiveSoftStallSilentSec(store, row.id)
+          : undefined;
 
       return {
         id: row.id,
@@ -1580,6 +1606,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         tokens_by_model: taskUsage.byModel,
         summary: card.contract.goal,
         has_host_backup: hasHostBackup,
+        ...(stallSilentSec !== undefined ? { stall_silent_sec: stallSilentSec } : {}),
         ...(latestRun !== null ? { agent: latestRun.agent, model: latestRun.model } : {}),
         ...(row.status === "waiting"
           ? {

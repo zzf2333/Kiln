@@ -199,6 +199,7 @@ export const SseEventSchema = z.discriminatedUnion("type", [
     chunk: z.string(),
     done: z.boolean().optional(),
     exitCode: z.number().int().nullable().optional(),
+    detectedUrls: z.array(z.string().min(1)).optional(),
     at: z.string().min(1),
   }),
   z.object({

@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   RunSpaceScriptResponseSchema,
+  extractLocalPreviewUrls,
   type RunSpaceScriptResponse,
 } from "@kiln/protocol";
 
@@ -39,6 +40,7 @@ export interface ScriptRunSummary {
   startedAt: string;
   endedAt: string | null;
   outputTail: string;
+  detectedUrls: string[];
 }
 
 interface ActiveScriptEntry {
@@ -230,6 +232,7 @@ export class KilnScriptRunner {
       startedAt,
       endedAt: null,
       outputTail: "",
+      detectedUrls: [],
     };
 
     let resolveCompletion!: (result: ScriptCompletionResult) => void;
@@ -270,11 +273,25 @@ export class KilnScriptRunner {
     };
     this.active.set(scriptRunId, entry);
 
+    const mergeDetectedUrls = (chunkText: string): void => {
+      if (entry.summary.detectedUrls.length >= 6) return;
+      const found = extractLocalPreviewUrls(chunkText, 6);
+      for (const u of found) {
+        if (!entry.summary.detectedUrls.includes(u)) {
+          entry.summary.detectedUrls.push(u);
+          if (entry.summary.detectedUrls.length >= 6) break;
+        }
+      }
+    };
+
     const publishChunk = (
       stream: "stdout" | "stderr" | "system",
       chunk: string,
       opts: { done?: boolean; exitCode?: number | null } = {},
     ): void => {
+      if (stream === "stdout" || stream === "stderr") {
+        mergeDetectedUrls(chunk);
+      }
       this.sseHub.publish({
         type: "script.output",
         spaceId: safeSpaceId,
@@ -285,6 +302,9 @@ export class KilnScriptRunner {
         chunk,
         ...(opts.done !== undefined ? { done: opts.done } : {}),
         ...(opts.exitCode !== undefined ? { exitCode: opts.exitCode } : {}),
+        ...(entry.summary.detectedUrls.length > 0
+          ? { detectedUrls: [...entry.summary.detectedUrls] }
+          : {}),
         at: new Date().toISOString(),
       });
     };

@@ -170,6 +170,26 @@ export function ScriptDrawer({ spaceId, taskId, scripts }: ScriptDrawerProps) {
         </button>
       </div>
 
+      {currentRun?.detectedUrls && currentRun.detectedUrls.length > 0 ? (
+        <div className="script-preview-bar" aria-label="探测到的本机预览地址">
+          <span className="muted">本机预览</span>
+          {currentRun.detectedUrls.map((url) => (
+            <a
+              key={url}
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="chip chip-ok mono"
+            >
+              ↗ {url}
+            </a>
+          ))}
+          {state.authMode === "remote" ? (
+            <span className="muted">（仅宿主机本机可访问）</span>
+          ) : null}
+        </div>
+      ) : null}
+
       {configuredKeys.length === 0 ? (
         <div className="script-empty">
           <span>

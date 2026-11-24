@@ -6,6 +6,7 @@ import {
   WORKFLOW_PRESETS,
   buildCustomWorkflow,
   buildWorkflowPreset,
+  extractLocalPreviewUrls,
   extractWorkflowToggles,
   validateSplitCardsDag,
   validateWorkflowBlueprint,
@@ -311,6 +312,7 @@ export interface ScriptRunBuffer {
   startedAt?: string;
   endedAt?: string | null;
   lines: string[];
+  detectedUrls?: string[];
   done: boolean;
   exitCode: number | null;
   updatedAt: string;
@@ -1707,6 +1709,7 @@ export class KilnWebStore {
         ...(event.taskId ? { taskId: event.taskId } : {}),
         scriptKey: event.scriptKey,
         lines: [],
+        detectedUrls: [],
         done: false,
         exitCode: null,
         updatedAt: event.at,
@@ -1716,12 +1719,20 @@ export class KilnWebStore {
         rawLines.pop();
       }
       const merged = [...existing.lines, ...rawLines].slice(-500);
+      const mergedUrls = Array.from(
+        new Set([
+          ...(existing.detectedUrls ?? []),
+          ...(event.detectedUrls ?? []),
+          ...extractLocalPreviewUrls(event.chunk ?? "", 6),
+        ]),
+      ).slice(0, 6);
       this.setState({
         scriptRuns: {
           ...this.state.scriptRuns,
           [event.scriptRunId]: {
             ...existing,
             lines: merged,
+            detectedUrls: mergedUrls,
             done: event.done !== undefined ? Boolean(event.done) : existing.done,
             exitCode: event.exitCode !== undefined ? event.exitCode : existing.exitCode,
             updatedAt: event.at,
@@ -1980,6 +1991,13 @@ export class KilnWebStore {
           startedAt: item.startedAt,
           endedAt: item.endedAt,
           lines: useServerLines ? serverLines : existing.lines,
+          detectedUrls: Array.from(
+            new Set([
+              ...(existing?.detectedUrls ?? []),
+              ...(item.detectedUrls ?? []),
+              ...extractLocalPreviewUrls(item.outputTail ?? "", 6),
+            ]),
+          ).slice(0, 6),
           done: existing?.done ? true : !item.running,
           exitCode: item.exitCode ?? existing?.exitCode ?? null,
           updatedAt: item.endedAt ?? existing?.updatedAt ?? item.startedAt,
