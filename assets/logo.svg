@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
+  <defs>
+    <linearGradient id="kiln-tile-bg" x1="128" y1="16" x2="128" y2="240" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1E2025" />
+      <stop offset="100%" stop-color="#121316" />
+    </linearGradient>
+    <linearGradient id="kiln-tile-rim" x1="128" y1="16" x2="128" y2="240" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#383B45" />
+      <stop offset="100%" stop-color="#22242A" />
+    </linearGradient>
+    <linearGradient id="kiln-arch" x1="128" y1="54" x2="128" y2="196" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#F2F2F5" />
+      <stop offset="100%" stop-color="#A8ACB5" />
+    </linearGradient>
+    <radialGradient id="kiln-hearth-glow" cx="128" cy="148" r="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#C8875A" stop-opacity="0.34" />
+      <stop offset="65%" stop-color="#B56536" stop-opacity="0.1" />
+      <stop offset="100%" stop-color="#141518" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="kiln-ember" x1="128" y1="98" x2="128" y2="176" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#F3C18B" />
+      <stop offset="55%" stop-color="#DC9D70" />
+      <stop offset="100%" stop-color="#B56536" />
+    </linearGradient>
+  </defs>
+
+  <rect x="16" y="16" width="224" height="224" rx="52" fill="url(#kiln-tile-bg)" />
+  <rect x="17.5" y="17.5" width="221" height="221" rx="50.5" stroke="url(#kiln-tile-rim)" stroke-width="3" />
+
+  <circle cx="128" cy="146" r="62" fill="url(#kiln-hearth-glow)" />
+
+  <!-- Architectural Kiln Arch -->
+  <path
+    d="M80 184V116C80 89.49 101.49 68 128 68C154.51 68 176 89.49 176 116V184"
+    stroke="url(#kiln-arch)"
+    stroke-width="18"
+    stroke-linecap="round"
+  />
+  <!-- Hearth Base -->
+  <path d="M56 188H200" stroke="url(#kiln-arch)" stroke-width="16" stroke-linecap="round" />
+
+  <!-- Forged Copper Ember Flame -->
+  <path
+    d="M128 100C128 100 148 124 148 144C148 155.046 139.046 164 128 164C116.954 164 108 155.046 108 144C108 124 128 100 128 100Z"
+    fill="url(#kiln-ember)"
+  />
+  <path
+    d="M128 122C128 122 136 133 136 142C136 146.418 132.418 150 128 150C123.582 150 120 146.418 120 142C120 133 128 122 128 122Z"
+    fill="#FFF1DB"
+  />
+</svg>

@@ -1,7 +1,17 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-  <rect width="24" height="24" rx="6" fill="#171615" />
-  <rect x="0.75" y="0.75" width="22.5" height="22.5" rx="5.25" fill="none" stroke="#3a3530" stroke-width="1.5" />
-  <path d="M5 18.5h14" stroke="#ece7e1" stroke-width="2" stroke-linecap="round" />
-  <path d="M7.5 18.5v-5a4.5 4.5 0 0 1 9 0v5" fill="none" stroke="#f08a24" stroke-width="2" stroke-linecap="round" />
-  <path d="M12 11v4" stroke="#fcd34d" stroke-width="2" stroke-linecap="round" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <defs>
+    <linearGradient id="f-bg" x1="16" y1="2" x2="16" y2="30" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1E2025" />
+      <stop offset="100%" stop-color="#121316" />
+    </linearGradient>
+    <linearGradient id="f-ember" x1="16" y1="12" x2="16" y2="21.5" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#F3C18B" />
+      <stop offset="60%" stop-color="#DC9D70" />
+      <stop offset="100%" stop-color="#B56536" />
+    </linearGradient>
+  </defs>
+  <rect x="1.5" y="1.5" width="29" height="29" rx="7" fill="url(#f-bg)" stroke="#2E3139" stroke-width="1.5" />
+  <path d="M9.5 23.5V14.5C9.5 10.91 12.41 8 16 8C19.59 8 22.5 10.91 22.5 14.5V23.5" stroke="#ECECEF" stroke-width="2.6" stroke-linecap="round" />
+  <path d="M6.5 23.5H25.5" stroke="#ECECEF" stroke-width="2.4" stroke-linecap="round" />
+  <path d="M16 12C16 12 19 15.6 19 18.2C19 19.857 17.657 21.2 16 21.2C14.343 21.2 13 19.857 13 18.2C13 15.6 16 12 16 12Z" fill="url(#f-ember)" />
 </svg>

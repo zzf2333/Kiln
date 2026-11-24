@@ -1,18 +1,17 @@
 export function BrandIcon() {
   return (
-    <svg
-      width="12"
-      height="12"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.2"
-      strokeLinecap="round"
-      aria-hidden="true"
-    >
-      <path d="M4 20h16" />
-      <path d="M7 20v-6a5 5 0 0 1 10 0v6" />
-      <path d="M12 11v4" />
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M6.5 19.5V11.5C6.5 8.46 8.96 6 12 6C15.04 6 17.5 8.46 17.5 11.5V19.5"
+        stroke="currentColor"
+        strokeWidth="2.1"
+        strokeLinecap="round"
+      />
+      <path d="M4 19.5H20" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" />
+      <path
+        d="M12 9.8C12 9.8 14.3 12.6 14.3 14.6C14.3 15.87 13.27 16.9 12 16.9C10.73 16.9 9.7 15.87 9.7 14.6C9.7 12.6 12 9.8 12 9.8Z"
+        fill="#f3c18b"
+      />
     </svg>
   );
 }

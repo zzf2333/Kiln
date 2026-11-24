@@ -1,10 +1,13 @@
-[English](README.md) | [简体中文](README.zh-CN.md)
+<div align="center">
+  <img src="assets/logo-mark.png" alt="Kiln Logo" width="96" />
+  <h1>Kiln</h1>
+  <p><strong>Agents are fuel; the workflow is the engine.</strong></p>
+  <p>Local-first, multi-agent, multi-subscription workflow orchestration and autonomous Kanban workbench</p>
+  <p><a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a></p>
+</div>
 
-# Kiln
+---
 
-> **Agents are fuel; the workflow is the engine.**
->
-> **A local-first, multi-agent, multi-subscription workflow orchestration and autonomous Kanban workbench.**
 > Wire the AI CLIs and model subscriptions you already pay for into a single deterministic pipeline—Kiln runs the board, verifies outputs against real gates in the background, and only interrupts you for scoping, approvals, and real acceptance.
 
 ---
@@ -20,6 +23,26 @@ Most AI coding tools trap you inside a "one conversation window, one manually pi
 | **Workflow Rigor**               | Relies on prompts and manual vigilance                                            | **Deterministic kernel + hard gates**: single-transaction stage leases, scope checks, frozen-test tampering escalation, `accept_cmd` re-runs, and advisor authority guardrails                    |
 | **Anti-Drift & Cost Efficiency** | Long threads re-ingest full context and burn tokens on repeated rework            | **4-layer prefix-stable caching + cognitive tiering**: warm `implement` session reuse, cheap recon + `fast_fix` before `main_dev` escalation, and independent cold review                         |
 | **Runtime Coupling**             | Locked to one vendor wrapper or external daemon                                   | **Open `CompositeBackend`**: built-in standard ACP core + direct adapters for `codex app-server`, `pi --mode rpc`, and `claude stream-json`                                                       |
+
+---
+
+## How Kiln Works
+
+![Kiln Autonomous Multi-Agent Workflow Pipeline](assets/diagrams/workflow-en.png)
+
+---
+
+## Interface Showcase
+
+|                                                  Kanban Board (Dark Theme)                                                  |                                                 Anti-Drift Task Detail & Stage Gates                                                 |
+| :-------------------------------------------------------------------------------------------------------------------------: | :----------------------------------------------------------------------------------------------------------------------------------: |
+|                            ![Kiln Kanban Board in Dark Theme](assets/screenshots/board-dark.png)                            |                               ![Kiln Anti-Drift Task Detail View](assets/screenshots/detail-dark.png)                                |
+| **4-Column Autonomous Board**: Waiting, Active (with isolated `paused`), External, and Done, paired with live sidebar spend | **Input → Alignment → Output & 4 Hard Gates**: Shows `BRIEF.md`, `PLAN.md`, implicit checkpoints, and 1-click **Native TUI** handoff |
+
+|                                     17-Role Roster Lineup & Fallback Chains                                      |                                 5-Field Billing, Net Cache Savings & USD Caps (Light Theme)                                  |
+| :--------------------------------------------------------------------------------------------------------------: | :--------------------------------------------------------------------------------------------------------------------------: |
+|                        ![Kiln 17-Role Roster Lineup](assets/screenshots/lineup-dark.png)                         |                  ![Kiln Usage and Cache Efficiency View in Light Theme](assets/screenshots/usage-light.png)                  |
+| **Single Pool + PM Assignment**: Role traits, `[1 → 2 → 3]` fallback chains, and honest provider quota telemetry | **Transparent Cost Telemetry**: Tracks `uncached / cache_read / cache_write / output`, net savings, USD caps, and warm reuse |
 
 ---
 
@@ -156,6 +179,8 @@ ruby -c packaging/homebrew/Formula/kiln.rb && ruby -c packaging/homebrew/Casks/k
 ---
 
 ## Repository Structure & Local Safety
+
+![Kiln One-Core Multi-Surface Architecture](assets/diagrams/architecture-en.png)
 
 | Path                                                  | Description                                                                                                                                                                                                                                        |
 | :---------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
