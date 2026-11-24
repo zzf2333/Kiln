@@ -61,6 +61,8 @@ class KilnDesktopApp implements TrayCoordinator {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private shutdownRequested = false;
   private isOpeningWindow = false;
+  private refreshInFlight = false;
+  private refreshQueued = false;
 
   async start(): Promise<void> {
     if (process.platform === "darwin") {
@@ -181,23 +183,36 @@ class KilnDesktopApp implements TrayCoordinator {
 
   private async refreshNow(): Promise<void> {
     if (this.shutdownRequested) return;
-    const { state: rawState, daemonVersion } = await this.client.probeTraySnapshot();
-    if (this.shutdownRequested) return;
-
-    let displayState: TrayDisplayState = rawState;
-    if (isTrayStateOnline(rawState)) {
-      this.startAction = { kind: "idle" };
-    } else {
-      displayState = applyStartAction(rawState, this.startAction);
+    if (this.refreshInFlight) {
+      this.refreshQueued = true;
+      return;
     }
+    this.refreshInFlight = true;
+    try {
+      const { state: rawState, daemonVersion } = await this.client.probeTraySnapshot();
+      if (this.shutdownRequested) return;
 
-    this.trayController?.updateDisplay(displayState, daemonVersion);
+      let displayState: TrayDisplayState = rawState;
+      if (isTrayStateOnline(rawState)) {
+        this.startAction = { kind: "idle" };
+      } else {
+        displayState = applyStartAction(rawState, this.startAction);
+      }
 
-    if (isTrayStateOnline(displayState)) {
-      this.ensureSseConnected();
-    } else {
-      this.closeSse();
-      this.scheduleOfflinePoll();
+      this.trayController?.updateDisplay(displayState, daemonVersion);
+
+      if (isTrayStateOnline(displayState)) {
+        this.ensureSseConnected();
+      } else {
+        this.closeSse();
+        this.scheduleOfflinePoll();
+      }
+    } finally {
+      this.refreshInFlight = false;
+      if (this.refreshQueued && !this.shutdownRequested) {
+        this.refreshQueued = false;
+        void this.refreshNow();
+      }
     }
   }
 

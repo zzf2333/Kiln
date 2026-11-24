@@ -28,9 +28,18 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-const CONNECT_TIMEOUT_MS = 1_500;
-const IO_TIMEOUT_MS = 2_500;
+const DEFAULT_HEALTH_TIMEOUT_MS = 2_500;
+const DEFAULT_BOOTSTRAP_TIMEOUT_MS = 10_000;
+const DEFAULT_SSE_CONNECT_TIMEOUT_MS = 5_000;
+const DEFAULT_IO_TIMEOUT_MS = 5_000;
 const MAX_HTTP_RESPONSE_BYTES = 4 * 1024 * 1024;
+
+export interface KilndClientTimeouts {
+  healthTimeoutMs?: number;
+  bootstrapTimeoutMs?: number;
+  sseConnectTimeoutMs?: number;
+  ioTimeoutMs?: number;
+}
 
 export interface KilnInvocation {
   command: string;
@@ -467,18 +476,33 @@ export function installCliCommand(): CliInstallOutcome {
 
 export class KilndClient {
   readonly url: NormalizedKilndUrl;
+  private readonly timeouts: Required<KilndClientTimeouts>;
 
-  constructor(url: NormalizedKilndUrl) {
+  constructor(url: NormalizedKilndUrl, timeouts: KilndClientTimeouts = {}) {
     this.url = validateKilndUrl(url.baseUrl);
+    this.timeouts = {
+      healthTimeoutMs: timeouts.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS,
+      bootstrapTimeoutMs: timeouts.bootstrapTimeoutMs ?? DEFAULT_BOOTSTRAP_TIMEOUT_MS,
+      sseConnectTimeoutMs: timeouts.sseConnectTimeoutMs ?? DEFAULT_SSE_CONNECT_TIMEOUT_MS,
+      ioTimeoutMs: timeouts.ioTimeoutMs ?? DEFAULT_IO_TIMEOUT_MS,
+    };
   }
 
-  private httpGetBody(reqPath: string): Promise<string> {
+  private httpGetBody(reqPath: string, responseTimeoutMs: number): Promise<string> {
     const validated = validateKilndUrl(this.url.baseUrl);
     return new Promise((resolve, reject) => {
       let settled = false;
+      let headerTimer: ReturnType<typeof setTimeout> | null = null;
+      const clearHeaderTimer = (): void => {
+        if (headerTimer !== null) {
+          clearTimeout(headerTimer);
+          headerTimer = null;
+        }
+      };
       const done = (fn: () => void): void => {
         if (!settled) {
           settled = true;
+          clearHeaderTimer();
           fn();
         }
       };
@@ -494,13 +518,14 @@ export class KilndClient {
             Accept: "application/json",
             Connection: "close",
           },
-          timeout: CONNECT_TIMEOUT_MS,
         },
         (res) => {
+          clearHeaderTimer();
+          req.setTimeout(0);
           const status = res.statusCode ?? 0;
           const chunks: Buffer[] = [];
           let totalBytes = 0;
-          res.setTimeout(IO_TIMEOUT_MS, () => {
+          res.setTimeout(this.timeouts.ioTimeoutMs, () => {
             req.destroy(new Error(`GET ${reqPath} timed out`));
           });
           res.on("data", (chunk: Buffer) => {
@@ -512,6 +537,7 @@ export class KilndClient {
             chunks.push(chunk);
           });
           res.on("end", () => {
+            res.setTimeout(0);
             if (status < 200 || status >= 300) {
               done(() => reject(new Error(`GET ${reqPath} returned HTTP ${status}`)));
               return;
@@ -524,9 +550,9 @@ export class KilndClient {
         },
       );
 
-      req.on("timeout", () => {
-        req.destroy(new Error(`GET ${reqPath} connect timeout`));
-      });
+      headerTimer = setTimeout(() => {
+        req.destroy(new Error(`GET ${reqPath} timed out waiting for response`));
+      }, responseTimeoutMs);
       req.on("error", (err) => {
         done(() => reject(new Error(`failed to connect to ${validated.baseUrl}: ${err.message}`)));
       });
@@ -535,12 +561,12 @@ export class KilndClient {
   }
 
   async fetchHealth(): Promise<KilnHealth> {
-    const body = await this.httpGetBody("/api/health");
+    const body = await this.httpGetBody("/api/health", this.timeouts.healthTimeoutMs);
     return parseHealthJson(body);
   }
 
   async fetchBootstrap(): Promise<KilnBootstrapSummary> {
-    const body = await this.httpGetBody("/api/bootstrap");
+    const body = await this.httpGetBody("/api/bootstrap", this.timeouts.bootstrapTimeoutMs);
     return parseBootstrapSummaryJson(body);
   }
 
@@ -588,7 +614,7 @@ export class KilndClient {
       Host: validated.hostHeader,
       Accept: "text/event-stream",
       "Cache-Control": "no-cache",
-      Connection: "close",
+      Connection: "keep-alive",
     };
     if (
       options.lastEventId &&
@@ -599,9 +625,17 @@ export class KilndClient {
     }
 
     let closed = false;
+    let connectTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearConnectTimer = (): void => {
+      if (connectTimer !== null) {
+        clearTimeout(connectTimer);
+        connectTimer = null;
+      }
+    };
     const finish = (reason: string): void => {
       if (!closed) {
         closed = true;
+        clearConnectTimer();
         options.signal.removeEventListener("abort", onAbort);
         options.onClose(reason);
       }
@@ -614,9 +648,14 @@ export class KilndClient {
         path: "/api/events",
         method: "GET",
         headers,
-        timeout: CONNECT_TIMEOUT_MS,
       },
       (res) => {
+        clearConnectTimer();
+        // SSE stream stays open indefinitely across idle gaps; never apply socket idle timeout.
+        req.setTimeout(0);
+        res.setTimeout(0);
+        res.socket?.setTimeout(0);
+
         const status = res.statusCode ?? 0;
         if (status < 200 || status >= 300) {
           res.resume();
@@ -676,9 +715,9 @@ export class KilndClient {
       return;
     }
     options.signal.addEventListener("abort", onAbort, { once: true });
-    req.on("timeout", () => {
+    connectTimer = setTimeout(() => {
       req.destroy(new Error("SSE connect timeout"));
-    });
+    }, this.timeouts.sseConnectTimeoutMs);
     req.on("error", (err) => {
       finish(`SSE connect error: ${err.message}`);
     });
