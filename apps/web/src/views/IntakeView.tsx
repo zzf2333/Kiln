@@ -11,6 +11,7 @@ import {
 } from "@kiln/protocol/web";
 import type { TaskAttachment } from "../api/types";
 import { AttachmentLightbox } from "../components/AttachmentLightbox";
+import { importGithubIssue } from "../api/client";
 import { ChatComposer } from "../components/ChatComposer";
 import { ChatTimeline } from "../components/ChatTimeline";
 import { CheckIcon, CloseIcon, GitPrIcon } from "../components/Icons";
@@ -56,6 +57,10 @@ export function IntakeView() {
   const [newNonGoalInput, setNewNonGoalInput] = useState("");
   const [lightboxAttachment, setLightboxAttachment] =
     useState<TaskAttachment | null>(null);
+  const [ghOpen, setGhOpen] = useState(false);
+  const [ghIssueInput, setGhIssueInput] = useState("");
+  const [ghBusy, setGhBusy] = useState(false);
+  const [ghError, setGhError] = useState<string | null>(null);
 
   const {
     intakeDraftId,
@@ -342,6 +347,19 @@ export function IntakeView() {
                     {pickDirBusy ? "等待选择…" : "从文件目录选择"}
                   </button>
                 ) : null}
+                {selectedProject ? (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => {
+                      setGhOpen((v) => !v);
+                      setGhError(null);
+                    }}
+                  >
+                    <GitPrIcon />
+                    <span>从 GitHub Issue 导入</span>
+                  </button>
+                ) : null}
               </div>
             ) : (
               <div className="intake-target">
@@ -371,6 +389,47 @@ export function IntakeView() {
               </div>
             )}
           </div>
+
+          {isProjectMode && ghOpen && selectedProject ? (
+            <div className="gh-import-bar" aria-label="从 GitHub Issue 导入草稿">
+              <input
+                type="text"
+                className="input mono input-sm"
+                style={{ flex: 1, minWidth: "220px" }}
+                placeholder="输入 #123 或 https://github.com/owner/repo/issues/123"
+                aria-label="GitHub Issue 编号或链接"
+                value={ghIssueInput}
+                onChange={(e) => setGhIssueInput((e.currentTarget as HTMLInputElement).value)}
+              />
+              <button
+                type="button"
+                className="btn btn-sm btn-light"
+                disabled={ghBusy || !ghIssueInput.trim()}
+                onClick={async () => {
+                  setGhBusy(true);
+                  setGhError(null);
+                  try {
+                    const res = await importGithubIssue({
+                      space: selectedProject.id,
+                      issue: ghIssueInput.trim(),
+                    });
+                    await store.bootstrap();
+                    await store.loadDraftIntoIntake(res.draft);
+                    setGhOpen(false);
+                    setGhIssueInput("");
+                    store.showToast(`已导入 ${res.issue.repo}#${res.issue.number}`);
+                  } catch (err) {
+                    setGhError(err instanceof Error ? err.message : String(err));
+                  } finally {
+                    setGhBusy(false);
+                  }
+                }}
+              >
+                {ghBusy ? "导入中…" : "导入"}
+              </button>
+              {ghError ? <span className="retro-err">{ghError}</span> : null}
+            </div>
+          ) : null}
 
           <ChatTimeline
             messages={intakeMessages}

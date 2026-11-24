@@ -11,10 +11,13 @@ import {
   DecideRequestSchema,
   DraftCardSchema,
   GateReportSchema,
+  GithubPrFeedbackSnapshotSchema,
   HashMismatchErrorSchema,
+  ImportGithubIssueRequestSchema,
   InspectSpaceRequestSchema,
   LimitsConfigSchema,
   PairCompleteRequestSchema,
+  PrFeedbackReworkRequestSchema,
   PricingConfigSchema,
   PrioritySchema,
   PriorityUpdateRequestSchema,
@@ -153,6 +156,12 @@ import {
   executeCommitPrAction,
   type PrDeliverExecFn,
 } from "./pr-deliver.js";
+import {
+  buildSanitizedPrFeedbackSteerMessage,
+  fetchTaskPrFeedback,
+  importGithubIssueToDraft,
+  parseGithubRepoFromUrl,
+} from "./github-bridge.js";
 import { syncModelPricing } from "./pricing-sync.js";
 import { KilnScriptRunner } from "./script-runner.js";
 import {
@@ -1966,6 +1975,9 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         depends_on: input.depends_on ?? existingDraft.depends_on,
         ...(nextWorkflow !== undefined ? { workflow: nextWorkflow } : {}),
         ...(copiedAttachments.length > 0 ? { attachments: copiedAttachments } : {}),
+        ...(existingDraft.external_ref !== undefined
+          ? { external_ref: existingDraft.external_ref }
+          : {}),
         contract_version: 1,
         contract: {
           ...existingDraft.contract,
@@ -3020,6 +3032,170 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     return c.json({ ok: true, scriptRunId, stopped: true });
   });
 
+  app.post("/api/github/import-issue", async (c) => {
+    const rawBody = await readJsonBodyStrict(c);
+    const body = ImportGithubIssueRequestSchema.parse(rawBody);
+    const result = await importGithubIssueToDraft({
+      store,
+      spaceId: body.space,
+      issueInput: body.issue,
+      ...(prDeliverExec !== undefined ? { execCommand: prDeliverExec } : {}),
+    });
+    return c.json(
+      {
+        ok: true,
+        draft: serializeDraftWithBrief(result.draft),
+        issue: result.issue,
+        brief_markdown: result.brief_markdown,
+      },
+      201,
+    );
+  });
+
+  app.get("/api/tasks/:id/pr-feedback", async (c) => {
+    const taskId = requireExistingTask(c.req.param("id"));
+    const prRef = c.req.query("pr")?.trim();
+    const feedback = GithubPrFeedbackSnapshotSchema.parse(
+      await fetchTaskPrFeedback({
+        store,
+        taskId,
+        ...(prRef ? { prRef } : {}),
+        ...(prDeliverExec !== undefined ? { execCommand: prDeliverExec } : {}),
+      }),
+    );
+    return c.json({ ok: true, feedback });
+  });
+
+  app.post("/api/tasks/:id/pr-feedback/rework", async (c) => {
+    const taskId = requireExistingTask(c.req.param("id"));
+    const body = PrFeedbackReworkRequestSchema.parse(await readJsonBodyStrict(c));
+    const feedback = await fetchTaskPrFeedback({
+      store,
+      taskId,
+      ...(body.pr_ref ? { prRef: body.pr_ref } : {}),
+      ...(prDeliverExec !== undefined ? { execCommand: prDeliverExec } : {}),
+    });
+    const message = buildSanitizedPrFeedbackSteerMessage({
+      snapshot: feedback,
+      failedCheckNames: body.failed_check_names,
+      commentIds: body.comment_ids,
+      ...(body.extra_note !== undefined ? { extraNote: body.extra_note } : {}),
+    });
+
+    const card = store.readTaskCard(taskId);
+    const derived = deriveTaskStatus(card, store.readStateEvents(taskId));
+
+    if (derived.status === "done") {
+      const now = new Date().toISOString();
+      const draftId = `dr-${randomUUID().slice(0, 8)}`;
+      const followupDraft = DraftCardSchema.parse({
+        schema_version: 1,
+        id: draftId,
+        title: `PR #${feedback.number} 返工：${card.title}`,
+        space: card.space,
+        priority: card.priority,
+        track: card.track,
+        workspace_mode: card.workspace_mode,
+        depends_on: [],
+        external_ref: card.external_ref ?? {
+          provider: "github",
+          repo: feedback.repo,
+          pr_number: feedback.number,
+          pr_url: feedback.url,
+          pr_branch: feedback.head_branch,
+        },
+        contract: {
+          goal: `响应 PR #${feedback.number} 的 CI/Review 反馈并修复`,
+          end: card.contract.end,
+          accept_cmd: card.contract.accept_cmd,
+          scope: card.contract.scope,
+          ...(card.contract.non_goals ? { non_goals: card.contract.non_goals } : {}),
+          deliver: card.contract.deliver,
+        },
+        created_at: now,
+        updated_at: now,
+      });
+      store.writeDraft(followupDraft);
+      store.writeDraftBrief(
+        draftId,
+        `# 基于 ${card.id} 的 PR #${feedback.number} 返工立项\n\n${message}\n`,
+      );
+      return c.json(
+        {
+          ok: true,
+          mode: "followup_draft",
+          draft: serializeDraftWithBrief(followupDraft),
+          message,
+        },
+        201,
+      );
+    }
+
+    if (derived.status === "waiting" || derived.status === "cancelled") {
+      throw new ServerHttpError(409, {
+        error: "invalid_task_state",
+        taskId,
+        status: derived.status,
+        message: `Task "${taskId}" cannot enter PR rework directly from status "${derived.status}"`,
+      });
+    }
+
+    if (derived.status === "running" || derived.status === "queued") {
+      if (onTaskSteered) {
+        await onTaskSteered(taskId, { message, interrupt: body.interrupt });
+      } else {
+        store.appendStateEvent(taskId, {
+          type: "steered",
+          at: new Date().toISOString(),
+          steer_id: `steer-${randomUUID().slice(0, 8)}`,
+          message,
+          interrupt: Boolean(body.interrupt && derived.status === "running"),
+          contract_version: derived.contractVersion,
+          ...(derived.stage !== null ? { stage: derived.stage } : {}),
+        });
+      }
+      const next = deriveTaskStatus(store.readTaskCard(taskId), store.readStateEvents(taskId));
+      return c.json({
+        ok: true,
+        mode: "steered",
+        taskId,
+        status: next.status,
+        message,
+      });
+    }
+
+    // paused or external -> append steered context and resume directly into implement stage
+    store.appendStateEvent(taskId, {
+      type: "steered",
+      at: new Date().toISOString(),
+      steer_id: `steer-${randomUUID().slice(0, 8)}`,
+      message,
+      interrupt: false,
+      contract_version: derived.contractVersion,
+      stage: "implement",
+    });
+    const nextState = stateMachine.resumeTask(taskId, undefined, "implement");
+    caffeinate.syncRunningCount(countRunningLeafTasks(store));
+    sseHub.publish({
+      type: "task.updated",
+      taskId,
+      patch: {
+        status: nextState.status,
+        ...(nextState.stage !== null ? { stage: nextState.stage } : {}),
+        ...(nextState.round !== null ? { round: nextState.round } : {}),
+        contractVersion: nextState.contractVersion,
+      },
+    });
+    onTaskQueued?.(taskId);
+    return c.json({
+      ok: true,
+      mode: "resumed",
+      taskId,
+      status: nextState.status,
+      message,
+    });
+  });
+
   app.get("/api/tasks/:id/deliver/pr-draft", (c) => {
     const taskId = requireExistingTask(c.req.param("id"));
     const draft = buildPrDraft(store, taskId);
@@ -3036,6 +3212,26 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       request: body,
       ...(prDeliverExec !== undefined ? { execCommand: prDeliverExec } : {}),
     });
+    if (result.action === "open_pr") {
+      const card = store.readTaskCard(taskId);
+      const parsedRepo =
+        parseGithubRepoFromUrl(result.prUrl) ?? card.external_ref?.repo;
+      if (parsedRepo) {
+        const updated = TaskCardSchema.parse({
+          ...card,
+          external_ref: {
+            ...(card.external_ref ?? {}),
+            provider: "github",
+            repo: parsedRepo,
+            ...(result.prNumber !== null ? { pr_number: result.prNumber } : {}),
+            pr_url: result.prUrl,
+            pr_branch: result.branch,
+          },
+          updated_at: new Date().toISOString(),
+        });
+        writeYamlAtomic(store.paths.cardYaml(taskId), updated, TaskCardSchema);
+      }
+    }
     return c.json(result);
   });
 

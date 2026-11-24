@@ -344,3 +344,62 @@ export const UpdateTaskLimitsRequestSchema = z.object({
   max_cost_usd: z.number().finite().positive().nullable().optional(),
 });
 export type UpdateTaskLimitsRequest = z.infer<typeof UpdateTaskLimitsRequestSchema>;
+
+export const ImportGithubIssueRequestSchema = z.object({
+  space: z.string().trim().min(1),
+  issue: z.string().trim().min(1),
+});
+export type ImportGithubIssueRequest = z.infer<typeof ImportGithubIssueRequestSchema>;
+
+export const GithubCheckRunItemSchema = z.object({
+  name: z.string().min(1),
+  status: z.string().min(1),
+  conclusion: z.string().nullable().optional(),
+  details_url: z.string().optional(),
+});
+export type GithubCheckRunItem = z.infer<typeof GithubCheckRunItemSchema>;
+
+export const GithubPrCommentItemSchema = z.object({
+  id: z.string().min(1),
+  kind: z.enum(["comment", "review"]),
+  author: z.string().min(1),
+  body: z.string(),
+  created_at: z.string().optional(),
+  url: z.string().optional(),
+  state: z.string().optional(),
+});
+export type GithubPrCommentItem = z.infer<typeof GithubPrCommentItemSchema>;
+
+export const GithubPrFeedbackSnapshotSchema = z.object({
+  repo: z.string().min(1),
+  number: z.number().int().positive(),
+  url: z.string().min(1),
+  title: z.string().min(1),
+  state: z.string().min(1),
+  head_branch: z.string().min(1),
+  base_branch: z.string().min(1),
+  mergeable: z.string().nullable().optional(),
+  checks: z.array(GithubCheckRunItemSchema),
+  comments: z.array(GithubPrCommentItemSchema),
+  fetched_at: z.string().min(1),
+});
+export type GithubPrFeedbackSnapshot = z.infer<typeof GithubPrFeedbackSnapshotSchema>;
+
+export const PrFeedbackReworkRequestSchema = z
+  .object({
+    pr_ref: z.string().trim().min(1).optional(),
+    failed_check_names: z.array(z.string().trim().min(1)).default([]),
+    comment_ids: z.array(z.string().trim().min(1)).default([]),
+    extra_note: z.string().trim().max(1500).optional(),
+    interrupt: z.boolean().default(false),
+  })
+  .refine(
+    (v) =>
+      v.failed_check_names.length > 0 ||
+      v.comment_ids.length > 0 ||
+      Boolean(v.extra_note && v.extra_note.length > 0),
+    {
+      message: "Must select at least one failed check, comment, or provide extra_note",
+    },
+  );
+export type PrFeedbackReworkRequest = z.infer<typeof PrFeedbackReworkRequestSchema>;

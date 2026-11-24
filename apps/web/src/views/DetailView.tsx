@@ -1,10 +1,18 @@
 import { Dialog } from "radix-ui";
 import { useEffect, useState } from "react";
 import type { GateReport, StageId } from "@kiln/protocol/web";
-import { acceptEvidenceUrl, fetchAcceptServiceLog, triggerTaskRetro, updateTaskLimits } from "../api/client";
+import {
+  acceptEvidenceUrl,
+  fetchAcceptServiceLog,
+  fetchTaskPrFeedback,
+  triggerPrFeedbackRework,
+  triggerTaskRetro,
+  updateTaskLimits,
+} from "../api/client";
 import type {
   AcceptServiceStatus,
   AcceptVerificationReport,
+  GithubPrFeedbackSnapshot,
   TaskAttachment,
   TaskRunDetail,
 } from "../api/types";
@@ -124,6 +132,14 @@ export function DetailView() {
     loading: boolean;
     error?: string;
   } | null>(null);
+  const [prFeedback, setPrFeedback] = useState<GithubPrFeedbackSnapshot | null>(null);
+  const [prLoading, setPrLoading] = useState(false);
+  const [prError, setPrError] = useState<string | null>(null);
+  const [prReworkBusy, setPrReworkBusy] = useState(false);
+  const [selectedCheckNames, setSelectedCheckNames] = useState<string[]>([]);
+  const [selectedCommentIds, setSelectedCommentIds] = useState<string[]>([]);
+  const [prExtraNote, setPrExtraNote] = useState("");
+  const [prStatusNote, setPrStatusNote] = useState<string | null>(null);
 
   const taskId = state.taskId;
   const detail = taskId ? state.taskDetails[taskId] : undefined;
@@ -142,7 +158,77 @@ export function DetailView() {
     setLightboxAttachment(null);
     setLightboxCustomUrl(null);
     setAcceptLogPreview(null);
+    setPrFeedback(null);
+    setPrLoading(false);
+    setPrError(null);
+    setPrReworkBusy(false);
+    setSelectedCheckNames([]);
+    setSelectedCommentIds([]);
+    setPrExtraNote("");
+    setPrStatusNote(null);
   }, [taskId]);
+
+  async function handleFetchPrFeedback(): Promise<void> {
+    if (!detail) return;
+    setPrLoading(true);
+    setPrError(null);
+    setPrStatusNote(null);
+    try {
+      const res = await fetchTaskPrFeedback(detail.card.id);
+      setPrFeedback(res.feedback);
+      const nonPassing = res.feedback.checks
+        .filter((c) => {
+          const v = (c.conclusion ?? c.status).toUpperCase();
+          return v !== "SUCCESS" && v !== "NEUTRAL" && v !== "SKIPPED";
+        })
+        .map((c) => c.name);
+      setSelectedCheckNames(nonPassing);
+      setSelectedCommentIds([]);
+    } catch (err) {
+      setPrError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPrLoading(false);
+    }
+  }
+
+  async function handleTriggerPrFeedbackRework(): Promise<void> {
+    if (!detail || !prFeedback) return;
+    if (
+      selectedCheckNames.length === 0 &&
+      selectedCommentIds.length === 0 &&
+      prExtraNote.trim().length === 0
+    ) {
+      setPrError("请至少勾选 1 条 CI Check、评论，或填写补充返工说明");
+      return;
+    }
+    setPrReworkBusy(true);
+    setPrError(null);
+    setPrStatusNote(null);
+    try {
+      const res = await triggerPrFeedbackRework(detail.card.id, {
+        pr_ref: String(prFeedback.number),
+        failed_check_names: selectedCheckNames,
+        comment_ids: selectedCommentIds,
+        ...(prExtraNote.trim().length > 0 ? { extra_note: prExtraNote.trim() } : {}),
+        interrupt: false,
+      });
+      if (res.mode === "followup_draft") {
+        await store.bootstrap();
+        await store.loadDraftIntoIntake(res.draft);
+        return;
+      }
+      setPrStatusNote(
+        res.mode === "resumed"
+          ? "已将选中 PR 反馈写入返工指令并重新入队 implement 阶段"
+          : "已追加选中 PR 反馈到当前任务执行上下文",
+      );
+      await store.loadTaskDetail(detail.card.id);
+    } catch (err) {
+      setPrError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPrReworkBusy(false);
+    }
+  }
 
   const detailSpaceId = detail?.card.space;
   const detailTaskId = detail?.card.id;
@@ -1918,6 +2004,147 @@ export function DetailView() {
                   )}
                 </section>
               ) : null}
+
+              {card.workspace_mode === "git_worktree" ? (
+                <section className="pr-feedback-panel" aria-label="GitHub PR 与 CI 反馈">
+                  <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                    <div className="row" style={{ gap: "6px", alignItems: "center" }}>
+                      <GitPrIcon />
+                      <strong>GitHub PR 与 CI 反馈</strong>
+                      {prFeedback ? (
+                        <span className="chip">{prFeedback.repo}#{prFeedback.number}</span>
+                      ) : null}
+                      {prFeedback ? (
+                        <span className="chip">{prFeedback.state}</span>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      disabled={prLoading || prReworkBusy}
+                      onClick={() => void handleFetchPrFeedback()}
+                    >
+                      {prLoading ? "查询中..." : "检查 PR 状态与评论"}
+                    </button>
+                  </div>
+
+                  {prError ? <div className="alert-err">{prError}</div> : null}
+                  {prStatusNote ? <div className="chip chip-ok">{prStatusNote}</div> : null}
+
+                  {prFeedback ? (
+                    <div className="col" style={{ gap: "8px" }}>
+                      <div className="row" style={{ gap: "8px", flexWrap: "wrap", alignItems: "center", fontSize: "12.5px" }}>
+                        {isSafeHttpOrPaseoUrl(prFeedback.url) ? (
+                          <a href={prFeedback.url} target="_blank" rel="noreferrer" className="mono">
+                            {prFeedback.title}
+                          </a>
+                        ) : (
+                          <span>{prFeedback.title}</span>
+                        )}
+                        <span className="muted mono">
+                          {prFeedback.head_branch} → {prFeedback.base_branch}
+                        </span>
+                        {prFeedback.mergeable ? (
+                          <span className="chip">{prFeedback.mergeable}</span>
+                        ) : null}
+                      </div>
+
+                      {prFeedback.checks.length > 0 ? (
+                        <div className="pr-feedback-list">
+                          <div className="muted" style={{ fontSize: "12px" }}>CI Checks</div>
+                          {prFeedback.checks.map((chk) => {
+                            const checked = selectedCheckNames.includes(chk.name);
+                            const verdict = chk.conclusion ?? chk.status;
+                            return (
+                              <label key={chk.name} className="pr-feedback-row">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(e) => {
+                                    const on = e.currentTarget.checked;
+                                    setSelectedCheckNames((prev) =>
+                                      on ? [...prev, chk.name] : prev.filter((n) => n !== chk.name),
+                                    );
+                                  }}
+                                />
+                                <span className="mono">{chk.name}</span>
+                                <span className="chip">{verdict}</span>
+                                {chk.details_url && isSafeHttpOrPaseoUrl(chk.details_url) ? (
+                                  <a href={chk.details_url} target="_blank" rel="noreferrer">
+                                    详情
+                                  </a>
+                                ) : null}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="muted" style={{ fontSize: "12px" }}>暂无 CI Check 记录</div>
+                      )}
+
+                      {prFeedback.comments.length > 0 ? (
+                        <div className="pr-feedback-list">
+                          <div className="muted" style={{ fontSize: "12px" }}>
+                            PR 评论 / Review（[外部不可信参考文本]）
+                          </div>
+                          {prFeedback.comments.map((cm) => {
+                            const checked = selectedCommentIds.includes(cm.id);
+                            return (
+                              <label key={cm.id} className="pr-feedback-row">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(e) => {
+                                    const on = e.currentTarget.checked;
+                                    setSelectedCommentIds((prev) =>
+                                      on ? [...prev, cm.id] : prev.filter((id) => id !== cm.id),
+                                    );
+                                  }}
+                                />
+                                <div className="col" style={{ gap: "2px", minWidth: 0 }}>
+                                  <div className="row" style={{ gap: "6px", flexWrap: "wrap" }}>
+                                    <span className="mono">@{cm.author}</span>
+                                    <span className="chip">
+                                      {cm.kind}
+                                      {cm.state ? `/${cm.state}` : ""}
+                                    </span>
+                                    <span className="muted">[外部不可信参考文本]</span>
+                                  </div>
+                                  <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                                    {cm.body}
+                                  </div>
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="muted" style={{ fontSize: "12px" }}>暂无 PR 评论或 Review</div>
+                      )}
+
+                      <div className="row" style={{ gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                        <input
+                          type="text"
+                          className="input input-sm"
+                          style={{ flex: 1, minWidth: "200px" }}
+                          placeholder="可选：补充给 Agent 的返工指示"
+                          aria-label="补充 PR 返工说明"
+                          value={prExtraNote}
+                          onChange={(e) => setPrExtraNote(e.currentTarget.value)}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-primary"
+                          disabled={prReworkBusy}
+                          onClick={() => void handleTriggerPrFeedbackRework()}
+                        >
+                          {prReworkBusy ? "处理中..." : "转入返工"}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
             </div>
           </article>
 
@@ -1961,6 +2188,43 @@ export function DetailView() {
                   <div>
                     <dt>PM 排兵理由</dt>
                     <dd>{card.workflow.pm_rationale}</dd>
+                  </div>
+                ) : null}
+                {card.external_ref ? (
+                  <div>
+                    <dt>GitHub 关联</dt>
+                    <dd className="row" style={{ gap: "8px", flexWrap: "wrap" }}>
+                      {card.external_ref.issue_number ? (
+                        card.external_ref.issue_url &&
+                        isSafeHttpOrPaseoUrl(card.external_ref.issue_url) ? (
+                          <a
+                            href={card.external_ref.issue_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="mono"
+                          >
+                            Issue #{card.external_ref.issue_number}
+                          </a>
+                        ) : (
+                          <span className="mono">Issue #{card.external_ref.issue_number}</span>
+                        )
+                      ) : null}
+                      {card.external_ref.pr_number ? (
+                        card.external_ref.pr_url &&
+                        isSafeHttpOrPaseoUrl(card.external_ref.pr_url) ? (
+                          <a
+                            href={card.external_ref.pr_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="mono"
+                          >
+                            PR #{card.external_ref.pr_number}
+                          </a>
+                        ) : (
+                          <span className="mono">PR #{card.external_ref.pr_number}</span>
+                        )
+                      ) : null}
+                    </dd>
                   </div>
                 ) : null}
               </dl>

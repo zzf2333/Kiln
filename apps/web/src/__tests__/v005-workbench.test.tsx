@@ -2067,4 +2067,246 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
       ).toBe("subscription");
     });
   });
+
+  it("Track 5 [B11]: imports a GitHub Issue into IntakeView and queries PR feedback & triggers rework in DetailView", async () => {
+    let importReqBody: Record<string, unknown> | null = null;
+    let reworkReqBody: Record<string, unknown> | null = null;
+
+    const importedDraft = {
+      schema_version: 1,
+      id: "dr-gh42",
+      title: "[GH #42] Fix pipeline edge case",
+      space: "alpha",
+      priority: "P2",
+      track: "L2",
+      workspace_mode: "git_worktree",
+      depends_on: [],
+      external_ref: {
+        provider: "github",
+        repo: "zzf2333/Kiln",
+        issue_number: 42,
+        issue_url: "https://github.com/zzf2333/Kiln/issues/42",
+      },
+      contract: {
+        goal: "解决 GitHub Issue zzf2333/Kiln#42：Fix pipeline edge case",
+      },
+      created_at: "2026-11-24T04:00:00Z",
+      updated_at: "2026-11-24T04:00:00Z",
+    };
+
+    const boot = makeV3Bootstrap({
+      tasks: [
+        {
+          id: "t-b11-ui",
+          space: "alpha",
+          parent_id: null,
+          title: "Track 5 B11 GitHub Bridge",
+          priority: "P1",
+          effective_priority: "P1",
+          track: "L2",
+          workspace_mode: "git_worktree",
+          status: "external",
+          stage: "deliver",
+          round: 1,
+          active_run_id: null,
+          contract_version: 1,
+          depends_on: [],
+          created_at: "2026-11-24T04:00:00Z",
+          updated_at: "2026-11-24T04:05:00Z",
+          cost_usd: 0,
+          tokens: {
+            input_tokens: 0,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+          },
+        },
+      ],
+    });
+
+    fetchMock.mockImplementation(async (url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url === "/api/auth/status") {
+        return jsonResponse({ ok: true, mode: "local", authenticated: true, device: null });
+      }
+      if (url === "/api/bootstrap") {
+        return jsonResponse(boot);
+      }
+      if (url === "/api/github/import-issue" && method === "POST") {
+        importReqBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        return jsonResponse({
+          ok: true,
+          draft: { ...importedDraft, brief_markdown: "# GitHub Issue 导入 · zzf2333/Kiln#42" },
+          issue: {
+            repo: "zzf2333/Kiln",
+            number: 42,
+            title: "Fix pipeline edge case",
+            body: "Issue body",
+            url: "https://github.com/zzf2333/Kiln/issues/42",
+            labels: ["bug"],
+            author: "alice",
+          },
+          brief_markdown: "# GitHub Issue 导入 · zzf2333/Kiln#42",
+        });
+      }
+      if (url === "/api/drafts/dr-gh42" && method === "GET") {
+        return jsonResponse({
+          ok: true,
+          draft: importedDraft,
+          brief: "# GitHub Issue 导入 · zzf2333/Kiln#42",
+          messages: [],
+        });
+      }
+      if (url === "/api/tasks/t-b11-ui" && method === "GET") {
+        return jsonResponse({
+          card: {
+            schema_version: 1,
+            id: "t-b11-ui",
+            space: "alpha",
+            title: "Track 5 B11 GitHub Bridge",
+            track: "L2",
+            priority: "P1",
+            workspace_mode: "git_worktree",
+            parent: null,
+            depends_on: [],
+            external_ref: {
+              provider: "github",
+              repo: "zzf2333/Kiln",
+              issue_number: 42,
+              issue_url: "https://github.com/zzf2333/Kiln/issues/42",
+              pr_number: 88,
+              pr_url: "https://github.com/zzf2333/Kiln/pull/88",
+              pr_branch: "kiln/t-b11-ui",
+            },
+            contract_version: 1,
+            contract: {
+              goal: "Deliver PR",
+              end: "PR delivered",
+              accept_cmd: "pnpm test",
+              accept_files_hash: `sha256:${"a".repeat(64)}`,
+              scope: ["src/bridge.ts"],
+              non_goals: [],
+              deliver: { mode: "merge_main", cmd: null },
+              human_accept: false,
+              external_actions: "ask",
+            },
+            limits: {
+              retries_per_stage: 2,
+              review_rounds: 2,
+              advisor_calls: 1,
+              max_tokens: 120000,
+            },
+            created_at: "2026-11-24T04:00:00Z",
+            updated_at: "2026-11-24T04:05:00Z",
+          },
+          state: {
+            status: "external",
+            stage: "deliver",
+            round: 1,
+            activeRunId: null,
+            priority: "P1",
+            effectivePriority: "P1",
+            track: "L2",
+            contractVersion: 1,
+            updatedAt: "2026-11-24T04:05:00Z",
+          },
+          brief: "# Brief",
+          decisions: "",
+          pendingDecision: null,
+          ledgerProposals: [],
+          runs: [],
+          usageTurns: [],
+          usage: boot.usage,
+        });
+      }
+      if (url === "/api/tasks/t-b11-ui/pr-feedback" && method === "GET") {
+        return jsonResponse({
+          ok: true,
+          feedback: {
+            repo: "zzf2333/Kiln",
+            number: 88,
+            url: "https://github.com/zzf2333/Kiln/pull/88",
+            title: "fix: edge case",
+            state: "OPEN",
+            head_branch: "kiln/t-b11-ui",
+            base_branch: "main",
+            mergeable: "MERGEABLE",
+            fetched_at: "2026-11-24T04:10:00Z",
+            checks: [
+              {
+                name: "ci / unit-test",
+                status: "COMPLETED",
+                conclusion: "FAILURE",
+              },
+              {
+                name: "ci / lint",
+                status: "COMPLETED",
+                conclusion: "SUCCESS",
+              },
+            ],
+            comments: [
+              {
+                id: "ic-1",
+                kind: "comment",
+                author: "reviewer1",
+                body: "Please handle empty array edge case",
+              },
+            ],
+          },
+        });
+      }
+      if (url === "/api/tasks/t-b11-ui/pr-feedback/rework" && method === "POST") {
+        reworkReqBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        return jsonResponse({
+          ok: true,
+          mode: "resumed",
+          taskId: "t-b11-ui",
+          status: "queued",
+          message: "ok",
+        });
+      }
+      return jsonResponse({ ok: true });
+    });
+
+    // 1. IntakeView GitHub Issue import
+    window.location.hash = "#view=intake";
+    render(<App />);
+    const ghToggleBtn = await screen.findByRole("button", { name: "从 GitHub Issue 导入" });
+    fireEvent.click(ghToggleBtn);
+    const issueInput = await screen.findByLabelText("GitHub Issue 编号或链接");
+    fireEvent.change(issueInput, { target: { value: "#42" } });
+    fireEvent.click(screen.getByRole("button", { name: "导入" }));
+    await waitFor(() => {
+      expect(importReqBody).toEqual({ space: "alpha", issue: "#42" });
+    });
+
+    // 2. DetailView GitHub external_ref links + PR feedback query & rework
+    window.location.hash = "#view=detail&task=t-b11-ui";
+    expect(await screen.findByText("Issue #42")).toBeTruthy();
+    expect(screen.getByText("PR #88")).toBeTruthy();
+
+    fireEvent.click(await screen.findByRole("button", { name: "检查 PR 状态与评论" }));
+    expect(await screen.findByText("ci / unit-test")).toBeTruthy();
+    expect(screen.getByText("Please handle empty array edge case")).toBeTruthy();
+
+    const commentCheckbox = screen
+      .getByText("Please handle empty array edge case")
+      .closest("label")!
+      .querySelector("input[type='checkbox']") as HTMLInputElement;
+    fireEvent.click(commentCheckbox);
+
+    const extraNoteInput = screen.getByLabelText("补充 PR 返工说明");
+    fireEvent.change(extraNoteInput, { target: { value: "Fix unit check" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "转入返工" }));
+    await waitFor(() => {
+      expect(reworkReqBody).toEqual({
+        pr_ref: "88",
+        failed_check_names: ["ci / unit-test"],
+        comment_ids: ["ic-1"],
+        extra_note: "Fix unit check",
+        interrupt: false,
+      });
+    });
+  });
 });

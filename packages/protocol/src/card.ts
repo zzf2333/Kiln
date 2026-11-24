@@ -109,6 +109,17 @@ export const TaskAttachmentSchema = z.object({
 });
 export type TaskAttachment = z.infer<typeof TaskAttachmentSchema>;
 
+export const TaskExternalRefSchema = z.object({
+  provider: z.literal("github"),
+  repo: z.string().min(1),
+  issue_number: z.number().int().positive().optional(),
+  issue_url: z.string().min(1).optional(),
+  pr_number: z.number().int().positive().optional(),
+  pr_url: z.string().min(1).optional(),
+  pr_branch: z.string().min(1).optional(),
+});
+export type TaskExternalRef = z.infer<typeof TaskExternalRefSchema>;
+
 export const AcceptReadyProbeSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("http"),
@@ -314,6 +325,7 @@ export const TaskCardSchema = z.object({
   depends_on: z.array(z.string().min(1)).default([]),
   workflow: WorkflowBlueprintSchema.optional(),
   attachments: z.array(TaskAttachmentSchema).optional(),
+  external_ref: TaskExternalRefSchema.optional(),
   contract_version: z.number().int().positive(),
   contract: CardContractSchema,
   limits: CardLimitsSchema,
@@ -341,6 +353,7 @@ export const DraftCardSchema = z.object({
   open_questions: z.array(z.string().min(1)).optional(),
   workflow: WorkflowBlueprintSchema.optional(),
   attachments: z.array(TaskAttachmentSchema).optional(),
+  external_ref: TaskExternalRefSchema.optional(),
   contract: CardContractSchema.partial().default({}),
   session_ref: SessionRefSchema.nullable().optional(),
   intake_open: z.boolean().optional(),

@@ -1,11 +1,14 @@
 import type {
   BudgetScopeStatus,
   DraftCard,
+  GithubPrFeedbackSnapshot,
   HashMismatchError,
+  ImportGithubIssueRequest,
   ImprovementProposal,
   LedgerEntry,
   LedgerFile,
   PolicyChangeRecord,
+  PrFeedbackReworkRequest,
   Priority,
   SpaceConfig,
   SseEvent,
@@ -1094,4 +1097,49 @@ export async function updateTaskLimits(
       body: JSON.stringify(body),
     },
   );
+}
+
+export async function importGithubIssue(
+  body: ImportGithubIssueRequest,
+): Promise<{
+  ok: true;
+  draft: DraftCard & { brief_markdown?: string };
+  issue: {
+    repo: string;
+    number: number;
+    title: string;
+    body: string;
+    url: string;
+    labels: string[];
+    author: string;
+  };
+  brief_markdown: string;
+}> {
+  return requestJson(`/api/github/import-issue`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function fetchTaskPrFeedback(
+  taskId: string,
+  prRef?: string,
+): Promise<{ ok: true; feedback: GithubPrFeedbackSnapshot }> {
+  const q = prRef && prRef.trim().length > 0 ? `?pr=${encodeURIComponent(prRef.trim())}` : "";
+  return requestJson<{ ok: true; feedback: GithubPrFeedbackSnapshot }>(
+    `/api/tasks/${encodeURIComponent(taskId)}/pr-feedback${q}`,
+  );
+}
+
+export async function triggerPrFeedbackRework(
+  taskId: string,
+  body: PrFeedbackReworkRequest,
+): Promise<
+  | { ok: true; mode: "steered" | "resumed"; taskId: string; status: string; message: string }
+  | { ok: true; mode: "followup_draft"; draft: DraftCard & { brief_markdown?: string }; message: string }
+> {
+  return requestJson(`/api/tasks/${encodeURIComponent(taskId)}/pr-feedback/rework`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }

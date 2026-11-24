@@ -274,6 +274,15 @@ export {
   type DispatchBudgetWarning,
 } from "./budget.js";
 export {
+  buildSanitizedPrFeedbackSteerMessage,
+  fetchTaskPrFeedback,
+  importGithubIssueToDraft,
+  parseGithubIssueInput,
+  parseGithubRepoFromUrl,
+  sanitizeExternalUntrustedText,
+  type ImportedGithubIssueInfo,
+} from "./github-bridge.js";
+export {
   extractDeterministicTaskRetro,
   runAiTaskRetro,
 } from "./retro-engine.js";
