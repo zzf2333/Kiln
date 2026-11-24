@@ -274,17 +274,19 @@ describe("Tunnel-Agnostic Remote Access: Fail-Closed Dual-Port Security & Auth",
       expect(res.status, `Host "${goodHost}" must be accepted`).toBe(200);
     }
 
-    // Cross-origin mutating request against local :4310 is also rejected
-    const crossOriginLocal = await server.app.request(
-      new Request("http://127.0.0.1:4310/api/remote/pair", {
-        method: "POST",
-        headers: { Origin: "https://evil.com" },
-      }),
-    );
-    expect(crossOriginLocal.status).toBe(403);
-    expect(((await crossOriginLocal.json()) as { error: string }).error).toBe(
-      "csrf_origin_mismatch",
-    );
+    // Cross-origin mutating request against local :4310 (including legacy Tauri origins) is rejected
+    for (const badOrigin of ["https://evil.com", "tauri://localhost", "http://tauri.localhost"]) {
+      const crossOriginLocal = await server.app.request(
+        new Request("http://127.0.0.1:4310/api/remote/pair", {
+          method: "POST",
+          headers: { Origin: badOrigin },
+        }),
+      );
+      expect(crossOriginLocal.status, `Origin "${badOrigin}" must be rejected`).toBe(403);
+      expect(((await crossOriginLocal.json()) as { error: string }).error).toBe(
+        "csrf_origin_mismatch",
+      );
+    }
   });
 
   it("remote :4311 unconditionally requires kiln_session cookie (zero loopback bypass) and minimizes unauth /api/health", async () => {

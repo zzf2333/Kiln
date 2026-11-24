@@ -14,7 +14,7 @@
 2. **只认硬门禁，不信自述（Verify, Never Trust）**：执行者提交回执后，必须在隔离环境通过真实 `accept_cmd` 与异构模型独立审查（Reviewer 自动避开实施所用模型）；冻结测试文件被改动时强制升轨审查。技术路线歧义与连续 `stuck_threshold` 同错停滞优先交由全新上下文顾问（`advisor`，产出 `PLAN.md` 并受四重防越权护栏约束），人类红线（扩范围、改契约、外部副作用）仍严格留给人工拍板。
 3. **耗材化底座与模型（Swappable Agents & Backends）**：通过自有 `ExecutionBackend` 窄接口包装底层执行底座（V1 统一采用 Paseo TS SDK，随 Paseo 演进平滑覆盖 Codex / Pi / `agy acp`），7 类角色在设置页随时热换 Agent 与模型，工作流与决策账本（Ledger）永久留在本地 `~/.kiln/`。
 4. **全场景四工作区隔离**：原生支持代码仓库（`git_worktree` + APFS 写时复制）、本机配置修改（`host_scoped` 两阶段沙盒暂存 + 路径锁 + SHA256 防覆盖回滚）、无项目调研（`scratch_dir`）与外部协作跟进（`external_only`）。
-5. **一核多端驻守形态**：单一零依赖本地守护进程（默认本地 `127.0.0.1:4310`，可选默认关闭的认证远程口 `127.0.0.1:4311`）同时驱动内嵌 Web 工作台（桌面 + 移动端 PWA，详情页提供 `Agent · Session` 输入/输出总览卡片及仅本机 `:4310` 可用的原生 TUI 跳转 `codex resume` / `pi --session` / `claude --resume` / `opencode --session`，`:4311` 远程端返 `403 local_only_endpoint`）、单文件 `kiln` / `kl` CLI、内置 MCP 工具桥（`kiln __mcp`）以及 macOS / Windows Tauri v2 Sidecar 托盘应用；所有消耗统一按官方 API 标价透明折算。
+5. **一核多端驻守形态**：单一零依赖本地守护进程（默认本地 `127.0.0.1:4310`，可选默认关闭的认证远程口 `127.0.0.1:4311`）同时驱动内嵌 Web 工作台（桌面 + 移动端 PWA，详情页提供 `Agent · Session` 输入/输出总览卡片及仅本机 `:4310` 可用的原生 TUI 跳转 `codex resume` / `pi --session` / `claude --resume` / `opencode --session`，`:4311` 远程端返 `403 local_only_endpoint`）、单文件 `kiln` / `kl` CLI、内置 MCP 工具桥（`kiln __mcp`）以及 macOS / Windows Electron 托盘应用；所有消耗统一按官方 API 标价透明折算。
 
 ---
 
@@ -27,10 +27,10 @@
 | [`packages/mcp`](packages/mcp/package.json)           | **`kiln-mcp` 工具服务**：受限 `stdio` MCP 服务（同时内置为 `kiln __mcp`），通过 POSIX `0600` Unix Socket 或 Windows Named Pipe + `KILN_RUN_TOKEN` 调用 `kilnd`                                                                            |
 | [`packages/cli`](packages/cli/package.json)           | **`kiln` / `kl` CLI**：守护进程启停、状态查询、草稿/审批/空间/远程管理命令、环境自检及跨平台系统服务管理（macOS / Linux / Windows）                                                                                                       |
 | [`apps/web`](apps/web/package.json)                   | **Web 工作台**：桌面与移动端（`<= 820px`）自适应 React 19 + Tailwind CSS v4 + Radix UI 前端，编译产出至 `packages/kernel/public/` 并内嵌进单文件二进制                                                                                    |
-| [`apps/desktop`](apps/desktop/README.md)              | **跨平台桌面托盘薄壳（macOS / Windows）**：Tauri v2 Sidecar 托盘壳（Windows `CREATE_NO_WINDOW` 无黑框、按需销毁 WebView、终端命令一键链接及纯 `std` `model.rs` 核心）                                                                     |
+| [`apps/desktop`](apps/desktop/README.md)              | **跨平台桌面托盘薄壳（macOS / Windows）**：Electron 托盘壳，通过 `ELECTRON_RUN_AS_NODE=1` 复用内置 Node 运行 `kiln-runtime/{kiln-cli.mjs,kiln-mcp.mjs,public/}`，支持按需销毁 `BrowserWindow` 与终端包装脚本安装                          |
 | [`scripts/`](scripts/install.sh)                      | **零依赖安装脚本与单文件编译**：POSIX [`install.sh`](scripts/install.sh)、Windows [`install.ps1`](scripts/install.ps1)、[`test-install.sh`](scripts/test-install.sh) 与 Bun 单文件编译 [`build-binary.mjs`](scripts/build-binary.mjs)     |
 | [`packaging/`](packaging/README.md)                   | **发版打包模板**：预编译二进制 Homebrew [Formula](packaging/homebrew/Formula/kiln.rb)、macOS [Cask](packaging/homebrew/Casks/kiln-app.rb) 与发版核对清单                                                                                  |
-| [`.github/workflows/`](.github/workflows/ci.yml)      | **CI/Release 工作流**：3-OS [`ci.yml`](.github/workflows/ci.yml)（`ubuntu-latest` / `macos-latest` / `windows-latest`）与 3-OS 单文件 + 桌面 Sidecar [`release.yml`](.github/workflows/release.yml)                                       |
+| [`.github/workflows/`](.github/workflows/ci.yml)      | **CI/Release 工作流**：3-OS [`ci.yml`](.github/workflows/ci.yml)（`ubuntu-latest` / `macos-latest` / `windows-latest`）与 3-OS 单文件 + Electron 桌面 [`release.yml`](.github/workflows/release.yml)                                      |
 
 ---
 
@@ -70,12 +70,12 @@ irm https://raw.githubusercontent.com/zzf2333/Kiln/main/scripts/install.ps1 | ie
 ./scripts/install.ps1 -DryRun -Version 0.1.0 -Prefix "$env:LOCALAPPDATA\Kiln"
 ```
 
-### 3. 内置 Sidecar 桌面应用（macOS `.dmg` / Windows NSIS `.exe`）
+### 3. 内置运行时桌面应用（macOS `.dmg` / Windows NSIS `.exe`）
 
-从 GitHub Releases 下载桌面安装包（内置独立 `kiln` / `kiln.exe` Sidecar，免装 Node.js，托盘菜单内置「安装 kiln 终端命令」入口）：
+从 GitHub Releases 下载桌面安装包（通过 Electron 内置 Node 运行时直接驱动捆绑的 `kiln-runtime/{kiln-cli.mjs,kiln-mcp.mjs,public/}`，免装 Node.js，托盘菜单内置「安装 kiln 终端命令」入口）：
 
 - **macOS**：`Kiln-v<ver>-darwin-arm64.dmg` / `Kiln-v<ver>-darwin-x64.dmg`（公证后同步 Homebrew Cask）
-- **Windows x64**：`Kiln-v<ver>-windows-x64-setup.exe`（当前用户级 NSIS 安装包，免 UAC，后台静默无黑框）
+- **Windows x64**：`Kiln-v<ver>-windows-x64-setup.exe`（当前用户级 NSIS 安装包，免 UAC）
 
 ### 4. Homebrew Tap（macOS / Linux，零 Node.js 依赖）
 
@@ -89,24 +89,23 @@ brew install --cask zzf2333/tap/kiln-app
 
 ### 源码构建与验证
 
-> 环境要求：`Node >= 22.0.0`、`pnpm >= 9.0.0`（单文件二进制编译需 `Bun >= 1.4`；桌面端打包需 `Rust / Cargo`）
+> 环境要求：`Node >= 22.0.0`、`pnpm >= 9.0.0`（单文件二进制编译需 `Bun >= 1.4`）
 
 ```sh
 pnpm install       # 安装 Monorepo 全部工作区依赖
-pnpm build         # 构建所有子包（含 apps/web 产物写入 packages/kernel/public/）
+pnpm build         # 构建所有子包（含 apps/web 产物写入 packages/kernel/public/ 与 Electron runtime/）
 pnpm typecheck     # 全仓 TypeScript 类型检查
 pnpm test          # 运行全部非 Socket 单元测试与集成测试
 pnpm test:socket   # 运行 Unix Socket / Named Pipe 与回环 TCP 连通冒烟测试
 pnpm build:binary -- --target host   # 编译内嵌 Web UI 的单文件二进制
 ```
 
-本地验证安装脚本、Homebrew 模板与桌面端单测：
+本地验证安装脚本、Homebrew 模板与 Electron 桌面端单测：
 
 ```sh
 sh -n scripts/install.sh && sh scripts/test-install.sh
 ruby -c packaging/homebrew/Formula/kiln.rb && ruby -c packaging/homebrew/Casks/kiln-app.rb
-cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
-rustc -D warnings --test apps/desktop/src-tauri/src/model.rs -o /tmp/kiln-desktop-model-test && /tmp/kiln-desktop-model-test && rm -f /tmp/kiln-desktop-model-test
+pnpm --filter @kiln/desktop test
 ```
 
 ---
@@ -158,7 +157,7 @@ kiln uninstall                  # 停止守护进程、移除系统服务并巡�
 - [x] **M0 · 技术探针验证**：已完成底层 Agent 能力、权限策略与用量格式实测锁定。
 - [x] **M1 · 协议与无头内核**：完成 `packages/protocol`、`kernel`、`mcp`、`cli` 与并发竞态 / 删库重建测试集。
 - [x] **M2 · MVP 工作台闭环**：已通过基于真实 Paseo（`codex` + `pi`）、真实独立 `stdio kiln-mcp` 与 Playwright Chrome 桌面端（`1440×900`）/ 移动端（`390×844` `<= 820px`）的 `S1`–`S8` 全部 8 场景真机端到端复验收与删库重建 100% 一致校验。
-- [ ] **M3 / M3.5 · 桌面 Sidecar、零依赖分发与远程移动访问 V1（进行中）**：已完成零原生内置 SQLite（`bun:sqlite` / `node:sqlite`）、`kiln __mcp` 与内嵌 Web/PWA 的单文件分发、macOS `.dmg` / Windows NSIS `.exe` Tauri v2 Sidecar 打包、双端口 Fail-Closed 远程移动访问（`:4310` 本地 / `:4311` 认证）、Bark/ntfy/Webhook 推送与三端 CI/Release 流水线（`0.0.5` 预发布落地 `CompositeBackend` 多 CLI / ACP 适配与 16 角色「编排阵容」中心、5 字段正交用量与 USD 预算熔断、Prefix Cache 分层与 `implement` 热会话复用、探索→方案→廉价执行自动升档→双重异构审查、多进程 `accept_entry` 真实验收证据门禁、任务后 `RETRO` 复盘进化飞轮、GitHub Issue/PR 闭环、Witness 停滞巡检、Refinery 串行合并队列、脚本端口探测及结构化审查缺陷清单；`0.1.0` 预留给签名公证后的首个正式对外版本）。
+- [ ] **M3 / M3.5 · Electron 桌面端、零依赖分发与远程移动访问 V1（进行中）**：已完成零原生内置 SQLite（`bun:sqlite` / `node:sqlite`）、`kiln __mcp` 与内嵌 Web/PWA 的单文件分发、macOS `.dmg` / Windows NSIS `.exe` Electron 桌面打包（方案 E1 `ELECTRON_RUN_AS_NODE=1` 内置 Node 运行时）、双端口 Fail-Closed 远程移动访问（`:4310` 本地 / `:4311` 认证）、Bark/ntfy/Webhook 推送与三端 CI/Release 流水线（`0.0.5` 预发布落地 `CompositeBackend` 多 CLI / ACP 适配与 16 角色「编排阵容」中心、5 字段正交用量与 USD 预算熔断、Prefix Cache 分层与 `implement` 热会话复用、探索→方案→廉价执行自动升档→双重异构审查、多进程 `accept_entry` 真实验收证据门禁、任务后 `RETRO` 复盘进化飞轮、GitHub Issue/PR 闭环、Witness 停滞巡检、Refinery 串行合并队列、脚本端口探测及结构化审查缺陷清单；`0.1.0` 预留给签名公证后的首个正式对外版本）。
 - [ ] **M4 · Post-MVP 演进**：`parallel` 节点内并行与子流编排、执行台泳道、跨节点远程 `kilnd` 聚合、多模型 A/B 对比出稿、Passkey/Face ID 推送及大需求循环（Epic Loop）。
 
 ---

@@ -152,8 +152,8 @@ export function isStrictLoopbackHost(rawHost: string): boolean {
 }
 
 /**
- * Validates that an `Origin` header on the local listener belongs to loopback
- * or the local Tauri desktop webview.
+ * Validates that an `Origin` header on the local listener belongs to a strict
+ * loopback HTTP(S) origin (covers browsers and Electron loading `127.0.0.1`).
  */
 export function isLocalAllowedOrigin(rawOrigin: string): boolean {
   let parsed: URL;
@@ -161,15 +161,6 @@ export function isLocalAllowedOrigin(rawOrigin: string): boolean {
     parsed = new URL(rawOrigin);
   } catch {
     return false;
-  }
-  if (parsed.protocol === "tauri:" && parsed.hostname === "localhost") {
-    return true;
-  }
-  if (
-    (parsed.protocol === "http:" || parsed.protocol === "https:") &&
-    parsed.hostname === "tauri.localhost"
-  ) {
-    return true;
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     return false;
