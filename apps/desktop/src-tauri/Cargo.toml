@@ -1,6 +1,6 @@
 [package]
 name = "kiln-desktop"
-version = "0.0.4"
+version = "0.0.5"
 description = "Kiln desktop workbench (Tauri v2)"
 authors = ["Kiln Contributors"]
 license = "Apache-2.0"
