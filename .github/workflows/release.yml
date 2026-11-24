@@ -92,7 +92,6 @@ jobs:
             "packages/cli/package.json",
             "apps/web/package.json",
             "apps/desktop/package.json",
-            "apps/desktop/src-tauri/tauri.conf.json",
           ];
 
           for (const manifestPath of jsonManifests) {
@@ -103,15 +102,6 @@ jobs:
               );
               process.exit(1);
             }
-          }
-
-          const cargoToml = fs.readFileSync("apps/desktop/src-tauri/Cargo.toml", "utf8");
-          const cargoMatch = /^version\s*=\s*"([^"]+)"/m.exec(cargoToml);
-          if (!cargoMatch || cargoMatch[1] !== target) {
-            console.error(
-              `Version mismatch in apps/desktop/src-tauri/Cargo.toml: expected ${target}, found ${cargoMatch ? cargoMatch[1] : "<missing>"}`,
-            );
-            process.exit(1);
           }
 
           console.log(`Verified release version parity across all manifests: ${target}`);
@@ -232,7 +222,7 @@ jobs:
           if-no-files-found: error
 
   build-desktop:
-    name: Build Tauri Desktop Sidecar (${{ matrix.target }})
+    name: Build Electron Desktop (${{ matrix.target }})
     needs: verify
     runs-on: ${{ matrix.os }}
     strategy:
@@ -241,16 +231,13 @@ jobs:
         include:
           - os: macos-latest
             target: darwin-arm64
-            rust_triple: aarch64-apple-darwin
-            bundles: dmg
+            arch: arm64
           - os: macos-latest
             target: darwin-x64
-            rust_triple: x86_64-apple-darwin
-            bundles: dmg
+            arch: x64
           - os: windows-latest
             target: windows-x64
-            rust_triple: x86_64-pc-windows-msvc
-            bundles: nsis
+            arch: x64
 
     steps:
       - name: Checkout repository
@@ -265,29 +252,17 @@ jobs:
           node-version: "24"
           cache: "pnpm"
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust_triple }}
-
-      - name: Install dependencies and build Web UI
+      - name: Install dependencies and build workspace + Electron runtime
         run: |
           pnpm install --frozen-lockfile
           pnpm build
 
-      - name: Run desktop Rust tests (base config without prebuilt sidecar)
-        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+      - name: Run Electron desktop tests
+        run: pnpm --filter @kiln/desktop test
 
-      - name: Build and stage sidecar binary (${{ matrix.target }})
-        run: node scripts/build-binary.mjs --target ${{ matrix.target }} --version ${{ needs.verify.outputs.version }} --stage-sidecar
-
-      - name: Build Tauri v2 desktop bundle (macOS ${{ matrix.rust_triple }})
+      - name: Build Electron desktop bundle (macOS ${{ matrix.arch }})
         if: runner.os == 'macOS'
         shell: bash
-        working-directory: apps/desktop
         env:
           RAW_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           RAW_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -296,23 +271,24 @@ jobs:
           RAW_APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
         run: |
           set -euo pipefail
-          unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_TEAM_ID APPLE_PASSWORD
+          unset CSC_LINK CSC_KEY_PASSWORD CSC_IDENTITY_AUTO_DISCOVERY APPLE_ID APPLE_TEAM_ID APPLE_APP_SPECIFIC_PASSWORD
           if [ -n "${RAW_APPLE_CERTIFICATE}" ] && [ -n "${RAW_APPLE_CERTIFICATE_PASSWORD}" ]; then
-            export APPLE_CERTIFICATE="${RAW_APPLE_CERTIFICATE}"
-            export APPLE_CERTIFICATE_PASSWORD="${RAW_APPLE_CERTIFICATE_PASSWORD}"
+            export CSC_LINK="${RAW_APPLE_CERTIFICATE}"
+            export CSC_KEY_PASSWORD="${RAW_APPLE_CERTIFICATE_PASSWORD}"
             if [ -n "${RAW_APPLE_ID}" ] && [ -n "${RAW_APPLE_TEAM_ID}" ] && [ -n "${RAW_APPLE_PASSWORD}" ]; then
               export APPLE_ID="${RAW_APPLE_ID}"
               export APPLE_TEAM_ID="${RAW_APPLE_TEAM_ID}"
-              export APPLE_PASSWORD="${RAW_APPLE_PASSWORD}"
+              export APPLE_APP_SPECIFIC_PASSWORD="${RAW_APPLE_PASSWORD}"
             fi
+          else
+            export CSC_IDENTITY_AUTO_DISCOVERY=false
           fi
-          npx -y @tauri-apps/cli@2 build --config src-tauri/tauri.sidecar.conf.json --target ${{ matrix.rust_triple }} --bundles ${{ matrix.bundles }}
+          pnpm --filter @kiln/desktop exec electron-builder --mac dmg --${{ matrix.arch }}
 
-      - name: Build Tauri v2 desktop bundle (Windows ${{ matrix.rust_triple }})
+      - name: Build Electron desktop bundle (Windows ${{ matrix.arch }})
         if: runner.os == 'Windows'
         shell: pwsh
-        working-directory: apps/desktop
-        run: npx -y @tauri-apps/cli@2 build --config src-tauri/tauri.sidecar.conf.json --target ${{ matrix.rust_triple }} --bundles ${{ matrix.bundles }}
+        run: pnpm --filter @kiln/desktop exec electron-builder --win nsis --${{ matrix.arch }}
 
       - name: Collect desktop bundle artifacts (macOS)
         if: runner.os == 'macOS'
@@ -320,9 +296,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release-artifacts/desktop
-          DMG_SRC="$(find "apps/desktop/src-tauri/target/${{ matrix.rust_triple }}/release/bundle/dmg" -maxdepth 1 -name '*.dmg' | head -n 1)"
-          test -n "${DMG_SRC}"
-          cp "${DMG_SRC}" "release-artifacts/desktop/Kiln-v${{ needs.verify.outputs.version }}-${{ matrix.target }}.dmg"
+          DMG_SRC="apps/desktop/release/Kiln-v${{ needs.verify.outputs.version }}-${{ matrix.target }}.dmg"
+          test -f "${DMG_SRC}"
+          cp "${DMG_SRC}" release-artifacts/desktop/
 
       - name: Collect desktop bundle artifacts (Windows)
         if: runner.os == 'Windows'
@@ -330,9 +306,9 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Path "release-artifacts/desktop" -Force | Out-Null
-          $exe = Get-ChildItem -Path "apps/desktop/src-tauri/target/${{ matrix.rust_triple }}/release/bundle/nsis" -Filter "*.exe" | Select-Object -First 1
-          if (-not $exe) { throw "NSIS installer .exe not found" }
-          Copy-Item -Path $exe.FullName -Destination "release-artifacts/desktop/Kiln-v${{ needs.verify.outputs.version }}-windows-x64-setup.exe" -Force
+          $exe = "apps/desktop/release/Kiln-v${{ needs.verify.outputs.version }}-windows-x64-setup.exe"
+          if (-not (Test-Path $exe)) { throw "NSIS installer .exe not found at $exe" }
+          Copy-Item -Path $exe -Destination "release-artifacts/desktop/Kiln-v${{ needs.verify.outputs.version }}-windows-x64-setup.exe" -Force
 
       - name: Upload desktop bundle artifact
         uses: actions/upload-artifact@v4

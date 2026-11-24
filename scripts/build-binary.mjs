@@ -11,8 +11,6 @@ const REPO_ROOT = path.resolve(SCRIPT_DIR, "..");
 const CLI_DIR = path.join(REPO_ROOT, "packages", "cli");
 const KERNEL_PUBLIC_DIR = path.join(REPO_ROOT, "packages", "kernel", "public");
 const CLI_PKG_PATH = path.join(CLI_DIR, "package.json");
-const DESKTOP_BINARIES_DIR = path.join(REPO_ROOT, "apps", "desktop", "src-tauri", "binaries");
-const DESKTOP_TARGET_DIR = path.join(REPO_ROOT, "apps", "desktop", "src-tauri", "target");
 
 const GENERATED_ASSETS_PATH = path.join(CLI_DIR, "src", "embedded-public.generated.ts");
 const GENERATED_ENTRY_PATH = path.join(CLI_DIR, ".bin-compiled.generated.ts");
@@ -20,22 +18,18 @@ const GENERATED_ENTRY_PATH = path.join(CLI_DIR, ".bin-compiled.generated.ts");
 const TARGET_SPECS = {
   "darwin-arm64": {
     bunTarget: "bun-darwin-arm64",
-    rustTriple: "aarch64-apple-darwin",
     ext: "",
   },
   "darwin-x64": {
     bunTarget: "bun-darwin-x64",
-    rustTriple: "x86_64-apple-darwin",
     ext: "",
   },
   "windows-x64": {
     bunTarget: "bun-windows-x64",
-    rustTriple: "x86_64-pc-windows-msvc",
     ext: ".exe",
   },
   "linux-x64": {
     bunTarget: "bun-linux-x64",
-    rustTriple: "x86_64-unknown-linux-gnu",
     ext: "",
   },
 };
@@ -53,7 +47,6 @@ function printUsage() {
       "Options:",
       "  --target <name>   host | darwin-arm64 | darwin-x64 | windows-x64 | linux-x64 | all (default: host)",
       "  --out-dir <dir>   Output directory (default: release-artifacts/bin)",
-      "  --stage-sidecar   Copy compiled binary to apps/desktop/src-tauri/binaries/kiln-<triple>(.exe)",
       "  --bytecode        Enable Bun --bytecode precompilation (opt-in)",
       "  --version <ver>   Override version tag in output filename (default: packages/cli/package.json)",
       "  -h, --help        Show this help message",
@@ -183,21 +176,12 @@ function sha256File(filePath) {
   return hash.digest("hex");
 }
 
-function removeStaleTauriSidecarCopies(ext) {
-  // Guard against stale stripped sidecar copies cached inside target/{debug,release}/
-  for (const profile of ["debug", "release"]) {
-    const stale = path.join(DESKTOP_TARGET_DIR, profile, `kiln${ext}`);
-    fs.rmSync(stale, { force: true });
-  }
-}
-
 function main() {
   const parsed = parseArgs({
     args: process.argv.slice(2),
     options: {
       target: { type: "string", default: "host" },
       "out-dir": { type: "string", default: path.join("release-artifacts", "bin") },
-      "stage-sidecar": { type: "boolean", default: false },
       bytecode: { type: "boolean", default: false },
       version: { type: "string" },
       help: { type: "boolean", short: "h", default: false },
@@ -250,9 +234,6 @@ function main() {
 
   const outDir = path.resolve(REPO_ROOT, parsed.values["out-dir"]);
   fs.mkdirSync(outDir, { recursive: true });
-  if (parsed.values["stage-sidecar"]) {
-    fs.mkdirSync(DESKTOP_BINARIES_DIR, { recursive: true });
-  }
 
   const publicFiles = collectPublicFiles(KERNEL_PUBLIC_DIR);
   if (publicFiles.length === 0) {
@@ -305,19 +286,6 @@ function main() {
       process.stdout.write(
         `[build-binary] Built ${artifactName}: ${stat.size} bytes (${sizeMiB} MiB), sha256=${digest}\n`,
       );
-
-      if (parsed.values["stage-sidecar"]) {
-        const sidecarName = `kiln-${spec.rustTriple}${spec.ext}`;
-        const sidecarPath = path.join(DESKTOP_BINARIES_DIR, sidecarName);
-        fs.copyFileSync(outPath, sidecarPath);
-        if (spec.ext === "" && process.platform !== "win32") {
-          fs.chmodSync(sidecarPath, 0o755);
-        }
-        removeStaleTauriSidecarCopies(spec.ext);
-        process.stdout.write(
-          `[build-binary] Staged Tauri sidecar: ${path.relative(REPO_ROOT, sidecarPath)}\n`,
-        );
-      }
     }
   } finally {
     cleanupGeneratedModules();

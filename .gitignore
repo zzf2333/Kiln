@@ -13,9 +13,8 @@ packages/cli/README.md
 packages/cli/LICENSE
 packages/cli/src/embedded-public.generated.ts
 packages/cli/.bin-compiled.generated.ts
-apps/desktop/src-tauri/target/
-apps/desktop/src-tauri/gen/
-apps/desktop/src-tauri/binaries/
+apps/desktop/runtime/
+apps/desktop/release/
 
 # Local runtime & environment
 .kiln/
