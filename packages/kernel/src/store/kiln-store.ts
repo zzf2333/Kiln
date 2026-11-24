@@ -18,8 +18,11 @@ import {
   SpaceConfigSchema,
   StateEventSchema,
   TaskCardSchema,
+  WorkflowsConfigSchema,
   createDefaultBuiltinRosterMetadata,
   createDefaultProvidersConfig,
+  createDefaultWorkflowTemplates,
+  createDefaultWorkflowsConfig,
   migrateRolesConfigToRoster,
   parseFrontmatterMarkdown,
   type CardContract,
@@ -42,6 +45,7 @@ import {
   type TaskCard,
   type TaskStatus,
   type Track,
+  type WorkflowsConfig,
 } from "@kiln/protocol";
 import {
   appendNdjsonLine,
@@ -87,6 +91,7 @@ const CONFIG_SCHEMAS = {
   devices: DevicesConfigSchema,
   providers: ProvidersConfigSchema,
   roster: RosterConfigSchema,
+  workflows: WorkflowsConfigSchema,
 } as const;
 
 type AnyKilnConfigValue =
@@ -96,7 +101,8 @@ type AnyKilnConfigValue =
   | RemoteConfig
   | DevicesConfig
   | ProvidersConfig
-  | RosterConfig;
+  | RosterConfig
+  | WorkflowsConfig;
 
 const RESTRICTED_CONFIG_NAMES: ReadonlySet<KilnConfigName> = new Set(["remote", "devices"]);
 
@@ -775,6 +781,7 @@ export class KilnStore {
   readConfig(name: "devices"): DevicesConfig | null;
   readConfig(name: "providers"): ProvidersConfig | null;
   readConfig(name: "roster"): RosterConfig | null;
+  readConfig(name: "workflows"): WorkflowsConfig | null;
   readConfig(name: KilnConfigName): AnyKilnConfigValue | null {
     const schema = CONFIG_SCHEMAS[name] as AnyZodType<AnyKilnConfigValue>;
     return readYamlOptional(this.paths.configFile(name), schema);
@@ -787,6 +794,7 @@ export class KilnStore {
   writeConfig(name: "devices", data: DevicesConfig): void;
   writeConfig(name: "providers", data: ProvidersConfig): void;
   writeConfig(name: "roster", data: RosterConfig): void;
+  writeConfig(name: "workflows", data: WorkflowsConfig): void;
   writeConfig(name: KilnConfigName, data: AnyKilnConfigValue): void {
     const schema = CONFIG_SCHEMAS[name] as AnyZodType<AnyKilnConfigValue>;
     const writeOpts = RESTRICTED_CONFIG_NAMES.has(name) ? { mode: 0o600 } : undefined;
@@ -795,6 +803,30 @@ export class KilnStore {
 
   readEffectiveProvidersConfig(): ProvidersConfig {
     return this.readConfig("providers") ?? createDefaultProvidersConfig();
+  }
+
+  readEffectiveWorkflowsConfig(): WorkflowsConfig {
+    const stored = this.readConfig("workflows");
+    if (stored !== null) {
+      const existingIds = new Set(stored.templates.map((t) => t.id));
+      const missingBuiltins = createDefaultWorkflowTemplates().filter(
+        (t) => !existingIds.has(t.id),
+      );
+      if (missingBuiltins.length === 0) {
+        return stored;
+      }
+      return WorkflowsConfigSchema.parse({
+        ...stored,
+        templates: [...stored.templates, ...missingBuiltins],
+      });
+    }
+    const hasLegacyRosterOrRoles =
+      fs.existsSync(this.paths.configFile("roster")) ||
+      fs.existsSync(this.paths.configFile("roles"));
+    if (hasLegacyRosterOrRoles) {
+      return createDefaultWorkflowsConfig(this.readEffectiveRosterConfig());
+    }
+    return createDefaultWorkflowsConfig(null);
   }
 
   readEffectiveRosterConfig(): RosterConfig {

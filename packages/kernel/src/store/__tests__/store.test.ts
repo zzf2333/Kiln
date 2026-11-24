@@ -18,6 +18,9 @@ import {
   RosterConfigSchema,
   TaskCardSchema,
   createDefaultBuiltinRosterMetadata,
+  createDefaultWorkflowsConfig,
+  deriveLegacyRolesConfigFromRoster,
+  projectWorkflowsConfigToRoster,
 } from "@kiln/protocol";
 import {
   KilnPaths,
@@ -977,5 +980,80 @@ describe("KilnStore concurrency, contract bump, locks, usage, and isolation", ()
     });
     expect(effective.roster.architect?.enabled).toBe(true);
     expect(effective.roster.architect?.primary?.model).toBe("gpt-5.4");
+  });
+
+  it("readEffectiveWorkflowsConfig initializes clean defaults, migrates legacy roster, and projects back losslessly", () => {
+    // 1. Fresh store defaults to single-subscription friendly heterogeneous_review=false + 2 builtin templates
+    const fresh = store.readEffectiveWorkflowsConfig();
+    expect(fresh.default_template_id).toBe("standard_dev");
+    expect(fresh.heterogeneous_review).toBe(false);
+    expect(fresh.templates.map((t) => t.id)).toEqual(["standard_dev", "quick"]);
+
+    // 2. Migrating an existing roster preserves all bindings, fallbacks, and full-access flags
+    const seed = createDefaultBuiltinRosterMetadata();
+    store.writeConfig(
+      "roster",
+      RosterConfigSchema.parse({
+        schema_version: 2,
+        heterogeneous_review: true,
+        roster: {
+          ...seed,
+          pm: {
+            ...seed.pm,
+            enabled: true,
+            primary: { provider: "codex", model: "gpt-5.4", effort: "high" },
+            allow_full_access_fallback: true,
+          },
+          main_dev: {
+            ...seed.main_dev,
+            enabled: true,
+            primary: { provider: "codex", model: "gpt-5.4", effort: "medium" },
+          },
+          reviewer: {
+            ...seed.reviewer,
+            enabled: true,
+            primary: { provider: "codex", model: "gpt-5.4" },
+            fallbacks: [{ provider: "claude", model: "claude-opus-4-6" }],
+          },
+          advisor: {
+            ...seed.advisor,
+            enabled: true,
+            primary: { provider: "claude", model: "claude-opus-4-6" },
+          },
+        },
+      }),
+    );
+
+    const migrated = store.readEffectiveWorkflowsConfig();
+    expect(migrated.heterogeneous_review).toBe(true);
+    expect(migrated.stage_bindings.intake).toEqual({
+      provider: "codex",
+      model: "gpt-5.4",
+      effort: "high",
+    });
+    expect(migrated.allow_full_access_fallback.intake).toBe(true);
+    expect(migrated.stage_bindings.implement?.model).toBe("gpt-5.4");
+    expect(migrated.stage_fallbacks.review).toEqual([
+      { provider: "claude", model: "claude-opus-4-6" },
+    ]);
+    expect(migrated.stage_bindings.advisor?.model).toBe("claude-opus-4-6");
+
+    // 3. Updating & persisting workflows projects back into roster & legacy roles cleanly
+    const updated = createDefaultWorkflowsConfig(null);
+    updated.stage_bindings.intake = { provider: "agy", model: "gemini-3-pro", effort: "high" };
+    updated.stage_bindings.implement = { provider: "agy", model: "gemini-3-pro", effort: "medium" };
+    updated.stage_bindings.review = { provider: "agy", model: "gemini-3-pro", effort: "medium" };
+    store.writeConfig("workflows", updated);
+    const projectedRoster = projectWorkflowsConfigToRoster(
+      store.readEffectiveWorkflowsConfig(),
+      store.readEffectiveRosterConfig(),
+    );
+    expect(projectedRoster.heterogeneous_review).toBe(false);
+    expect(projectedRoster.roster.pm?.primary?.model).toBe("gemini-3-pro");
+    expect(projectedRoster.roster.reviewer?.primary?.model).toBe("gemini-3-pro");
+    const projectedLegacyRoles = deriveLegacyRolesConfigFromRoster(projectedRoster);
+    expect(projectedLegacyRoles.heterogeneous_review).toBe(false);
+    expect(projectedLegacyRoles.roles.intake?.model).toBe("gemini-3-pro");
+    expect(projectedLegacyRoles.roles.worker?.model).toBe("gemini-3-pro");
   });
 });

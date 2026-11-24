@@ -1,7 +1,9 @@
 import type {
+  ReasoningEffort,
   RosterPermission,
   StageId,
   Track,
+  VerifierCapability,
   WorkflowPreset,
   WorkspaceMode,
 } from "./constants.js";
@@ -22,14 +24,29 @@ export const WORKFLOW_APPROVAL_ITEMS = [
 ] as const;
 export type WorkflowApprovalItem = (typeof WORKFLOW_APPROVAL_ITEMS)[number];
 
+export interface WorkflowNodeBinding {
+  provider: string;
+  model: string;
+  backend_id?: string;
+  effort?: ReasoningEffort;
+}
+
+export const WORKFLOW_NODE_ON_FAIL_ACTIONS = ["loop_back", "continue"] as const;
+export type WorkflowNodeOnFail = (typeof WORKFLOW_NODE_ON_FAIL_ACTIONS)[number];
+
 export interface WorkflowAgentNode {
   kind: "agent";
+  id?: string;
+  label?: string;
   stage: WorkflowAgentStage;
   role: WorkflowAgentRole;
   fresh_context: boolean;
   mode?: "normal" | "dry_run_only";
   roster_role?: string;
   rationale?: string;
+  binding?: WorkflowNodeBinding;
+  instructions?: string;
+  on_fail?: WorkflowNodeOnFail;
 }
 
 export interface WorkflowGateNode {
@@ -160,7 +177,139 @@ function cloneNode<T extends WorkflowStep>(step: T): T {
       show: [...step.show],
     };
   }
+  if (step.kind === "agent" && step.binding) {
+    return {
+      ...step,
+      binding: { ...step.binding },
+    };
+  }
   return { ...step };
+}
+
+export const WORKFLOW_BINDING_KEYS = [
+  "intake",
+  "research",
+  "plan",
+  "implement",
+  "review",
+  "accept",
+  "advisor",
+  "resolver",
+  "triage",
+  "retro",
+] as const;
+export type WorkflowBindingKey = (typeof WORKFLOW_BINDING_KEYS)[number];
+
+export interface WorkflowTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  builtin?: boolean;
+  blueprint: WorkflowBlueprint;
+}
+
+export interface WorkflowsConfig {
+  schema_version: 1;
+  default_template_id: string;
+  heterogeneous_review: boolean;
+  stage_bindings: Partial<Record<WorkflowBindingKey, WorkflowNodeBinding>>;
+  stage_fallbacks: Partial<Record<WorkflowBindingKey, WorkflowNodeBinding[]>>;
+  allow_full_access_fallback: Partial<Record<WorkflowBindingKey, boolean>>;
+  verifier_capabilities: VerifierCapability[];
+  deliver_mode: "kernel" | "on_conflict" | "agent";
+  deliver_binding?: WorkflowNodeBinding;
+  templates: WorkflowTemplate[];
+}
+
+export function createDefaultWorkflowTemplates(): WorkflowTemplate[] {
+  return [
+    {
+      id: "standard_dev",
+      name: "标准开发（含 3↔4 循环）",
+      description: "调研/方案（可选）→ [实施 ↔ 门禁 ↔ 独立审查] → 真实验收（可选）→ 合并交付",
+      builtin: true,
+      blueprint: buildWorkflowPreset("standard_dev"),
+    },
+    {
+      id: "quick",
+      name: "极速修复",
+      description: "实施写码 → 确定性门禁 → 合并交付（轻量单步，无审查循环）",
+      builtin: true,
+      blueprint: buildWorkflowPreset("quick"),
+    },
+  ];
+}
+
+/**
+ * Ensures any `implement` node is covered by a subsequent deterministic `verify` gate
+ * before leaving a loop or reaching review/accept/deliver stages.
+ */
+export function normalizeWorkflowBlueprintSafety(blueprint: WorkflowBlueprint): WorkflowBlueprint {
+  const flat = flattenWorkflowSteps(blueprint);
+  const checkMode: "full" | "staged_only" = flat.some(
+    (n) => n.kind === "gate" && n.check === "staged_only",
+  )
+    ? "staged_only"
+    : "full";
+
+  let needsVerify = false;
+  const nextSteps: WorkflowStep[] = [];
+
+  for (const rawStep of blueprint.steps) {
+    const step = cloneNode(rawStep);
+    if (step.kind === "loop") {
+      const nextInner: WorkflowAtomicNode[] = [];
+      let loopNeedsVerify = needsVerify;
+      for (const inner of step.steps) {
+        if (inner.kind === "agent" && inner.stage === "implement") {
+          nextInner.push(inner);
+          loopNeedsVerify = true;
+        } else if (inner.kind === "gate" && inner.stage === "verify") {
+          nextInner.push(inner);
+          loopNeedsVerify = false;
+        } else {
+          if (
+            loopNeedsVerify &&
+            (inner.stage === "review" || inner.stage === "accept" || inner.stage === "deliver")
+          ) {
+            nextInner.push({ kind: "gate", stage: "verify", check: checkMode });
+            loopNeedsVerify = false;
+          }
+          nextInner.push(inner);
+        }
+      }
+      if (loopNeedsVerify) {
+        nextInner.push({ kind: "gate", stage: "verify", check: checkMode });
+        loopNeedsVerify = false;
+      }
+      needsVerify = false;
+      nextSteps.push({ ...step, steps: nextInner });
+    } else if (step.kind === "agent" && step.stage === "implement") {
+      nextSteps.push(step);
+      needsVerify = true;
+    } else if (step.kind === "gate" && step.stage === "verify") {
+      nextSteps.push(step);
+      needsVerify = false;
+    } else {
+      if (
+        needsVerify &&
+        (step.stage === "review" || step.stage === "accept" || step.stage === "deliver")
+      ) {
+        nextSteps.push({ kind: "gate", stage: "verify", check: checkMode });
+        needsVerify = false;
+      }
+      nextSteps.push(step);
+    }
+  }
+
+  if (needsVerify) {
+    nextSteps.push({ kind: "gate", stage: "verify", check: checkMode });
+  }
+
+  return {
+    ...blueprint,
+    steps: nextSteps,
+  };
 }
 
 /**
@@ -441,6 +590,8 @@ export function validateWorkflowBlueprint(
   let seenResearchIdx = -1;
   let seenPlanRank = -1;
   let firstImplementIdx = -1;
+  let lastImplementIdx = -1;
+  let lastVerifyGateIdx = -1;
 
   for (let i = 0; i < flat.length; i++) {
     const node = flat[i]!;
@@ -461,6 +612,7 @@ export function validateWorkflowBlueprint(
         if (firstImplementIdx === -1) {
           firstImplementIdx = i;
         }
+        lastImplementIdx = i;
       }
       if (node.stage === "research" && seenResearchIdx === -1) {
         seenResearchIdx = i;
@@ -472,6 +624,7 @@ export function validateWorkflowBlueprint(
       if (node.check === "staged_only") {
         seenStagedOnlyGate = true;
       }
+      lastVerifyGateIdx = i;
     } else if (node.kind === "approval") {
       if (node.stage === "deliver") {
         seenDeliverApproval = true;
@@ -512,6 +665,9 @@ export function validateWorkflowBlueprint(
     errors.push(
       'Gate check="staged_only" requires a subsequent command node with final_accept_gate=true',
     );
+  }
+  if (hasImplement && lastImplementIdx > lastVerifyGateIdx) {
+    errors.push('Each "implement" agent node must be followed by a "verify" gate before delivery');
   }
 
   return errors.length === 0 ? { ok: true } : { ok: false, errors };

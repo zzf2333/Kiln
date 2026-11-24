@@ -10,6 +10,7 @@ export const CONFIG_NAMES = [
   "devices",
   "providers",
   "roster",
+  "workflows",
 ] as const;
 export type KilnConfigName = (typeof CONFIG_NAMES)[number];
 

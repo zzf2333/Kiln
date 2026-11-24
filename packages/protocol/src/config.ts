@@ -1,5 +1,13 @@
 import { z } from "zod";
 import {
+  WORKFLOW_BINDING_KEYS,
+  createDefaultWorkflowTemplates,
+  type WorkflowBindingKey,
+  type WorkflowNodeBinding,
+  type WorkflowsConfig,
+} from "./workflow-core.js";
+import { WorkflowBlueprintSchema, WorkflowNodeBindingSchema } from "./workflow.js";
+import {
   BUILTIN_ROSTER_ROLE_IDS,
   CORE_COGNITIVE_ROSTER_IDS,
   COST_SOURCES,
@@ -845,5 +853,285 @@ export function deriveLegacyRolesConfigFromRoster(rosterConfig: RosterConfig): R
     schema_version: 1,
     heterogeneous_review: rosterConfig.heterogeneous_review,
     roles,
+  });
+}
+
+export const WorkflowTemplateSchema = z
+  .object({
+    id: z
+      .string()
+      .regex(PROVIDER_OR_ROLE_ID_RE, "template id must match ^[a-z0-9][a-z0-9_-]{0,47}$"),
+    name: z.string().trim().min(1).max(80),
+    description: z.string().trim().max(300).optional(),
+    builtin: z.boolean().optional(),
+    blueprint: WorkflowBlueprintSchema,
+  })
+  .strict();
+
+const StageBindingsMapSchema = z
+  .object({
+    intake: WorkflowNodeBindingSchema.optional(),
+    research: WorkflowNodeBindingSchema.optional(),
+    plan: WorkflowNodeBindingSchema.optional(),
+    implement: WorkflowNodeBindingSchema.optional(),
+    review: WorkflowNodeBindingSchema.optional(),
+    accept: WorkflowNodeBindingSchema.optional(),
+    advisor: WorkflowNodeBindingSchema.optional(),
+    resolver: WorkflowNodeBindingSchema.optional(),
+    triage: WorkflowNodeBindingSchema.optional(),
+    retro: WorkflowNodeBindingSchema.optional(),
+  })
+  .strict();
+
+const StageFallbacksMapSchema = z
+  .object({
+    intake: z.array(WorkflowNodeBindingSchema).optional(),
+    research: z.array(WorkflowNodeBindingSchema).optional(),
+    plan: z.array(WorkflowNodeBindingSchema).optional(),
+    implement: z.array(WorkflowNodeBindingSchema).optional(),
+    review: z.array(WorkflowNodeBindingSchema).optional(),
+    accept: z.array(WorkflowNodeBindingSchema).optional(),
+    advisor: z.array(WorkflowNodeBindingSchema).optional(),
+    resolver: z.array(WorkflowNodeBindingSchema).optional(),
+    triage: z.array(WorkflowNodeBindingSchema).optional(),
+    retro: z.array(WorkflowNodeBindingSchema).optional(),
+  })
+  .strict();
+
+const StageBooleanMapSchema = z
+  .object({
+    intake: z.boolean().optional(),
+    research: z.boolean().optional(),
+    plan: z.boolean().optional(),
+    implement: z.boolean().optional(),
+    review: z.boolean().optional(),
+    accept: z.boolean().optional(),
+    advisor: z.boolean().optional(),
+    resolver: z.boolean().optional(),
+    triage: z.boolean().optional(),
+    retro: z.boolean().optional(),
+  })
+  .strict();
+
+export const WorkflowsConfigSchema = z
+  .object({
+    schema_version: z.literal(1),
+    default_template_id: z.string().min(1).default("standard_dev"),
+    heterogeneous_review: z.boolean().default(false),
+    stage_bindings: StageBindingsMapSchema.default({}),
+    stage_fallbacks: StageFallbacksMapSchema.default({}),
+    allow_full_access_fallback: StageBooleanMapSchema.default({}),
+    verifier_capabilities: z.array(z.enum(VERIFIER_CAPABILITIES)).min(1).default(["cli"]),
+    deliver_mode: z.enum(["kernel", "on_conflict", "agent"]).default("kernel"),
+    deliver_binding: WorkflowNodeBindingSchema.optional(),
+    templates: z.array(WorkflowTemplateSchema).min(1),
+  })
+  .strict()
+  .superRefine((val, ctx) => {
+    const ids = new Set<string>();
+    for (let i = 0; i < val.templates.length; i += 1) {
+      const id = val.templates[i]!.id;
+      if (ids.has(id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate workflow template id "${id}"`,
+          path: ["templates", i, "id"],
+        });
+      }
+      ids.add(id);
+    }
+    if (!ids.has(val.default_template_id)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `default_template_id "${val.default_template_id}" does not exist in templates`,
+        path: ["default_template_id"],
+      });
+    }
+  });
+
+const WORKFLOW_BINDING_KEY_TO_ROSTER_ID: Readonly<Record<WorkflowBindingKey, BuiltinRosterRoleId>> =
+  {
+    intake: "pm",
+    research: "researcher",
+    plan: "architect",
+    implement: "main_dev",
+    review: "reviewer",
+    accept: "verifier",
+    advisor: "advisor",
+    resolver: "resolver",
+    triage: "triage",
+    retro: "retro",
+  };
+
+function cloneNodeBinding(binding: WorkflowNodeBinding): WorkflowNodeBinding {
+  return {
+    provider: binding.provider,
+    model: binding.model,
+    ...(binding.backend_id !== undefined ? { backend_id: binding.backend_id } : {}),
+    ...(binding.effort !== undefined ? { effort: binding.effort } : {}),
+  };
+}
+
+/**
+ * Builds `WorkflowsConfig` defaults or migrates seamlessly from an existing `RosterConfig`.
+ */
+export function createDefaultWorkflowsConfig(roster?: RosterConfig | null): WorkflowsConfig {
+  const templates = createDefaultWorkflowTemplates();
+  if (!roster) {
+    return WorkflowsConfigSchema.parse({
+      schema_version: 1,
+      default_template_id: "standard_dev",
+      heterogeneous_review: false,
+      stage_bindings: {},
+      stage_fallbacks: {},
+      allow_full_access_fallback: {},
+      verifier_capabilities: ["cli"],
+      deliver_mode: "kernel",
+      templates,
+    });
+  }
+
+  const stageBindings: Partial<Record<WorkflowBindingKey, WorkflowNodeBinding>> = {};
+  const stageFallbacks: Partial<Record<WorkflowBindingKey, WorkflowNodeBinding[]>> = {};
+  const allowFullAccess: Partial<Record<WorkflowBindingKey, boolean>> = {};
+
+  for (const key of WORKFLOW_BINDING_KEYS) {
+    const rosterId = WORKFLOW_BINDING_KEY_TO_ROSTER_ID[key];
+    let entry = roster.roster[rosterId];
+    if (key === "advisor" && (!entry || !entry.enabled || !entry.primary)) {
+      const legacyArch = roster.roster.architect;
+      if (
+        legacyArch?.enabled &&
+        legacyArch.secondary_stages.includes("advise") &&
+        legacyArch.primary
+      ) {
+        entry = legacyArch;
+      }
+    }
+    if (!entry) continue;
+    if (entry.enabled && entry.primary) {
+      stageBindings[key] = cloneNodeBinding(entry.primary);
+    }
+    if (entry.fallbacks.length > 0) {
+      stageFallbacks[key] = entry.fallbacks.map(cloneNodeBinding);
+    }
+    if (entry.allow_full_access_fallback) {
+      allowFullAccess[key] = true;
+    }
+  }
+
+  const deliverer = roster.roster.deliverer;
+  const deliverMode: "kernel" | "on_conflict" | "agent" = deliverer?.mode ?? "kernel";
+  const deliverBinding = deliverer?.primary ? cloneNodeBinding(deliverer.primary) : undefined;
+  const verifierCaps = roster.roster.verifier?.verifier_capabilities;
+
+  return WorkflowsConfigSchema.parse({
+    schema_version: 1,
+    default_template_id: "standard_dev",
+    heterogeneous_review: roster.heterogeneous_review,
+    stage_bindings: stageBindings,
+    stage_fallbacks: stageFallbacks,
+    allow_full_access_fallback: allowFullAccess,
+    verifier_capabilities: verifierCaps && verifierCaps.length > 0 ? [...verifierCaps] : ["cli"],
+    deliver_mode: deliverMode,
+    ...(deliverBinding !== undefined ? { deliver_binding: deliverBinding } : {}),
+    templates,
+  });
+}
+
+/**
+ * Projects single-source `WorkflowsConfig` back into `RosterConfig` (preserving any custom specialist
+ * entries and `pm_orchestration` policy) so scheduler/PM/legacy `roles.yaml` remain in lockstep.
+ */
+export function projectWorkflowsConfigToRoster(
+  workflows: WorkflowsConfig,
+  existingRoster?: RosterConfig | null,
+): RosterConfig {
+  const defaults = createDefaultBuiltinRosterMetadata();
+  const nextRoster: Record<string, RosterEntry> = {};
+
+  if (existingRoster) {
+    for (const [id, entry] of Object.entries(existingRoster.roster)) {
+      nextRoster[id] = {
+        ...entry,
+        secondary_stages: [...(entry.secondary_stages ?? [])],
+        fallbacks: (entry.fallbacks ?? []).map(cloneNodeBinding),
+        ...(entry.primary ? { primary: cloneNodeBinding(entry.primary) } : {}),
+        ...(entry.verifier_capabilities
+          ? { verifier_capabilities: [...entry.verifier_capabilities] }
+          : {}),
+      };
+    }
+  }
+
+  for (const [id, entry] of Object.entries(defaults)) {
+    if (!nextRoster[id]) {
+      nextRoster[id] = {
+        ...entry,
+        secondary_stages: [...(entry.secondary_stages ?? [])],
+        fallbacks: [],
+      };
+    }
+  }
+
+  for (const key of WORKFLOW_BINDING_KEYS) {
+    const rosterId = WORKFLOW_BINDING_KEY_TO_ROSTER_ID[key];
+    const base = nextRoster[rosterId] ?? defaults[rosterId];
+    const binding = workflows.stage_bindings[key];
+    const fallbacks = (workflows.stage_fallbacks[key] ?? []).map(cloneNodeBinding);
+    const allowFullAccess = workflows.allow_full_access_fallback[key] ?? false;
+
+    const updated: RosterEntry = {
+      ...base,
+      enabled: Boolean(binding),
+      mode: "agent",
+      fallbacks,
+      allow_full_access_fallback: allowFullAccess,
+      ...(key === "accept"
+        ? {
+            verifier_capabilities:
+              workflows.verifier_capabilities.length > 0
+                ? [...workflows.verifier_capabilities]
+                : ["cli"],
+          }
+        : {}),
+    };
+    if (binding) {
+      updated.primary = cloneNodeBinding(binding);
+    } else {
+      delete updated.primary;
+    }
+    nextRoster[rosterId] = RosterEntrySchema.parse(updated);
+  }
+
+  const deliverBase = nextRoster.deliverer ?? defaults.deliverer;
+  const deliverPrimary =
+    workflows.deliver_binding ??
+    workflows.stage_bindings.advisor ??
+    workflows.stage_bindings.implement ??
+    workflows.stage_bindings.intake;
+  const effectiveDeliverMode =
+    workflows.deliver_mode !== "kernel" && deliverPrimary ? workflows.deliver_mode : "kernel";
+  const deliverEntry: RosterEntry = {
+    ...deliverBase,
+    enabled: true,
+    mode: effectiveDeliverMode,
+    fallbacks: [],
+    allow_full_access_fallback: false,
+  };
+  if (effectiveDeliverMode !== "kernel" && deliverPrimary) {
+    deliverEntry.primary = cloneNodeBinding(deliverPrimary);
+  } else {
+    delete deliverEntry.primary;
+  }
+  nextRoster.deliverer = RosterEntrySchema.parse(deliverEntry);
+
+  return RosterConfigSchema.parse({
+    schema_version: 2,
+    heterogeneous_review: workflows.heterogeneous_review,
+    ...(existingRoster?.pm_orchestration
+      ? { pm_orchestration: { ...existingRoster.pm_orchestration } }
+      : {}),
+    roster: nextRoster,
   });
 }

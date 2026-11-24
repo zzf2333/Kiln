@@ -15,6 +15,7 @@ import {
   getWorkflowLoopPolicy,
   getWorkflowStages,
   nextWorkflowStepAfter,
+  normalizeWorkflowBlueprintSafety,
   resolveTaskWorkflow,
   resolveWorkflowStepAt,
   validateWorkflowBlueprint,
@@ -442,5 +443,97 @@ describe("workflow composable blueprint schemas & helpers", () => {
       ],
     });
     expect(researchAfterPlan.ok).toBe(false);
+  });
+
+  it("supports custom inline bindings, instructions, on_fail and enforces post-implement verify gate safety", () => {
+    const customSecNode = {
+      kind: "agent" as const,
+      id: "sec-review-1",
+      label: "安全审查",
+      stage: "review" as const,
+      role: "reviewer" as const,
+      fresh_context: true,
+      binding: { provider: "claude", model: "claude-opus-4-6", effort: "high" as const },
+      instructions: "重点检查凭据泄露与权限绕过",
+      on_fail: "loop_back" as const,
+    };
+
+    const withTrailingImpl = {
+      schema_version: 1 as const,
+      preset: "custom" as const,
+      steps: [
+        {
+          kind: "loop" as const,
+          max_rounds: 3,
+          stuck_threshold: 2,
+          steps: [
+            {
+              kind: "agent" as const,
+              stage: "implement" as const,
+              role: "worker" as const,
+              fresh_context: false,
+            },
+            { kind: "gate" as const, stage: "verify" as const, check: "full" as const },
+            {
+              kind: "agent" as const,
+              stage: "review" as const,
+              role: "reviewer" as const,
+              fresh_context: true,
+            },
+            customSecNode,
+          ],
+        },
+        {
+          kind: "agent" as const,
+          id: "doc-sync-1",
+          label: "文档同步",
+          stage: "implement" as const,
+          role: "worker" as const,
+          fresh_context: false,
+          binding: { provider: "codex", model: "gpt-5.4" },
+          instructions: "更新 README 与变更日志",
+        },
+        {
+          kind: "command" as const,
+          stage: "deliver" as const,
+          apply_staged: false,
+          run_deliver_cmd: false,
+          verify_sha256: false,
+          final_accept_gate: false,
+        },
+      ],
+    };
+
+    const unverified = validateWorkflowBlueprint(withTrailingImpl);
+    expect(unverified.ok).toBe(false);
+    if (!unverified.ok) {
+      expect(unverified.errors.some((e) => e.includes('"verify" gate'))).toBe(true);
+    }
+
+    const normalized = WorkflowBlueprintSchema.parse(
+      normalizeWorkflowBlueprintSafety(withTrailingImpl),
+    );
+    const cloned = resolveTaskWorkflow({
+      track: "L2",
+      workspace_mode: "git_worktree",
+      contract: {},
+      workflow: normalized,
+    });
+    const flat = flattenWorkflowSteps(cloned);
+    expect(flat.map((n) => `${n.stage}:${n.kind}`)).toEqual([
+      "implement:agent",
+      "verify:gate",
+      "review:agent",
+      "review:agent",
+      "implement:agent",
+      "verify:gate",
+      "deliver:command",
+    ]);
+    expect(flat[3]).toMatchObject({
+      id: "sec-review-1",
+      label: "安全审查",
+      on_fail: "loop_back",
+      binding: { provider: "claude", model: "claude-opus-4-6", effort: "high" },
+    });
   });
 });

@@ -1,9 +1,10 @@
 import { z } from "zod";
-import { WORKFLOW_PRESETS } from "./constants.js";
+import { REASONING_EFFORTS, WORKFLOW_PRESETS } from "./constants.js";
 import {
   WORKFLOW_AGENT_ROLES,
   WORKFLOW_AGENT_STAGES,
   WORKFLOW_APPROVAL_ITEMS,
+  WORKFLOW_NODE_ON_FAIL_ACTIONS,
   validateWorkflowBlueprint,
 } from "./workflow-core.js";
 
@@ -17,14 +18,30 @@ export const WorkflowAgentRoleSchema = z.enum(WORKFLOW_AGENT_ROLES);
 
 export const WorkflowApprovalItemSchema = z.enum(WORKFLOW_APPROVAL_ITEMS);
 
+export const WorkflowNodeBindingSchema = z
+  .object({
+    provider: z.string().min(1),
+    model: z.string().min(1),
+    backend_id: z.string().min(1).optional(),
+    effort: z.enum(REASONING_EFFORTS).optional(),
+  })
+  .strict();
+
+export const WorkflowNodeOnFailSchema = z.enum(WORKFLOW_NODE_ON_FAIL_ACTIONS);
+
 export const WorkflowAgentNodeSchema = z.object({
   kind: z.literal("agent"),
+  id: z.string().trim().min(1).max(64).optional(),
+  label: z.string().trim().min(1).max(80).optional(),
   stage: WorkflowAgentStageSchema,
   role: WorkflowAgentRoleSchema,
   fresh_context: z.boolean(),
   mode: z.enum(["normal", "dry_run_only"]).optional(),
   roster_role: z.string().min(1).optional(),
   rationale: z.string().min(1).optional(),
+  binding: WorkflowNodeBindingSchema.optional(),
+  instructions: z.string().trim().min(1).max(4000).optional(),
+  on_fail: WorkflowNodeOnFailSchema.optional(),
 });
 
 export const WorkflowGateNodeSchema = z.object({
