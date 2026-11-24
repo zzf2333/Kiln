@@ -82,12 +82,16 @@ describe("Providers/Roster HTTP API, :4311 security isolation, SSE provider.stat
     // 1. Local GET /api/providers strips command/args/env secrets
     const provRes = await server.app.request(new Request("http://127.0.0.1/api/providers"));
     expect(provRes.status).toBe(200);
-    const provJson = (await provRes.json()) as { ok: boolean; providers: unknown[] };
+    const provJson = (await provRes.json()) as {
+      ok: boolean;
+      providers: Array<{ provider_id: string; status: string }>;
+    };
     expect(provJson.ok).toBe(true);
     expect(provJson.providers.length).toBeGreaterThanOrEqual(4);
     for (const item of provJson.providers) {
       ProviderRuntimeStatusSchema.parse(item);
     }
+    expect(provJson.providers.find((p) => p.provider_id === "paseo")?.status).toBe("unavailable");
     expect(JSON.stringify(provJson)).not.toContain("super-secret-env-key");
 
     // 2. Local GET /api/settings/providers and PUT /api/settings/roster (syncs roles.yaml)
@@ -194,11 +198,59 @@ describe("Providers/Roster HTTP API, :4311 security isolation, SSE provider.stat
         method: "POST",
         headers: { Cookie: cookie },
       }),
+      new Request("http://127.0.0.1/api/providers/detect", {
+        method: "POST",
+        headers: { Cookie: cookie },
+      }),
     ]) {
       const res = await server.remoteApp.request(req);
       expect(res.status).toBe(403);
       expect(((await res.json()) as { error: string }).error).toBe("local_only_endpoint");
     }
+
+    // 5. Local POST /api/providers/detect auto-enables available binaries and auto-disables missing ones
+    const detectCfg = ProvidersConfigSchema.parse({
+      schema_version: 1,
+      providers: cfg.providers.map((p) => {
+        if (p.id === "codex") {
+          return {
+            ...p,
+            enabled: false,
+            command: process.execPath,
+            args: ["-e", "console.log('9.9.9')"],
+          };
+        }
+        if (p.id === "gemini") {
+          return {
+            ...p,
+            enabled: true,
+            command: "/nonexistent/kiln-missing-gemini-cli-binary",
+          };
+        }
+        return p;
+      }),
+    });
+    server.store.writeConfig("providers", detectCfg);
+
+    const detectRes = await server.app.request(
+      new Request("http://127.0.0.1/api/providers/detect", { method: "POST" }),
+    );
+    expect(detectRes.status).toBe(200);
+    const detectJson = (await detectRes.json()) as {
+      ok: boolean;
+      data: { providers: Array<{ id: string; enabled: boolean }> };
+      providers: Array<{ provider_id: string; status: string }>;
+    };
+    expect(detectJson.ok).toBe(true);
+    expect(detectJson.data.providers.find((p) => p.id === "codex")?.enabled).toBe(true);
+    expect(detectJson.data.providers.find((p) => p.id === "gemini")?.enabled).toBe(false);
+    expect(detectJson.data.providers.find((p) => p.id === "paseo")?.enabled).toBe(false);
+    expect(detectJson.providers.find((p) => p.provider_id === "codex")?.status).toBe("ready");
+    expect(detectJson.providers.find((p) => p.provider_id === "gemini")?.status).toBe("unavailable");
+    expect(detectJson.providers.find((p) => p.provider_id === "paseo")?.status).toBe("unavailable");
+    const persisted = server.store.readEffectiveProvidersConfig();
+    expect(persisted.providers.find((p) => p.id === "codex")?.enabled).toBe(true);
+    expect(persisted.providers.find((p) => p.id === "gemini")?.enabled).toBe(false);
   });
 
   it("orchestrator records rate_limited -> provider.status SSE and detects read-only reviewer worktree mutation", async () => {

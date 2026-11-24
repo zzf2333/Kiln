@@ -28,6 +28,7 @@ export const RunTokenClaimsSchema = z.object({
   runId: z.string().min(1),
   role: RoleIdSchema,
   contractVersion: z.number().int().positive(),
+  sessionKey: z.string().min(1).optional(),
   iat: z.number().int().nonnegative(),
   exp: z.number().int().positive(),
 });

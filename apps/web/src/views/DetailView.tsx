@@ -100,6 +100,9 @@ export function DetailView() {
   const [showRawEvents, setShowRawEvents] = useState(false);
   const [deliverPrOpen, setDeliverPrOpen] = useState(false);
   const [briefModalOpen, setBriefModalOpen] = useState(false);
+  const [steerOpen, setSteerOpen] = useState(false);
+  const [steerText, setSteerText] = useState("");
+  const [steerSubmitting, setSteerSubmitting] = useState(false);
   const [lightboxAttachment, setLightboxAttachment] =
     useState<TaskAttachment | null>(null);
 
@@ -114,6 +117,9 @@ export function DetailView() {
     setShowRawEvents(false);
     setDeliverPrOpen(false);
     setBriefModalOpen(false);
+    setSteerOpen(false);
+    setSteerText("");
+    setSteerSubmitting(false);
     setLightboxAttachment(null);
   }, [taskId]);
 
@@ -587,6 +593,18 @@ export function DetailView() {
       }
       right={
         <>
+          {taskState.status === "running" ||
+          taskState.status === "queued" ||
+          taskState.status === "paused" ? (
+            <button
+              type="button"
+              className={`btn ${steerOpen ? "btn-light" : ""}`}
+              aria-expanded={steerOpen}
+              onClick={() => setSteerOpen((v) => !v)}
+            >
+              补充纠偏
+            </button>
+          ) : null}
           {taskState.status === "running" || taskState.status === "queued" ? (
             <button
               type="button"
@@ -759,6 +777,90 @@ export function DetailView() {
             ))}
           </div>
         </section>
+
+        {steerOpen || (detail.steers && detail.steers.length > 0) ? (
+          <section className="steer-panel" aria-label="运行中补充纠偏">
+            <div className="steer-head">
+              <b>运行中补充纠偏（不改动契约）</b>
+              {taskState.status === "running" ||
+              taskState.status === "queued" ||
+              taskState.status === "paused" ? (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => setSteerOpen((v) => !v)}
+                >
+                  {steerOpen ? "收起输入" : "追加提示"}
+                </button>
+              ) : null}
+            </div>
+            {steerOpen &&
+            (taskState.status === "running" ||
+              taskState.status === "queued" ||
+              taskState.status === "paused") ? (
+              <div className="steer-form">
+                <textarea
+                  className="steer-input"
+                  rows={2}
+                  aria-label="补充纠偏指令"
+                  placeholder="在不修改目标与 scope 的前提下补充执行提示（如：优先复用现有 helper）"
+                  value={steerText}
+                  disabled={steerSubmitting}
+                  onChange={(e) => setSteerText(e.target.value)}
+                />
+                <div className="steer-actions">
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-light"
+                    disabled={steerSubmitting || steerText.trim().length === 0}
+                    onClick={async () => {
+                      setSteerSubmitting(true);
+                      const ok = await store.steerTask(card.id, steerText, false);
+                      setSteerSubmitting(false);
+                      if (ok) {
+                        setSteerText("");
+                        setSteerOpen(false);
+                      }
+                    }}
+                  >
+                    下一棒生效
+                  </button>
+                  {taskState.status === "running" ? (
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      disabled={steerSubmitting || steerText.trim().length === 0}
+                      onClick={async () => {
+                        setSteerSubmitting(true);
+                        const ok = await store.steerTask(card.id, steerText, true);
+                        setSteerSubmitting(false);
+                        if (ok) {
+                          setSteerText("");
+                          setSteerOpen(false);
+                        }
+                      }}
+                    >
+                      中断当前棒并立即重跑
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+            {detail.steers && detail.steers.length > 0 ? (
+              <ul className="steer-list">
+                {detail.steers.map((s) => (
+                  <li key={s.id} className="steer-item">
+                    <span className="mono muted">{fmtTime(s.at)}</span>
+                    <span className="chip">
+                      {s.interrupt ? "中断重跑" : "下一棒生效"}
+                    </span>
+                    <span className="steer-msg">{s.message}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </section>
+        ) : null}
 
         <ol className="stations">
           {pipelineStages.map((st) => {

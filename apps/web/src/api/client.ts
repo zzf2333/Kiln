@@ -35,6 +35,7 @@ import type {
   PrDraftResponse,
   ProviderSettingsResponse,
   ProvidersStatusResponse,
+  ReconDraftResponse,
   RemoteAuthStatusResponse,
   RemoteConfig,
   RemoteDevicesResponse,
@@ -292,6 +293,31 @@ export async function resumeTask(taskId: string, stage?: StageId): Promise<void>
   await requestJson(`/api/tasks/${encodeURIComponent(taskId)}/resume`, {
     method: "POST",
     body: JSON.stringify(stage ? { stage } : {}),
+  });
+}
+
+export async function steerTask(
+  taskId: string,
+  payload: { message: string; interrupt?: boolean },
+): Promise<{
+  ok: true;
+  taskId: string;
+  interrupted: boolean;
+  steer: {
+    id: string;
+    at: string;
+    message: string;
+    interrupt: boolean;
+    contract_version: number;
+    stage?: StageId;
+  };
+}> {
+  return await requestJson(`/api/tasks/${encodeURIComponent(taskId)}/steer`, {
+    method: "POST",
+    body: JSON.stringify({
+      message: payload.message,
+      interrupt: Boolean(payload.interrupt),
+    }),
   });
 }
 
@@ -641,6 +667,19 @@ export async function sendIntakeChat(
   );
 }
 
+export async function reconDraft(
+  draftId: string,
+  hint?: string,
+): Promise<ReconDraftResponse> {
+  return await requestJson<ReconDraftResponse>(
+    `/api/drafts/${encodeURIComponent(draftId)}/recon`,
+    {
+      method: "POST",
+      body: JSON.stringify(hint && hint.trim() ? { hint: hint.trim() } : {}),
+    },
+  );
+}
+
 export async function fetchTaskChat(taskId: string): Promise<ChatMessage[] | null> {
   const url = `/api/tasks/${encodeURIComponent(taskId)}/chat`;
   const res = await apiFetch(url);
@@ -732,6 +771,21 @@ export async function fetchSpaceFiles(
 
 export async function fetchProviders(): Promise<ProvidersStatusResponse> {
   return await requestJson<ProvidersStatusResponse>("/api/providers");
+}
+
+export async function detectProviders(): Promise<{
+  ok: true;
+  data: ProviderSettingsResponse["data"];
+  providers: ProvidersStatusResponse["providers"];
+}> {
+  return await requestJson<{
+    ok: true;
+    data: ProviderSettingsResponse["data"];
+    providers: ProvidersStatusResponse["providers"];
+  }>("/api/providers/detect", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
 }
 
 export async function testProvider(providerId: string): Promise<TestProviderResponse> {

@@ -77,6 +77,7 @@ export const BASE_ACP_CAPABILITIES: BackendCapabilities = {
   contextWindowTelemetry: true,
   nativeQuotaWindow: false,
   readOnlySandbox: false,
+  warmSessionReuse: true,
 };
 
 export interface AcpBackendOptions {

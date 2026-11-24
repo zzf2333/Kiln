@@ -16,6 +16,11 @@ import { CodexAppServerBackend } from "./codex-app-server.js";
 import { PaseoBackend } from "./paseo/index.js";
 import { PiRpcBackend } from "./pi-rpc.js";
 import { ProviderHealthTracker } from "./provider-health.js";
+import {
+  buildAgentCliEnv,
+  probeCliBinary,
+  type ProbeCliBinaryOptions,
+} from "./stdio-rpc.js";
 import type {
   ApprovalHandler,
   BackendAgentDescriptor,
@@ -100,6 +105,73 @@ function stableProviderConfigKey(entry: ProviderEntry): string {
     quota: entry.quota ?? null,
     paseo_url: entry.paseo_url ?? null,
   });
+}
+
+export interface DetectProvidersOptions {
+  healthTracker?: ProviderHealthTracker;
+  probeFn?: (
+    command: string,
+    options?: ProbeCliBinaryOptions,
+  ) => ReturnType<typeof probeCliBinary>;
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Probes host availability for all configured non-Paseo providers and returns an updated
+ * `ProvidersConfig` with `enabled` synced to whether each CLI is installed on the host.
+ */
+export async function detectProvidersConfigOnHost(
+  config: ProvidersConfig,
+  options: DetectProvidersOptions = {},
+): Promise<ProvidersConfig> {
+  const probeFn = options.probeFn ?? probeCliBinary;
+  const tracker = options.healthTracker;
+  const nextProviders = await Promise.all(
+    config.providers.map(async (entry) => {
+      if (entry.adapter === "paseo") {
+        if (!entry.enabled) {
+          tracker?.setAvailability(entry.id, {
+            available: false,
+            detail: "Paseo 历史兼容桥接已关闭",
+          });
+        }
+        return {
+          ...entry,
+          args: [...entry.args],
+          env: { ...entry.env },
+          custom_models: [...entry.custom_models],
+        };
+      }
+
+      const cmd = entry.command?.trim() || entry.id;
+      const env = buildAgentCliEnv(entry.env, undefined, options.env);
+      const probed = await probeFn(cmd, { env });
+      if (probed.available) {
+        tracker?.setAvailability(entry.id, {
+          available: true,
+          version: probed.version,
+        });
+      } else {
+        tracker?.setAvailability(entry.id, {
+          available: false,
+          version: null,
+          detail: probed.detail ?? `Command "${cmd}" not found`,
+        });
+      }
+      return {
+        ...entry,
+        enabled: probed.available,
+        args: [...entry.args],
+        env: { ...entry.env },
+        custom_models: [...entry.custom_models],
+      };
+    }),
+  );
+
+  return {
+    schema_version: 1,
+    providers: nextProviders,
+  };
 }
 
 function createDefaultAdapter(

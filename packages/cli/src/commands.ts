@@ -43,6 +43,7 @@ import {
   computeUsageSnapshot,
   countRunningLeafTasks,
   deriveTaskStatus,
+  detectProvidersConfigOnHost,
   ensureDir,
   inspectGitSpacePath,
   isCompiledKilnBinary,
@@ -925,7 +926,14 @@ async function handleUp(
         const tempStore = new KilnStore({ kilnHome });
         let initialProviders;
         try {
+          const hasSavedProviders = fs.existsSync(tempStore.paths.configFile("providers"));
           initialProviders = tempStore.readEffectiveProvidersConfig();
+          if (!hasSavedProviders) {
+            initialProviders = await detectProvidersConfigOnHost(initialProviders, {
+              healthTracker: providerHealth,
+            });
+            tempStore.writeConfig("providers", initialProviders);
+          }
         } finally {
           tempStore.close();
         }

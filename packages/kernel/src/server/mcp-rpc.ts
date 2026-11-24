@@ -740,11 +740,39 @@ export class McpRpcServer {
     return card;
   }
 
+  private resolveEffectiveRunId(claims: RunTokenClaims): string {
+    if (!claims.sessionKey) {
+      return claims.runId;
+    }
+    const lease = this.store.getStageLease(claims.taskId);
+    if (!lease || lease.state !== "active" || lease.contract_version !== claims.contractVersion) {
+      return claims.runId;
+    }
+    try {
+      const leaseSession = JSON.parse(lease.session_ref) as { meta?: Record<string, unknown> } | null;
+      if (leaseSession?.meta?.kilnSessionKey !== claims.sessionKey) {
+        return claims.runId;
+      }
+    } catch {
+      return claims.runId;
+    }
+    const activeRun = findRunByRunId(this.store, claims.taskId, lease.run_id);
+    if (
+      !activeRun ||
+      activeRun.runMeta.role !== claims.role ||
+      activeRun.runMeta.contract_version !== claims.contractVersion
+    ) {
+      return claims.runId;
+    }
+    return lease.run_id;
+  }
+
   private handleGetContext(
     rawBody: unknown,
     claims: RunTokenClaims,
   ): Record<string, unknown> {
     WbGetContextInputSchema.parse(rawBody);
+    const effectiveRunId = this.resolveEffectiveRunId(claims);
     const card = this.requireCard(claims.taskId);
     const brief = readOptionalText(this.store.paths.briefMd(claims.taskId)) ?? "";
     const research = readOptionalText(this.store.paths.researchMd(claims.taskId)) ?? "";
@@ -753,14 +781,14 @@ export class McpRpcServer {
     const derived = deriveTaskStatus(card, stateEvents);
     const taskIndex = this.store.getTaskIndex(claims.taskId);
     const spaceConfig = this.store.readSpace(card.space);
-    const matchedRun = findRunByRunId(this.store, claims.taskId, claims.runId);
+    const matchedRun = findRunByRunId(this.store, claims.taskId, effectiveRunId);
     const activeLease = this.store.getStageLease(claims.taskId);
     const pendingDecision = this.pendingDecisions.get(claims.taskId);
 
     return {
       ok: true,
       taskId: claims.taskId,
-      runId: claims.runId,
+      runId: effectiveRunId,
       role: claims.role,
       tokenContractVersion: claims.contractVersion,
       contract_version: card.contract_version,
@@ -954,7 +982,12 @@ export class McpRpcServer {
           });
           validateCommitContract(this.store, card.contract);
 
+          const draftResearch =
+            input.draft_id !== undefined ? this.store.readDraftResearch(input.draft_id) : null;
           created = this.stateMachine.createTask(card, input.brief_markdown);
+          if (draftResearch && draftResearch.trim().length > 0) {
+            this.store.writeTaskResearch(created.card.id, draftResearch);
+          }
         } catch (err) {
           this.store.deleteTaskOnRollback(taskId);
           throw err;
@@ -1107,6 +1140,7 @@ export class McpRpcServer {
           'Agent roles cannot propose "return_external" options; use "resume", "finish", or "cancel"',
       });
     }
+    const effectiveRunId = this.resolveEffectiveRunId(claims);
     const card = this.requireCard(claims.taskId);
 
     if (card.contract_version !== claims.contractVersion) {
@@ -1118,13 +1152,13 @@ export class McpRpcServer {
       });
     }
 
-    const matchedRun = findRunByRunId(this.store, claims.taskId, claims.runId);
+    const matchedRun = findRunByRunId(this.store, claims.taskId, effectiveRunId);
     if (!matchedRun) {
       throw new ServerHttpError(409, {
         error: "run_not_dispatched",
         taskId: claims.taskId,
-        runId: claims.runId,
-        message: `Run "${claims.runId}" has not been dispatched for task "${claims.taskId}"`,
+        runId: effectiveRunId,
+        message: `Run "${effectiveRunId}" has not been dispatched for task "${claims.taskId}"`,
       });
     }
     if (matchedRun.runMeta.contract_version !== claims.contractVersion) {
@@ -1132,7 +1166,7 @@ export class McpRpcServer {
         error: "contract_version_mismatch",
         expectedContractVersion: matchedRun.runMeta.contract_version,
         tokenContractVersion: claims.contractVersion,
-        message: `Run "${claims.runId}" contract_version (${matchedRun.runMeta.contract_version}) does not match token (${claims.contractVersion})`,
+        message: `Run "${effectiveRunId}" contract_version (${matchedRun.runMeta.contract_version}) does not match token (${claims.contractVersion})`,
       });
     }
     if (matchedRun.runMeta.role !== claims.role) {
@@ -1140,7 +1174,7 @@ export class McpRpcServer {
         error: "role_mismatch",
         expectedRole: matchedRun.runMeta.role,
         tokenRole: claims.role,
-        message: `Run "${claims.runId}" belongs to role "${matchedRun.runMeta.role}", not "${claims.role}"`,
+        message: `Run "${effectiveRunId}" belongs to role "${matchedRun.runMeta.role}", not "${claims.role}"`,
       });
     }
 
@@ -1149,8 +1183,8 @@ export class McpRpcServer {
       throw new ServerHttpError(409, {
         error: "no_active_lease",
         taskId: claims.taskId,
-        runId: claims.runId,
-        message: `Task "${claims.taskId}" has no active stage lease for run "${claims.runId}"`,
+        runId: effectiveRunId,
+        message: `Task "${claims.taskId}" has no active stage lease for run "${effectiveRunId}"`,
       });
     }
     if (lease.state !== "active") {
@@ -1161,11 +1195,11 @@ export class McpRpcServer {
         message: `Stage lease for task "${claims.taskId}" (run "${lease.run_id}") is in state "${lease.state}", not "active"`,
       });
     }
-    if (lease.run_id !== claims.runId) {
+    if (lease.run_id !== effectiveRunId) {
       throw new ServerHttpError(409, {
         error: "lease_mismatch",
         activeRunId: lease.run_id,
-        message: `Active stage lease belongs to run "${lease.run_id}", not "${claims.runId}"`,
+        message: `Active stage lease belongs to run "${lease.run_id}", not "${effectiveRunId}"`,
       });
     }
     if (lease.contract_version !== claims.contractVersion) {
@@ -1178,12 +1212,12 @@ export class McpRpcServer {
     }
 
     const derived = deriveTaskStatus(card, this.store.readStateEvents(claims.taskId));
-    if (derived.status !== "running" || derived.activeRunId !== claims.runId) {
+    if (derived.status !== "running" || derived.activeRunId !== effectiveRunId) {
       throw new ServerHttpError(409, {
         error: "task_not_running_for_run",
         status: derived.status,
         activeRunId: derived.activeRunId,
-        message: `Task "${claims.taskId}" is in status "${derived.status}" (active run "${derived.activeRunId ?? "none"}"), not running under "${claims.runId}"`,
+        message: `Task "${claims.taskId}" is in status "${derived.status}" (active run "${derived.activeRunId ?? "none"}"), not running under "${effectiveRunId}"`,
       });
     }
 
@@ -1198,7 +1232,7 @@ export class McpRpcServer {
     ) {
       const advisorRoute = this.onTechnicalDecisionForAdvisor({
         taskId: claims.taskId,
-        runId: claims.runId,
+        runId: effectiveRunId,
         role: claims.role,
         stage: matchedRun.runMeta.stage,
         contractVersion: claims.contractVersion,
@@ -1221,7 +1255,7 @@ export class McpRpcServer {
     const decision = PendingDecisionSchema.parse({
       id: `dec-${randomUUID().slice(0, 8)}`,
       task_id: claims.taskId,
-      run_id: claims.runId,
+      run_id: effectiveRunId,
       contract_version: claims.contractVersion,
       reason: input.reason,
       category: input.category,
@@ -1269,15 +1303,16 @@ export class McpRpcServer {
     claims: RunTokenClaims,
   ): Record<string, unknown> {
     const input = WbSubmitReceiptInputSchema.parse(rawBody);
+    const effectiveRunId = this.resolveEffectiveRunId(claims);
     this.requireCard(claims.taskId);
 
-    const matchedRun = findRunByRunId(this.store, claims.taskId, claims.runId);
+    const matchedRun = findRunByRunId(this.store, claims.taskId, effectiveRunId);
     if (!matchedRun) {
       throw new ServerHttpError(404, {
         error: "run_not_found",
         taskId: claims.taskId,
-        runId: claims.runId,
-        message: `No RUN.yaml found for task "${claims.taskId}" and run "${claims.runId}"`,
+        runId: effectiveRunId,
+        message: `No RUN.yaml found for task "${claims.taskId}" and run "${effectiveRunId}"`,
       });
     }
 
@@ -1295,9 +1330,9 @@ export class McpRpcServer {
     const validation = parseAndValidateReceipt(claims.role, input.markdown);
     const errors: string[] = validation.ok ? [] : [...validation.errors];
     if (validation.ok) {
-      if (validation.frontmatter.run_id !== claims.runId) {
+      if (validation.frontmatter.run_id !== effectiveRunId) {
         errors.push(
-          `frontmatter.run_id "${validation.frontmatter.run_id}" does not match run token runId "${claims.runId}"`,
+          `frontmatter.run_id "${validation.frontmatter.run_id}" does not match run token runId "${effectiveRunId}"`,
         );
       }
       if (validation.frontmatter.contract_version !== claims.contractVersion) {
@@ -1318,7 +1353,7 @@ export class McpRpcServer {
 
     const submitResult = this.store.submitReceipt({
       taskId: claims.taskId,
-      runId: claims.runId,
+      runId: effectiveRunId,
       contractVersion: claims.contractVersion,
       runDirName: matchedRun.runDirName,
       markdown: input.markdown,
@@ -1349,12 +1384,13 @@ export class McpRpcServer {
     const input = WbProposeLedgerInputSchema.parse(rawBody);
     assertSafeSegment(input.space, "space");
     this.requireCard(claims.taskId);
+    const effectiveRunId = this.resolveEffectiveRunId(claims);
 
     const proposal = appendLedgerProposal(this.store, {
       schema_version: 1,
       id: `lprop-${randomUUID().slice(0, 8)}`,
       task_id: claims.taskId,
-      run_id: claims.runId,
+      run_id: effectiveRunId,
       role: claims.role,
       space: input.space,
       rule: input.rule,

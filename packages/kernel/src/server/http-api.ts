@@ -30,6 +30,7 @@ import {
   SpaceConfigSchema,
   SplitCardPlanItemSchema,
   StageIdSchema,
+  SteerTaskRequestSchema,
   SyncPricingRequestSchema,
   TaskCardSchema,
   TrackSchema,
@@ -43,17 +44,21 @@ import {
   type PendingDecision,
   type PickDirectoryResponse,
   type ProviderRuntimeStatus,
+  type ProvidersConfig,
   type PublicPairedDevice,
   type RemoteConfig,
   type RunMeta,
   type SpaceConfig,
   type StageId,
+  type SteerNote,
+  type SteerTaskRequest,
   type SyncPricingRequest,
   type SyncPricingResponse,
   type TailscaleStatusResponse,
 } from "@kiln/protocol";
 import {
   ProviderHealthTracker,
+  detectProvidersConfigOnHost,
   probeCliBinary,
   type BackendRegistry,
   type TestProviderResult,
@@ -148,6 +153,7 @@ import {
   launchNativeAgentTui,
   resolveNativeTuiCommand,
 } from "./tui-launcher.js";
+import { extractActiveSteerNotes } from "./orchestrator-handoff.js";
 
 export type HttpApiListenerMode = "local" | "remote";
 
@@ -167,6 +173,7 @@ function isLocalOnlyRemoteAdminPath(rawPath: string): boolean {
     lower.startsWith("/api/settings/remote/") ||
     lower === "/api/settings/providers" ||
     lower.startsWith("/api/settings/providers/") ||
+    lower === "/api/providers/detect" ||
     /^\/api\/providers\/[^/]+\/test$/.test(lower) ||
     lower === "/api/remote" ||
     lower.startsWith("/api/remote/") ||
@@ -185,6 +192,10 @@ export interface HttpApiDependencies {
   backendRegistry?: BackendRegistry;
   providerHealth?: ProviderHealthTracker;
   testProvider?: (providerId: string) => Promise<TestProviderResult>;
+  detectProviders?: () => Promise<{
+    data: ProvidersConfig;
+    providers: ProviderRuntimeStatus[];
+  }>;
   rateTracker?: LiveRateTracker;
   chatEngine?: KilnChatEngine;
   scriptRunner?: KilnScriptRunner;
@@ -207,6 +218,14 @@ export interface HttpApiDependencies {
   extensionsHomeDir?: string;
   onTaskQueued?: (taskId: string) => void;
   onTaskPaused?: (taskId: string) => Promise<void> | void;
+  onTaskSteered?: (
+    taskId: string,
+    input: SteerTaskRequest,
+  ) => Promise<{
+    steer: SteerNote;
+    state: ReturnType<typeof deriveTaskStatus>;
+    interrupted: boolean;
+  }>;
   onTaskCancelled?: (taskId: string) => Promise<void> | void;
   onBeforeDecisionApply?: (taskId: string) => Promise<void> | void;
   onSettingsUpdated?: (
@@ -536,6 +555,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     inspectTailscale,
     onTaskQueued,
     onTaskPaused,
+    onTaskSteered,
     onTaskCancelled,
     onBeforeDecisionApply,
     onSettingsUpdated,
@@ -600,10 +620,14 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     draft: NonNullable<ReturnType<KilnStore["readDraft"]>>,
   ) => {
     const brief = store.readDraftBrief(draft.id);
-    if (brief !== null && brief.trim().length > 0) {
-      return { ...draft, brief_markdown: brief };
-    }
-    return draft;
+    const research = store.readDraftResearch(draft.id);
+    return {
+      ...draft,
+      ...(brief !== null && brief.trim().length > 0 ? { brief_markdown: brief } : {}),
+      ...(research !== null && research.trim().length > 0
+        ? { research_markdown: research }
+        : {}),
+    };
   };
 
   app.onError((err, c) => {
@@ -1070,6 +1094,45 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       ok: true,
       status,
       modelsCount: 0,
+    });
+  });
+
+  app.post("/api/providers/detect", async (c) => {
+    if (listenerMode !== "local") {
+      throw new ServerHttpError(403, {
+        error: "local_only_endpoint",
+        path: c.req.path,
+        message: "Detecting host providers is restricted to the local Kiln port",
+      });
+    }
+    if (deps.detectProviders) {
+      const detected = await deps.detectProviders();
+      return c.json({
+        ok: true,
+        ...detected,
+      });
+    }
+    const current = store.readEffectiveProvidersConfig();
+    const nextConfig = await detectProvidersConfigOnHost(current, {
+      healthTracker: providerHealth,
+    });
+    store.writeConfig("providers", nextConfig);
+    const providers = buildSanitizedProviderStatuses();
+    const nowIso = new Date().toISOString();
+    for (const st of providers) {
+      sseHub.publish({
+        type: "provider.status",
+        providerId: st.provider_id,
+        status: st.status,
+        ...(st.cooldown_until ? { cooldownUntil: st.cooldown_until } : {}),
+        ...(st.detail ? { detail: st.detail } : {}),
+        at: nowIso,
+      });
+    }
+    return c.json({
+      ok: true,
+      data: nextConfig,
+      providers,
     });
   });
 
@@ -1550,6 +1613,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       hostBackup,
       hostStagedDiffs,
       stateEvents,
+      steers: extractActiveSteerNotes(stateEvents),
       chatMessages,
     });
   });
@@ -1557,10 +1621,14 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
   app.get("/api/drafts/:id", (c) => {
     const { draftId, draft } = requireExistingDraft(c.req.param("id"));
     const brief = store.readDraftBrief(draftId);
+    const research = store.readDraftResearch(draftId);
     return c.json({
       ok: true,
       draft: serializeDraftWithBrief(draft),
       ...(brief !== null && brief.trim().length > 0 ? { brief_markdown: brief } : {}),
+      ...(research !== null && research.trim().length > 0
+        ? { research_markdown: research }
+        : {}),
       messages: readDraftChatFallback(draftId),
     });
   });
@@ -1596,6 +1664,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     }
     const res = await chatEngine.sendDraftChat(draftId, body.message);
     const brief = store.readDraftBrief(draftId);
+    const research = store.readDraftResearch(draftId);
     return c.json({
       ok: true,
       draftId,
@@ -1603,6 +1672,35 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       reply: res.reply,
       draft: serializeDraftWithBrief(res.draft),
       ...(brief !== null && brief.trim().length > 0 ? { brief_markdown: brief } : {}),
+      ...(research !== null && research.trim().length > 0
+        ? { research_markdown: research }
+        : {}),
+    });
+  });
+
+  app.post("/api/drafts/:id/recon", async (c) => {
+    const { draftId } = requireExistingDraft(c.req.param("id"));
+    const rawText = await c.req.text();
+    let hint = "";
+    if (rawText.trim().length > 0) {
+      const parsedBody = JSON.parse(rawText) as { hint?: unknown };
+      if (typeof parsedBody?.hint === "string") {
+        hint = parsedBody.hint;
+      }
+    }
+    if (!chatEngine) {
+      throw new ServerHttpError(409, {
+        error: "chat_engine_unavailable",
+        message: "Interactive chat engine is not configured on this server",
+      });
+    }
+    const res = await chatEngine.runDraftRecon(draftId, hint, { force: true });
+    return c.json({
+      ok: true,
+      draftId,
+      ran: res.ran,
+      ...(res.researchMarkdown !== null ? { research_markdown: res.researchMarkdown } : {}),
+      ...(res.skippedReason !== undefined ? { skipped_reason: res.skippedReason } : {}),
     });
   });
 
@@ -1734,7 +1832,11 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         updated_at: now,
       });
       validateCommitContract(store, card.contract);
+      const draftResearch = store.readDraftResearch(draftId);
       created = stateMachine.createTask(card, effectiveBrief);
+      if (draftResearch && draftResearch.trim().length > 0) {
+        store.writeTaskResearch(created.card.id, draftResearch);
+      }
     } catch (err) {
       store.deleteTaskOnRollback(taskId);
       throw err;
@@ -1910,6 +2012,73 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       },
     });
     return c.json({ ok: true, taskId, state: nextState });
+  });
+
+  app.post("/api/tasks/:id/steer", async (c) => {
+    const taskId = requireExistingTask(c.req.param("id"));
+    const rawBody = await readJsonBodyStrict(c);
+    const body = SteerTaskRequestSchema.parse(rawBody);
+
+    if (onTaskSteered) {
+      const res = await onTaskSteered(taskId, body);
+      return c.json({
+        ok: true,
+        taskId,
+        interrupted: res.interrupted,
+        steer: res.steer,
+        state: res.state,
+      });
+    }
+
+    const card = store.readTaskCard(taskId);
+    const derived = deriveTaskStatus(card, store.readStateEvents(taskId));
+    if (
+      derived.status !== "queued" &&
+      derived.status !== "running" &&
+      derived.status !== "paused"
+    ) {
+      throw new ServerHttpError(409, {
+        error: "invalid_task_state",
+        taskId,
+        status: derived.status,
+        message: `Cannot steer task "${taskId}" in status "${derived.status}"`,
+      });
+    }
+
+    const at = new Date().toISOString();
+    const steerId = `steer-${randomUUID().slice(0, 8)}`;
+    const nextState = store.appendStateEvent(taskId, {
+      type: "steered",
+      at,
+      steer_id: steerId,
+      message: body.message,
+      interrupt: false,
+      contract_version: derived.contractVersion,
+      ...(derived.stage !== null ? { stage: derived.stage } : {}),
+    });
+    sseHub.publish({
+      type: "task.updated",
+      taskId,
+      patch: {
+        status: nextState.status,
+        ...(nextState.stage !== null ? { stage: nextState.stage } : {}),
+        contractVersion: nextState.contractVersion,
+      },
+    });
+    return c.json({
+      ok: true,
+      taskId,
+      interrupted: false,
+      steer: {
+        id: steerId,
+        at,
+        message: body.message,
+        interrupt: false,
+        contract_version: derived.contractVersion,
+        ...(derived.stage !== null ? { stage: derived.stage } : {}),
+      },
+      state: nextState,
+    });
   });
 
   app.post("/api/tasks/:id/resume", async (c) => {

@@ -46,6 +46,7 @@ import type {
   RosterGroup,
   RosterModelBinding,
   RosterPermission,
+  RosterTierHint,
   RunAntiDriftSummary,
   RunEvent,
   RunMeta,
@@ -59,6 +60,8 @@ import type {
   SplitCardPlanItem,
   StageId,
   StateEvent,
+  SteerNote,
+  SteerTaskRequest,
   SyncPricingRequest,
   SyncPricingResponse,
   TailscaleStatusResponse,
@@ -124,6 +127,18 @@ export interface UsageBucketSummary {
   cacheNetSavedUsd?: number;
 }
 
+export interface StageUsageBucketSummary extends UsageBucketSummary {
+  runCount: number;
+  reusedRunCount: number;
+}
+
+export interface WarmSessionStats {
+  totalImplementRuns: number;
+  reusedImplementRuns: number;
+  warmCacheHitRate: number;
+  coldCacheHitRate: number;
+}
+
 export interface UsageSnapshot {
   inputTokens: number;
   cachedInputTokens: number;
@@ -137,6 +152,9 @@ export interface UsageSnapshot {
   byAgent: Record<string, UsageBucketSummary>;
   byModel: Record<string, UsageBucketSummary>;
   byAgentModel?: Record<string, Record<string, UsageBucketSummary>>;
+  byStage?: Record<string, StageUsageBucketSummary>;
+  byRosterRole?: Record<string, StageUsageBucketSummary>;
+  warmSessionStats?: WarmSessionStats;
 }
 
 export interface ProviderQuotaWindow {
@@ -202,6 +220,7 @@ export interface BackendConnectionInfo {
 
 export type DraftCardWithBrief = DraftCard & {
   brief_markdown?: string;
+  research_markdown?: string;
 };
 
 export interface BootstrapResponse {
@@ -377,6 +396,7 @@ export interface TaskDetailResponse {
   hostBackup?: HostBackupManifestInfo | null;
   hostStagedDiffs?: HostStagedDiffEntry[];
   stateEvents?: StateEvent[];
+  steers?: SteerNote[];
   chatMessages?: ChatMessage[];
 }
 
@@ -449,9 +469,18 @@ export interface ChatResponsePayload {
   reply?: ChatMessage | string;
   draft?: DraftCardWithBrief;
   brief_markdown?: string;
+  research_markdown?: string;
   pendingDecision?: PendingDecision | null;
   contractPatch?: Partial<CardContract>;
   card?: TaskCard;
+}
+
+export interface ReconDraftResponse {
+  ok: true;
+  draftId: string;
+  ran: boolean;
+  research_markdown?: string;
+  skipped_reason?: string;
 }
 
 export type SettingsSectionMap = {
@@ -666,6 +695,7 @@ export type {
   RosterGroup,
   RosterModelBinding,
   RosterPermission,
+  RosterTierHint,
   RunAntiDriftSummary,
   RunSpaceScriptRequest,
   RunSpaceScriptResponse,

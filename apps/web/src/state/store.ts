@@ -39,6 +39,7 @@ import {
   deleteDraft as apiDeleteDraft,
   deleteDraftAttachment as apiDeleteDraftAttachment,
   deleteSpace as apiDeleteSpace,
+  detectProviders as apiDetectProviders,
   discoverSpaces as apiDiscoverSpaces,
   executeGitDeliver as apiExecuteGitDeliver,
   fetchAgents as apiFetchAgents,
@@ -60,6 +61,7 @@ import {
   pairRemoteDevice as apiPairRemoteDevice,
   pauseTask as apiPauseTask,
   pickSpaceDirectory as apiPickSpaceDirectory,
+  reconDraft as apiReconDraft,
   restoreHostBackup as apiRestoreHostBackup,
   resumeTask as apiResumeTask,
   revealLocalPath as apiRevealLocalPath,
@@ -68,6 +70,7 @@ import {
   sendIntakeChat as apiSendIntakeChat,
   sendResolveChat as apiSendResolveChat,
   setUnauthorizedHandler,
+  steerTask as apiSteerTask,
   stopScriptRun as apiStopScriptRun,
   submitDecision as apiSubmitDecision,
   subscribeSseEvents,
@@ -176,6 +179,7 @@ export interface IntakeFormState {
   depends_on: string;
   open_questions: string[];
   brief_markdown: string;
+  research_markdown: string;
 }
 
 function collectAgentAssignmentsByStage(
@@ -386,6 +390,7 @@ export interface KilnStoreState {
   intakeProgressLogs: IntakeProgressItem[];
   intakeMessages: ChatMessage[];
   intakeBusy: boolean;
+  reconBusy: boolean;
   attachmentUploadBusy: boolean;
   intakeActiveOpen: boolean;
   intakeHasUnreadReply: boolean;
@@ -509,6 +514,7 @@ export function createDefaultIntakeForm(
       depends_on: "",
       open_questions: [],
       brief_markdown: "",
+      research_markdown: "",
     };
   }
   const projects = getProjectSpaces(spaces);
@@ -535,6 +541,7 @@ export function createDefaultIntakeForm(
     depends_on: "",
     open_questions: [],
     brief_markdown: "",
+    research_markdown: "",
   };
 }
 
@@ -597,6 +604,8 @@ function normalizeIntakeForm(form: IntakeFormState): IntakeFormState {
     split_cards: Array.isArray(form.split_cards) ? form.split_cards : [],
     open_questions: Array.isArray(form.open_questions) ? form.open_questions : [],
     brief_markdown: typeof form.brief_markdown === "string" ? form.brief_markdown : "",
+    research_markdown:
+      typeof form.research_markdown === "string" ? form.research_markdown : "",
   };
 }
 
@@ -659,6 +668,8 @@ function draftToIntakeForm(draft: DraftCardWithBrief): IntakeFormState {
     depends_on: draft.depends_on.join(", "),
     open_questions: Array.isArray(draft.open_questions) ? draft.open_questions : [],
     brief_markdown: typeof draft.brief_markdown === "string" ? draft.brief_markdown : "",
+    research_markdown:
+      typeof draft.research_markdown === "string" ? draft.research_markdown : "",
   };
 }
 
@@ -980,6 +991,7 @@ export class KilnWebStore {
       intakeProgressLogs: [],
       intakeMessages: defaultWelcomeIntakeMessages(),
       intakeBusy: false,
+      reconBusy: false,
       attachmentUploadBusy: false,
       intakeActiveOpen: false,
       intakeHasUnreadReply: false,
@@ -2189,6 +2201,33 @@ export class KilnWebStore {
       }
     } catch (err) {
       this.showToast(err instanceof Error ? err.message : "恢复失败");
+    }
+  }
+
+  async steerTask(
+    taskId: string,
+    message: string,
+    interrupt = false,
+  ): Promise<boolean> {
+    const trimmed = message.trim();
+    if (!trimmed) {
+      return false;
+    }
+    try {
+      const res = await apiSteerTask(taskId, { message: trimmed, interrupt });
+      this.showToast(
+        res.interrupted
+          ? "已中断当前棒并携新指令重跑"
+          : "已记录补充纠偏指令，下一棒生效",
+      );
+      await this.bootstrap();
+      if (this.state.taskId === taskId) {
+        await this.loadTaskDetail(taskId);
+      }
+      return true;
+    } catch (err) {
+      this.showToast(err instanceof Error ? err.message : "提交纠偏指令失败");
+      return false;
     }
   }
 
@@ -3424,6 +3463,45 @@ export class KilnWebStore {
     );
   }
 
+  async refreshIntakeRecon(hint?: string): Promise<void> {
+    if (this.state.reconBusy || this.state.intakeBusy || this.guardAttachmentUploadBusy()) {
+      return;
+    }
+    const f = this.state.intakeForm;
+    if (f.mode !== "project" || !isProjectSpace(this.state.spaces[f.space])) {
+      this.showToast("前置侦察仅适用于已绑定仓库的项目空间");
+      return;
+    }
+    this.setState({ reconBusy: true });
+    try {
+      const draftId = await this.ensureDraftForIntakeAction();
+      if (!draftId) {
+        this.setState({ reconBusy: false });
+        return;
+      }
+      const res = await apiReconDraft(draftId, hint);
+      if (typeof res.research_markdown === "string" && res.research_markdown.trim()) {
+        const nextForm = {
+          ...this.state.intakeForm,
+          research_markdown: res.research_markdown,
+        };
+        this.setState({ intakeForm: nextForm, reconBusy: false });
+        writeLocalIntakeSnapshot(nextForm, this.state.intakeMessages);
+        this.showToast("已完成项目前置侦察，简报已注入 PM 上下文");
+      } else {
+        this.setState({ reconBusy: false });
+        this.showToast(
+          res.skipped_reason === "researcher_not_enabled"
+            ? "未启用 researcher 槽位，请先在阵容页绑定侦察模型"
+            : `未能生成侦察简报（${res.skipped_reason ?? "empty"}）`,
+        );
+      }
+    } catch (err) {
+      this.setState({ reconBusy: false });
+      this.showToast(err instanceof Error ? err.message : "刷新项目侦察失败");
+    }
+  }
+
   async sendIntakeChat(text: string): Promise<void> {
     const trimmed = text.trim();
     if (!trimmed || this.state.intakeBusy || this.guardAttachmentUploadBusy()) {
@@ -3555,6 +3633,10 @@ export class KilnWebStore {
       const nextBrief = res.brief_markdown ?? res.draft?.brief_markdown;
       if (typeof nextBrief === "string") {
         nextForm.brief_markdown = nextBrief;
+      }
+      const nextResearch = res.research_markdown ?? res.draft?.research_markdown;
+      if (typeof nextResearch === "string") {
+        nextForm.research_markdown = nextResearch;
       }
       const unread = this.state.view !== "intake";
       this.setState({
@@ -3781,6 +3863,26 @@ export class KilnWebStore {
       this.setState({ providerStatuses: res.providers });
     } catch {
       // Best-effort refresh; keep current snapshot on transient error
+    }
+  }
+
+  async detectProviders(): Promise<ProvidersConfig | null> {
+    if (this.state.authMode !== "local") return null;
+    try {
+      const res = await apiDetectProviders();
+      this.setState({
+        providersConfig: res.data,
+        providersConfigLoaded: true,
+        providerStatuses: res.providers,
+      });
+      void this.refreshAgents(true);
+      const enabledCount = res.data.providers.filter((p) => p.enabled).length;
+      const disabledCount = res.data.providers.length - enabledCount;
+      this.showToast(`已按本机探测同步：启用 ${enabledCount} 项，关闭 ${disabledCount} 项`);
+      return res.data;
+    } catch (err) {
+      this.showToast(err instanceof Error ? err.message : "重新探测 Providers 失败");
+      return null;
     }
   }
 

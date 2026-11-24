@@ -109,6 +109,8 @@ export function commitSplitCards(
     tempIdToTaskId.set(tempId, candidate);
   }
 
+  const draftResearch =
+    input.draft_id !== undefined ? store.readDraftResearch(input.draft_id) : null;
   const now = new Date().toISOString();
   const createdTaskIds: string[] = [];
   const createdCards: TaskCard[] = [];
@@ -173,6 +175,9 @@ export function commitSplitCards(
       });
 
       const created = stateMachine.createTask(card, item.brief_markdown);
+      if (draftResearch && draftResearch.trim().length > 0) {
+        store.writeTaskResearch(created.card.id, draftResearch);
+      }
       createdCards.push(created.card);
       createdStates.push({
         ...created.state,

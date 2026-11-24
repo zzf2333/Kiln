@@ -62,6 +62,9 @@ CREATE TABLE IF NOT EXISTS usage_turns (
   reasoning_tokens INTEGER NOT NULL DEFAULT 0,
   provider_cost_usd REAL,
   cost_source TEXT,
+  stage TEXT,
+  roster_role TEXT,
+  session_reused INTEGER NOT NULL DEFAULT 0,
   recorded_at TEXT NOT NULL,
   PRIMARY KEY (run_id, turn_id)
 );
@@ -148,6 +151,9 @@ export interface UsageTurnRow {
   reasoning_tokens?: number;
   provider_cost_usd?: number | null;
   cost_source?: CostSource | null;
+  stage?: StageId | null;
+  roster_role?: string | null;
+  session_reused?: number | null;
   recorded_at: string;
 }
 
@@ -297,11 +303,13 @@ export class KilnSqliteIndex {
         run_id, turn_id, task_id, agent, model,
         input_tokens, cached_input_tokens, output_tokens,
         cache_write_tokens, reasoning_tokens, provider_cost_usd, cost_source,
+        stage, roster_role, session_reused,
         recorded_at
       ) VALUES (
         @run_id, @turn_id, @task_id, @agent, @model,
         @input_tokens, @cached_input_tokens, @output_tokens,
         @cache_write_tokens, @reasoning_tokens, @provider_cost_usd, @cost_source,
+        @stage, @roster_role, @session_reused,
         @recorded_at
       )
       ON CONFLICT(run_id, turn_id) DO UPDATE SET
@@ -315,6 +323,9 @@ export class KilnSqliteIndex {
         reasoning_tokens = excluded.reasoning_tokens,
         provider_cost_usd = excluded.provider_cost_usd,
         cost_source = excluded.cost_source,
+        stage = excluded.stage,
+        roster_role = excluded.roster_role,
+        session_reused = excluded.session_reused,
         recorded_at = excluded.recorded_at
     `);
 
@@ -629,6 +640,9 @@ export class KilnSqliteIndex {
       ["reasoning_tokens", "INTEGER NOT NULL DEFAULT 0"],
       ["provider_cost_usd", "REAL"],
       ["cost_source", "TEXT"],
+      ["stage", "TEXT"],
+      ["roster_role", "TEXT"],
+      ["session_reused", "INTEGER NOT NULL DEFAULT 0"],
     ];
     for (const [colName, colDef] of migrations) {
       if (!existingCols.has(colName)) {
@@ -680,6 +694,9 @@ export class KilnSqliteIndex {
       reasoning_tokens: reasoningTokens,
       provider_cost_usd: providerCostUsd,
       cost_source: costSource,
+      stage: row.stage ?? null,
+      roster_role: row.roster_role ?? null,
+      session_reused: row.session_reused ? 1 : 0,
       recorded_at: row.recorded_at,
     });
   }

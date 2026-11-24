@@ -53,6 +53,7 @@ export const PI_RPC_CAPABILITIES: BackendCapabilities = {
   contextWindowTelemetry: true,
   nativeQuotaWindow: false,
   readOnlySandbox: true,
+  warmSessionReuse: true,
 };
 
 export interface PiRpcBackendOptions {

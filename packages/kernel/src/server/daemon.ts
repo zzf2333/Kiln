@@ -8,6 +8,8 @@ import type {
   DiscoverSpacesResponse,
   OpenRunTuiResponse,
   PickDirectoryResponse,
+  ProviderRuntimeStatus,
+  ProvidersConfig,
   RemoteConfig,
   RoleId,
   RunMeta,
@@ -20,6 +22,7 @@ import {
   BackendRegistry,
   CompositeBackend,
   ProviderHealthTracker,
+  detectProvidersConfigOnHost,
   probeCliBinary,
   type TestProviderResult,
 } from "../backend/index.js";
@@ -139,6 +142,7 @@ export interface IssueRunTokenInput {
   runId: string;
   role: RoleId;
   contractVersion: number;
+  sessionKey?: string;
   iat?: number;
   exp?: number;
   ttlSeconds?: number;
@@ -351,6 +355,7 @@ export class KilndServer {
       backendRegistry: this.backendRegistry,
       providerHealth: this.providerHealth,
       testProvider: (providerId) => this.testProvider(providerId),
+      detectProviders: () => this.detectProviders(),
       rateTracker: this.rateTracker,
       chatEngine: this.chatEngine,
       scriptRunner: this.scriptRunner,
@@ -393,6 +398,7 @@ export class KilndServer {
         await this.orchestrator.abortActiveRun(taskId);
         void this.orchestrator.wake();
       },
+      onTaskSteered: (taskId, input) => this.orchestrator.steerTask(taskId, input),
       onTaskCancelled: async (taskId) => {
         await this.orchestrator.abortActiveRun(taskId);
         void this.orchestrator.wake();
@@ -879,6 +885,7 @@ export class KilndServer {
         runId: input.runId,
         role: input.role,
         contractVersion: input.contractVersion,
+        ...(input.sessionKey !== undefined ? { sessionKey: input.sessionKey } : {}),
         iat,
         exp,
       },
@@ -975,6 +982,46 @@ export class KilndServer {
     });
 
     return result;
+  }
+
+  /**
+   * Probes all configured non-Paseo CLIs on the host (`POST /api/providers/detect`),
+   * automatically sets `enabled` to match host availability, persists `config/providers.yaml`,
+   * syncs `CompositeBackend`, and emits `provider.status` SSE updates.
+   */
+  async detectProviders(): Promise<{
+    data: ProvidersConfig;
+    providers: ProviderRuntimeStatus[];
+  }> {
+    const current = this.store.readEffectiveProvidersConfig();
+    const nextConfig = await detectProvidersConfigOnHost(current, {
+      healthTracker: this.providerHealth,
+    });
+    this.store.writeConfig("providers", nextConfig);
+    for (const backend of this.backendRegistry.list()) {
+      if (backend instanceof CompositeBackend) {
+        await backend.syncFromConfig(nextConfig);
+        await backend.refreshProviders();
+      }
+    }
+    const turns = this.store.listUsageTurns();
+    const pricing = this.store.readConfig("pricing");
+    const providers = nextConfig.providers.map((entry) =>
+      this.providerHealth.buildRuntimeStatus(entry, turns, pricing),
+    );
+    const nowIso = new Date().toISOString();
+    for (const st of providers) {
+      this.sseHub.publish({
+        type: "provider.status",
+        providerId: st.provider_id,
+        status: st.status,
+        ...(st.cooldown_until ? { cooldownUntil: st.cooldown_until } : {}),
+        ...(st.detail ? { detail: st.detail } : {}),
+        at: nowIso,
+      });
+    }
+    void this.orchestrator.wake();
+    return { data: nextConfig, providers };
   }
 
   /**

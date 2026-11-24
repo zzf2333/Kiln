@@ -114,6 +114,20 @@ function makeSampleRoster(): RosterConfig {
         allow_full_access_fallback: false,
         builtin: true,
       },
+      advisor: {
+        group: "core",
+        enabled: true,
+        name: "技术顾问",
+        stage: "advise",
+        secondary_stages: [],
+        perm: "read_only",
+        traits: "全新上下文裁决技术分歧与停滞破局（严格只读）",
+        mode: "agent",
+        primary: { provider: "claude", model: "claude-opus-4-6", effort: "high" },
+        fallbacks: [],
+        allow_full_access_fallback: false,
+        builtin: true,
+      },
       main_dev: {
         group: "core",
         enabled: true,
@@ -401,14 +415,74 @@ afterEach(() => {
 });
 
 describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusbar", () => {
-  it("LineupView displays honest pool quotas, detects hetero collision, resolves via fallback, creates locked-perm custom role, and saves RosterConfig", async () => {
+  it("LineupView displays honest pool quotas, hides disabled/unavailable providers, detects hetero collision, resolves via fallback, creates locked-perm custom role, and saves RosterConfig", async () => {
     let savedRoster: RosterConfig | null = null;
+    const bootWithMissingProviders = (): BootstrapResponse => {
+      const base = makeV3Bootstrap();
+      return {
+        ...base,
+        providers: [
+          ...(base.providers ?? []),
+          {
+            provider_id: "gemini",
+            label: "Gemini CLI",
+            adapter: "acp",
+            status: "unavailable",
+            detail: 'Command "gemini" not found',
+            native_quota: null,
+            local_window_cost_usd: 0,
+          },
+          {
+            provider_id: "paseo",
+            label: "Paseo (Legacy Bridge)",
+            adapter: "paseo",
+            status: "unavailable",
+            detail: "Paseo 历史兼容桥接已关闭",
+            native_quota: null,
+            local_window_cost_usd: 0,
+          },
+        ],
+        settings: base.settings
+          ? {
+              ...base.settings,
+              providers: base.settings.providers
+                ? {
+                    ...base.settings.providers,
+                    providers: [
+                      ...base.settings.providers.providers,
+                      {
+                        id: "gemini",
+                        label: "Gemini CLI",
+                        adapter: "acp",
+                        enabled: false,
+                        command: "gemini",
+                        args: ["--experimental-acp"],
+                        env: {},
+                        custom_models: [],
+                      },
+                      {
+                        id: "paseo",
+                        label: "Paseo (Legacy Bridge)",
+                        adapter: "paseo",
+                        enabled: false,
+                        args: [],
+                        env: {},
+                        custom_models: [],
+                      },
+                    ],
+                  }
+                : undefined,
+            }
+          : undefined,
+      };
+    };
+
     fetchMock.mockImplementation(async (url, init) => {
       if (url === "/api/auth/status") {
         return jsonResponse({ ok: true, mode: "local", authenticated: true, device: null });
       }
       if (url === "/api/bootstrap") {
-        return jsonResponse(makeV3Bootstrap());
+        return jsonResponse(bootWithMissingProviders());
       }
       if (url === "/api/settings/roster" && (init?.method ?? "GET") === "PUT") {
         savedRoster = JSON.parse(String(init?.body)) as RosterConfig;
@@ -424,7 +498,8 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
       expect(screen.getByRole("heading", { name: "编排与阵容" })).toBeTruthy();
     });
 
-    // Pool tiles: Codex native_quota (42%), Claude cooldown (.limited), Agy no official quota
+    // Pool tiles: Codex native_quota (42%), Claude cooldown (.limited), Agy no official quota;
+    // disabled/unavailable gemini & paseo are hidden from pool & provider selects.
     const codexTile = container.querySelector('[data-provider-tile="codex"]')!;
     const claudeTile = container.querySelector('[data-provider-tile="claude"]')!;
     const agyTile = container.querySelector('[data-provider-tile="agy"]')!;
@@ -432,9 +507,31 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
     expect(claudeTile.className).toContain("limited");
     expect(claudeTile.textContent).toContain("429 冷却至 18:45");
     expect(agyTile.textContent).toContain("无官方余额接口");
+    expect(container.querySelector('[data-provider-tile="gemini"]')).toBeNull();
+    expect(container.querySelector('[data-provider-tile="paseo"]')).toBeNull();
+
+    const primarySelect = screen.getByLabelText("主订阅 Provider") as HTMLSelectElement;
+    const fbSelect = screen.getByLabelText("备选 Provider") as HTMLSelectElement;
+    const primaryVals = Array.from(primarySelect.options).map((o) => o.value);
+    const fbVals = Array.from(fbSelect.options).map((o) => o.value);
+    expect(primaryVals).not.toContain("gemini");
+    expect(primaryVals).not.toContain("paseo");
+    expect(fbVals).not.toContain("gemini");
+    expect(fbVals).not.toContain("paseo");
 
     // Hetero review collides initially (main_dev & reviewer both codex/gpt-5.4 with no fallback on reviewer)
     expect(screen.getByText("审查与实施撞模型")).toBeTruthy();
+
+    // Advisor row renders under 核心推进 with 顾问 & 只读 perm and can be selected for editing
+    const advisorRowBtn = container.querySelector('[data-roster-row="advisor"]')!;
+    expect(advisorRowBtn).toBeTruthy();
+    expect(advisorRowBtn.textContent).toContain("技术顾问");
+    expect(advisorRowBtn.textContent).toContain("顾问");
+    expect(advisorRowBtn.textContent).toContain("只读");
+    fireEvent.click(advisorRowBtn);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("claude-opus-4-6")).toBeTruthy();
+    });
 
     // Verify enable checkbox is NOT nested inside row select button (accessibility)
     const reviewerRowBtn = container.querySelector('[data-roster-row="reviewer"]')!;
@@ -535,6 +632,35 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
           modelsCount: 2,
         });
       }
+      if (url === "/api/providers/detect" && method === "POST") {
+        const syncedCfg: ProvidersConfig = {
+          schema_version: 1,
+          providers: makeSampleProviders().providers.map((p) =>
+            p.id === "claude" ? { ...p, enabled: false } : p,
+          ),
+        };
+        return jsonResponse({
+          ok: true,
+          data: syncedCfg,
+          providers: [
+            {
+              provider_id: "codex",
+              label: "Codex CLI",
+              adapter: "codex_app_server",
+              status: "ready",
+              version: "0.43.0",
+              detail: "Probe ok",
+            },
+            {
+              provider_id: "claude",
+              label: "Claude Code",
+              adapter: "claude_direct",
+              status: "unavailable",
+              detail: "Command \"claude\" not found",
+            },
+          ],
+        });
+      }
       if (url === "/api/settings/providers" && method === "PUT") {
         const body = JSON.parse(String(init?.body)) as ProvidersConfig;
         return jsonResponse({ ok: true, section: "providers", data: body });
@@ -549,8 +675,33 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
       expect(screen.getByLabelText("Codex CLI 命令")).toBeTruthy();
     });
 
-    // Test Codex connectivity
+    // Accordion defaults to only first enabled provider (codex) expanded; claude body is collapsed
     const codexCard = localRender.container.querySelector('[data-provider-card="codex"]') as HTMLElement;
+    const claudeCard = localRender.container.querySelector('[data-provider-card="claude"]') as HTMLElement;
+    expect(codexCard.getAttribute("data-state")).toBe("open");
+    expect(claudeCard.getAttribute("data-state")).toBe("closed");
+
+    // Clicking claude trigger switches accordion open item to claude and collapses codex
+    fireEvent.click(within(claudeCard).getByRole("button", { name: /Claude Code/ }));
+    await waitFor(() => {
+      expect(claudeCard.getAttribute("data-state")).toBe("open");
+      expect(codexCard.getAttribute("data-state")).toBe("closed");
+      expect(screen.getByLabelText("Claude Code 命令")).toBeTruthy();
+    });
+
+    // Toggling claude off collapses it; switching back to codex keeps form testable
+    fireEvent.click(within(claudeCard).getByLabelText("启用 Claude Code"));
+    expect(claudeCard.getAttribute("data-state")).toBe("closed");
+
+    // Click 重新探测 -> POST /api/providers/detect syncs host availability and clears dirty state
+    fireEvent.click(screen.getByRole("button", { name: "重新探测" }));
+    await waitFor(() => {
+      expect(calls.some((c) => c.url === "/api/providers/detect" && c.method === "POST")).toBe(true);
+      expect(codexCard.getAttribute("data-state")).toBe("open");
+      expect((within(claudeCard).getByLabelText("启用 Claude Code") as HTMLInputElement).checked).toBe(false);
+    });
+
+    // Test Codex connectivity
     fireEvent.click(within(codexCard).getByRole("button", { name: "测试连通" }));
     await waitFor(() => {
       expect(calls.some((c) => c.url === "/api/providers/codex/test" && c.method === "POST")).toBe(true);
@@ -793,5 +944,334 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
     expect(document.body.classList.contains("side-hidden")).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "展开导航栏" }));
     expect(document.body.classList.contains("side-hidden")).toBe(false);
+  });
+
+  it("DetailView supports mid-flight steering (POST /api/tasks/:id/steer) and displays steer history", async () => {
+    const steerBodies: Array<Record<string, unknown>> = [];
+    const steers: Array<{
+      id: string;
+      at: string;
+      message: string;
+      interrupt: boolean;
+      contract_version: number;
+      stage?: string;
+    }> = [];
+
+    const sampleTaskCard = {
+      schema_version: 1 as const,
+      id: "t-steer-ui",
+      title: "DetailView Steer 联调任务",
+      space: "alpha",
+      priority: "P1" as const,
+      track: "L2" as const,
+      workspace_mode: "git_worktree" as const,
+      parent: null,
+      depends_on: [],
+      contract_version: 1,
+      contract: {
+        goal: "实现流式日志过滤",
+        end: "单测通过",
+        accept_cmd: "pnpm test",
+        accept_files_hash: "sha256:abc",
+        scope: ["apps/web/**"],
+        deliver: { mode: "merge_main" as const, cmd: null },
+        human_accept: false,
+        external_actions: "ask" as const,
+      },
+      limits: {
+        retries_per_stage: 2,
+        review_rounds: 2,
+        advisor_calls: 1,
+        max_tokens: 250_000,
+      },
+      created_at: "2026-11-23T08:00:00.000Z",
+      updated_at: "2026-11-23T08:05:00.000Z",
+    };
+
+    const makeDetailPayload = () => ({
+      card: sampleTaskCard,
+      state: {
+        status: "running" as const,
+        stage: "implement" as const,
+        round: 1,
+        activeRunId: "run-steer-1",
+        priority: "P1" as const,
+        effectivePriority: "P1" as const,
+        track: "L2" as const,
+        contractVersion: 1,
+        updatedAt: "2026-11-23T08:05:00.000Z",
+      },
+      brief: "## 1. 目标\n实现流式日志过滤",
+      decisions: "",
+      pendingDecision: null,
+      ledgerProposals: [],
+      runs: [],
+      usageTurns: [],
+      usage: {
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        costUsd: 0,
+        byAgent: {},
+        byModel: {},
+      },
+      steers: [...steers],
+    });
+
+    fetchMock.mockImplementation(async (url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url === "/api/auth/status") {
+        return jsonResponse({ ok: true, mode: "local", authenticated: true, device: null });
+      }
+      if (url === "/api/bootstrap") {
+        return jsonResponse(
+          makeV3Bootstrap({
+            tasks: [
+              {
+                id: sampleTaskCard.id,
+                space: sampleTaskCard.space,
+                parent_id: null,
+                title: sampleTaskCard.title,
+                priority: sampleTaskCard.priority,
+                effective_priority: sampleTaskCard.priority,
+                track: sampleTaskCard.track,
+                workspace_mode: sampleTaskCard.workspace_mode,
+                status: "running",
+                stage: "implement",
+                round: 1,
+                active_run_id: "run-steer-1",
+                contract_version: 1,
+                depends_on: [],
+                created_at: sampleTaskCard.created_at,
+                updated_at: sampleTaskCard.updated_at,
+                tokens: {
+                  input_tokens: 0,
+                  cached_input_tokens: 0,
+                  output_tokens: 0,
+                  total_tokens: 0,
+                },
+                cost_usd: 0,
+              },
+            ],
+            runningCount: 1,
+          }),
+        );
+      }
+      if (url === `/api/tasks/${sampleTaskCard.id}` && method === "GET") {
+        return jsonResponse(makeDetailPayload());
+      }
+      if (url === `/api/tasks/${sampleTaskCard.id}/steer` && method === "POST") {
+        const body = JSON.parse(String(init?.body)) as {
+          message: string;
+          interrupt?: boolean;
+        };
+        steerBodies.push(body);
+        const created = {
+          id: "steer-ui-1",
+          at: "2026-11-23T08:06:00.000Z",
+          message: body.message,
+          interrupt: Boolean(body.interrupt),
+          contract_version: 1,
+          stage: "implement",
+        };
+        steers.push(created);
+        return jsonResponse({
+          ok: true,
+          taskId: sampleTaskCard.id,
+          interrupted: Boolean(body.interrupt),
+          steer: created,
+        });
+      }
+      return jsonResponse({ ok: true });
+    });
+
+    window.location.hash = `#view=detail&task=${sampleTaskCard.id}`;
+    render(<App />);
+
+    const steerToggleBtn = await screen.findByRole("button", { name: "补充纠偏" });
+    fireEvent.click(steerToggleBtn);
+
+    const textarea = await screen.findByLabelText("补充纠偏指令");
+    fireEvent.change(textarea, {
+      target: { value: "优先复用现有 filterLogs 工具函数" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "下一棒生效" }));
+
+    await waitFor(() => {
+      expect(steerBodies).toEqual([
+        { message: "优先复用现有 filterLogs 工具函数", interrupt: false },
+      ]);
+      expect(screen.getByText("优先复用现有 filterLogs 工具函数")).toBeTruthy();
+    });
+  });
+
+  it("renders B3 stage cache hit rates and warm session reuse telemetry on UsageView", async () => {
+    const boot = makeV3Bootstrap();
+    boot.usage = {
+      ...boot.usage,
+      inputTokens: 30_000,
+      cachedInputTokens: 20_000,
+      outputTokens: 3_000,
+      totalTokens: 33_000,
+      costUsd: 0.12,
+      cacheNetSavedUsd: 0.04,
+      byStage: {
+        implement: {
+          inputTokens: 20_000,
+          cachedInputTokens: 18_000,
+          cacheWriteTokens: 0,
+          outputTokens: 2_000,
+          reasoningTokens: 0,
+          totalTokens: 22_000,
+          costUsd: 0.08,
+          cacheNetSavedUsd: 0.04,
+          runCount: 2,
+          reusedRunCount: 1,
+        },
+        review: {
+          inputTokens: 10_000,
+          cachedInputTokens: 2_000,
+          cacheWriteTokens: 0,
+          outputTokens: 1_000,
+          reasoningTokens: 0,
+          totalTokens: 11_000,
+          costUsd: 0.04,
+          cacheNetSavedUsd: 0,
+          runCount: 1,
+          reusedRunCount: 0,
+        },
+      },
+      warmSessionStats: {
+        totalImplementRuns: 2,
+        reusedImplementRuns: 1,
+        warmCacheHitRate: 90,
+        coldCacheHitRate: 20,
+      },
+    };
+
+    fetchMock.mockImplementation(async (url) => {
+      if (url === "/api/auth/status") {
+        return jsonResponse({ ok: true, mode: "local", authenticated: true, device: null });
+      }
+      if (url === "/api/bootstrap") {
+        return jsonResponse(boot);
+      }
+      return jsonResponse({ ok: true });
+    });
+
+    window.location.hash = "#view=usage";
+    render(<App />);
+
+    expect(await screen.findByText("阶段缓存与热复用效率")).toBeTruthy();
+    expect(
+      screen.getByText(/implement 热复用 1\/2 次 · 热命中 90% vs 冷命中 20%/),
+    ).toBeTruthy();
+    expect(screen.getByText("90%")).toBeTruthy();
+  });
+
+  it("LineupView supports Track 2 derived inheritance hints, tier_hint, escalation_target, and deliverer on_conflict mode", async () => {
+    let savedRoster: RosterConfig | null = null;
+    const boot = makeV3Bootstrap();
+    const curRoster = boot.roster!;
+    const nextRoster: RosterConfig = {
+      ...curRoster,
+      roster: {
+        ...curRoster.roster,
+        architect: {
+          group: "core",
+          enabled: false,
+          name: "架构方案",
+          stage: "plan",
+          secondary_stages: [],
+          perm: "read_only",
+          traits: "出 PLAN.md",
+          mode: "agent",
+          fallbacks: [],
+          allow_full_access_fallback: false,
+          builtin: true,
+        },
+        fast_fix: {
+          group: "core",
+          enabled: true,
+          name: "快修开发",
+          stage: "implement",
+          secondary_stages: [],
+          perm: "workspace_write",
+          traits: "有 PLAN.md 时首选便宜执行",
+          mode: "agent",
+          tier_hint: "economy",
+          escalation_target: "main_dev",
+          primary: { provider: "codex", model: "gpt-5.4", effort: "low" },
+          fallbacks: [],
+          allow_full_access_fallback: false,
+          builtin: true,
+        },
+        deliverer: {
+          group: "kernel",
+          enabled: true,
+          name: "合并交付",
+          stage: "deliver",
+          secondary_stages: [],
+          perm: "kernel_gate",
+          traits: "默认内核合并，冲突按需切模型",
+          mode: "kernel",
+          fallbacks: [],
+          allow_full_access_fallback: false,
+          builtin: true,
+        },
+      },
+    };
+    boot.roster = nextRoster;
+    if (boot.settings) {
+      boot.settings.roster = nextRoster;
+    }
+
+    fetchMock.mockImplementation(async (url, init) => {
+      if (url === "/api/auth/status") {
+        return jsonResponse({ ok: true, mode: "local", authenticated: true, device: null });
+      }
+      if (url === "/api/bootstrap") {
+        return jsonResponse(boot);
+      }
+      if (url === "/api/settings/roster" && (init?.method ?? "GET") === "PUT") {
+        savedRoster = JSON.parse(String(init?.body ?? "{}")) as RosterConfig;
+        return jsonResponse({ ok: true, section: "roster", data: savedRoster });
+      }
+      return jsonResponse({ ok: true });
+    });
+
+    window.location.hash = "#view=lineup";
+    const { container } = render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "编排与阵容" })).toBeTruthy();
+
+    // Disabled architect surfaces automatic inheritance from advisor
+    await waitFor(() => {
+      expect(container.querySelector('[data-roster-row="architect"]')).not.toBeNull();
+    });
+    const architectRow = container.querySelector('[data-roster-row="architect"]')!;
+    expect(architectRow.textContent).toContain("自动继承 技术顾问");
+
+    // Inspect fast_fix tier_hint & escalation_target
+    const fastFixRow = container.querySelector('[data-roster-row="fast_fix"]')!;
+    fireEvent.click(fastFixRow);
+    const tierSelect = screen.getByLabelText("模型档位定位") as HTMLSelectElement;
+    const escSelect = screen.getByLabelText("失败自动升档目标") as HTMLSelectElement;
+    expect(tierSelect.value).toBe("economy");
+    expect(escSelect.value).toBe("main_dev");
+
+    // Switch deliverer to 3-way on_conflict mode and save
+    const delivererRow = container.querySelector('[data-roster-row="deliverer"]')!;
+    fireEvent.click(delivererRow);
+    fireEvent.click(screen.getByRole("button", { name: "冲突按需" }));
+    fireEvent.click(screen.getByRole("button", { name: /保存阵容/ }));
+
+    await waitFor(() => {
+      expect(savedRoster).not.toBeNull();
+    });
+    expect(savedRoster!.roster.deliverer?.mode).toBe("on_conflict");
+    expect(savedRoster!.roster.fast_fix?.tier_hint).toBe("economy");
+    expect(savedRoster!.roster.fast_fix?.escalation_target).toBe("main_dev");
   });
 });

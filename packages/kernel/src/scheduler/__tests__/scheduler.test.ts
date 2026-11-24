@@ -6,9 +6,11 @@ import type {
   BackendCapabilities,
   LimitsConfig,
   RolesConfig,
+  RosterConfig,
   RunMeta,
   TaskCard,
 } from "@kiln/protocol";
+import { RosterConfigSchema, createDefaultBuiltinRosterMetadata } from "@kiln/protocol";
 import { IneligibleRoleAgentError } from "../../backend/index.js";
 import { resolveCanonicalHostTarget } from "../../gate/index.js";
 import { TaskStateMachine, handleExecutionFailure } from "../../state/index.js";
@@ -20,6 +22,7 @@ import {
   RateLimitTracker,
   RoleNotConfiguredError,
   resolveRoleAssignment,
+  resolveRosterStageAssignment,
   scopesOverlap,
   type DispatchPlan,
   type RateLimitDeferredEvent,
@@ -479,6 +482,76 @@ describe("resolveRoleAssignment", () => {
     expect(() => resolveRoleAssignment(config, "triage")).toThrow(
       RoleNotConfiguredError,
     );
+  });
+
+  it("resolves advise stage to standalone advisor first and preserves legacy architect secondary_stages fallback", () => {
+    const seed = createDefaultBuiltinRosterMetadata();
+    const standalone = {
+      schema_version: 2 as const,
+      heterogeneous_review: true,
+      pm_orchestration: {
+        enabled: true,
+        allow_auto_tester: true,
+        prefer_unthrottled: true,
+        require_review_for_core: true,
+      },
+      roster: {
+        ...seed,
+        architect: {
+          ...seed.architect,
+          enabled: true,
+          primary: { provider: "codex", model: "gpt-5.4" },
+        },
+        advisor: {
+          ...seed.advisor,
+          enabled: true,
+          primary: { provider: "claude", model: "claude-opus-4-6" },
+        },
+      },
+    };
+    const resolvedStandalone = resolveRosterStageAssignment(standalone, "advise", "advisor");
+    expect(resolvedStandalone).toMatchObject({
+      role: "advisor",
+      agent: "claude",
+      model: "claude-opus-4-6",
+      freshContext: true,
+    });
+
+    const legacyArchitect = {
+      ...standalone,
+      roster: {
+        ...seed,
+        architect: {
+          ...seed.architect,
+          enabled: true,
+          secondary_stages: ["advise" as const],
+          primary: { provider: "codex", model: "gpt-5.4" },
+        },
+      },
+    };
+    const resolvedFallback = resolveRosterStageAssignment(legacyArchitect, "advise", "advisor");
+    expect(resolvedFallback).toMatchObject({
+      role: "advisor",
+      agent: "codex",
+      model: "gpt-5.4",
+      freshContext: true,
+    });
+
+    const architectWithoutAdvise = {
+      ...standalone,
+      roster: {
+        ...seed,
+        architect: {
+          ...seed.architect,
+          enabled: true,
+          secondary_stages: [],
+          primary: { provider: "codex", model: "gpt-5.4" },
+        },
+      },
+    };
+    expect(() =>
+      resolveRosterStageAssignment(architectWithoutAdvise, "advise", "advisor"),
+    ).toThrow(RoleNotConfiguredError);
   });
 });
 
@@ -1589,5 +1662,489 @@ describe("KilnScheduler", () => {
     await scheduler.wake();
     expect(dispatchErrors).toEqual([]);
     expect(dispatched).toEqual(["t-win-a", "t-win-c-disjoint"]);
+  });
+
+  it("allows read-only stages (plan/research/review) to run concurrently with same-space overlapping git_worktree write locks", async () => {
+    store.writeConfig(
+      "roster",
+      RosterConfigSchema.parse({
+        schema_version: 2,
+        heterogeneous_review: true,
+        roster: {
+          pm: {
+            group: "core",
+            enabled: true,
+            name: "PM",
+            stage: "intake",
+            perm: "read_only_draft",
+            traits: "pm",
+            mode: "agent",
+            primary: { provider: "codex", model: "gpt-5.4" },
+          },
+          researcher: {
+            group: "core",
+            enabled: true,
+            name: "Researcher",
+            stage: "research",
+            perm: "read_only",
+            traits: "research",
+            mode: "agent",
+            primary: { provider: "codex", model: "gpt-5.4" },
+          },
+          architect: {
+            group: "core",
+            enabled: true,
+            name: "Architect",
+            stage: "plan",
+            perm: "read_only",
+            traits: "plan",
+            mode: "agent",
+            primary: { provider: "codex", model: "gpt-5.4" },
+          },
+          main_dev: {
+            group: "core",
+            enabled: true,
+            name: "Main Dev",
+            stage: "implement",
+            perm: "workspace_write",
+            traits: "dev",
+            mode: "agent",
+            primary: { provider: "codex", model: "gpt-5.4" },
+          },
+          reviewer: {
+            group: "core",
+            enabled: true,
+            name: "Reviewer",
+            stage: "review",
+            perm: "read_only",
+            traits: "review",
+            mode: "agent",
+            primary: { provider: "claude", model: "claude-sonnet-4-6" },
+            avoid_same_as: "implement",
+          },
+          tester: {
+            group: "kernel",
+            enabled: true,
+            name: "Tester",
+            stage: "verify",
+            perm: "kernel_gate",
+            traits: "verify",
+            mode: "agent",
+            primary: { provider: "claude", model: "claude-sonnet-4-6" },
+          },
+        },
+      }),
+    );
+
+    // 1. t-impl-active holds git_worktree scope packages/** in space "s-shared"
+    sm.createTask(
+      makeTaskCard({
+        id: "t-impl-active",
+        space: "s-shared",
+        priority: "P1",
+        contract: {
+          goal: "Implement A",
+          end: "Done",
+          accept_cmd: "true",
+          accept_files_hash: "sha256:a",
+          scope: ["packages/**"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+      }),
+      "# Impl A",
+    );
+    store.persistRunBeforeDispatch(
+      makeRunMeta(
+        {
+          taskId: "t-impl-active",
+          stage: "implement",
+          round: 1,
+          role: "worker",
+          contractVersion: 1,
+        },
+        "run-impl-active",
+      ),
+      "001-implement",
+    );
+
+    // 2. Same space & overlapping scope: read-only plan & review should dispatch; overlapping implement should stay blocked
+    sm.createTask(
+      makeTaskCard({
+        id: "t-plan-ro",
+        space: "s-shared",
+        priority: "P2",
+        contract: {
+          goal: "Plan B",
+          end: "Done",
+          accept_cmd: "true",
+          accept_files_hash: "sha256:b",
+          scope: ["packages/**"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        workflow: {
+          schema_version: 1,
+          preset: "full_delivery",
+          steps: [
+            { kind: "agent", stage: "plan", role: "advisor", fresh_context: true, roster_role: "architect" },
+            { kind: "agent", stage: "implement", role: "worker", fresh_context: false, roster_role: "main_dev" },
+            { kind: "gate", stage: "verify", check: "full" },
+            { kind: "command", stage: "deliver", apply_staged: false, run_deliver_cmd: false, verify_sha256: false, final_accept_gate: false },
+          ],
+        },
+      }),
+      "# Plan B",
+    );
+    sm.createTask(
+      makeTaskCard({
+        id: "t-review-ro",
+        space: "s-shared",
+        priority: "P2",
+        contract: {
+          goal: "Review C",
+          end: "Done",
+          accept_cmd: "true",
+          accept_files_hash: "sha256:c",
+          scope: ["packages/**"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+      }),
+      "# Review C",
+    );
+    store.appendStateEvent("t-review-ro", {
+      type: "resumed",
+      at: "2026-11-19T10:01:00.000Z",
+      stage: "review",
+    });
+    sm.createTask(
+      makeTaskCard({
+        id: "t-impl-blocked",
+        space: "s-shared",
+        priority: "P2",
+        contract: {
+          goal: "Implement D",
+          end: "Done",
+          accept_cmd: "true",
+          accept_files_hash: "sha256:d",
+          scope: ["packages/**"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+      }),
+      "# Impl D",
+    );
+
+    // 3. Also test verify stage resolving tester agent when mode=agent
+    sm.createTask(
+      makeTaskCard({
+        id: "t-verify-agent",
+        space: "s-other",
+        priority: "P2",
+      }),
+      "# Verify agent",
+    );
+    store.appendStateEvent("t-verify-agent", {
+      type: "resumed",
+      at: "2026-11-19T10:02:00.000Z",
+      stage: "verify",
+    });
+
+    const dispatched: Array<{ taskId: string; stage: string; rosterRoleId?: string }> = [];
+    const scheduler = new KilnScheduler({
+      store,
+      stateMachine: sm,
+      onDispatch: (plan) => {
+        dispatched.push({
+          taskId: plan.taskId,
+          stage: plan.stage,
+          ...(plan.roleAssignment?.rosterRoleId
+            ? { rosterRoleId: plan.roleAssignment.rosterRoleId }
+            : {}),
+        });
+      },
+    });
+    activeScheduler = scheduler;
+
+    await scheduler.wake();
+    expect(dispatched.map((d) => d.taskId)).toEqual([
+      "t-plan-ro",
+      "t-review-ro",
+      "t-verify-agent",
+    ]);
+    expect(dispatched[2]).toEqual({
+      taskId: "t-verify-agent",
+      stage: "verify",
+      rosterRoleId: "tester",
+    });
+    expect(dispatched.map((d) => d.taskId)).not.toContain("t-impl-blocked");
+  });
+
+  it("prioritizes cache-TTL affinity (tier 2 warm > tier 1 space > tier 0 cold) without starving old waiters or overriding priority", async () => {
+    const roster = RosterConfigSchema.parse({
+      schema_version: 2,
+      heterogeneous_review: true,
+      roster: {
+        main_dev: {
+          group: "core",
+          enabled: true,
+          name: "主力开发",
+          stage: "implement",
+          perm: "workspace_write",
+          traits: "backend",
+          mode: "agent",
+          primary: { provider: "codex", model: "gpt-5.4" },
+        },
+        reviewer: {
+          group: "core",
+          enabled: true,
+          name: "异构审查",
+          stage: "review",
+          perm: "read_only",
+          traits: "review",
+          mode: "agent",
+          avoid_same_as: "implement",
+          primary: { provider: "claude", model: "claude-sonnet-4-6" },
+        },
+      },
+    });
+    store.writeConfig("roster", roster);
+    store.writeConfig("limits", {
+      schema_version: 1,
+      max_concurrent_slots: 1,
+      p0_extra_slot: true,
+      max_waiting_wip: 5,
+      retries_per_stage: 2,
+      review_rounds: 2,
+      advisor_calls: 1,
+      max_card_tokens: 250_000,
+    });
+
+    const tCold = makeTaskCard({
+      id: "t-cold-old",
+      space: "sp-cold",
+      priority: "P2",
+      created_at: "2026-11-23T09:55:00.000Z",
+      updated_at: "2026-11-23T09:55:00.000Z",
+    });
+    const tSpace = makeTaskCard({
+      id: "t-space-warm",
+      space: "sp-warm",
+      priority: "P2",
+      created_at: "2026-11-23T09:58:00.000Z",
+      updated_at: "2026-11-23T09:58:00.000Z",
+    });
+    const tSession = makeTaskCard({
+      id: "t-session-warm",
+      space: "sp-sess",
+      priority: "P2",
+      created_at: "2026-11-23T09:59:00.000Z",
+      updated_at: "2026-11-23T09:59:00.000Z",
+    });
+    sm.createTask(tCold, "# Cold");
+    sm.createTask(tSpace, "# Space");
+    sm.createTask(tSession, "# Session");
+
+    let fakeNowMs = Date.parse("2026-11-23T10:00:00.000Z");
+    const dispatched: string[] = [];
+    const scheduler = new KilnScheduler({
+      store,
+      stateMachine: sm,
+      now: () => fakeNowMs,
+      cacheAffinityStarvationMs: 15 * 60_000,
+      getCacheAffinity: ({ taskId, space }) => {
+        if (taskId === "t-session-warm") return 2;
+        if (space === "sp-warm") return 1;
+        return 0;
+      },
+      onDispatch: (plan) => {
+        dispatched.push(plan.taskId);
+      },
+    });
+    activeScheduler = scheduler;
+
+    // With max_concurrent_slots=1 and no starvation yet (cold waiter waited 5 min),
+    // tier 2 warm session wins over older tier 1 and tier 0.
+    await scheduler.wake();
+    expect(dispatched).toEqual(["t-session-warm"]);
+
+    // Restore t-session-warm back to queued and advance clock 20 min -> cold task waited > 15m (starvation guard!)
+    store.appendStateEvent("t-session-warm", {
+      type: "queued",
+      at: "2026-11-23T10:00:10.000Z",
+    });
+    fakeNowMs = Date.parse("2026-11-23T10:16:00.000Z");
+    dispatched.length = 0;
+
+    await scheduler.wake();
+    expect(dispatched).toEqual(["t-cold-old"]);
+
+    // Restore t-cold-old back to queued and verify P0 cold still beats P2 tier 2 warm!
+    store.appendStateEvent("t-cold-old", {
+      type: "queued",
+      at: "2026-11-23T10:16:10.000Z",
+    });
+    sm.createTask(
+      makeTaskCard({
+        id: "t-p0-cold",
+        space: "sp-p0",
+        priority: "P0",
+        created_at: "2026-11-23T10:16:12.000Z",
+        updated_at: "2026-11-23T10:16:12.000Z",
+      }),
+      "# P0",
+    );
+    fakeNowMs = Date.parse("2026-11-23T10:16:15.000Z");
+    dispatched.length = 0;
+
+    await scheduler.wake();
+    expect(dispatched).toEqual(["t-p0-cold"]);
+  });
+
+  it("supports Track 2 derived inheritance, optional research skip, dual heterogeneity fallback, and on_conflict deliverer", () => {
+    const seed = createDefaultBuiltinRosterMetadata();
+    const derivedRoster: RosterConfig = {
+      schema_version: 2,
+      heterogeneous_review: true,
+      pm_orchestration: {
+        enabled: true,
+        allow_auto_tester: true,
+        prefer_unthrottled: true,
+        require_review_for_core: true,
+      },
+      roster: {
+        ...seed,
+        pm: {
+          ...seed.pm,
+          enabled: true,
+          primary: { provider: "codex", model: "gpt-5.4" },
+        },
+        advisor: {
+          ...seed.advisor,
+          enabled: true,
+          primary: { provider: "claude", model: "claude-opus-4-6" },
+        },
+        architect: { ...seed.architect, enabled: false },
+        triage: { ...seed.triage, enabled: false },
+        resolver: { ...seed.resolver, enabled: false },
+        researcher: { ...seed.researcher, enabled: false },
+        main_dev: {
+          ...seed.main_dev,
+          enabled: true,
+          primary: { provider: "codex", model: "gpt-5.4" },
+        },
+        reviewer: {
+          ...seed.reviewer,
+          enabled: true,
+          primary: { provider: "codex", model: "gpt-5.4" },
+          fallbacks: [
+            { provider: "claude", model: "claude-opus-4-6" },
+            { provider: "agy", model: "gemini-2.5-pro" },
+          ],
+          avoid_same_as: ["implement", "plan"],
+        },
+        deliverer: {
+          ...seed.deliverer,
+          enabled: true,
+          mode: "on_conflict",
+          primary: { provider: "codex", model: "gpt-5.4" },
+        },
+      },
+    };
+
+    // Derived inheritance: disabled architect & triage inherit advisor; disabled resolver inherits pm
+    expect(resolveRosterStageAssignment(derivedRoster, "plan", "advisor")).toMatchObject({
+      agent: "claude",
+      model: "claude-opus-4-6",
+      inheritedFrom: "advisor",
+      perm: "read_only",
+    });
+    expect(resolveRosterStageAssignment(derivedRoster, "triage", "triage")).toMatchObject({
+      agent: "claude",
+      model: "claude-opus-4-6",
+      inheritedFrom: "advisor",
+    });
+    expect(resolveRosterStageAssignment(derivedRoster, "intake", "resolver")).toMatchObject({
+      agent: "codex",
+      model: "gpt-5.4",
+      inheritedFrom: "pm",
+    });
+
+    // Disabled researcher gracefully yields null instead of throwing
+    expect(resolveRosterStageAssignment(derivedRoster, "research", "advisor")).toBeNull();
+
+    // Dual heterogeneous review avoids BOTH implement (codex) and plan (claude) -> picks agy
+    expect(
+      resolveRosterStageAssignment(derivedRoster, "review", "reviewer", {
+        avoidPeers: [
+          { stage: "implement", agent: "codex", model: "gpt-5.4" },
+          { stage: "plan", agent: "claude", model: "claude-opus-4-6" },
+        ],
+      }),
+    ).toMatchObject({
+      agent: "agy",
+      model: "gemini-2.5-pro",
+      heterogeneityLevel: "dual",
+    });
+
+    // 2-provider setup gracefully falls back to single heterogeneity (avoiding implement)
+    const twoProviderRoster: RosterConfig = {
+      ...derivedRoster,
+      roster: {
+        ...derivedRoster.roster,
+        reviewer: {
+          ...derivedRoster.roster.reviewer!,
+          fallbacks: [{ provider: "claude", model: "claude-opus-4-6" }],
+        },
+      },
+    };
+    expect(
+      resolveRosterStageAssignment(twoProviderRoster, "review", "reviewer", {
+        avoidPeers: [
+          { stage: "implement", agent: "codex", model: "gpt-5.4" },
+          { stage: "plan", agent: "claude", model: "claude-opus-4-6" },
+        ],
+      }),
+    ).toMatchObject({
+      agent: "claude",
+      model: "claude-opus-4-6",
+      heterogeneityLevel: "single",
+    });
+
+    // 1-provider collision with implement still fails closed
+    const singleProviderCollision: RosterConfig = {
+      ...derivedRoster,
+      roster: {
+        ...derivedRoster.roster,
+        reviewer: {
+          ...derivedRoster.roster.reviewer!,
+          fallbacks: [],
+        },
+      },
+    };
+    expect(() =>
+      resolveRosterStageAssignment(singleProviderCollision, "review", "reviewer", {
+        avoidPeers: [
+          { stage: "implement", agent: "codex", model: "gpt-5.4" },
+          { stage: "plan", agent: "claude", model: "claude-opus-4-6" },
+        ],
+      }),
+    ).toThrow(HeterogeneousReviewConflictError);
+
+    // on_conflict deliverer returns null unless explicitly requested for conflict resolution
+    expect(resolveRosterStageAssignment(derivedRoster, "deliver", "worker")).toBeNull();
+    expect(
+      resolveRosterStageAssignment(derivedRoster, "deliver", "worker", {
+        allowOnConflictDeliverer: true,
+      }),
+    ).toMatchObject({
+      rosterMode: "on_conflict",
+      agent: "codex",
+    });
   });
 });

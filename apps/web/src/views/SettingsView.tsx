@@ -1,4 +1,4 @@
-import { Dialog } from "radix-ui";
+import { Accordion, Dialog } from "radix-ui";
 import { useEffect, useRef, useState } from "react";
 import {
   REASONING_EFFORTS,
@@ -13,7 +13,14 @@ import {
   type RolesConfig,
 } from "@kiln/protocol/web";
 import type { AgentDescriptorInfo, AgentModeInfo } from "../api/types";
-import { CloseIcon, PinIcon, PlusIcon, RefreshIcon, TrashIcon } from "../components/Icons";
+import {
+  ChevronRightIcon,
+  CloseIcon,
+  PinIcon,
+  PlusIcon,
+  RefreshIcon,
+  TrashIcon,
+} from "../components/Icons";
 import { ProviderAvatar, formatAdapterLabel } from "../components/ProviderAvatar";
 import { RemoteSettingsPanel } from "../components/RemoteSettingsPanel";
 import { ViewFrame } from "../components/ViewFrame";
@@ -152,6 +159,10 @@ function splitArgsString(raw: string): string[] {
     .filter((s) => s.length > 0);
 }
 
+function pickDefaultExpandedProviderId(providers: readonly ProviderEntry[]): string {
+  return providers.find((p) => p.enabled)?.id ?? providers[0]?.id ?? "";
+}
+
 export function SettingsView() {
   const { store, state } = useKilnStore();
   const {
@@ -199,6 +210,9 @@ export function SettingsView() {
     ),
   );
   const [customModelInputs, setCustomModelInputs] = useState<Record<string, string>>({});
+  const [expandedProviderId, setExpandedProviderId] = useState<string>(() =>
+    pickDefaultExpandedProviderId(providersConfig?.providers ?? []),
+  );
   const [newAcpOpen, setNewAcpOpen] = useState(false);
   const [newAcpId, setNewAcpId] = useState("");
   const [newAcpLabel, setNewAcpLabel] = useState("");
@@ -244,6 +258,11 @@ export function SettingsView() {
           p.quota?.soft_daily_usd !== undefined ? String(p.quota.soft_daily_usd) : "",
         ]),
       ),
+    );
+    setExpandedProviderId((prev) =>
+      prev && cloned.providers.some((p) => p.id === prev)
+        ? prev
+        : pickDefaultExpandedProviderId(cloned.providers),
     );
   }, [providersConfig]);
 
@@ -428,6 +447,7 @@ export function SettingsView() {
       setEnvRawByProvider((prev) => ({ ...prev, [id]: "" }));
       setQuotaRawByProvider((prev) => ({ ...prev, [id]: "" }));
       setProvidersDirty(true);
+      setExpandedProviderId(id);
       setNewAcpOpen(false);
       store.showToast(`已添加自定义 ACP「${label}」，请点击保存生效`);
     };
@@ -491,7 +511,7 @@ export function SettingsView() {
       <>
         <div className="sync-line">
           <span>
-            管理本机订阅 CLI 与标准 ACP Agent。这里登记的 `custom_models` 与可用状态会同步出现在「编排与阵容」可选列表。
+            自动检测本机已安装 CLI 并开关对应订阅底座（无则关闭）；点击项标题可折叠或展开详细参数与 `custom_models`。
           </span>
           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
             <button
@@ -501,11 +521,11 @@ export function SettingsView() {
               onClick={async () => {
                 setRefreshBusy(true);
                 try {
-                  await Promise.all([
-                    store.refreshProviders(),
-                    store.refreshProvidersConfig(),
-                    store.refreshAgents(true),
-                  ]);
+                  const detected = await store.detectProviders();
+                  if (detected) {
+                    setProvidersDirty(false);
+                    setExpandedProviderId(pickDefaultExpandedProviderId(detected.providers));
+                  }
                 } finally {
                   setRefreshBusy(false);
                 }
@@ -553,321 +573,360 @@ export function SettingsView() {
             正在读取 `config/providers.yaml`，或点击上方「重新探测」。
           </div>
         ) : (
-          providersDraft.providers.map((p) => {
-            const st = statusMap.get(p.id);
-            const agentDesc = agentMap.get(p.id);
-            const discoveredModels = (agentDesc?.models ?? []).map((m) =>
-              typeof m === "string" ? m : m.id,
-            );
-            const isTesting = providerTestBusyId === p.id;
-            const statusChip =
-              !p.enabled
-                ? { cls: "", label: "已禁用" }
-                : st?.status === "ready"
-                  ? { cls: "chip-ok", label: "已就绪" }
-                  : st?.status === "cooldown"
-                    ? { cls: "chip-ask", label: "429 冷却中" }
-                    : st?.status === "auth_required"
-                      ? { cls: "chip-bad", label: "需登录认证" }
-                      : st?.status === "unavailable"
-                        ? { cls: "chip-bad", label: "不可用" }
-                        : { cls: "", label: "待检测" };
+          <Accordion.Root
+            type="single"
+            collapsible
+            value={expandedProviderId}
+            onValueChange={setExpandedProviderId}
+            className="prov-accordion"
+          >
+            {providersDraft.providers.map((p) => {
+              const st = statusMap.get(p.id);
+              const agentDesc = agentMap.get(p.id);
+              const discoveredModels = (agentDesc?.models ?? []).map((m) =>
+                typeof m === "string" ? m : m.id,
+              );
+              const totalModelsCount = discoveredModels.length + p.custom_models.length;
+              const isTesting = providerTestBusyId === p.id;
+              const statusChip =
+                !p.enabled
+                  ? { cls: "", label: "已关闭" }
+                  : st?.status === "ready"
+                    ? { cls: "chip-ok", label: "已就绪" }
+                    : st?.status === "cooldown"
+                      ? { cls: "chip-ask", label: "429 冷却中" }
+                      : st?.status === "auth_required"
+                        ? { cls: "chip-bad", label: "需登录认证" }
+                        : st?.status === "unavailable"
+                          ? { cls: "chip-bad", label: "不可用" }
+                          : { cls: "", label: "待检测" };
 
-            const cap = (ok: boolean | undefined, yesText: string, noText: string) => (
-              <span className={`cap ${ok ? "ok" : ""}`}>
-                {ok ? yesText : noText}
-              </span>
-            );
+              const cap = (ok: boolean | undefined, yesText: string, noText: string) => (
+                <span className={`cap ${ok ? "ok" : ""}`}>
+                  {ok ? yesText : noText}
+                </span>
+              );
 
-            return (
-              <section
-                key={p.id}
-                className={`group ${!p.enabled || st?.status === "unavailable" ? "is-dim" : ""}`}
-                data-provider-card={p.id}
-              >
-                <div className="group-h">
-                  <ProviderAvatar providerId={p.id} large />
-                  <div style={{ minWidth: 0 }}>
-                    <b>{p.label}</b>
-                    <small>
-                      {formatAdapterLabel(p.adapter)}
-                      {st?.version ? ` · v${st.version}` : ""}
-                    </small>
-                  </div>
-                  <span className="sp" />
-                  <span className={`chip ${statusChip.cls}`}>{statusChip.label}</span>
-                  <label className="switch" title={p.enabled ? "已启用" : "已停用"}>
-                    <input
-                      type="checkbox"
-                      aria-label={`启用 ${p.label}`}
-                      checked={p.enabled}
-                      onChange={(e) =>
-                        updateProviderDraft(p.id, {
-                          enabled: (e.currentTarget as HTMLInputElement).checked,
-                        })
-                      }
-                    />
-                    <span />
-                  </label>
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    disabled={isTesting}
-                    onClick={() => void store.testProvider(p.id)}
-                  >
-                    {isTesting ? "测试中…" : "测试连通"}
-                  </button>
-                  {!BUILTIN_PROVIDER_IDS.has(p.id) ? (
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-danger"
-                      aria-label={`移除 ${p.label}`}
-                      onClick={() => {
-                        setProvidersDraft((prev) => ({
-                          ...prev,
-                          providers: prev.providers.filter((item) => item.id !== p.id),
-                        }));
-                        setProvidersDirty(true);
-                      }}
-                    >
-                      <TrashIcon />
-                    </button>
-                  ) : null}
-                </div>
+              const collapsedSummary = !p.enabled
+                ? st?.detail || "未检测到本机 CLI，已自动关闭"
+                : totalModelsCount > 0
+                  ? `已识别 ${totalModelsCount} 个模型`
+                  : p.command || p.id;
 
-                {st?.detail ? (
-                  <div className="g-stack">
-                    <span className="muted" style={{ fontSize: "12px" }}>
-                      {st.detail}
-                    </span>
-                  </div>
-                ) : null}
-
-                {agentDesc ? (
-                  <div className="g-stack">
-                    <div className="cap-badges">
-                      {cap(agentDesc.capabilities.mcpInjection, "MCP 注入", "补丁回执协议")}
-                      {cap(agentDesc.capabilities.readOnlySandbox, "只读硬拦截", "沙盒 + 门禁兜底")}
-                      {cap(agentDesc.capabilities.imageInput, "多模态图片", "纯文本输入")}
-                      {cap(agentDesc.capabilities.cacheWriteTelemetry, "上报缓存写入", "仅上报缓存读取")}
-                      {cap(agentDesc.capabilities.contextWindowTelemetry, "上下文水位", "无实时水位")}
-                      <span className="cap">
-                        {agentDesc.capabilities.nativeQuotaWindow ? "官方额度窗口" : "本机统计 + 软预算"}
-                      </span>
+              return (
+                <Accordion.Item
+                  key={p.id}
+                  value={p.id}
+                  className={`group prov-acc-item ${!p.enabled || st?.status === "unavailable" ? "is-dim" : ""}`}
+                  data-provider-card={p.id}
+                >
+                  <div className="group-h prov-acc-head">
+                    <Accordion.Header asChild>
+                      <div className="prov-acc-hwrap">
+                        <Accordion.Trigger className="prov-acc-trigger">
+                          <span className="prov-acc-chev" aria-hidden="true">
+                            <ChevronRightIcon />
+                          </span>
+                          <ProviderAvatar providerId={p.id} large />
+                          <div className="prov-acc-meta">
+                            <b>{p.label}</b>
+                            <small>
+                              {formatAdapterLabel(p.adapter)}
+                              {st?.version ? ` · v${st.version}` : ""}
+                            </small>
+                          </div>
+                          <span className="prov-acc-summary" title={collapsedSummary}>
+                            {collapsedSummary}
+                          </span>
+                          <span className={`chip ${statusChip.cls}`}>{statusChip.label}</span>
+                        </Accordion.Trigger>
+                      </div>
+                    </Accordion.Header>
+                    <div className="prov-acc-actions">
+                      <label className="switch" title={p.enabled ? "已启用" : "已停用"}>
+                        <input
+                          type="checkbox"
+                          aria-label={`启用 ${p.label}`}
+                          checked={p.enabled}
+                          onChange={(e) => {
+                            const nextEnabled = (e.currentTarget as HTMLInputElement).checked;
+                            updateProviderDraft(p.id, { enabled: nextEnabled });
+                            if (nextEnabled) {
+                              setExpandedProviderId(p.id);
+                            } else if (expandedProviderId === p.id) {
+                              setExpandedProviderId("");
+                            }
+                          }}
+                        />
+                        <span />
+                      </label>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        disabled={isTesting || !p.enabled}
+                        title={!p.enabled ? "请先启用该订阅底座后再测试连通" : undefined}
+                        onClick={() => void store.testProvider(p.id)}
+                      >
+                        {isTesting ? "测试中…" : "测试连通"}
+                      </button>
+                      {!BUILTIN_PROVIDER_IDS.has(p.id) ? (
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-danger"
+                          aria-label={`移除 ${p.label}`}
+                          onClick={() => {
+                            setProvidersDraft((prev) => ({
+                              ...prev,
+                              providers: prev.providers.filter((item) => item.id !== p.id),
+                            }));
+                            if (expandedProviderId === p.id) {
+                              setExpandedProviderId("");
+                            }
+                            setProvidersDirty(true);
+                          }}
+                        >
+                          <TrashIcon />
+                        </button>
+                      ) : null}
                     </div>
                   </div>
-                ) : null}
 
-                {p.adapter !== "paseo" ? (
-                  <>
+                  <Accordion.Content className="prov-acc-body">
+                    {st?.detail ? (
+                      <div className="g-stack">
+                        <span className="muted" style={{ fontSize: "12px" }}>
+                          {st.detail}
+                        </span>
+                      </div>
+                    ) : null}
+
+                    {agentDesc ? (
+                      <div className="g-stack">
+                        <div className="cap-badges">
+                          {cap(agentDesc.capabilities.mcpInjection, "MCP 注入", "补丁回执协议")}
+                          {cap(agentDesc.capabilities.readOnlySandbox, "只读硬拦截", "沙盒 + 门禁兜底")}
+                          {cap(agentDesc.capabilities.imageInput, "多模态图片", "纯文本输入")}
+                          {cap(agentDesc.capabilities.cacheWriteTelemetry, "上报缓存写入", "仅上报缓存读取")}
+                          {cap(agentDesc.capabilities.contextWindowTelemetry, "上下文水位", "无实时水位")}
+                          <span className="cap">
+                            {agentDesc.capabilities.nativeQuotaWindow ? "官方额度窗口" : "本机统计 + 软预算"}
+                          </span>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {p.adapter !== "paseo" ? (
+                      <>
+                        <div className="g-row2">
+                          <div className="lbl">
+                            <b>可执行命令</b>
+                            <p>二进制名称或绝对路径，留空按 Provider ID 查找</p>
+                          </div>
+                          <input
+                            className="input mono input-sm"
+                            aria-label={`${p.label} 命令`}
+                            placeholder={p.id}
+                            value={p.command ?? ""}
+                            onChange={(e) =>
+                              updateProviderDraft(p.id, {
+                                command: (e.currentTarget as HTMLInputElement).value,
+                              })
+                            }
+                          />
+                        </div>
+
+                        <div className="g-row2">
+                          <div className="lbl">
+                            <b>启动参数</b>
+                            <p>空格分隔，如 acp --stdio</p>
+                          </div>
+                          <input
+                            className="input mono input-sm"
+                            aria-label={`${p.label} 参数`}
+                            value={argsRawByProvider[p.id] ?? p.args.join(" ")}
+                            onChange={(e) => {
+                              const raw = (e.currentTarget as HTMLInputElement).value;
+                              setArgsRawByProvider((prev) => ({ ...prev, [p.id]: raw }));
+                              if (raw !== p.args.join(" ")) {
+                                setProvidersDirty(true);
+                              }
+                            }}
+                            onBlur={() => {
+                              const raw = argsRawByProvider[p.id];
+                              if (raw === undefined) return;
+                              const nextArgs = splitArgsString(raw);
+                              if (
+                                nextArgs.length !== p.args.length ||
+                                nextArgs.some((v, i) => v !== p.args[i])
+                              ) {
+                                updateProviderDraft(p.id, { args: nextArgs });
+                              }
+                            }}
+                          />
+                        </div>
+                      </>
+                    ) : (
+                      <div className="g-row2">
+                        <div className="lbl">
+                          <b>Paseo URL</b>
+                          <p>仅作历史兼容桥接，推荐优先使用自建 ACP 与 CLI 直连</p>
+                        </div>
+                        <input
+                          className="input mono input-sm"
+                          aria-label={`${p.label} URL`}
+                          placeholder="http://127.0.0.1:..."
+                          value={p.paseo_url ?? ""}
+                          onChange={(e) =>
+                            updateProviderDraft(p.id, {
+                              paseo_url: (e.currentTarget as HTMLInputElement).value,
+                            })
+                          }
+                        />
+                      </div>
+                    )}
+
                     <div className="g-row2">
                       <div className="lbl">
-                        <b>可执行命令</b>
-                        <p>二进制名称或绝对路径，留空按 Provider ID 查找</p>
+                        <b>日软预算上限 ($ USD)</b>
+                        <p>仅作本地统计对比提示，不会强制阻断执行</p>
                       </div>
                       <input
+                        type="number"
+                        min="0"
+                        step="0.5"
                         className="input mono input-sm"
-                        aria-label={`${p.label} 命令`}
-                        placeholder={p.id}
-                        value={p.command ?? ""}
-                        onChange={(e) =>
-                          updateProviderDraft(p.id, {
-                            command: (e.currentTarget as HTMLInputElement).value,
-                          })
+                        aria-label={`${p.label} 日软预算`}
+                        placeholder="不限制"
+                        value={
+                          quotaRawByProvider[p.id] ??
+                          (p.quota?.soft_daily_usd !== undefined
+                            ? String(p.quota.soft_daily_usd)
+                            : "")
                         }
-                      />
-                    </div>
-
-                    <div className="g-row2">
-                      <div className="lbl">
-                        <b>启动参数</b>
-                        <p>空格分隔，如 acp --stdio</p>
-                      </div>
-                      <input
-                        className="input mono input-sm"
-                        aria-label={`${p.label} 参数`}
-                        value={argsRawByProvider[p.id] ?? p.args.join(" ")}
                         onChange={(e) => {
                           const raw = (e.currentTarget as HTMLInputElement).value;
-                          setArgsRawByProvider((prev) => ({ ...prev, [p.id]: raw }));
-                          if (raw !== p.args.join(" ")) {
+                          setQuotaRawByProvider((prev) => ({ ...prev, [p.id]: raw }));
+                          const initialStr =
+                            p.quota?.soft_daily_usd !== undefined
+                              ? String(p.quota.soft_daily_usd)
+                              : "";
+                          if (raw !== initialStr) {
                             setProvidersDirty(true);
                           }
                         }}
                         onBlur={() => {
-                          const raw = argsRawByProvider[p.id];
-                          if (raw === undefined) return;
-                          const nextArgs = splitArgsString(raw);
-                          if (
-                            nextArgs.length !== p.args.length ||
-                            nextArgs.some((v, i) => v !== p.args[i])
-                          ) {
-                            updateProviderDraft(p.id, { args: nextArgs });
+                          const raw = (quotaRawByProvider[p.id] ?? "").trim();
+                          const prevVal = p.quota?.soft_daily_usd;
+                          if (!raw) {
+                            if (prevVal === undefined) return;
+                            const nextQuota = { ...(p.quota ?? {}) };
+                            delete nextQuota.soft_daily_usd;
+                            updateProviderDraft(p.id, { quota: nextQuota });
+                            return;
+                          }
+                          const num = Number(raw);
+                          if (Number.isFinite(num) && num > 0 && num !== prevVal) {
+                            updateProviderDraft(p.id, {
+                              quota: { ...(p.quota ?? {}), soft_daily_usd: num },
+                            });
                           }
                         }}
                       />
                     </div>
-                  </>
-                ) : (
-                  <div className="g-row2">
-                    <div className="lbl">
-                      <b>Paseo URL</b>
-                      <p>仅作历史兼容桥接，推荐优先使用自建 ACP 与 CLI 直连</p>
+
+                    <div className="g-stack">
+                      <div className="lbl">
+                        <b>环境变量（每行 KEY=VALUE）</b>
+                      </div>
+                      <textarea
+                        className="role-trait-in mono"
+                        style={{ minHeight: "48px", fontSize: "11.5px" }}
+                        aria-label={`${p.label} 环境变量`}
+                        placeholder="例如：ANTHROPIC_BASE_URL=https://..."
+                        value={envRawByProvider[p.id] ?? formatEnvLines(p.env)}
+                        onChange={(e) => {
+                          const raw = (e.currentTarget as HTMLTextAreaElement).value;
+                          setEnvRawByProvider((prev) => ({ ...prev, [p.id]: raw }));
+                          if (raw !== formatEnvLines(p.env)) {
+                            setProvidersDirty(true);
+                          }
+                        }}
+                        onBlur={() => {
+                          const raw = envRawByProvider[p.id];
+                          if (raw === undefined) return;
+                          const nextEnv = parseEnvLines(raw);
+                          const prevEntries = Object.entries(p.env ?? {});
+                          const nextEntries = Object.entries(nextEnv);
+                          const changed =
+                            prevEntries.length !== nextEntries.length ||
+                            nextEntries.some(([k, v]) => p.env?.[k] !== v);
+                          if (changed) {
+                            updateProviderDraft(p.id, { env: nextEnv });
+                          }
+                        }}
+                      />
                     </div>
-                    <input
-                      className="input mono input-sm"
-                      aria-label={`${p.label} URL`}
-                      placeholder="http://127.0.0.1:..."
-                      value={p.paseo_url ?? ""}
-                      onChange={(e) =>
-                        updateProviderDraft(p.id, {
-                          paseo_url: (e.currentTarget as HTMLInputElement).value,
-                        })
-                      }
-                    />
-                  </div>
-                )}
 
-                <div className="g-row2">
-                  <div className="lbl">
-                    <b>日软预算上限 ($ USD)</b>
-                    <p>仅作本地统计对比提示，不会强制阻断执行</p>
-                  </div>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.5"
-                    className="input mono input-sm"
-                    aria-label={`${p.label} 日软预算`}
-                    placeholder="不限制"
-                    value={
-                      quotaRawByProvider[p.id] ??
-                      (p.quota?.soft_daily_usd !== undefined
-                        ? String(p.quota.soft_daily_usd)
-                        : "")
-                    }
-                    onChange={(e) => {
-                      const raw = (e.currentTarget as HTMLInputElement).value;
-                      setQuotaRawByProvider((prev) => ({ ...prev, [p.id]: raw }));
-                      const initialStr =
-                        p.quota?.soft_daily_usd !== undefined
-                          ? String(p.quota.soft_daily_usd)
-                          : "";
-                      if (raw !== initialStr) {
-                        setProvidersDirty(true);
-                      }
-                    }}
-                    onBlur={() => {
-                      const raw = (quotaRawByProvider[p.id] ?? "").trim();
-                      const prevVal = p.quota?.soft_daily_usd;
-                      if (!raw) {
-                        if (prevVal === undefined) return;
-                        const nextQuota = { ...(p.quota ?? {}) };
-                        delete nextQuota.soft_daily_usd;
-                        updateProviderDraft(p.id, { quota: nextQuota });
-                        return;
-                      }
-                      const num = Number(raw);
-                      if (Number.isFinite(num) && num > 0 && num !== prevVal) {
-                        updateProviderDraft(p.id, {
-                          quota: { ...(p.quota ?? {}), soft_daily_usd: num },
-                        });
-                      }
-                    }}
-                  />
-                </div>
-
-                <div className="g-stack">
-                  <div className="lbl">
-                    <b>环境变量（每行 KEY=VALUE）</b>
-                  </div>
-                  <textarea
-                    className="role-trait-in mono"
-                    style={{ minHeight: "48px", fontSize: "11.5px" }}
-                    aria-label={`${p.label} 环境变量`}
-                    placeholder="例如：ANTHROPIC_BASE_URL=https://..."
-                    value={envRawByProvider[p.id] ?? formatEnvLines(p.env)}
-                    onChange={(e) => {
-                      const raw = (e.currentTarget as HTMLTextAreaElement).value;
-                      setEnvRawByProvider((prev) => ({ ...prev, [p.id]: raw }));
-                      if (raw !== formatEnvLines(p.env)) {
-                        setProvidersDirty(true);
-                      }
-                    }}
-                    onBlur={() => {
-                      const raw = envRawByProvider[p.id];
-                      if (raw === undefined) return;
-                      const nextEnv = parseEnvLines(raw);
-                      const prevEntries = Object.entries(p.env ?? {});
-                      const nextEntries = Object.entries(nextEnv);
-                      const changed =
-                        prevEntries.length !== nextEntries.length ||
-                        nextEntries.some(([k, v]) => p.env?.[k] !== v);
-                      if (changed) {
-                        updateProviderDraft(p.id, { env: nextEnv });
-                      }
-                    }}
-                  />
-                </div>
-
-                <div className="g-stack">
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", color: "var(--t3)" }}>
-                    <span>可用与自定义模型</span>
-                    <span className="mono">
-                      发现 {discoveredModels.length} + 自定义 {p.custom_models.length}
-                    </span>
-                  </div>
-                  <div className="tag-list">
-                    {discoveredModels.map((m) => (
-                      <span key={`disc-${m}`} className="tag-pill">
-                        {m}
-                      </span>
-                    ))}
-                    {p.custom_models.map((m) => (
-                      <span key={`cust-${m}`} className="tag-pill custom">
-                        {m}
+                    <div className="g-stack">
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", color: "var(--t3)" }}>
+                        <span>可用与自定义模型</span>
+                        <span className="mono">
+                          发现 {discoveredModels.length} + 自定义 {p.custom_models.length}
+                        </span>
+                      </div>
+                      <div className="tag-list">
+                        {discoveredModels.map((m) => (
+                          <span key={`disc-${m}`} className="tag-pill">
+                            {m}
+                          </span>
+                        ))}
+                        {p.custom_models.map((m) => (
+                          <span key={`cust-${m}`} className="tag-pill custom">
+                            {m}
+                            <button
+                              type="button"
+                              aria-label={`删除模型 ${m}`}
+                              onClick={() =>
+                                updateProviderDraft(p.id, {
+                                  custom_models: p.custom_models.filter((item) => item !== m),
+                                })
+                              }
+                            >
+                              <CloseIcon />
+                            </button>
+                          </span>
+                        ))}
+                        <input
+                          className="input mono input-sm"
+                          style={{ width: "170px" }}
+                          aria-label={`${p.label} 新增自定义模型`}
+                          placeholder="自定义模型 ID"
+                          value={customModelInputs[p.id] ?? ""}
+                          onChange={(e) => {
+                            const v = (e.currentTarget as HTMLInputElement).value;
+                            setCustomModelInputs((prev) => ({ ...prev, [p.id]: v }));
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              handleAddCustomModel(p.id);
+                            }
+                          }}
+                        />
                         <button
                           type="button"
-                          aria-label={`删除模型 ${m}`}
-                          onClick={() =>
-                            updateProviderDraft(p.id, {
-                              custom_models: p.custom_models.filter((item) => item !== m),
-                            })
-                          }
+                          className="btn btn-sm"
+                          onClick={() => handleAddCustomModel(p.id)}
                         >
-                          <CloseIcon />
+                          添加
                         </button>
-                      </span>
-                    ))}
-                    <input
-                      className="input mono input-sm"
-                      style={{ width: "170px" }}
-                      aria-label={`${p.label} 新增自定义模型`}
-                      placeholder="自定义模型 ID"
-                      value={customModelInputs[p.id] ?? ""}
-                      onChange={(e) => {
-                        const v = (e.currentTarget as HTMLInputElement).value;
-                        setCustomModelInputs((prev) => ({ ...prev, [p.id]: v }));
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          handleAddCustomModel(p.id);
-                        }
-                      }}
-                    />
-                    <button
-                      type="button"
-                      className="btn btn-sm"
-                      onClick={() => handleAddCustomModel(p.id)}
-                    >
-                      添加
-                    </button>
-                  </div>
-                </div>
-              </section>
-            );
-          })
+                      </div>
+                    </div>
+                  </Accordion.Content>
+                </Accordion.Item>
+              );
+            })}
+          </Accordion.Root>
         )}
 
         <Dialog.Root open={newAcpOpen} onOpenChange={setNewAcpOpen}>

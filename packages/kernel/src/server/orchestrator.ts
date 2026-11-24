@@ -1,29 +1,24 @@
-import { execFile } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
-import { z } from "zod";
 import {
   AdvisorRequestSchema,
-  DecisionOptionSchema,
   DecisionRecordSchema,
   GateReportSchema,
   PendingDecisionSchema,
   RunMetaSchema,
   TaskCardSchema,
-  getDeliverCommandPolicy,
-  getImplementAgentMode,
+  deriveLegacyRolesConfigFromRoster,
+  findLoopRestartStepIndex,
   getVerifyGateCheckMode,
+  getWorkflowFlatSteps,
   isAdvisorEligibleDecisionCategory,
   isReadOnlyRosterPermission,
+  nextWorkflowStepAfter,
   parseAndValidateReceipt,
-  parseFrontmatterMarkdown,
   serializeFrontmatterMarkdown,
-  type AdvisorReceiptFrontmatter,
   type AdvisorRequest,
   type BackendCapabilities,
-  type DecisionOption,
   type GateReport,
   type PendingDecision,
   type RoleId,
@@ -31,7 +26,8 @@ import {
   type RunMeta,
   type SessionRef,
   type StageId,
-  type StateEvent,
+  type SteerNote,
+  type SteerTaskRequest,
   type TaskCard,
 } from "@kiln/protocol";
 import {
@@ -48,11 +44,7 @@ import {
   type RunAttachmentInput,
 } from "../backend/index.js";
 import {
-  applyApprovedHostScopedChanges,
-  buildSanitizedEnv,
   checkScope,
-  cleanupGitWorktree,
-  cleanupTaskCheckpoints,
   computeFrozenSnapshot,
   createGitWorktreeCheckpoint,
   isHostTargetWithinScope,
@@ -81,7 +73,6 @@ import {
   evaluateWorkerStageOutcome,
   getTaskPipelineStages,
   handleExecutionFailure,
-  nextTaskStageAfter,
   type StageCounters,
 } from "../state/index.js";
 import {
@@ -92,6 +83,7 @@ import {
   readYamlOptional,
   writeFileAtomic,
   writeYamlAtomic,
+  type DerivedTaskState,
 } from "../store/index.js";
 import { resolveRunAttachmentInputs } from "./attachments.js";
 import type { CaffeinateController } from "./caffeinate.js";
@@ -99,10 +91,38 @@ import {
   resolveMcpServerCommand,
   type McpCommandSpec,
 } from "./chat.js";
+import { ServerHttpError } from "./errors.js";
 import type {
   TechnicalDecisionAdvisorRouteInput,
   TechnicalDecisionAdvisorRouteResult,
 } from "./mcp-rpc.js";
+import {
+  executeDeliverStage,
+  type DeliverContext,
+  type DeliverHandler,
+  type DeliverOutcome,
+} from "./orchestrator-deliver.js";
+import {
+  collectRelativeFiles,
+  commitVerifiedWorktreeChanges,
+  computeWorktreeDirtySignature,
+  parseGitPorcelainStatusZ,
+  runGitCommand,
+} from "./orchestrator-git.js";
+import {
+  buildHandoffPayload,
+  extractActiveSteerNotes,
+  extractDecisionFromNeedDecisionReceipt,
+  extractSection,
+  type HandoffPayload,
+} from "./orchestrator-handoff.js";
+import {
+  DEFAULT_WARM_CACHE_TTL_MS,
+  WARM_CONTEXT_PERCENT_LIMIT,
+  WARM_MAX_CONSECUTIVE_REUSES,
+  WarmSessionPool,
+} from "./orchestrator-warm-pool.js";
+import { reconcileOrchestratorOnStart } from "./orchestrator-reconcile.js";
 import {
   PendingDecisionStore,
   countRunningLeafTasks,
@@ -111,26 +131,12 @@ import {
 import type { LiveRateTracker } from "./rate-tracker.js";
 import type { KilnScriptRunner } from "./script-runner.js";
 import type { SseHub } from "./sse.js";
+import { z } from "zod";
 
-const execFileAsync = promisify(execFile);
 const RATE_LIMIT_MESSAGE_RE = /\b429\b|rate[_ -]?limit|too many requests|quota exceeded/i;
 const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 15_000;
 
-export interface DeliverContext {
-  taskId: string;
-  card: TaskCard;
-  worktreePath: string | null;
-  store: KilnStore;
-}
-
-export type DeliverOutcome =
-  | { status: "done"; deliverRef?: string }
-  | { status: "external"; detail?: string }
-  | { status: "waiting"; decision: PendingDecision };
-
-export type DeliverHandler = (
-  ctx: DeliverContext,
-) => Promise<DeliverOutcome> | DeliverOutcome;
+export type { DeliverContext, DeliverHandler, DeliverOutcome };
 
 export interface ApprovalDecisionContext {
   taskId: string;
@@ -159,6 +165,7 @@ export interface KilnOrchestratorOptions {
     runId: string;
     role: RoleId;
     contractVersion: number;
+    sessionKey?: string;
     ttlSeconds?: number;
   }) => string;
   mcpServerCommand?: McpCommandSpec;
@@ -220,240 +227,6 @@ function isRateLimitErrorMessage(message: string): boolean {
 function parseRunSequenceNumber(dirName: string): number {
   const m = /^(\d+)-/.exec(dirName);
   return m ? Number(m[1]) : 0;
-}
-
-async function runGitCommand(args: readonly string[], cwd?: string): Promise<string> {
-  const { stdout } = await execFileAsync("git", [...args], {
-    cwd,
-    env: buildSanitizedEnv(),
-    maxBuffer: 10 * 1024 * 1024,
-    encoding: "utf8",
-  });
-  return stdout;
-}
-
-interface ParsedPorcelainStatus {
-  dirtyPaths: string[];
-  pathsToStage: string[];
-}
-
-function parseGitPorcelainStatusZ(raw: string): ParsedPorcelainStatus {
-  const dirtySet = new Set<string>();
-  const stageSet = new Set<string>();
-  const tokens = raw.split("\0");
-  let idx = 0;
-
-  while (idx < tokens.length) {
-    const token = tokens[idx];
-    idx++;
-    if (!token || token.length < 4) {
-      continue;
-    }
-
-    const xy = token.slice(0, 2);
-    const filePath = normalizeRepoRelativePath(token.slice(3));
-    dirtySet.add(filePath);
-
-    if (xy === "??" || xy[1] !== " ") {
-      stageSet.add(filePath);
-    }
-
-    if (xy[0] === "R" || xy[0] === "C" || xy[1] === "R" || xy[1] === "C") {
-      const origPath = tokens[idx];
-      idx++;
-      if (origPath && origPath.length > 0) {
-        dirtySet.add(normalizeRepoRelativePath(origPath));
-      }
-    }
-  }
-
-  return {
-    dirtyPaths: Array.from(dirtySet).sort(),
-    pathsToStage: Array.from(stageSet).sort(),
-  };
-}
-
-function buildReceiptTemplateSection(params: {
-  role: RoleId;
-  runId: string;
-  contractVersion: number;
-  workspaceMode: TaskCard["workspace_mode"];
-  inputRef?: string;
-}): string {
-  const { role, runId, contractVersion, workspaceMode, inputRef } = params;
-  const fallbackRef = inputRef ?? (workspaceMode === "git_worktree" ? "HEAD" : workspaceMode);
-
-  let templateMarkdown: string;
-  let fieldNotes: string[];
-
-  switch (role) {
-    case "worker": {
-      templateMarkdown = serializeFrontmatterMarkdown(
-        {
-          run_id: runId,
-          contract_version: contractVersion,
-          outcome: "completed",
-          input_ref: fallbackRef,
-          output_ref: "<产物路径或提交Hash>",
-          changed_paths: ["<改动文件相对路径>"],
-          accept_result: "pass",
-          is_bugfix: false,
-          complexity_escalate: false,
-        },
-        [
-          "## 改动说明",
-          "<简要说明本次修改内容>",
-          "",
-          "## 验证命令与真实输出",
-          "<粘贴真实执行的验收命令与输出摘要>",
-          "",
-          "## 未完成或待决问题",
-          "无",
-          "",
-        ].join("\n"),
-      );
-      fieldNotes = [
-        "- `outcome`: 仅允许 `completed` | `need_decision`",
-        "- `accept_result`: 仅允许 `pass` | `fail` | `skipped`",
-        "- `changed_paths`: 字符串数组（相对路径，或 `host_scoped` 下的绝对白名单路径）",
-        "- `is_bugfix`: 布尔值；若为 `true`，必须额外包含非空的 `## 修前复现证据` 二级标题章节",
-      ];
-      break;
-    }
-    case "reviewer": {
-      templateMarkdown = serializeFrontmatterMarkdown(
-        {
-          run_id: runId,
-          contract_version: contractVersion,
-          reviewed_ref: fallbackRef,
-          verdict: "pass",
-          p0: 0,
-          p1: 0,
-          p2: 0,
-        },
-        [
-          "## 结论",
-          "<审查总结与放行/退回结论>",
-          "",
-          "## 缺陷清单",
-          "无",
-          "",
-          "## 测试真实性与复现核查",
-          "<核查验收命令与测试是否真实有效>",
-          "",
-        ].join("\n"),
-      );
-      fieldNotes = [
-        "- `verdict`: 仅允许 `pass` | `changes_requested`",
-        "- **重要**：`p0`、`p1`、`p2` 必须为非负整数（如 `0`、`1`），**绝不能写成数组 `[]`**；具体问题明细请写在 `## 缺陷清单` 正文中",
-        "- `reviewed_ref`: 被审查的提交 Hash 或工作区产物引用（非空字符串）",
-      ];
-      break;
-    }
-    case "verifier": {
-      templateMarkdown = serializeFrontmatterMarkdown(
-        {
-          run_id: runId,
-          contract_version: contractVersion,
-          verified_ref: fallbackRef,
-          verdict: "pass",
-          passed_scenarios: 1,
-          failed_scenarios: 0,
-        },
-        [
-          "## 验收场景明细",
-          "- 场景 1：<逐项记录真实输入、动作与观察结果>",
-          "",
-        ].join("\n"),
-      );
-      fieldNotes = [
-        "- `verdict`: 仅允许 `pass` | `fail`",
-        "- `passed_scenarios`、`failed_scenarios`: 必须为非负整数",
-        "- `verified_ref`: 被验收对象引用（非空字符串）",
-      ];
-      break;
-    }
-    case "triage": {
-      templateMarkdown = serializeFrontmatterMarkdown(
-        {
-          run_id: runId,
-          contract_version: contractVersion,
-          recommendation: "retry",
-          summary: "<一句异常研判摘要>",
-        },
-        [
-          "## 异常事实",
-          "<列出观察到的错误日志、状态与失败证据>",
-          "",
-          "## 研判结论",
-          "<给出根因判断与推荐动作>",
-          "",
-        ].join("\n"),
-      );
-      fieldNotes = [
-        "- `recommendation`: 仅允许 `retry` | `escalate_advisor` | `ask_human`",
-        "- `summary`: 非空字符串摘要",
-      ];
-      break;
-    }
-    case "advisor": {
-      templateMarkdown = serializeFrontmatterMarkdown(
-        {
-          run_id: runId,
-          contract_version: contractVersion,
-          outcome: "resolved",
-          chosen_approach: "<选定技术方案>",
-        },
-        [
-          "## 技术取舍",
-          "<说明备选方案对比与选型依据>",
-          "",
-          "## 授权裁决",
-          "<明确后续实施方向与边界>",
-          "",
-        ].join("\n"),
-      );
-      fieldNotes = [
-        "- `outcome`: 仅允许 `resolved` | `need_decision`",
-        "- `chosen_approach`: 非空字符串",
-        "- `decision_kind` / `target_stage`: 可选；`target_stage` 仅限 `implement` | `review`",
-        "- `requires_contract_change` / `requires_scope_expansion` / `requires_human_approval`: 布尔值（默认 `false`；任一为 `true` 将触发内核护栏转交人类批准）",
-      ];
-      break;
-    }
-    default:
-      return "";
-  }
-
-  return [
-    `## 阶段回执格式要求`,
-    `请严格按以下 \`${role}\` 角色模板提交回执（YAML frontmatter 与必需二级标题缺一不可；格式校验失败将返回 \`400 invalid_receipt\` 且不会消耗当前阶段租约，可按报错修正后同回合重提）：`,
-    ...fieldNotes,
-    ``,
-    "```markdown",
-    templateMarkdown.trimEnd(),
-    "```",
-  ].join("\n");
-}
-
-function collectRelativeFiles(dir: string, relPrefix = ""): string[] {
-  if (!fs.existsSync(dir)) {
-    return [];
-  }
-  const files: string[] = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name.startsWith(".")) {
-      continue;
-    }
-    const rel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...collectRelativeFiles(full, rel));
-    } else if (entry.isFile()) {
-      files.push(rel);
-    }
-  }
-  return files.sort();
 }
 
 function isAbsoluteOrHomePath(p: string): boolean {
@@ -571,141 +344,6 @@ function resolveStagedHostMapping(
   return { specs, unmappedPaths };
 }
 
-function extractSection(markdownBody: string, heading: string): string {
-  const pattern = new RegExp(
-    `^#{1,3}[ \\t]+${heading}(?:[ \\t:(（][^\\r\\n]*)?(?=\\r?\\n|$)`,
-    "m",
-  );
-  const match = pattern.exec(markdownBody);
-  if (!match) return "";
-  const after = markdownBody.slice(match.index + match[0].length);
-  const next = /^#{1,3}[ \t]+/m.exec(after);
-  return (next ? after.slice(0, next.index) : after).trim();
-}
-
-function extractDecisionFromNeedDecisionReceipt(
-  rawReceipt: string,
-  taskId: string,
-  runId: string,
-  contractVersion: number,
-  body: string,
-): PendingDecision {
-  const parsedFm = parseFrontmatterMarkdown(rawReceipt).frontmatter;
-  const issueSection =
-    extractSection(body, "未完成或待决问题") || extractSection(body, "待决问题");
-
-  const question =
-    typeof parsedFm.question === "string" && parsedFm.question.trim().length > 0
-      ? parsedFm.question.trim()
-      : issueSection.split(/\r?\n/).find((l) => l.trim().length > 0)?.trim() ||
-        `任务 "${taskId}" 在执行过程中提出待决问题，请确认继续方案`;
-
-  const reason =
-    typeof parsedFm.reason === "string" && parsedFm.reason.trim().length > 0
-      ? parsedFm.reason.trim()
-      : "worker_need_decision";
-
-  const category =
-    typeof parsedFm.category === "string" && parsedFm.category.trim().length > 0
-      ? parsedFm.category.trim()
-      : "worker_decision";
-
-  let options: DecisionOption[] | null = null;
-  if (Array.isArray(parsedFm.options)) {
-    const parsedOpts = z.array(DecisionOptionSchema).min(1).safeParse(parsedFm.options);
-    if (parsedOpts.success) {
-      options = parsedOpts.data;
-    }
-  }
-
-  if (!options) {
-    const parsedFromBullets: DecisionOption[] = [];
-    for (const line of body.split(/\r?\n/)) {
-      const m = /^[-*]\s+\[([^\]]+)\]\s+(.+?)(?:\s+\(action:\s*(resume|return_external|finish|cancel)\))?$/i.exec(
-        line.trim(),
-      );
-      if (m) {
-        parsedFromBullets.push(
-          DecisionOptionSchema.parse({
-            id: m[1]!.trim(),
-            label: m[2]!.trim(),
-            action: (m[3]?.toLowerCase() ?? "resume") as DecisionOption["action"],
-            recommended: parsedFromBullets.length === 0,
-          }),
-        );
-      }
-    }
-    if (parsedFromBullets.length > 0) {
-      options = parsedFromBullets;
-    }
-  }
-
-  let strippedReturnExternal = false;
-  if (options) {
-    const filtered = options.filter((opt) => opt.action !== "return_external");
-    if (filtered.length !== options.length) {
-      strippedReturnExternal = true;
-      options = filtered;
-    }
-  }
-
-  if (!options || options.length === 0) {
-    options = [
-      DecisionOptionSchema.parse({
-        id: "opt-resume",
-        label: "确认澄清并继续推进当前阶段",
-        action: "resume",
-        target_stage: "implement",
-        recommended: true,
-      }),
-      DecisionOptionSchema.parse({
-        id: "opt-cancel",
-        label: "取消任务",
-        action: "cancel",
-        recommended: false,
-      }),
-    ];
-  } else if (strippedReturnExternal) {
-    if (!options.some((opt) => opt.action === "resume")) {
-      options.unshift(
-        DecisionOptionSchema.parse({
-          id: "opt-resume",
-          label: "确认澄清并继续推进当前阶段",
-          action: "resume",
-          target_stage: "implement",
-          recommended: !options.some((opt) => opt.recommended),
-        }),
-      );
-    }
-    if (!options.some((opt) => opt.action === "cancel")) {
-      options.push(
-        DecisionOptionSchema.parse({
-          id: "opt-cancel",
-          label: "取消任务",
-          action: "cancel",
-          recommended: false,
-        }),
-      );
-    }
-  }
-
-  const effectiveQuestion = strippedReturnExternal
-    ? `${question}\n\n（注：执行阶段不支持自动转入外部等待，已由内核移除不合法的 return_external 选项）`
-    : question;
-
-  return PendingDecisionSchema.parse({
-    id: `dec-${randomUUID().slice(0, 8)}`,
-    task_id: taskId,
-    run_id: runId,
-    contract_version: contractVersion,
-    reason,
-    category,
-    question: effectiveQuestion,
-    options,
-    created_at: new Date().toISOString(),
-  });
-}
-
 /**
  * Deterministic execution orchestrator connecting `KilnScheduler`, `ExecutionBackend`,
  * `KilnStore`, `TaskStateMachine`, `runVerificationGate`, `PendingDecisionStore`,
@@ -739,6 +377,11 @@ export class KilnOrchestrator {
     req: ApprovalRequestEvent;
   }> = [];
   private readonly scheduler: KilnScheduler;
+  private readonly warmPool = new WarmSessionPool();
+  private readonly latestContextPercentByRunId = new Map<string, number>();
+  private readonly recentSpaceCompletedAtMs = new Map<string, number>();
+  private readonly sessionKeyByRunId = new Map<string, string>();
+  private readonly reuseCountByRunId = new Map<string, number>();
 
   private startingBackendCount = 0;
   private started = false;
@@ -767,6 +410,17 @@ export class KilnOrchestrator {
       stateMachine: this.stateMachine,
       ...(this.providerHealth !== undefined ? { providerHealth: this.providerHealth } : {}),
       agentCapabilitiesMap: this.agentCapabilitiesMap,
+      getCacheAffinity: ({ taskId, space, stage }, nowMs) => {
+        const ttlMs = this.getWarmCacheTtlMs();
+        if (stage === "implement" && this.warmPool.hasWarmSession(taskId, nowMs, ttlMs)) {
+          return 2;
+        }
+        const recentAt = this.recentSpaceCompletedAtMs.get(space);
+        if (recentAt !== undefined && nowMs - recentAt <= ttlMs) {
+          return 1;
+        }
+        return 0;
+      },
       onDispatch: async (plan) => {
         await this.dispatchPlan(plan);
       },
@@ -774,6 +428,11 @@ export class KilnOrchestrator {
         void this.handleSchedulerDispatchError(taskId, error);
       },
     });
+  }
+
+  private getWarmCacheTtlMs(): number {
+    const ttlSec = this.store.readConfig("limits")?.warm_cache_ttl_sec;
+    return ttlSec !== undefined ? ttlSec * 1_000 : DEFAULT_WARM_CACHE_TTL_MS;
   }
 
   private registerApprovalListeners(): void {
@@ -883,158 +542,34 @@ export class KilnOrchestrator {
    * receipts, or safely returns orphaned runs back to `queued` without disturbing `paused`.
    */
   async reconcileOnStart(): Promise<void> {
-    await this.syncAgentCapabilities();
-
-    const runningTasks = this.store.listTasks({ status: "running" });
-    const activeLeases = this.store.listActiveStageLeases();
-    const candidateTaskIds = new Set<string>([
-      ...runningTasks.map((t) => t.id),
-      ...activeLeases.map((l) => l.task_id),
-    ]);
-
-    for (const taskId of candidateTaskIds) {
-      const card = this.store.readTaskCard(taskId);
-      const events = this.store.readStateEvents(taskId);
-      const derived = deriveTaskStatus(card, events);
-      if (derived.status !== "running") {
-        // Never touch paused/waiting/terminal tasks; ensure orphan lease is expired.
-        this.store.sqlite.expireActiveLeaseByTask(
-          taskId,
-          new Date().toISOString(),
-          "expired",
-        );
-        continue;
-      }
-
-      if (derived.stage === "verify" || derived.stage === "deliver") {
-        const now = new Date().toISOString();
-        this.store.sqlite.expireActiveLeaseByTask(taskId, now, "expired");
-        this.store.appendStateEvent(taskId, { type: "queued", at: now });
-        this.publishTaskUpdated(taskId, {
-          status: "queued",
-          stage: derived.stage,
-          contractVersion: derived.contractVersion,
-        });
-        continue;
-      }
-
-      const activeRunId = derived.activeRunId;
-      const runDirs = this.listTaskRunDirs(taskId);
-      const matchingRun = activeRunId
-        ? runDirs.find((r) => r.meta?.run_id === activeRunId)
-        : undefined;
-
-      if (
-        !matchingRun ||
-        !matchingRun.meta ||
-        matchingRun.meta.contract_version !== derived.contractVersion
-      ) {
-        const now = new Date().toISOString();
-        this.store.sqlite.expireActiveLeaseByTask(taskId, now, "expired");
-        this.store.appendStateEvent(taskId, { type: "queued", at: now });
-        this.publishTaskUpdated(taskId, { status: "queued" });
-        continue;
-      }
-
-      const runMeta = matchingRun.meta;
-      if (matchingRun.hasReceipt) {
-        try {
-          switch (runMeta.stage) {
-            case "plan":
-              await this.finalizePlanRun(taskId, matchingRun.dirName, runMeta);
-              break;
-            case "research":
-              await this.finalizeResearchRun(taskId, matchingRun.dirName, runMeta);
-              break;
-            case "implement":
-              await this.finalizeWorkerRun(taskId, matchingRun.dirName, runMeta, null);
-              break;
-            case "review":
-              await this.finalizeReviewerRun(taskId, matchingRun.dirName, runMeta, null);
-              break;
-            case "accept":
-              await this.finalizeVerifierRun(taskId, matchingRun.dirName, runMeta);
-              break;
-            case "triage":
-              await this.finalizeTriageRun(taskId, matchingRun.dirName, runMeta);
-              break;
-            case "advise":
-              await this.finalizeAdvisorRun(taskId, matchingRun.dirName, runMeta);
-              break;
-            default: {
-              const now = new Date().toISOString();
-              this.store.sqlite.expireActiveLeaseByTask(taskId, now, "expired");
-              this.store.appendStateEvent(taskId, { type: "queued", at: now });
-              this.publishTaskUpdated(taskId, { status: "queued" });
-              break;
-            }
-          }
-        } catch {
-          this.store.sqlite.expireActiveLeaseByTask(
-            taskId,
-            new Date().toISOString(),
-            "expired",
-          );
-        }
-        const afterFinalize = deriveTaskStatus(
-          this.store.readTaskCard(taskId),
-          this.store.readStateEvents(taskId),
-        );
-        if (afterFinalize.status === "running" && afterFinalize.activeRunId === runMeta.run_id) {
-          const now = new Date().toISOString();
-          this.store.sqlite.expireActiveLeaseByTask(taskId, now, "expired");
-          this.store.appendStateEvent(taskId, { type: "queued", at: now });
-          this.publishTaskUpdated(taskId, {
-            status: "queued",
-            ...(afterFinalize.stage !== null ? { stage: afterFinalize.stage } : {}),
-            contractVersion: afterFinalize.contractVersion,
-          });
-        }
-        continue;
-      }
-
-      const lease = this.store.getStageLease(taskId);
-      if (!lease || lease.state !== "active" || lease.run_id !== runMeta.run_id) {
-        const now = new Date().toISOString();
-        this.store.appendStateEvent(taskId, { type: "queued", at: now });
-        this.publishTaskUpdated(taskId, { status: "queued" });
-        continue;
-      }
-
-      if (!this.backendRegistry.has(runMeta.backend_id)) {
-        const now = new Date().toISOString();
-        this.store.sqlite.expireActiveLeaseByTask(taskId, now, "expired");
-        this.store.appendStateEvent(taskId, { type: "queued", at: now });
-        this.publishTaskUpdated(taskId, { status: "queued" });
-        continue;
-      }
-
-      const backend = this.backendRegistry.get(runMeta.backend_id);
-      let aliveRunning = false;
-      try {
-        const probe = await backend.probe(runMeta.session_ref);
-        aliveRunning = probe.alive && probe.status === "running";
-      } catch {
-        aliveRunning = false;
-      }
-
-      if (aliveRunning) {
-        this.attachSessionConsumer(
-          taskId,
-          matchingRun.dirName,
-          runMeta,
-          backend,
-          runMeta.session_ref,
-        );
-      } else {
-        const now = new Date().toISOString();
-        this.store.sqlite.expireActiveLeaseByTask(taskId, now, "expired");
-        this.store.appendStateEvent(taskId, { type: "queued", at: now });
-        this.publishTaskUpdated(taskId, { status: "queued" });
-      }
-    }
-
-    this.syncCaffeinate();
+    await reconcileOrchestratorOnStart({
+      store: this.store,
+      backendRegistry: this.backendRegistry,
+      syncAgentCapabilities: () => this.syncAgentCapabilities(),
+      listTaskRunDirs: (taskId) => this.listTaskRunDirs(taskId),
+      finalizePlanRun: (taskId, dirName, meta) =>
+        this.finalizePlanRun(taskId, dirName, meta),
+      finalizeResearchRun: (taskId, dirName, meta) =>
+        this.finalizeResearchRun(taskId, dirName, meta),
+      finalizeWorkerRun: (taskId, dirName, meta, exitEvent) =>
+        this.finalizeWorkerRun(taskId, dirName, meta, exitEvent),
+      finalizeVerifyAgentRun: (taskId, dirName, meta, exitEvent) =>
+        this.finalizeVerifyAgentRun(taskId, dirName, meta, exitEvent),
+      finalizeReviewerRun: (taskId, dirName, meta, exitEvent) =>
+        this.finalizeReviewerRun(taskId, dirName, meta, exitEvent),
+      finalizeVerifierRun: (taskId, dirName, meta) =>
+        this.finalizeVerifierRun(taskId, dirName, meta),
+      finalizeTriageRun: (taskId, dirName, meta) =>
+        this.finalizeTriageRun(taskId, dirName, meta),
+      finalizeAdvisorRun: (taskId, dirName, meta) =>
+        this.finalizeAdvisorRun(taskId, dirName, meta),
+      finalizeDeliverAgentRun: (taskId, dirName, meta) =>
+        this.finalizeDeliverAgentRun(taskId, dirName, meta),
+      attachSessionConsumer: (taskId, dirName, meta, backend, sessionRef) =>
+        this.attachSessionConsumer(taskId, dirName, meta, backend, sessionRef),
+      publishTaskUpdated: (taskId, patch) => this.publishTaskUpdated(taskId, patch),
+      syncCaffeinate: () => this.syncCaffeinate(),
+    });
   }
 
   async start(): Promise<void> {
@@ -1073,6 +608,10 @@ export class KilnOrchestrator {
     this.activeRuns.clear();
     this.inFlightOperations.clear();
     this.abortingBeforeDispatch.clear();
+    await this.warmPool.evictAll();
+    this.latestContextPercentByRunId.clear();
+    this.sessionKeyByRunId.clear();
+    this.reuseCountByRunId.clear();
   }
 
   async wake(): Promise<void> {
@@ -1088,11 +627,15 @@ export class KilnOrchestrator {
     const handle = this.activeRuns.get(safeTaskId);
     const op = this.inFlightOperations.get(safeTaskId);
     this.rateTracker.clearTask(safeTaskId);
+    this.warmPool.evictTask(safeTaskId);
     if (handle) {
       handle.cancelledByControl = true;
       handle.abortController.abort();
       await handle.backend.cancel(handle.sessionRef).catch(() => {});
       await handle.consumePromise.catch(() => {});
+      this.latestContextPercentByRunId.delete(handle.runId);
+      this.sessionKeyByRunId.delete(handle.runId);
+      this.reuseCountByRunId.delete(handle.runId);
       if (this.activeRuns.get(safeTaskId)?.runId === handle.runId) {
         this.activeRuns.delete(safeTaskId);
       }
@@ -1104,6 +647,116 @@ export class KilnOrchestrator {
         this.inFlightOperations.delete(safeTaskId);
       }
     }
+  }
+
+  /**
+   * Records a mid-flight steering directive without mutating `contract_version`.
+   * Optionally interrupts the currently active run and immediately re-queues the same
+   * `(stage, stepIndex)` with the steering note injected into `HANDOFF.md`.
+   */
+  async steerTask(
+    taskId: string,
+    input: SteerTaskRequest,
+  ): Promise<{ steer: SteerNote; state: DerivedTaskState; interrupted: boolean }> {
+    const safeTaskId = assertSafeSegment(taskId, "taskId");
+    const card = readYamlOptional(this.store.paths.cardYaml(safeTaskId), TaskCardSchema);
+    if (!card) {
+      throw new ServerHttpError(404, {
+        error: "task_not_found",
+        taskId: safeTaskId,
+        message: `Task "${safeTaskId}" does not exist`,
+      });
+    }
+
+    const before = deriveTaskStatus(card, this.store.readStateEvents(safeTaskId));
+    if (
+      before.status !== "queued" &&
+      before.status !== "running" &&
+      before.status !== "paused"
+    ) {
+      throw new ServerHttpError(409, {
+        error: "invalid_task_state",
+        taskId: safeTaskId,
+        status: before.status,
+        message: `Cannot steer task "${safeTaskId}" in status "${before.status}"`,
+      });
+    }
+
+    const now = new Date().toISOString();
+    const steerId = `steer-${randomUUID().slice(0, 8)}`;
+    const wantsInterrupt = Boolean(input.interrupt) && before.status === "running";
+
+    let nextState = this.store.appendStateEvent(safeTaskId, {
+      type: "steered",
+      at: now,
+      steer_id: steerId,
+      message: input.message,
+      interrupt: wantsInterrupt,
+      contract_version: before.contractVersion,
+      ...(before.stage !== null ? { stage: before.stage } : {}),
+    });
+
+    let interrupted = false;
+    if (wantsInterrupt) {
+      this.abortingBeforeDispatch.add(safeTaskId);
+      try {
+        await this.abortActiveRun(safeTaskId);
+        this.store.sqlite.expireActiveLeaseByTask(
+          safeTaskId,
+          new Date().toISOString(),
+          "expired",
+        );
+        const latestCard = this.store.readTaskCard(safeTaskId);
+        const currentDerived = deriveTaskStatus(
+          latestCard,
+          this.store.readStateEvents(safeTaskId),
+        );
+        if (currentDerived.status === "running") {
+          const targetStage = currentDerived.stage ?? before.stage ?? "implement";
+          const targetStepIndex =
+            currentDerived.stepIndex !== null ? currentDerived.stepIndex : before.stepIndex;
+          nextState = this.store.appendStateEvent(safeTaskId, {
+            type: "resumed",
+            at: new Date().toISOString(),
+            stage: targetStage,
+            ...(targetStepIndex !== null ? { step_index: targetStepIndex } : {}),
+          });
+          interrupted = true;
+        }
+      } finally {
+        this.abortingBeforeDispatch.delete(safeTaskId);
+      }
+    }
+
+    this.syncCaffeinate();
+    this.publishTaskUpdated(safeTaskId, {
+      status: nextState.status,
+      ...(nextState.stage !== null ? { stage: nextState.stage } : {}),
+      contractVersion: nextState.contractVersion,
+    });
+    if (interrupted) {
+      void this.wake();
+    }
+
+    const activeSteers = extractActiveSteerNotes(
+      this.store.readStateEvents(safeTaskId),
+      before.contractVersion,
+    );
+    const createdSteer =
+      activeSteers.find((s) => s.id === steerId) ?? {
+        id: steerId,
+        at: now,
+        message: input.message,
+        interrupt: wantsInterrupt,
+        contract_version: before.contractVersion,
+        ...(before.stage !== null ? { stage: before.stage } : {}),
+      };
+
+    return {
+      steer: createdSteer,
+      state: nextState,
+      interrupted,
+    };
   }
 
   private isRunStillCurrent(
@@ -1377,6 +1030,14 @@ export class KilnOrchestrator {
     return path.join(this.store.paths.workspaceDir(safeTaskId), "worktree");
   }
 
+  private canonicalizeWorkspacePath(dir: string): string {
+    try {
+      return fs.realpathSync(dir);
+    } catch {
+      return path.resolve(dir);
+    }
+  }
+
   private async prepareWorkspaceForPlan(
     card: TaskCard,
     stage: StageId,
@@ -1386,7 +1047,7 @@ export class KilnOrchestrator {
     }
 
     if (card.workspace_mode === "scratch_dir") {
-      const cwd = prepareScratchWorkspace(this.store, card.id);
+      const cwd = this.canonicalizeWorkspacePath(prepareScratchWorkspace(this.store, card.id));
       this.ensureFrozenBaselineInitialized(card, cwd);
       return { cwd };
     }
@@ -1395,8 +1056,9 @@ export class KilnOrchestrator {
       const wsDir = this.store.paths.workspaceDir(card.id);
       ensureDir(wsDir);
       ensureDir(this.store.paths.stagedDir(card.id));
-      this.ensureFrozenBaselineInitialized(card, wsDir);
-      return { cwd: wsDir };
+      const canonicalWsDir = this.canonicalizeWorkspacePath(wsDir);
+      this.ensureFrozenBaselineInitialized(card, canonicalWsDir);
+      return { cwd: canonicalWsDir };
     }
 
     // git_worktree
@@ -1418,6 +1080,7 @@ export class KilnOrchestrator {
         cloneDeps: space.clone_deps,
       });
 
+      const canonicalPrepPath = this.canonicalizeWorkspacePath(prep.worktreePath);
       try {
         if (space.scripts?.setup?.trim()) {
           const setupOutcome = this.scriptRunner
@@ -1428,7 +1091,7 @@ export class KilnOrchestrator {
                 timeoutMs: 120_000,
               })
             : await runIsolatedCommand(space.scripts.setup, {
-                cwd: prep.worktreePath,
+                cwd: canonicalPrepPath,
                 timeoutMs: 120_000,
               });
           if (setupOutcome.exitCode !== 0) {
@@ -1442,7 +1105,7 @@ export class KilnOrchestrator {
           }
         }
 
-        this.ensureFrozenBaselineInitialized(card, prep.worktreePath);
+        this.ensureFrozenBaselineInitialized(card, canonicalPrepPath);
       } catch (err) {
         await runGitCommand([
           "-C",
@@ -1450,16 +1113,17 @@ export class KilnOrchestrator {
           "worktree",
           "remove",
           "--force",
-          prep.worktreePath,
+          canonicalPrepPath,
         ]).catch(() => {});
         throw err;
       }
-      return { cwd: prep.worktreePath, inputRef: prep.baseCommit };
+      return { cwd: canonicalPrepPath, inputRef: prep.baseCommit };
     }
 
-    this.ensureFrozenBaselineInitialized(card, worktreePath);
+    const resolvedWorktreePath = this.canonicalizeWorkspacePath(worktreePath);
+    this.ensureFrozenBaselineInitialized(card, resolvedWorktreePath);
     const headCommit = (
-      await runGitCommand(["-C", worktreePath, "rev-parse", "HEAD"])
+      await runGitCommand(["-C", resolvedWorktreePath, "rev-parse", "HEAD"])
     ).trim();
 
     if (stage === "implement") {
@@ -1467,12 +1131,12 @@ export class KilnOrchestrator {
         (r) => r.meta?.stage === "implement" && r.meta.input_ref,
       );
       return {
-        cwd: worktreePath,
+        cwd: resolvedWorktreePath,
         inputRef: firstImplementRun?.meta?.input_ref ?? headCommit,
       };
     }
 
-    return { cwd: worktreePath, inputRef: headCommit };
+    return { cwd: resolvedWorktreePath, inputRef: headCommit };
   }
 
   private async findBackendWithAgent(
@@ -1498,7 +1162,119 @@ export class KilnOrchestrator {
     return null;
   }
 
-  private buildHandoffMarkdown(params: {
+  private buildPreviousDeltaSummaries(
+    taskId: string,
+    card: TaskCard,
+    stage: StageId,
+  ): { previousFailureSummary: string | null; previousReviewSummary: string | null } {
+    if (stage !== "implement") {
+      return { previousFailureSummary: null, previousReviewSummary: null };
+    }
+    const runs = this.listCurrentWindowRuns(taskId, card);
+    let previousFailureSummary: string | null = null;
+    let previousReviewSummary: string | null = null;
+
+    for (let i = runs.length - 1; i >= 0; i--) {
+      const r = runs[i]!;
+      if (
+        previousFailureSummary === null &&
+        (r.meta.stage === "implement" || r.meta.stage === "verify")
+      ) {
+        const gate = readYamlOptional(
+          this.store.paths.gateYaml(taskId, r.dirName),
+          GateReportSchema,
+        );
+        if (
+          gate &&
+          (!gate.schema_ok ||
+            !gate.scope_ok ||
+            gate.artifacts_ok === false ||
+            gate.accept_exit_code !== 0 ||
+            gate.frozen_files_changed.length > 0)
+        ) {
+          const lines = [
+            `- 来源 Run: ${r.meta.run_id} (${r.meta.stage} · round ${r.meta.round})`,
+            `- schema_ok=${gate.schema_ok}, scope_ok=${gate.scope_ok}, artifacts_ok=${gate.artifacts_ok !== false}, accept_exit_code=${gate.accept_exit_code}`,
+          ];
+          if (gate.out_of_scope_paths.length > 0) {
+            lines.push(`- 越界文件: ${gate.out_of_scope_paths.join(", ")}`);
+          }
+          if (gate.frozen_files_changed.length > 0) {
+            lines.push(`- 冻结文件变动: ${gate.frozen_files_changed.join(", ")}`);
+          }
+          lines.push(`- 门禁详情文件: ${this.store.paths.gateYaml(taskId, r.dirName)}`);
+          previousFailureSummary = lines.join("\n");
+        }
+      }
+      if (previousReviewSummary === null && r.meta.stage === "review" && r.hasReceipt) {
+        const raw = readOptionalText(this.store.paths.receiptMd(taskId, r.dirName));
+        if (raw) {
+          const parsed = parseAndValidateReceipt("reviewer", raw);
+          if (parsed.ok && parsed.frontmatter.verdict === "changes_requested") {
+            const defects =
+              extractSection(parsed.body, "缺陷清单") ||
+              extractSection(parsed.body, "结论") ||
+              parsed.body;
+            previousReviewSummary = [
+              `- 审查 Run: ${r.meta.run_id} (P0=${parsed.frontmatter.p0}, P1=${parsed.frontmatter.p1}, P2=${parsed.frontmatter.p2})`,
+              defects.trim().slice(0, 1500),
+            ].join("\n");
+          }
+        }
+      }
+      if (previousFailureSummary !== null && previousReviewSummary !== null) {
+        break;
+      }
+    }
+
+    return { previousFailureSummary, previousReviewSummary };
+  }
+
+  private hasConsecutiveSameGateFailure(
+    taskId: string,
+    card: TaskCard,
+    threshold: number,
+  ): boolean {
+    const runs = this.listCurrentWindowRuns(taskId, card);
+    let latestFp: string | null = null;
+    let streak = 0;
+
+    for (let i = runs.length - 1; i >= 0; i--) {
+      const r = runs[i]!;
+      if (r.meta.stage === "advise" || r.meta.stage === "triage") {
+        break;
+      }
+      if (r.meta.stage !== "implement" && r.meta.stage !== "verify") {
+        if (r.meta.stage === "review") {
+          // Review rejection shouldn't mask earlier gate failure checks, stop scanning gate streak.
+          break;
+        }
+        continue;
+      }
+      const gate = readYamlOptional(
+        this.store.paths.gateYaml(taskId, r.dirName),
+        GateReportSchema,
+      );
+      const fp = gate ? computeGateFailureFingerprint(gate) : null;
+      if (!fp) {
+        break;
+      }
+      if (latestFp === null) {
+        latestFp = fp;
+        streak = 1;
+      } else if (fp === latestFp) {
+        streak += 1;
+      } else {
+        break;
+      }
+      if (streak >= threshold) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private buildHandoffPayload(params: {
     card: TaskCard;
     runId: string;
     runDirName: string;
@@ -1508,130 +1284,21 @@ export class KilnOrchestrator {
     cwd: string;
     inputRef?: string;
     mcpEnabled: boolean;
-  }): string {
-    const { card, runId, runDirName, stage, round, role, cwd, inputRef, mcpEnabled } = params;
-    const brief = readOptionalText(this.store.paths.briefMd(card.id)) ?? "";
-    const researchDoc =
-      stage !== "research" ? (readOptionalText(this.store.paths.researchMd(card.id)) ?? "") : "";
-    const planDoc =
-      stage !== "plan" ? (readOptionalText(this.store.paths.planMd(card.id)) ?? "") : "";
+    rosterRoleId?: string;
+  }): HandoffPayload {
     const advisorReq =
-      stage === "advise" ? this.readAdvisorRequest(card.id, card.contract_version) : null;
-    const decisions = readOptionalText(this.store.paths.decisionsMd(card.id)) ?? "";
-    const ledger = this.store.readLedger(card.space);
-    const ledgerText =
-      ledger && ledger.entries.length > 0
-        ? ledger.entries.map((e) => `- ${e.rule}`).join("\n")
-        : "(无)";
-
-    const advisorRoutingHint =
-      role === "worker" || role === "reviewer"
-        ? `- 若遇到纯技术选型、架构/数据结构取舍或界面排版歧义（不改变产品目标、外部行为、\`contract.scope\` 与人类红线），请将 \`category\` 设为 \`technical_ambiguity\`（或 \`design_tradeoff\` / \`layout_ambiguity\`），内核将优先交由技术顾问决策；若涉及改需求目标、扩范围或高风险外部动作，请使用对应人类审批类别直接交由用户拍板。`
-        : "";
-
-    const protocolNote = mcpEnabled
-      ? [
-          `请使用 kiln-mcp 工具（wb_get_context / wb_read_ledger / wb_submit_receipt / wb_ask_decision）提交阶段产物。`,
-          ...(advisorRoutingHint ? [advisorRoutingHint] : []),
-        ].join("\n")
-      : [
-          `当前执行环境未注入 MCP，请严格遵守文件降级协议：`,
-          `- 将阶段回执直接写入：${this.store.paths.receiptMd(card.id, runDirName)}`,
-          `- 若遇到阻塞需要裁决，请在回执 frontmatter 填写 outcome: need_decision、category、question 与 options，并在正文 "## 未完成或待决问题" 写明详情。`,
-          ...(advisorRoutingHint ? [advisorRoutingHint] : []),
-        ].join("\n");
-
-    const isHostTwoPhase =
-      card.workspace_mode === "host_scoped" &&
-      (getImplementAgentMode(card) === "dry_run_only" ||
-        getVerifyGateCheckMode(card) === "staged_only");
-
-    const modeNote =
-      stage === "research"
-        ? `当前为前置调研阶段 (research · advisor)：你正在只读分析目标工作区 ${cwd} 与《产品方案》(BRIEF.md)。请围绕代码现状、依赖边界、接口兼容与风险验证给出客观调研结论（严禁直接修改源码或暂存文件），完成后提交 advisor 角色回执（outcome: resolved）；若必须改契约/扩 scope/人类审批，请在 frontmatter 置位 requires_* 字段或提交 outcome: need_decision。`
-        : stage === "plan"
-          ? `当前为前置方案阶段 (plan · advisor)：你正在只读分析目标工作区 ${cwd} 与《产品方案》(BRIEF.md)。请产出清晰、可落地且无歧义的技术实施方案（改动模块、接口/状态设计、边界与验证要点）写在回执正文中（严禁直接修改源码或暂存文件），完成后提交 advisor 角色回执（outcome: resolved）；若必须改契约/扩 scope/人类审批，请在 frontmatter 置位 requires_* 字段或提交 outcome: need_decision。`
-          : stage === "advise"
-          ? `当前为盘中技术顾问决策阶段 (advise · advisor)：你正在只读分析目标工作区 ${cwd}、产品方案、历史裁决与触发上下文。严禁直接修改源码或暂存文件；严禁擅自更改交付目标、扩大 contract.scope 或越过人类红线。请在已授权契约内给出明确可执行的单一选型建议并提交 outcome: resolved（可通过 target_stage 指定回到 implement 或 review）；若判定必须修改契约（requires_contract_change: true）、扩大 scope（requires_scope_expansion: true）或需人类批准红线副作用（requires_human_approval: true），请如实在 frontmatter 标明或提交 outcome: need_decision，由内核转交本人拍板。`
-          : isHostTwoPhase
-            ? `当前为 host_op 两阶段确定性执行（Phase 1 · dry_run_only）：只能把待写入/待执行的脚本、配置文件等产物放入沙盒暂存目录 ${this.store.paths.stagedDir(card.id)}，并在回执 changed_paths 中列出对应的宿主机目标绝对路径，严禁直接修改宿主机目标或运行直接改动宿主机的正式命令！Phase 1 门禁采用 staged_only（不会预先运行宿主机正式 accept_cmd），完成暂存与 dry-run 自检后请直接提交 outcome: completed（accept_result 可填 skipped 或 pass），严禁提出 action: return_external。后续落盘审批、交付命令执行与最终 accept_cmd 验真将由 Kiln 内核在 deliver 阶段原子完成。`
-            : card.workspace_mode === "host_scoped"
-              ? `当前为 host_scoped 模式：只能把待写文件写入沙盒暂存目录 ${this.store.paths.stagedDir(card.id)}，并在回执 changed_paths 中列出对应的宿主机目标绝对路径，严禁直接修改宿主机目标文件！提交 outcome: completed 后将由 Kiln 内核向用户发起落盘审批并原子写入，严禁使用或提出 action: return_external。`
-              : card.workspace_mode === "git_worktree"
-                ? `当前为 git_worktree 模式：工作区位于 ${cwd}。你只需编辑工作区内 scope 允许的文件并运行验收命令，严禁在受限沙箱里执行 git commit、git merge 或 git push；通过门禁后将由 kilnd 内核统一提交并合入。`
-                : `当前为 scratch_dir 模式：独立目录位于 ${cwd}。`;
-
-    const advisorContextSection = advisorReq
-      ? [
-          `## 触发顾问的待决与异常上下文`,
-          `- 触发原因: ${advisorReq.trigger} (${advisorReq.reason})`,
-          `- 来源阶段: ${advisorReq.source_stage}${advisorReq.source_role ? ` · ${advisorReq.source_role}` : ""} (${advisorReq.source_run_id})`,
-          `- 问题类别: ${advisorReq.category}`,
-          ...(advisorReq.failure_fingerprint
-            ? [
-                `- 连续同错指纹: ${advisorReq.failure_fingerprint}（连续 ${advisorReq.consecutive_failures ?? 1} 次）`,
-              ]
-            : []),
-          `- 问题描述: ${advisorReq.question}`,
-          ...(advisorReq.options.length > 0
-            ? [
-                `- 原候选选项:\n${advisorReq.options
-                  .map((o) => `  - [${o.id}] ${o.label} (action=${o.action})`)
-                  .join("\n")}`,
-              ]
-            : []),
-        ].join("\n")
-      : "";
-
-    const receiptTemplateSection = buildReceiptTemplateSection({
-      role,
-      runId,
-      contractVersion: card.contract_version,
-      workspaceMode: card.workspace_mode,
-      inputRef,
+      params.stage === "advise"
+        ? this.readAdvisorRequest(params.card.id, params.card.contract_version)
+        : null;
+    const { previousFailureSummary, previousReviewSummary } =
+      this.buildPreviousDeltaSummaries(params.card.id, params.card, params.stage);
+    return buildHandoffPayload({
+      store: this.store,
+      ...params,
+      advisorReq,
+      previousFailureSummary,
+      previousReviewSummary,
     });
-
-    return [
-      `# HANDOFF (${stage} · round ${round})`,
-      ``,
-      `- task_id: ${card.id}`,
-      `- run_id: ${runId}`,
-      `- role: ${role}`,
-      `- contract_version: ${card.contract_version}`,
-      `- workspace_mode: ${card.workspace_mode}`,
-      `- cwd: ${cwd}`,
-      ...(inputRef ? [`- input_ref: ${inputRef}`] : []),
-      ``,
-      `## 交付契约`,
-      `- 目标: ${card.contract.goal}`,
-      `- 终点: ${card.contract.end}`,
-      `- 验收命令: \`${card.contract.accept_cmd}\``,
-      `- 可改范围: ${card.contract.scope.join(", ")}`,
-      ``,
-      `## 安全与协议要求`,
-      modeNote,
-      protocolNote,
-      ``,
-      ...(receiptTemplateSection ? [receiptTemplateSection, ``] : []),
-      ...(advisorContextSection ? [advisorContextSection, ``] : []),
-      `## 空间决策账本 (${card.space})`,
-      ledgerText,
-      ``,
-      ...(brief ? [`## 立项说明 (BRIEF)`, brief, ``] : []),
-      ...(researchDoc ? [`## 调研结论 (RESEARCH.md)`, researchDoc, ``] : []),
-      ...(planDoc ? [`## 技术实施方案 (PLAN.md)`, planDoc, ``] : []),
-      ...(card.attachments && card.attachments.length > 0
-        ? [
-            `## 任务附件 (${card.attachments.length})`,
-            ...card.attachments.map((att) => {
-              const diskName = path.posix.basename(att.rel_path.replace(/\\/g, "/"));
-              return `- ${att.filename} (${att.mime_type}) -> ${this.store.paths.taskAttachmentFile(card.id, diskName)}`;
-            }),
-            ``,
-          ]
-        : []),
-      ...(decisions ? [`## 历史裁决 (decisions)`, decisions, ``] : []),
-    ].join("\n");
   }
 
   private async handleSchedulerDispatchError(
@@ -1687,6 +1354,62 @@ export class KilnOrchestrator {
     }
   }
 
+  private isTesterAgentModeEnabled(): boolean {
+    const roster = this.store.readConfig("roster");
+    const entry = roster?.roster.tester;
+    return Boolean(entry?.enabled && entry.mode === "agent" && entry.primary);
+  }
+
+  private hasCompletedAgentRunInTail(
+    taskId: string,
+    card: TaskCard,
+    targetStage: "verify" | "deliver",
+    stopAtStage?: StageId,
+  ): boolean {
+    const runs = this.listCurrentWindowRuns(taskId, card);
+    for (let i = runs.length - 1; i >= 0; i--) {
+      const r = runs[i]!;
+      if (stopAtStage !== undefined && r.meta.stage === stopAtStage) {
+        return false;
+      }
+      if (r.meta.stage !== targetStage) {
+        return false;
+      }
+      if (!r.hasReceipt) {
+        continue;
+      }
+      const raw = readOptionalText(this.store.paths.receiptMd(taskId, r.dirName));
+      if (!raw) {
+        continue;
+      }
+      const parsed = parseAndValidateReceipt("worker", raw);
+      if (
+        parsed.ok &&
+        parsed.frontmatter.run_id === r.meta.run_id &&
+        parsed.frontmatter.contract_version === card.contract_version &&
+        parsed.frontmatter.outcome === "completed"
+      ) {
+        if (targetStage === "verify") {
+          const gate = readYamlOptional(
+            this.store.paths.gateYaml(taskId, r.dirName),
+            GateReportSchema,
+          );
+          const gatePassed =
+            gate !== null &&
+            gate.schema_ok &&
+            gate.scope_ok &&
+            gate.artifacts_ok !== false &&
+            gate.accept_exit_code === 0;
+          if (!gatePassed) {
+            continue;
+          }
+        }
+        return true;
+      }
+    }
+    return false;
+  }
+
   private async dispatchPlan(plan: DispatchPlan): Promise<void> {
     if (this.stopped || this.abortingBeforeDispatch.has(plan.taskId)) {
       return;
@@ -1702,9 +1425,14 @@ export class KilnOrchestrator {
       return;
     }
 
-    if (plan.stage === "plan" && plan.roleAssignment === null) {
-      const next = nextTaskStageAfter(plan.card, "plan", plan.card.track) ?? "implement";
-      await this.advanceToNextStage(plan.taskId, next);
+    if ((plan.stage === "plan" || plan.stage === "research") && plan.roleAssignment === null) {
+      const nextStep = nextWorkflowStepAfter(plan.card, plan.stepIndex, plan.stage, plan.card.track);
+      await this.advanceToNextStage(
+        plan.taskId,
+        nextStep?.stage ?? "implement",
+        undefined,
+        nextStep?.stepIndex ?? null,
+      );
       return;
     }
 
@@ -1744,6 +1472,17 @@ export class KilnOrchestrator {
       return;
     }
 
+    await this.dispatchAgentStageRun(plan);
+  }
+
+  private async dispatchAgentStageRun(
+    plan: DispatchPlan,
+    opts?: { deliverConflictNote?: string },
+  ): Promise<void> {
+    if (this.stopped || this.abortingBeforeDispatch.has(plan.taskId)) {
+      return;
+    }
+
     if (!plan.role || !plan.roleAssignment) {
       throw new Error(
         `Role "${plan.role ?? plan.stage}" is not configured in roles.yaml for task "${plan.taskId}"`,
@@ -1769,7 +1508,22 @@ export class KilnOrchestrator {
     const runId = `run-${plan.taskId}-${plan.stage}-r${plan.round}-v${plan.contractVersion}-${randomUUID().slice(0, 6)}`;
     const now = new Date().toISOString();
 
-    const handoffMarkdown = this.buildHandoffMarkdown({
+    let escalatedDiffStat: string | undefined;
+    if (
+      assignment.escalatedFrom &&
+      plan.card.workspace_mode === "git_worktree" &&
+      fs.existsSync(workspace.cwd)
+    ) {
+      const diffArgs = workspace.inputRef
+        ? ["-C", workspace.cwd, "diff", "--stat", workspace.inputRef]
+        : ["-C", workspace.cwd, "status", "--short"];
+      const rawStat = await runGitCommand(diffArgs).catch(() => "");
+      if (rawStat.trim().length > 0) {
+        escalatedDiffStat = rawStat.trim().slice(0, 1_200);
+      }
+    }
+
+    const handoff = this.buildHandoffPayload({
       card: plan.card,
       runId,
       runDirName,
@@ -1779,6 +1533,17 @@ export class KilnOrchestrator {
       cwd: workspace.cwd,
       inputRef: workspace.inputRef,
       mcpEnabled: caps.mcpInjection,
+      ...(assignment.rosterRoleId !== undefined ? { rosterRoleId: assignment.rosterRoleId } : {}),
+      ...(assignment.customInstructions !== undefined
+        ? { customInstructions: assignment.customInstructions }
+        : {}),
+      ...(assignment.escalatedFrom !== undefined
+        ? { escalatedFrom: assignment.escalatedFrom }
+        : {}),
+      ...(escalatedDiffStat !== undefined ? { escalatedDiffStat } : {}),
+      ...(opts?.deliverConflictNote !== undefined
+        ? { deliverConflictNote: opts.deliverConflictNote }
+        : {}),
     });
 
     const isReadOnly =
@@ -1802,9 +1567,136 @@ export class KilnOrchestrator {
       }
     }
 
+    const canTryWarm =
+      plan.stage === "implement" &&
+      plan.role === "worker" &&
+      !assignment.freshContext &&
+      caps.warmSessionReuse === true &&
+      !this.hasConsecutiveSameGateFailure(plan.taskId, plan.card, 2);
+
+    let warmEntry = canTryWarm
+      ? this.warmPool.takeMatching(
+          {
+            taskId: plan.taskId,
+            backendId: backend.backendId,
+            agent: assignment.agent,
+            model: assignment.model,
+            cwd: workspace.cwd,
+            rosterRoleId: assignment.rosterRoleId,
+            contractVersion: plan.contractVersion,
+          },
+          Date.now(),
+          this.getWarmCacheTtlMs(),
+        )
+      : null;
+
+    if (warmEntry !== null) {
+      const probe = await backend.probe(warmEntry.sessionRef).catch(() => null);
+      if (!probe || !probe.alive || probe.status !== "idle") {
+        void backend.cancel(warmEntry.sessionRef).catch(() => {});
+        warmEntry = null;
+      }
+    }
+
+    let alreadyPersistedLease = false;
+    if (warmEntry !== null) {
+      const warmMessage = `# HANDOFF (热会话续跑 · 继承自 ${warmEntry.lastRunId})\n\n${handoff.dynamicTail}`;
+      const warmSessionRef: SessionRef = {
+        ...warmEntry.sessionRef,
+        meta: {
+          ...(warmEntry.sessionRef.meta ?? {}),
+          kilnSessionKey: warmEntry.sessionKey,
+        },
+      };
+      const warmRunMeta: RunMeta = {
+        schema_version: 1,
+        run_id: runId,
+        task_id: plan.taskId,
+        stage: plan.stage,
+        ...(plan.stepIndex !== null ? { step_index: plan.stepIndex } : {}),
+        round: plan.round,
+        role: plan.role,
+        ...(assignment.rosterRoleId !== undefined ? { roster_role: assignment.rosterRoleId } : {}),
+        contract_version: plan.contractVersion,
+        backend_id: backend.backendId,
+        agent: assignment.agent,
+        model: assignment.model,
+        session_ref: warmSessionRef,
+        session_reused: true,
+        parent_run_id: warmEntry.lastRunId,
+        ...(assignment.escalatedFrom !== undefined
+          ? { escalated_from: assignment.escalatedFrom }
+          : {}),
+        ...(assignment.heterogeneityLevel !== undefined
+          ? { heterogeneity_level: assignment.heterogeneityLevel }
+          : {}),
+        cwd: workspace.cwd,
+        ...(workspace.inputRef !== undefined ? { input_ref: workspace.inputRef } : {}),
+        ...(checkpointRef !== undefined ? { checkpoint_ref: checkpointRef } : {}),
+        started_at: now,
+      };
+      const leaseResult = this.store.persistRunBeforeDispatch(
+        warmRunMeta,
+        runDirName,
+        warmMessage,
+      );
+      if (!leaseResult.acquired) {
+        void backend.cancel(warmEntry.sessionRef).catch(() => {});
+        return;
+      }
+      alreadyPersistedLease = true;
+      this.syncCaffeinate();
+      this.publishTaskUpdated(plan.taskId, {
+        status: "running",
+        stage: plan.stage,
+        round: plan.round,
+        contractVersion: plan.contractVersion,
+      });
+
+      this.sessionKeyByRunId.set(runId, warmEntry.sessionKey);
+      this.reuseCountByRunId.set(runId, warmEntry.reuseCount + 1);
+      this.startingBackendCount += 1;
+      let sendSucceeded = false;
+      try {
+        await backend.send(warmEntry.sessionRef, warmMessage);
+        sendSucceeded = true;
+      } catch {
+        this.sessionKeyByRunId.delete(runId);
+        this.reuseCountByRunId.delete(runId);
+        void backend.cancel(warmEntry.sessionRef).catch(() => {});
+        warmEntry = null;
+      } finally {
+        this.startingBackendCount = Math.max(0, this.startingBackendCount - 1);
+      }
+      if (sendSucceeded) {
+        this.attachSessionConsumer(
+          plan.taskId,
+          runDirName,
+          warmRunMeta,
+          backend,
+          warmSessionRef,
+        );
+        this.flushDeferredApprovals();
+        return;
+      }
+    }
+
+    if (!canTryWarm) {
+      this.warmPool.evictTask(plan.taskId);
+    }
+
+    const handoffMarkdown = handoff.fullMarkdown;
+    const coldSessionKey =
+      plan.stage === "implement" &&
+      plan.role === "worker" &&
+      caps.warmSessionReuse === true
+        ? `sk-${randomUUID().slice(0, 12)}`
+        : undefined;
+
     const placeholderSessionRef: SessionRef = {
       backendId: backend.backendId,
       sessionId: `pending-${runId}`,
+      ...(coldSessionKey !== undefined ? { meta: { kilnSessionKey: coldSessionKey } } : {}),
     };
 
     const runMeta: RunMeta = {
@@ -1812,6 +1704,7 @@ export class KilnOrchestrator {
       run_id: runId,
       task_id: plan.taskId,
       stage: plan.stage,
+      ...(plan.stepIndex !== null ? { step_index: plan.stepIndex } : {}),
       round: plan.round,
       role: plan.role,
       ...(assignment.rosterRoleId !== undefined ? { roster_role: assignment.rosterRoleId } : {}),
@@ -1820,28 +1713,47 @@ export class KilnOrchestrator {
       agent: assignment.agent,
       model: assignment.model,
       session_ref: placeholderSessionRef,
+      ...(assignment.escalatedFrom !== undefined
+        ? { escalated_from: assignment.escalatedFrom }
+        : {}),
+      ...(assignment.heterogeneityLevel !== undefined
+        ? { heterogeneity_level: assignment.heterogeneityLevel }
+        : {}),
       cwd: workspace.cwd,
       ...(workspace.inputRef !== undefined ? { input_ref: workspace.inputRef } : {}),
       ...(checkpointRef !== undefined ? { checkpoint_ref: checkpointRef } : {}),
       started_at: now,
     };
 
-    const leaseResult = this.store.persistRunBeforeDispatch(
-      runMeta,
-      runDirName,
-      handoffMarkdown,
-    );
-    if (!leaseResult.acquired) {
-      return;
+    if (alreadyPersistedLease) {
+      writeYamlAtomic(
+        this.store.paths.runYaml(plan.taskId, runDirName),
+        runMeta,
+        RunMetaSchema,
+      );
+      writeFileAtomic(this.store.paths.handoffMd(plan.taskId, runDirName), handoffMarkdown);
+    } else {
+      const leaseResult = this.store.persistRunBeforeDispatch(
+        runMeta,
+        runDirName,
+        handoffMarkdown,
+      );
+      if (!leaseResult.acquired) {
+        return;
+      }
+      this.syncCaffeinate();
+      this.publishTaskUpdated(plan.taskId, {
+        status: "running",
+        stage: plan.stage,
+        round: plan.round,
+        contractVersion: plan.contractVersion,
+      });
     }
 
-    this.syncCaffeinate();
-    this.publishTaskUpdated(plan.taskId, {
-      status: "running",
-      stage: plan.stage,
-      round: plan.round,
-      contractVersion: plan.contractVersion,
-    });
+    if (coldSessionKey !== undefined) {
+      this.sessionKeyByRunId.set(runId, coldSessionKey);
+      this.reuseCountByRunId.set(runId, 0);
+    }
 
     const mcpServers: McpStdioMountSpec[] | undefined = caps.mcpInjection
       ? [
@@ -1855,6 +1767,7 @@ export class KilnOrchestrator {
                 runId,
                 role: plan.role,
                 contractVersion: plan.contractVersion,
+                ...(coldSessionKey !== undefined ? { sessionKey: coldSessionKey } : {}),
                 ttlSeconds: 7_200,
               }),
               KILN_SOCK_PATH: this.socketPath,
@@ -1908,6 +1821,16 @@ export class KilnOrchestrator {
       return;
     } finally {
       this.startingBackendCount = Math.max(0, this.startingBackendCount - 1);
+    }
+
+    if (coldSessionKey !== undefined) {
+      sessionRef = {
+        ...sessionRef,
+        meta: {
+          ...(sessionRef.meta ?? {}),
+          kilnSessionKey: coldSessionKey,
+        },
+      };
     }
 
     const updatedRunMeta: RunMeta = {
@@ -2203,6 +2126,15 @@ export class KilnOrchestrator {
               this.rateTracker.recordDelta({ taskId, text: ev.text });
             }
 
+            if (ev.kind === "context_window") {
+              const pct =
+                ev.percent ??
+                (ev.contextWindowTokens > 0
+                  ? Math.min(100, Math.max(0, (ev.usedTokens / ev.contextWindowTokens) * 100))
+                  : 0);
+              this.latestContextPercentByRunId.set(runMeta.run_id, pct);
+            }
+
             if (ev.kind === "rate_limited") {
               const cooldownMs =
                 ev.retryAfterSec !== undefined
@@ -2396,6 +2328,66 @@ export class KilnOrchestrator {
       return;
     }
 
+    this.recentSpaceCompletedAtMs.set(card.space, Date.now());
+    const sessionKey = this.sessionKeyByRunId.get(runMeta.run_id);
+    const reuseCount = this.reuseCountByRunId.get(runMeta.run_id) ?? 0;
+    const lastContextPercent =
+      this.latestContextPercentByRunId.get(runMeta.run_id) ?? null;
+    this.sessionKeyByRunId.delete(runMeta.run_id);
+    this.reuseCountByRunId.delete(runMeta.run_id);
+    this.latestContextPercentByRunId.delete(runMeta.run_id);
+
+    if (
+      runMeta.stage === "implement" &&
+      runMeta.role === "worker" &&
+      exitEvent?.reason === "completed" &&
+      sessionKey !== undefined
+    ) {
+      const latestRunMeta =
+        readYamlOptional(
+          this.store.paths.runYaml(taskId, runDirName),
+          RunMetaSchema,
+        ) ?? runMeta;
+      const backend = this.backendRegistry.get(latestRunMeta.backend_id);
+      const caps =
+        this.agentCapabilitiesMap.get(latestRunMeta.agent) ??
+        (backend
+          ? await backend.capabilities(latestRunMeta.agent).catch(() => undefined)
+          : undefined);
+      const cwd =
+        latestRunMeta.cwd ??
+        (card.workspace_mode === "git_worktree"
+          ? this.getGitWorktreeDir(taskId)
+          : this.store.paths.workspaceDir(taskId));
+      if (
+        backend &&
+        caps?.warmSessionReuse === true &&
+        reuseCount < WARM_MAX_CONSECUTIVE_REUSES &&
+        (lastContextPercent === null ||
+          lastContextPercent < WARM_CONTEXT_PERCENT_LIMIT)
+      ) {
+        this.warmPool.park(
+          {
+            taskId,
+            sessionRef: latestRunMeta.session_ref,
+            sessionKey,
+            backend,
+            backendId: latestRunMeta.backend_id,
+            agent: latestRunMeta.agent,
+            model: latestRunMeta.model,
+            cwd,
+            rosterRoleId: latestRunMeta.roster_role,
+            contractVersion: latestRunMeta.contract_version,
+            lastRunId: latestRunMeta.run_id,
+            reuseCount,
+            lastContextPercent,
+            lastUsedAtMs: Date.now(),
+          },
+          this.getWarmCacheTtlMs(),
+        );
+      }
+    }
+
     if (exitEvent?.reason === "cancelled") {
       await this.applyStageFailure(
         taskId,
@@ -2420,6 +2412,9 @@ export class KilnOrchestrator {
       case "implement":
         await this.finalizeWorkerRun(taskId, runDirName, runMeta, exitEvent, signal);
         break;
+      case "verify":
+        await this.finalizeVerifyAgentRun(taskId, runDirName, runMeta, exitEvent, signal);
+        break;
       case "review":
         await this.finalizeReviewerRun(taskId, runDirName, runMeta, exitEvent);
         break;
@@ -2431,6 +2426,9 @@ export class KilnOrchestrator {
         break;
       case "advise":
         await this.finalizeAdvisorRun(taskId, runDirName, runMeta);
+        break;
+      case "deliver":
+        await this.finalizeDeliverAgentRun(taskId, runDirName, runMeta);
         break;
       default:
         break;
@@ -2511,54 +2509,7 @@ export class KilnOrchestrator {
   }
 
   private async computeWorktreeDirtySignature(worktreePath: string): Promise<string> {
-    if (!fs.existsSync(worktreePath)) {
-      return "missing";
-    }
-    try {
-      let head = "no_head";
-      try {
-        head = (await runGitCommand(["-C", worktreePath, "rev-parse", "HEAD"])).trim();
-      } catch {
-        head = "no_head";
-      }
-      const raw = await runGitCommand([
-        "-C",
-        worktreePath,
-        "status",
-        "--porcelain=v1",
-        "-z",
-        "-uall",
-      ]);
-      if (raw.length === 0) {
-        return `clean:${head}`;
-      }
-      const parsed = parseGitPorcelainStatusZ(raw);
-      const hash = createHash("sha256");
-      hash.update(head);
-      hash.update("\0");
-      hash.update(raw);
-      for (const relPath of parsed.dirtyPaths) {
-        hash.update("\0");
-        hash.update(relPath);
-        hash.update("\0");
-        const absPath = path.join(worktreePath, relPath);
-        try {
-          const stat = fs.lstatSync(absPath);
-          if (stat.isSymbolicLink()) {
-            hash.update(`sym:${fs.readlinkSync(absPath)}`);
-          } else if (stat.isFile()) {
-            hash.update(fs.readFileSync(absPath));
-          } else {
-            hash.update("dir");
-          }
-        } catch {
-          hash.update("deleted");
-        }
-      }
-      return `dirty:${hash.digest("hex")}`;
-    } catch {
-      return "git_error";
-    }
+    return await computeWorktreeDirtySignature(worktreePath);
   }
 
   private async detectAdvisorWorkspaceMutation(
@@ -2602,14 +2553,21 @@ export class KilnOrchestrator {
     );
   }
 
+  private isAdvisorConfigured(): boolean {
+    const roster = this.store.readConfig("roster");
+    if (roster !== null) {
+      return deriveLegacyRolesConfigFromRoster(roster).roles.advisor !== undefined;
+    }
+    return this.store.readConfig("roles")?.roles.advisor !== undefined;
+  }
+
   private canInvokeAdvisorForTask(
     taskId: string,
     card: TaskCard,
     currentStage: StageId,
     currentRunId: string,
   ): boolean {
-    const roles = this.store.readConfig("roles");
-    if (!roles?.roles.advisor) {
+    if (!this.isAdvisorConfigured()) {
       return false;
     }
     const { counters } = this.computeStageCounters(
@@ -2856,6 +2814,7 @@ export class KilnOrchestrator {
     taskId: string,
     nextStage: StageId,
     expected?: ExpectedRunGuard,
+    nextStepIndex?: number | null,
   ): Promise<boolean> {
     if (
       this.stopped ||
@@ -2866,11 +2825,17 @@ export class KilnOrchestrator {
       return false;
     }
 
+    if (nextStage === "deliver") {
+      this.warmPool.evictTask(taskId);
+    }
     const now = new Date().toISOString();
     const nextState = this.store.appendStateEvent(taskId, {
       type: "resumed",
       at: now,
       stage: nextStage,
+      ...(nextStepIndex !== undefined && nextStepIndex !== null
+        ? { step_index: nextStepIndex }
+        : {}),
     });
     this.syncCaffeinate();
     this.publishTaskUpdated(taskId, {
@@ -2918,7 +2883,12 @@ export class KilnOrchestrator {
     });
 
     if (decision.action === "retry_stage") {
-      await this.advanceToNextStage(taskId, stage, guard);
+      await this.advanceToNextStage(
+        taskId,
+        stage,
+        guard,
+        runMeta.step_index ?? null,
+      );
       return;
     }
 
@@ -2958,6 +2928,16 @@ export class KilnOrchestrator {
     this.transitionTaskToWaiting(taskId, pending, guard);
   }
 
+  private async finalizeVerifyAgentRun(
+    taskId: string,
+    runDirName: string,
+    runMeta: RunMeta,
+    exitEvent: Extract<RunEvent, { kind: "exit" }> | null,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.finalizeWorkerRun(taskId, runDirName, runMeta, exitEvent, signal);
+  }
+
   private async finalizeWorkerRun(
     taskId: string,
     runDirName: string,
@@ -2966,6 +2946,8 @@ export class KilnOrchestrator {
     signal?: AbortSignal,
     activeRunIdOverride?: string,
   ): Promise<void> {
+    const effectiveStage: "implement" | "verify" =
+      runMeta.stage === "verify" ? "verify" : "implement";
     const activeRunId = activeRunIdOverride ?? runMeta.run_id;
     const guard: ExpectedRunGuard = {
       runId: activeRunId,
@@ -2988,7 +2970,7 @@ export class KilnOrchestrator {
       }
       await this.applyStageFailure(
         taskId,
-        "implement",
+        effectiveStage,
         runMeta,
         {
           kind: "schema_invalid",
@@ -3010,7 +2992,7 @@ export class KilnOrchestrator {
       ) {
         await this.applyStageFailure(
           taskId,
-          "implement",
+          effectiveStage,
           runMeta,
           {
             kind: "schema_invalid",
@@ -3032,14 +3014,14 @@ export class KilnOrchestrator {
       );
       if (
         isAdvisorEligibleDecisionCategory(pending.category) &&
-        this.canInvokeAdvisorForTask(taskId, card, "implement", runMeta.run_id)
+        this.canInvokeAdvisorForTask(taskId, card, effectiveStage, runMeta.run_id)
       ) {
         assertCanInvokeAdvisor("kernel");
         this.writeAdvisorRequest(taskId, {
           schema_version: 1,
           contract_version: card.contract_version,
           trigger: "technical_ambiguity",
-          source_stage: "implement",
+          source_stage: effectiveStage,
           source_run_id: runMeta.run_id,
           source_role: "worker",
           category: pending.category,
@@ -3145,6 +3127,112 @@ export class KilnOrchestrator {
     const worktreePath =
       card.workspace_mode === "git_worktree" ? this.getGitWorktreeDir(taskId) : undefined;
     const baselineSnapshot = this.readSavedFrozenBaseline(taskId, card);
+
+    // Multi-specialist consecutive implement steps: validate receipt, scope & frozen baseline,
+    // commit intermediate changes, and hand off directly to the next implement specialist before
+    // running full accept_cmd verification at the end of the implement sequence.
+    const preNextStep =
+      effectiveStage === "implement"
+        ? nextWorkflowStepAfter(card, runMeta.step_index ?? null, "implement", card.track)
+        : null;
+    if (
+      effectiveStage === "implement" &&
+      preNextStep !== null &&
+      preNextStep.node.kind === "agent" &&
+      preNextStep.stage === "implement" &&
+      card.workspace_mode !== "host_scoped" &&
+      parsedReceipt.ok &&
+      parsedReceipt.frontmatter.run_id === runMeta.run_id &&
+      parsedReceipt.frontmatter.contract_version === card.contract_version
+    ) {
+      if (worktreePath && fs.existsSync(worktreePath)) {
+        const statusRaw = await runGitCommand([
+          "-C",
+          worktreePath,
+          "status",
+          "--porcelain=v1",
+          "-z",
+          "-uall",
+        ]);
+        const dirtyPaths = statusRaw.length > 0 ? parseGitPorcelainStatusZ(statusRaw).dirtyPaths : [];
+        const scopeCheck = checkScope(dirtyPaths, card.contract.scope);
+        if (!scopeCheck.ok) {
+          await this.applyStageFailure(
+            taskId,
+            "implement",
+            runMeta,
+            {
+              kind: "runtime_error",
+              message: `gate_scope_violation: ${scopeCheck.outOfScopePaths.join(", ")}`,
+            },
+            guard,
+          );
+          return;
+        }
+          let frozenChanged: string[] = [];
+          if (baselineSnapshot && baselineSnapshot.files.length > 0) {
+            const space = this.store.readSpace(card.space);
+            const currentFrozen = computeFrozenSnapshot(
+              worktreePath,
+              space?.freeze_patterns ?? [],
+              card.contract.accept_cmd,
+            );
+            const baselineMap = new Map(baselineSnapshot.files.map((f) => [f.path, f]));
+            frozenChanged = currentFrozen.files
+              .filter((f) => {
+                const prev = baselineMap.get(f.path);
+                return prev && (prev.exists !== f.exists || prev.sha256 !== f.sha256);
+              })
+              .map((f) => f.path);
+          }
+          if (
+            (frozenChanged.length > 0 || parsedReceipt.frontmatter.complexity_escalate) &&
+            card.track === "L1"
+          ) {
+            const escalatedState = this.stateMachine.escalateTrackToL2(
+              taskId,
+              frozenChanged.length > 0 ? "frozen_files_changed" : "complexity_escalate",
+            );
+            this.publishTaskUpdated(taskId, {
+              contractVersion: escalatedState.contractVersion,
+            });
+          }
+          const latestCardForIntermediate = this.store.readTaskCard(taskId);
+          await this.commitVerifiedWorktreeChanges(
+            latestCardForIntermediate,
+            worktreePath,
+            runMeta.round,
+          );
+          await createGitWorktreeCheckpoint({
+            worktreePath,
+            taskId,
+            runId: runMeta.run_id,
+            phase: "post",
+            stage: "implement",
+            round: runMeta.round,
+          }).catch(() => {});
+      } else if (
+        parsedReceipt.frontmatter.complexity_escalate &&
+        card.track === "L1"
+      ) {
+        const escalatedState = this.stateMachine.escalateTrackToL2(
+          taskId,
+          "complexity_escalate",
+        );
+        this.publishTaskUpdated(taskId, {
+          contractVersion: escalatedState.contractVersion,
+        });
+      }
+
+      await this.advanceToNextStage(
+        taskId,
+        preNextStep.stage,
+        guard,
+        preNextStep.stepIndex,
+      );
+      return;
+    }
+
     const scratchExpectedArtifacts =
       card.workspace_mode === "scratch_dir"
         ? this.resolveScratchExpectedArtifacts(
@@ -3181,11 +3269,10 @@ export class KilnOrchestrator {
     const { counters, triageAttempted } = this.computeStageCounters(
       taskId,
       card,
-      "implement",
+      effectiveStage,
       runMeta.run_id,
     );
-    const rolesForStuck = this.store.readConfig("roles");
-    const advisorAvailable = Boolean(rolesForStuck?.roles.advisor);
+    const advisorAvailable = this.isAdvisorConfigured();
     const consecutiveSameFailureCount = this.computeConsecutiveSameGateFailureCount(
       taskId,
       card,
@@ -3199,7 +3286,7 @@ export class KilnOrchestrator {
       gateResult.report,
       counters,
       {
-        currentStage: "implement",
+        currentStage: effectiveStage,
         triageAttempted,
         consecutiveSameFailureCount,
         advisorAvailable,
@@ -3249,21 +3336,46 @@ export class KilnOrchestrator {
         taskId,
         runId: runMeta.run_id,
         phase: "post",
-        stage: "implement",
+        stage: effectiveStage,
         round: runMeta.round,
       }).catch(() => {});
     }
 
     if (stageDecision.action === "advance_stage") {
-      const next =
-        stageDecision.nextStage === "verify"
-          ? (nextTaskStageAfter(
-              latestCard,
-              "verify",
-              stageDecision.effectiveTrack,
-            ) ?? "deliver")
-          : (stageDecision.nextStage ?? "deliver");
-      await this.advanceToNextStage(taskId, next, guard);
+      const postNext = nextWorkflowStepAfter(
+        latestCard,
+        runMeta.step_index ?? null,
+        effectiveStage,
+        stageDecision.effectiveTrack,
+      );
+      if (effectiveStage === "implement" && postNext?.stage === "verify") {
+        if (
+          this.isTesterAgentModeEnabled() &&
+          latestCard.workspace_mode !== "host_scoped" &&
+          !this.hasCompletedAgentRunInTail(taskId, latestCard, "verify", "implement")
+        ) {
+          await this.advanceToNextStage(taskId, "verify", guard, postNext.stepIndex);
+          return;
+        }
+        const afterVerify = nextWorkflowStepAfter(
+          latestCard,
+          postNext.stepIndex,
+          "verify",
+          stageDecision.effectiveTrack,
+        );
+        await this.advanceToNextStage(
+          taskId,
+          afterVerify?.stage ?? "deliver",
+          guard,
+          afterVerify?.stepIndex ?? null,
+        );
+        return;
+      }
+      if (postNext !== null) {
+        await this.advanceToNextStage(taskId, postNext.stage, guard, postNext.stepIndex);
+        return;
+      }
+      await this.advanceToNextStage(taskId, stageDecision.nextStage ?? "deliver", guard);
       return;
     }
 
@@ -3292,7 +3404,7 @@ export class KilnOrchestrator {
         schema_version: 1,
         contract_version: latestCard.contract_version,
         trigger: "stuck_same_failure",
-        source_stage: "implement",
+        source_stage: effectiveStage,
         source_run_id: runMeta.run_id,
         source_role: "worker",
         category: "stuck_loop",
@@ -3308,7 +3420,12 @@ export class KilnOrchestrator {
     }
 
     if (stageDecision.action === "retry_stage") {
-      await this.advanceToNextStage(taskId, stageDecision.stage, guard);
+      await this.advanceToNextStage(
+        taskId,
+        stageDecision.stage,
+        guard,
+        runMeta.step_index ?? null,
+      );
       return;
     }
 
@@ -3366,77 +3483,7 @@ export class KilnOrchestrator {
     worktreePath: string,
     round: number,
   ): Promise<void> {
-    const statusRaw = await runGitCommand([
-      "-C",
-      worktreePath,
-      "status",
-      "--porcelain=v1",
-      "-z",
-      "-uall",
-    ]);
-    if (statusRaw.length === 0) {
-      return;
-    }
-
-    let parsed: ParsedPorcelainStatus;
-    try {
-      parsed = parseGitPorcelainStatusZ(statusRaw);
-    } catch {
-      return;
-    }
-    if (parsed.dirtyPaths.length === 0) {
-      return;
-    }
-
-    // Re-verify all dirty/untracked paths remain strictly within contract scope before committing.
-    const scopeCheck = checkScope(parsed.dirtyPaths, card.contract.scope);
-    if (!scopeCheck.ok) {
-      return;
-    }
-
-    if (parsed.pathsToStage.length > 0) {
-      await runGitCommand([
-        "-C",
-        worktreePath,
-        "add",
-        "--",
-        ...parsed.pathsToStage,
-      ]);
-    }
-
-    const stagedRaw = await runGitCommand([
-      "-C",
-      worktreePath,
-      "diff",
-      "--cached",
-      "--name-only",
-      "-z",
-    ]);
-    if (stagedRaw.length === 0) {
-      return;
-    }
-
-    const userName = (
-      await runGitCommand(["-C", worktreePath, "config", "user.name"]).catch(() => "")
-    ).trim();
-    const userEmail = (
-      await runGitCommand(["-C", worktreePath, "config", "user.email"]).catch(() => "")
-    ).trim();
-
-    const commitArgs = ["-C", worktreePath];
-    if (!userName) {
-      commitArgs.push("-c", "user.name=Kiln");
-    }
-    if (!userEmail) {
-      commitArgs.push("-c", "user.email=kiln@local");
-    }
-    const cleanTitle = card.title.replace(/[\r\n]+/g, " ").trim();
-    commitArgs.push(
-      "commit",
-      "-m",
-      `kiln(${card.id}): ${cleanTitle} (round ${round})`,
-    );
-    await runGitCommand(commitArgs);
+    await commitVerifiedWorktreeChanges(card, worktreePath, round);
   }
 
   private async finalizeReviewerRun(
@@ -3519,8 +3566,7 @@ export class KilnOrchestrator {
       "review",
       runMeta.run_id,
     );
-    const rolesForStuck = this.store.readConfig("roles");
-    const advisorAvailable = Boolean(rolesForStuck?.roles.advisor);
+    const advisorAvailable = this.isAdvisorConfigured();
     const consecutiveSameFailureCount =
       parsedReceipt.ok &&
       parsedReceipt.frontmatter.run_id === runMeta.run_id &&
@@ -3541,17 +3587,43 @@ export class KilnOrchestrator {
     });
 
     if (reviewDecision.action === "advance_stage") {
-      await this.advanceToNextStage(taskId, reviewDecision.nextStage ?? "deliver", guard);
+      const nextStep = nextWorkflowStepAfter(
+        card,
+        runMeta.step_index ?? null,
+        "review",
+        card.track,
+      );
+      await this.advanceToNextStage(
+        taskId,
+        nextStep?.stage ?? reviewDecision.nextStage ?? "deliver",
+        guard,
+        nextStep?.stepIndex ?? null,
+      );
       return;
     }
 
     if (reviewDecision.action === "rework_implement") {
-      await this.advanceToNextStage(taskId, reviewDecision.targetStage, guard);
+      const restartStepIndex = findLoopRestartStepIndex(
+        card,
+        reviewDecision.targetStage,
+        card.track,
+      );
+      await this.advanceToNextStage(
+        taskId,
+        reviewDecision.targetStage,
+        guard,
+        restartStepIndex,
+      );
       return;
     }
 
     if (reviewDecision.action === "retry_stage") {
-      await this.advanceToNextStage(taskId, "review", guard);
+      await this.advanceToNextStage(
+        taskId,
+        "review",
+        guard,
+        runMeta.step_index ?? null,
+      );
       return;
     }
 
@@ -3687,9 +3759,21 @@ export class KilnOrchestrator {
     }
 
     if (parsed.frontmatter.verdict === "pass") {
-      await this.advanceToNextStage(taskId, "deliver", guard);
+      const nextStep = nextWorkflowStepAfter(
+        card,
+        runMeta.step_index ?? null,
+        "accept",
+        card.track,
+      );
+      await this.advanceToNextStage(
+        taskId,
+        nextStep?.stage ?? "deliver",
+        guard,
+        nextStep?.stepIndex ?? null,
+      );
     } else {
-      await this.advanceToNextStage(taskId, "implement", guard);
+      const restartIdx = findLoopRestartStepIndex(card, "implement", card.track);
+      await this.advanceToNextStage(taskId, "implement", guard, restartIdx);
     }
   }
 
@@ -3797,8 +3881,7 @@ export class KilnOrchestrator {
         "triage",
         runMeta.run_id,
       );
-      const roles = this.store.readConfig("roles");
-      if (counters.advisorCalls < card.limits.advisor_calls && roles?.roles.advisor) {
+      if (counters.advisorCalls < card.limits.advisor_calls && this.isAdvisorConfigured()) {
         this.writeAdvisorRequest(taskId, {
           schema_version: 1,
           contract_version: card.contract_version,
@@ -4049,8 +4132,18 @@ export class KilnOrchestrator {
       ].join("\n");
       writeFileAtomic(outputPath, markdown);
       const derived = deriveTaskStatus(card, this.store.readStateEvents(taskId));
-      const next = nextTaskStageAfter(card, stage, derived.track) ?? "implement";
-      await this.advanceToNextStage(taskId, next, guard);
+      const nextStep = nextWorkflowStepAfter(
+        card,
+        runMeta.step_index ?? null,
+        stage,
+        derived.track,
+      );
+      await this.advanceToNextStage(
+        taskId,
+        nextStep?.stage ?? "implement",
+        guard,
+        nextStep?.stepIndex ?? null,
+      );
       return;
     }
 
@@ -4396,13 +4489,186 @@ export class KilnOrchestrator {
     this.transitionTaskToWaiting(taskId, pending, guard);
   }
 
+  private async finalizeDeliverAgentRun(
+    taskId: string,
+    runDirName: string,
+    runMeta: RunMeta,
+  ): Promise<void> {
+    const guard: ExpectedRunGuard = {
+      runId: runMeta.run_id,
+      contractVersion: runMeta.contract_version,
+    };
+    if (!this.isRunStillCurrent(taskId, runMeta.run_id, runMeta.contract_version)) {
+      this.syncCaffeinate();
+      return;
+    }
+
+    const receiptLoad = this.readReceiptAndCommitLease(taskId, runDirName, runMeta);
+    if (!receiptLoad.ok) {
+      if (receiptLoad.reason === "lease_expired") {
+        this.syncCaffeinate();
+        return;
+      }
+      await this.applyStageFailure(
+        taskId,
+        "deliver",
+        runMeta,
+        {
+          kind: "schema_invalid",
+          errors: ["Missing deliverer RECEIPT.md"],
+        },
+        guard,
+      );
+      return;
+    }
+
+    const card = this.store.readTaskCard(taskId);
+    const parsed = parseAndValidateReceipt("worker", receiptLoad.rawReceipt);
+    if (!parsed.ok) {
+      await this.applyStageFailure(
+        taskId,
+        "deliver",
+        runMeta,
+        {
+          kind: "schema_invalid",
+          errors: parsed.errors,
+        },
+        guard,
+      );
+      return;
+    }
+
+    if (
+      parsed.frontmatter.run_id !== runMeta.run_id ||
+      parsed.frontmatter.contract_version !== card.contract_version
+    ) {
+      await this.applyStageFailure(
+        taskId,
+        "deliver",
+        runMeta,
+        {
+          kind: "schema_invalid",
+          errors: [
+            `Deliverer receipt run_id/contract_version mismatch (${parsed.frontmatter.run_id}, v${parsed.frontmatter.contract_version})`,
+          ],
+        },
+        guard,
+      );
+      return;
+    }
+
+    if (parsed.frontmatter.outcome === "need_decision") {
+      const pending = extractDecisionFromNeedDecisionReceipt(
+        receiptLoad.rawReceipt,
+        taskId,
+        runMeta.run_id,
+        card.contract_version,
+        parsed.body,
+      );
+      this.transitionTaskToWaiting(taskId, pending, guard);
+      return;
+    }
+
+    if (card.workspace_mode === "git_worktree") {
+      const worktreePath = this.getGitWorktreeDir(taskId);
+      if (fs.existsSync(worktreePath)) {
+        const statusRaw = await runGitCommand([
+          "-C",
+          worktreePath,
+          "status",
+          "--porcelain=v1",
+          "-z",
+          "-uall",
+        ]);
+        const dirtyPaths = statusRaw.length > 0 ? parseGitPorcelainStatusZ(statusRaw).dirtyPaths : [];
+        const scopeCheck = checkScope(dirtyPaths, card.contract.scope);
+        if (!scopeCheck.ok) {
+          await this.applyStageFailure(
+            taskId,
+            "deliver",
+            runMeta,
+            {
+              kind: "runtime_error",
+              message: `deliver_scope_violation: ${scopeCheck.outOfScopePaths.join(", ")}`,
+            },
+            guard,
+          );
+          return;
+        }
+        await this.commitVerifiedWorktreeChanges(card, worktreePath, runMeta.round);
+        const postHead = (
+          await runGitCommand(["-C", worktreePath, "rev-parse", "HEAD"])
+        ).trim();
+        if (runMeta.input_ref && postHead !== runMeta.input_ref) {
+          const derived = deriveTaskStatus(card, this.store.readStateEvents(taskId));
+          const verifyIdx = getWorkflowFlatSteps(card, derived.track).findIndex(
+            (n) => n.stage === "verify",
+          );
+          await this.advanceToNextStage(
+            taskId,
+            "verify",
+            guard,
+            verifyIdx >= 0 ? verifyIdx : null,
+          );
+          return;
+        }
+      }
+    }
+
+    await this.advanceToNextStage(
+      taskId,
+      "deliver",
+      guard,
+      runMeta.step_index ?? null,
+    );
+  }
+
+  private findCompletedDelivererAfterLastImplement(
+    taskId: string,
+    card: TaskCard,
+  ): { dirName: string; meta: RunMeta } | null {
+    const runs = this.listCurrentWindowRuns(taskId, card);
+    for (let i = runs.length - 1; i >= 0; i--) {
+      const r = runs[i]!;
+      if (r.meta.stage === "implement") {
+        return null;
+      }
+      if (r.meta.stage === "deliver" && r.hasReceipt) {
+        const raw = readOptionalText(this.store.paths.receiptMd(taskId, r.dirName));
+        if (!raw) {
+          continue;
+        }
+        const parsed = parseAndValidateReceipt("worker", raw);
+        if (
+          parsed.ok &&
+          parsed.frontmatter.run_id === r.meta.run_id &&
+          parsed.frontmatter.contract_version === card.contract_version &&
+          parsed.frontmatter.outcome === "completed"
+        ) {
+          return { dirName: r.dirName, meta: r.meta };
+        }
+      }
+    }
+    return null;
+  }
+
   private async dispatchVerifyStage(plan: DispatchPlan): Promise<void> {
+    if (
+      plan.roleAssignment !== null &&
+      plan.card.workspace_mode !== "host_scoped" &&
+      !this.hasCompletedAgentRunInTail(plan.taskId, plan.card, "verify", "implement")
+    ) {
+      await this.dispatchAgentStageRun(plan);
+      return;
+    }
+
     const now = new Date().toISOString();
     const verifyRunId = `run-${plan.taskId}-verify-r${plan.round}-v${plan.contractVersion}`;
     this.store.appendStateEvent(plan.taskId, {
       type: "running",
       at: now,
       stage: "verify",
+      ...(plan.stepIndex !== null ? { step_index: plan.stepIndex } : {}),
       round: plan.round,
       run_id: verifyRunId,
     });
@@ -4427,6 +4693,111 @@ export class KilnOrchestrator {
         .reverse()
         .find((r) => r.meta?.stage === "implement");
 
+      const postDeliverRun = this.findCompletedDelivererAfterLastImplement(
+        plan.taskId,
+        plan.card,
+      );
+      if (postDeliverRun !== null) {
+        const card = this.store.readTaskCard(plan.taskId);
+        const worktreePath =
+          card.workspace_mode === "git_worktree" ? this.getGitWorktreeDir(plan.taskId) : undefined;
+        const baselineSnapshot = this.readSavedFrozenBaseline(plan.taskId, card);
+        let inputRef = latestImpl?.meta?.input_ref ?? postDeliverRun.meta.input_ref;
+        if (worktreePath && fs.existsSync(worktreePath)) {
+          const space = this.store.readSpace(card.space);
+          const baseRef = space?.default_branch ?? "main";
+          const isAncestor = await runGitCommand([
+            "-C",
+            worktreePath,
+            "merge-base",
+            "--is-ancestor",
+            baseRef,
+            "HEAD",
+          ]).then(
+            () => true,
+            () => false,
+          );
+          if (isAncestor) {
+            const resolvedBaseSha = (
+              await runGitCommand(["-C", worktreePath, "rev-parse", baseRef]).catch(() => "")
+            ).trim();
+            if (resolvedBaseSha.length > 0) {
+              inputRef = resolvedBaseSha;
+            }
+          }
+        }
+
+        const gateResult = await runVerificationGate(this.store, {
+          taskId: plan.taskId,
+          runDirName: postDeliverRun.dirName,
+          gateCheckMode: getVerifyGateCheckMode(card),
+          ...(worktreePath !== undefined ? { worktreePath } : {}),
+          ...(inputRef !== undefined ? { inputRef } : {}),
+          ...(baselineSnapshot !== undefined ? { baselineSnapshot } : {}),
+          signal,
+        });
+
+        if (
+          signal.aborted ||
+          !this.isRunStillCurrent(plan.taskId, verifyRunId, card.contract_version)
+        ) {
+          this.syncCaffeinate();
+          return;
+        }
+
+        const verifyGuard: ExpectedRunGuard = {
+          runId: verifyRunId,
+          contractVersion: card.contract_version,
+        };
+        if (gateResult.passed) {
+          if (worktreePath && fs.existsSync(worktreePath)) {
+            await this.commitVerifiedWorktreeChanges(
+              card,
+              worktreePath,
+              postDeliverRun.meta.round,
+            );
+          }
+          const derived = deriveTaskStatus(card, this.store.readStateEvents(plan.taskId));
+          const deliverIdx = getWorkflowFlatSteps(card, derived.track).findIndex(
+            (n) => n.stage === "deliver",
+          );
+          await this.advanceToNextStage(
+            plan.taskId,
+            "deliver",
+            verifyGuard,
+            deliverIdx >= 0 ? deliverIdx : null,
+          );
+          return;
+        }
+
+        const decision = PendingDecisionSchema.parse({
+          id: `dec-${randomUUID().slice(0, 8)}`,
+          task_id: plan.taskId,
+          contract_version: card.contract_version,
+          reason: "deliver_conflict_verify_failed",
+          category: "deliver_merge_conflict",
+          question: `交付代理解决合并冲突后，重跑确定性 verify 门禁未通过（accept_exit_code=${gateResult.report.accept_exit_code}, scope_ok=${gateResult.report.scope_ok}），已拦截合入主分支。请选择下一步处理：`,
+          options: [
+            {
+              id: "opt-reimplement",
+              label: "退回实施阶段排查修复",
+              action: "resume",
+              target_stage: "implement",
+              recommended: true,
+            },
+            {
+              id: "opt-cancel",
+              label: "取消任务",
+              action: "cancel",
+              recommended: false,
+            },
+          ],
+          created_at: new Date().toISOString(),
+        });
+        this.transitionTaskToWaiting(plan.taskId, decision, verifyGuard);
+        return;
+      }
+
       if (!latestImpl || !latestImpl.meta) {
         await this.advanceToNextStage(plan.taskId, "implement", {
           runId: verifyRunId,
@@ -4446,747 +4817,45 @@ export class KilnOrchestrator {
     });
   }
 
-  private hasApprovedDeliverDecision(
-    events: readonly StateEvent[],
-    waitingReason: string,
-  ): boolean {
-    let lastWaitingIdx = -1;
-    let lastImplIdx = -1;
-    for (let i = events.length - 1; i >= 0; i--) {
-      const ev = events[i]!;
-      if (lastWaitingIdx === -1 && ev.type === "waiting" && ev.reason === waitingReason) {
-        lastWaitingIdx = i;
-      }
-      if (lastImplIdx === -1 && ev.type === "running" && ev.stage === "implement") {
-        lastImplIdx = i;
-      }
-      if (lastWaitingIdx !== -1 && lastImplIdx !== -1) {
-        break;
-      }
-    }
-    if (lastWaitingIdx === -1 || lastWaitingIdx < lastImplIdx) {
-      return false;
-    }
-    for (let i = lastWaitingIdx + 1; i < events.length; i++) {
-      const ev = events[i]!;
-      if (
-        ev.type === "decided" &&
-        ev.action === "resume" &&
-        ev.target_stage === "deliver"
-      ) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   private async dispatchDeliverStage(plan: DispatchPlan): Promise<void> {
-    const now = new Date().toISOString();
-    const deliverRunId = `run-${plan.taskId}-deliver-r${plan.round}-v${plan.contractVersion}`;
-    const deliverGuard: ExpectedRunGuard = {
-      runId: deliverRunId,
-      contractVersion: plan.contractVersion,
-    };
-
-    this.store.appendStateEvent(plan.taskId, {
-      type: "running",
-      at: now,
-      stage: "deliver",
-      round: plan.round,
-      run_id: deliverRunId,
-    });
-    this.syncCaffeinate();
-    this.publishTaskUpdated(plan.taskId, {
-      status: "running",
-      stage: "deliver",
-      round: plan.round,
-      contractVersion: plan.contractVersion,
-    });
-
-    await this.runTrackedStageOperation(plan.taskId, deliverRunId, async (signal) => {
-      if (
-        signal.aborted ||
-        !this.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
-      ) {
-        this.syncCaffeinate();
-        return;
-      }
-
-      const card = this.store.readTaskCard(plan.taskId);
-      const deliverPolicy = getDeliverCommandPolicy(card);
-      const worktreePath =
-        card.workspace_mode === "git_worktree"
-          ? this.getGitWorktreeDir(plan.taskId)
-          : null;
-      let deliverRef = worktreePath ?? this.store.paths.workspaceDir(plan.taskId);
-      let hostAppliedWithVerify = false;
-
-      if (card.workspace_mode === "host_scoped") {
-        let hostDeliverRef = "host_scoped_completed";
-        const manifestPath = this.store.paths.backupManifest(plan.taskId);
-        const existingManifest = fs.existsSync(manifestPath)
-          ? readHostBackupManifest(this.store, plan.taskId)
-          : null;
-
-        if (existingManifest?.status === "staged_awaiting_approval") {
-          const events = this.store.readStateEvents(plan.taskId);
-          const approved =
-            this.hasApprovedDeliverDecision(events, "host_scoped_approval") ||
-            this.hasApprovedDeliverDecision(events, "deliver_approval");
-
-          if (!approved) {
-            const targetList = existingManifest.files
-              .map(
-                (f) =>
-                  `${f.target_canonical_path}${
-                    f.staged_sha256 ? ` (sha256:${f.staged_sha256.slice(7, 19)})` : ""
-                  }`,
-              )
-              .join(", ");
-            const deliverCmdNote =
-              card.contract.deliver.mode === "run_cmd" && card.contract.deliver.cmd
-                ? `\n- 落盘后执行交付命令: \`${card.contract.deliver.cmd}\``
-                : "";
-            const acceptGateNote = deliverPolicy.finalAcceptGate
-              ? `\n- 最终宿主机验收命令: \`${card.contract.accept_cmd}\``
-              : "";
-            const decision = PendingDecisionSchema.parse({
-              id: `dec-${randomUUID().slice(0, 8)}`,
-              task_id: plan.taskId,
-              contract_version: card.contract_version,
-              reason: "host_scoped_approval",
-              category: "host_scoped_apply",
-              question: `本机任务 "${card.title}" 已生成暂存修改并备份原文件，批准原子写入并执行吗？\n- 目标路径: ${targetList}${deliverCmdNote}${acceptGateNote}`,
-              options: [
-                {
-                  id: "opt-apply-host",
-                  label: "批准落盘写入宿主机并执行校验",
-                  action: "resume",
-                  target_stage: "deliver",
-                  recommended: true,
-                },
-                {
-                  id: "opt-finish-staged",
-                  label: "仅保留暂存补丁，不写本机直接完成",
-                  action: "finish",
-                  recommended: false,
-                },
-                {
-                  id: "opt-cancel",
-                  label: "取消任务",
-                  action: "cancel",
-                  recommended: false,
-                },
-              ],
-              created_at: new Date().toISOString(),
-            });
-            this.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
-            return;
-          }
-
-          const applyRes = await applyApprovedHostScopedChanges(this.store, {
-            taskId: plan.taskId,
-            approved: true,
-            ...(card.contract.deliver.mode === "run_cmd" && card.contract.deliver.cmd
-              ? { postApplyCmd: card.contract.deliver.cmd }
-              : {}),
-            verifyCmd: card.contract.accept_cmd,
-            signal,
-          });
-          if (
-            signal.aborted ||
-            !this.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
-          ) {
-            this.syncCaffeinate();
-            return;
-          }
-          if (!applyRes.ok) {
-            const failureDetail =
-              applyRes.reason === "staged_hash_mismatch"
-                ? "暂存区文件 SHA-256 校验与待批快照不一致，已拦截写入宿主机"
-                : applyRes.reason === "deliver_cmd_failed_rolled_back"
-                  ? `交付命令执行失败（exit=${applyRes.postApplyResult.exitCode}），已自动回滚宿主机文件`
-                  : applyRes.reason === "verify_failed_rolled_back"
-                    ? `最终验收失败（exit=${applyRes.verifyResult.exitCode}），已自动回滚宿主机文件`
-                    : `本机落盘未完成 (${applyRes.reason})，已安全保护或回滚`;
-            const decision = PendingDecisionSchema.parse({
-              id: `dec-${randomUUID().slice(0, 8)}`,
-              task_id: plan.taskId,
-              contract_version: card.contract_version,
-              reason: `host_apply_${applyRes.reason}`,
-              category: "host_scoped_apply_error",
-              question: `${failureDetail}，请选择下一步操作。`,
-              options: [
-                {
-                  id: "opt-reimplement",
-                  label: "退回实施重新生成暂存",
-                  action: "resume",
-                  target_stage: "implement",
-                  recommended: true,
-                },
-                {
-                  id: "opt-cancel",
-                  label: "取消任务",
-                  action: "cancel",
-                  recommended: false,
-                },
-              ],
-              created_at: new Date().toISOString(),
-            });
-            this.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
-            return;
-          }
-
-          hostAppliedWithVerify = true;
-          hostDeliverRef = applyRes.manifest.files
-            .map((f) => f.target_canonical_path)
-            .join(", ");
-          deliverRef = hostDeliverRef;
-          this.completeTaskDelivery(plan.taskId, deliverRef, deliverGuard);
-          return;
-        }
-
-        if (existingManifest?.status === "applied") {
-          hostDeliverRef = existingManifest.files
-            .map((f) => f.target_canonical_path)
-            .join(", ");
-          hostAppliedWithVerify = true;
-        }
-
-        deliverRef = hostDeliverRef;
-        if (card.contract.deliver.mode !== "run_cmd") {
-          if (deliverPolicy.finalAcceptGate && !hostAppliedWithVerify) {
-            const events = this.store.readStateEvents(plan.taskId);
-            const approved =
-              this.hasApprovedDeliverDecision(events, "deliver_approval") ||
-              this.hasApprovedDeliverDecision(events, "host_scoped_approval");
-            if (!approved) {
-              const decision = PendingDecisionSchema.parse({
-                id: `dec-${randomUUID().slice(0, 8)}`,
-                task_id: plan.taskId,
-                contract_version: card.contract_version,
-                reason: "deliver_approval",
-                category: "deliver_approval",
-                question: `本机任务 "${card.title}" 待执行最终宿主机验收命令 \`${card.contract.accept_cmd}\`，是否批准执行？`,
-                options: [
-                  {
-                    id: "opt-approve-deliver",
-                    label: "批准执行交付与宿主机验收",
-                    action: "resume",
-                    target_stage: "deliver",
-                    recommended: true,
-                  },
-                  {
-                    id: "opt-reimplement",
-                    label: "退回实施阶段修改",
-                    action: "resume",
-                    target_stage: "implement",
-                    recommended: false,
-                  },
-                  {
-                    id: "opt-cancel",
-                    label: "取消任务",
-                    action: "cancel",
-                    recommended: false,
-                  },
-                ],
-                created_at: new Date().toISOString(),
-              });
-              this.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
-              return;
-            }
-
-            const finalCwd = fs.existsSync(this.store.paths.workspaceDir(plan.taskId))
-              ? this.store.paths.workspaceDir(plan.taskId)
-              : this.store.paths.taskDir(plan.taskId);
-            const finalAccept = await runIsolatedCommand(card.contract.accept_cmd, {
-              cwd: finalCwd,
-              signal,
-            });
-            if (
-              signal.aborted ||
-              !this.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
-            ) {
-              this.syncCaffeinate();
-              return;
-            }
-            if (finalAccept.exitCode !== 0 || finalAccept.timedOut) {
-              const decision = PendingDecisionSchema.parse({
-                id: `dec-${randomUUID().slice(0, 8)}`,
-                task_id: plan.taskId,
-                contract_version: card.contract_version,
-                reason: "deliver_final_accept_failed",
-                category: "deliver_approval",
-                question: `最终宿主机验收命令失败 (exit=${finalAccept.exitCode}, timedOut=${finalAccept.timedOut})，请选择处理方式。`,
-                options: [
-                  {
-                    id: "opt-reimplement",
-                    label: "退回实施阶段修复",
-                    action: "resume",
-                    target_stage: "implement",
-                    recommended: true,
-                  },
-                  {
-                    id: "opt-cancel",
-                    label: "取消任务",
-                    action: "cancel",
-                    recommended: false,
-                  },
-                ],
-                created_at: new Date().toISOString(),
-              });
-              this.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
-              return;
-            }
-          }
-          this.completeTaskDelivery(plan.taskId, deliverRef, deliverGuard);
-          return;
-        }
-      }
-
-      if (
-        !this.deliverHandler &&
-        card.workspace_mode !== "host_scoped" &&
-        deliverPolicy.requiresDeliverApproval
-      ) {
-        const isOpenPrAsk =
-          card.workspace_mode === "git_worktree" &&
-          card.contract.deliver.mode === "open_pr" &&
-          card.contract.external_actions === "ask";
-        if (!isOpenPrAsk) {
-          const events = this.store.readStateEvents(plan.taskId);
-          const alreadyApproved =
-            this.hasApprovedDeliverDecision(events, "deliver_approval") ||
-            this.hasApprovedDeliverDecision(events, "external_action_approval");
-          if (!alreadyApproved) {
-            const cmdDesc =
-              card.contract.deliver.mode === "run_cmd" && card.contract.deliver.cmd
-                ? `\n- 交付命令: \`${card.contract.deliver.cmd}\``
-                : "";
-            const decision = PendingDecisionSchema.parse({
-              id: `dec-${randomUUID().slice(0, 8)}`,
-              task_id: plan.taskId,
-              contract_version: card.contract_version,
-              reason: "deliver_approval",
-              category: "deliver_approval",
-              question: `任务 "${card.title}" 已完成前置验证，准备进入交付（mode=${card.contract.deliver.mode}），是否批准交付？${cmdDesc}`,
-              options: [
-                {
-                  id: "opt-approve-deliver",
-                  label: "批准执行交付",
-                  action: "resume",
-                  target_stage: "deliver",
-                  recommended: true,
-                },
-                {
-                  id: "opt-rework",
-                  label: "退回实施阶段调整",
-                  action: "resume",
-                  target_stage: "implement",
-                  recommended: false,
-                },
-                {
-                  id: "opt-cancel",
-                  label: "取消任务",
-                  action: "cancel",
-                  recommended: false,
-                },
-              ],
-              created_at: new Date().toISOString(),
-            });
-            this.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
-            return;
-          }
-        }
-      }
-
-      if (this.deliverHandler) {
-        const outcome = await this.deliverHandler({
-          taskId: plan.taskId,
-          card,
-          worktreePath,
-          store: this.store,
-        });
-        if (
-          signal.aborted ||
-          !this.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
-        ) {
-          this.syncCaffeinate();
-          return;
-        }
-        if (outcome.status === "waiting") {
-          this.transitionTaskToWaiting(plan.taskId, outcome.decision, deliverGuard);
-          return;
-        }
-        if (outcome.status === "external") {
-          const extState = this.store.appendStateEvent(plan.taskId, {
-            type: "external",
-            at: new Date().toISOString(),
-            ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}),
-          });
-          this.syncCaffeinate();
-          this.publishTaskUpdated(plan.taskId, {
-            status: extState.status,
-            stage: "deliver",
-            contractVersion: extState.contractVersion,
-          });
-          void this.wake();
-          return;
-        }
-        this.completeTaskDelivery(plan.taskId, outcome.deliverRef, deliverGuard);
-        return;
-      }
-
-      // Default deterministic local delivery handler
-      if (
-        card.workspace_mode === "git_worktree" &&
-        worktreePath &&
-        fs.existsSync(worktreePath)
-      ) {
-        const space = this.store.readSpace(card.space);
-        if (card.contract.deliver.mode === "merge_main" && space?.repo_path) {
-          const statusOut = (
-            await runGitCommand(["-C", worktreePath, "status", "--porcelain"])
-          ).trim();
-          const headCommit = (
-            await runGitCommand(["-C", worktreePath, "rev-parse", "HEAD"])
-          ).trim();
-          if (
-            signal.aborted ||
-            !this.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
-          ) {
-            this.syncCaffeinate();
-            return;
-          }
-          deliverRef = headCommit;
-
-          if (statusOut.length > 0) {
-            const decision = PendingDecisionSchema.parse({
-              id: `dec-${randomUUID().slice(0, 8)}`,
-              task_id: plan.taskId,
-              contract_version: card.contract_version,
-              reason: "worktree_dirty_before_merge",
-              category: "deliver_merge_blocked",
-              question: `工作树分支 kiln/${plan.taskId} 存在未提交改动，无法执行 merge_main，请先处理未提交变更后再重试合并。`,
-              options: [
-                {
-                  id: "opt-reimplement",
-                  label: "退回实施提交或清理工作树",
-                  action: "resume",
-                  target_stage: "implement",
-                  recommended: true,
-                },
-                {
-                  id: "opt-retry-deliver",
-                  label: "已在本地处理，重试合并主分支",
-                  action: "resume",
-                  target_stage: "deliver",
-                  recommended: false,
-                },
-                {
-                  id: "opt-finish",
-                  label: "保留工作树分支并直接标记完成",
-                  action: "finish",
-                  recommended: false,
-                },
-              ],
-              created_at: new Date().toISOString(),
-            });
-            this.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
-            return;
-          }
-
-          const baseRef = space.default_branch;
-          const aheadCount = Number(
-            (
-              await runGitCommand([
-                "-C",
-                space.repo_path,
-                "rev-list",
-                "--count",
-                `${baseRef}..kiln/${plan.taskId}`,
-              ]).catch(() => "0")
-            ).trim(),
-          );
-          if (
-            signal.aborted ||
-            !this.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
-          ) {
-            this.syncCaffeinate();
-            return;
-          }
-          if (aheadCount > 0) {
-            const currentMainBranch = (
-              await runGitCommand([
-                "-C",
-                space.repo_path,
-                "rev-parse",
-                "--abbrev-ref",
-                "HEAD",
-              ]).catch(() => "")
-            ).trim();
-            const mainStatus = (
-              await runGitCommand(["-C", space.repo_path, "status", "--porcelain"])
-            ).trim();
-            if (
-              signal.aborted ||
-              !this.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
-            ) {
-              this.syncCaffeinate();
-              return;
-            }
-            if (mainStatus.length > 0 || currentMainBranch !== baseRef) {
-              const reasons: string[] = [];
-              if (mainStatus.length > 0) {
-                reasons.push("主仓库存在未提交改动");
-              }
-              if (currentMainBranch !== baseRef) {
-                reasons.push(
-                  `主仓库当前位于 "${currentMainBranch || "unknown"}" 而非 "${baseRef}"`,
-                );
-              }
-              const decision = PendingDecisionSchema.parse({
-                id: `dec-${randomUUID().slice(0, 8)}`,
-                task_id: plan.taskId,
-                contract_version: card.contract_version,
-                reason: "main_repo_not_ready_for_merge",
-                category: "deliver_merge_blocked",
-                question: `分支 kiln/${plan.taskId} 尚有 ${aheadCount} 个提交未合并至 ${baseRef}，但${reasons.join("且")}，已保留 worktree 等待处理。`,
-                options: [
-                  {
-                    id: "opt-retry-deliver",
-                    label: "主仓库就绪后重试合并主分支",
-                    action: "resume",
-                    target_stage: "deliver",
-                    recommended: true,
-                  },
-                  {
-                    id: "opt-finish",
-                    label: "跳过合并主分支直接标记完成（保留工作树）",
-                    action: "finish",
-                    recommended: false,
-                  },
-                ],
-                created_at: new Date().toISOString(),
-              });
-              this.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
-              return;
-            }
-
-            try {
-              await runGitCommand([
-                "-C",
-                space.repo_path,
-                "merge",
-                "--no-edit",
-                `kiln/${plan.taskId}`,
-              ]);
-              deliverRef = (
-                await runGitCommand(["-C", space.repo_path, "rev-parse", "HEAD"])
-              ).trim();
-            } catch (mergeErr) {
-              await runGitCommand(["-C", space.repo_path, "merge", "--abort"]).catch(
-                () => {},
-              );
-              const msg =
-                mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
-              const decision = PendingDecisionSchema.parse({
-                id: `dec-${randomUUID().slice(0, 8)}`,
-                task_id: plan.taskId,
-                contract_version: card.contract_version,
-                reason: "merge_conflict",
-                category: "deliver_merge_conflict",
-                question: `本地合并分支 kiln/${plan.taskId} 到 ${baseRef} 时冲突（${msg}），请人工处理或选择继续方式。`,
-                options: [
-                  {
-                    id: "opt-reimplement",
-                    label: "退回实施解决冲突",
-                    action: "resume",
-                    target_stage: "implement",
-                    recommended: true,
-                  },
-                  {
-                    id: "opt-finish",
-                    label: "保留工作区分支并直接标记完成",
-                    action: "finish",
-                    recommended: false,
-                  },
-                ],
-                created_at: new Date().toISOString(),
-              });
-              this.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
-              return;
-            }
-          }
-        } else if (card.contract.deliver.mode === "open_pr") {
-          const events = this.store.readStateEvents(plan.taskId);
-          const approvedPr = this.hasApprovedDeliverDecision(
-            events,
-            "external_action_approval",
-          );
-          if (!approvedPr && card.contract.external_actions === "ask") {
-            const decision = PendingDecisionSchema.parse({
-              id: `dec-${randomUUID().slice(0, 8)}`,
-              task_id: plan.taskId,
-              contract_version: card.contract_version,
-              reason: "external_action_approval",
-              category: "external_deliver_pr",
-              question: `分支 kiln/${plan.taskId} 已通过验真与审查，是否批准创建外部 PR 或转入外部等待？`,
-              options: [
-                {
-                  id: "opt-return-external",
-                  label: "已提交外部 PR，转入外部等待",
-                  action: "return_external",
-                  recommended: true,
-                },
-                {
-                  id: "opt-finish",
-                  label: "直接标记完成",
-                  action: "finish",
-                  recommended: false,
-                },
-              ],
-              created_at: new Date().toISOString(),
-            });
-            this.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
-            return;
-          }
-        }
-      }
-
-      if (
-        card.contract.deliver.mode === "run_cmd" &&
-        card.contract.deliver.cmd
-      ) {
-        const cmdCwd =
-          card.workspace_mode === "git_worktree"
-            ? worktreePath
-            : this.store.paths.workspaceDir(plan.taskId);
-        if (
-          !cmdCwd ||
-          !fs.existsSync(cmdCwd) ||
-          !fs.statSync(cmdCwd).isDirectory()
-        ) {
-          throw new Error(
-            `Delivery command working directory does not exist for task "${plan.taskId}": ${String(cmdCwd)}`,
-          );
-        }
-
-        const events = this.store.readStateEvents(plan.taskId);
-        const approvedCmd =
-          this.hasApprovedDeliverDecision(events, "external_action_approval") ||
-          this.hasApprovedDeliverDecision(events, "deliver_approval");
-        if (!approvedCmd && card.contract.external_actions === "ask") {
-          const decision = PendingDecisionSchema.parse({
-            id: `dec-${randomUUID().slice(0, 8)}`,
-            task_id: plan.taskId,
-            contract_version: card.contract_version,
-            reason: "external_action_approval",
-            category: "external_deliver_cmd",
-            question: `交付动作需要执行外部命令 \`${card.contract.deliver.cmd}\`，是否批准执行？`,
-            options: [
-              {
-                id: "opt-run-deliver-cmd",
-                label: "批准执行交付命令",
-                action: "resume",
-                target_stage: "deliver",
-                recommended: true,
-              },
-              {
-                id: "opt-finish-manual",
-                label: "跳过命令并直接完成",
-                action: "finish",
-                recommended: false,
-              },
-            ],
-            created_at: new Date().toISOString(),
-          });
-          this.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
-          return;
-        }
-
-        const cmdRes = await runIsolatedCommand(card.contract.deliver.cmd, {
-          cwd: cmdCwd,
-          signal,
-        });
-        if (
-          signal.aborted ||
-          !this.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
-        ) {
-          this.syncCaffeinate();
-          return;
-        }
-        if (cmdRes.exitCode !== 0 || cmdRes.timedOut) {
-          throw new Error(
-            `Delivery command failed (exit=${cmdRes.exitCode}, timedOut=${cmdRes.timedOut})`,
-          );
-        }
-
-        if (deliverPolicy.finalAcceptGate && !hostAppliedWithVerify) {
-          const finalAccept = await runIsolatedCommand(card.contract.accept_cmd, {
-            cwd: cmdCwd,
-            signal,
-          });
-          if (
-            signal.aborted ||
-            !this.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
-          ) {
-            this.syncCaffeinate();
-            return;
-          }
-          if (finalAccept.exitCode !== 0 || finalAccept.timedOut) {
-            const decision = PendingDecisionSchema.parse({
-              id: `dec-${randomUUID().slice(0, 8)}`,
-              task_id: plan.taskId,
-              contract_version: card.contract_version,
-              reason: "deliver_final_accept_failed",
-              category: "deliver_approval",
-              question: `交付命令已执行，但最终验收命令失败 (exit=${finalAccept.exitCode}, timedOut=${finalAccept.timedOut})，请选择下一步处理。`,
-              options: [
-                {
-                  id: "opt-reimplement",
-                  label: "退回实施阶段修复",
-                  action: "resume",
-                  target_stage: "implement",
-                  recommended: true,
-                },
-                {
-                  id: "opt-cancel",
-                  label: "取消任务",
-                  action: "cancel",
-                  recommended: false,
-                },
-              ],
-              created_at: new Date().toISOString(),
-            });
-            this.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
-            return;
-          }
-        }
-      }
-
-      const delivered = this.completeTaskDelivery(
-        plan.taskId,
-        deliverRef,
-        deliverGuard,
-      );
-
-      if (delivered && card.workspace_mode === "git_worktree" && worktreePath) {
-        const space = this.store.readSpace(card.space);
-        if (space?.repo_path) {
-          const cleaned = await cleanupGitWorktree({
-            repoPath: space.repo_path,
-            worktreePath,
-            taskStatus: "done",
-            gatePassed: true,
-            awaitingHumanReview: false,
-          }).catch(() => null);
-          if (cleaned?.deleted) {
-            await cleanupTaskCheckpoints(space.repo_path, plan.taskId).catch(() => {});
-          }
-        }
-      }
-    });
+    await executeDeliverStage(
+      {
+        store: this.store,
+        deliverHandler: this.deliverHandler,
+        getGitWorktreeDir: (taskId) => this.getGitWorktreeDir(taskId),
+        isRunStillCurrent: (taskId, runId, contractVersion) =>
+          this.isRunStillCurrent(taskId, runId, contractVersion),
+        syncCaffeinate: () => this.syncCaffeinate(),
+        transitionTaskToWaiting: (taskId, decision, expected) =>
+          this.transitionTaskToWaiting(taskId, decision, expected),
+        completeTaskDelivery: (taskId, deliverRef, expected) =>
+          this.completeTaskDelivery(taskId, deliverRef, expected),
+        runTrackedStageOperation: (taskId, runId, fn) =>
+          this.runTrackedStageOperation(taskId, runId, fn),
+        publishTaskUpdated: (taskId, patch) => this.publishTaskUpdated(taskId, patch),
+        shouldRunDelivererAgent: (p) =>
+          p.roleAssignment !== null &&
+          (p.roleAssignment.rosterMode ?? "agent") === "agent" &&
+          p.card.workspace_mode === "git_worktree" &&
+          this.findCompletedDelivererAfterLastImplement(p.taskId, p.card) === null,
+        canRunOnConflictDeliverer: (p) =>
+          p.roleAssignment !== null &&
+          p.roleAssignment.rosterMode === "on_conflict" &&
+          p.card.workspace_mode === "git_worktree" &&
+          this.findCompletedDelivererAfterLastImplement(p.taskId, p.card) === null,
+        dispatchOnConflictDeliverer: (p, conflict) =>
+          this.dispatchAgentStageRun(p, {
+            deliverConflictNote: [
+              `- 自动 \`merge_main\` 将分支 \`kiln/${p.taskId}\` 合入 \`${conflict.baseRef}\` 时发生冲突：\`${conflict.mergeError}\``,
+              `- 请在隔离 worktree (${this.getGitWorktreeDir(p.taskId)}) 内执行 \`git merge ${conflict.baseRef}\` 解决冲突并运行验收命令确认无误，严禁执行 \`git push\` 或修改主仓库。`,
+              `- 提交 \`worker\` 角色回执后，内核将强制重跑确定性 \`verify\` 门禁，通过后自动完成合并。`,
+            ].join("\n"),
+          }),
+        dispatchAgentStageRun: (p) => this.dispatchAgentStageRun(p),
+        wake: () => this.wake(),
+      },
+      plan,
+    );
   }
 
   private completeTaskDelivery(
@@ -5204,6 +4873,7 @@ export class KilnOrchestrator {
     }
 
     const now = new Date().toISOString();
+    this.warmPool.evictTask(taskId);
     const doneState = this.store.appendStateEvent(taskId, {
       type: "done",
       at: now,

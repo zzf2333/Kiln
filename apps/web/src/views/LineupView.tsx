@@ -1,13 +1,17 @@
 import { Dialog } from "radix-ui";
 import { useEffect, useRef, useState } from "react";
 import {
+  CORE_COGNITIVE_ROSTER_IDS,
+  DERIVED_ROSTER_INHERITANCE,
   REASONING_EFFORTS,
+  ROSTER_TIER_HINTS,
   type ReasoningEffort,
   type RosterConfig,
   type RosterEntry,
   type RosterGroup,
   type RosterModelBinding,
   type RosterPermission,
+  type RosterTierHint,
   type StageId,
 } from "@kiln/protocol/web";
 import type { AgentDescriptorInfo, ProviderRuntimeStatus } from "../api/types";
@@ -61,26 +65,28 @@ const CUSTOM_STAGE_OPTIONS: ReadonlyArray<{
   { stage: "implement", label: "实施（工作区可写）", perm: "workspace_write" },
   { stage: "research", label: "调研（严格只读）", perm: "read_only" },
   { stage: "plan", label: "方案（严格只读）", perm: "read_only" },
+  { stage: "advise", label: "顾问（严格只读）", perm: "read_only" },
   { stage: "review", label: "审查（严格只读）", perm: "read_only" },
   { stage: "accept", label: "验收（只读+真实入口）", perm: "accept_entry" },
 ];
 
+const TIER_HINT_LABELS: Record<RosterTierHint, string> = {
+  economy: "省钱快用",
+  standard: "均衡主力",
+  flagship: "最高智商",
+};
+
 const BUILTIN_ID_ORDER: readonly string[] = [
-  "pm",
-  "researcher",
+  ...CORE_COGNITIVE_ROSTER_IDS,
   "architect",
-  "main_dev",
-  "fast_fix",
-  "reviewer",
-  "verifier",
+  "triage",
+  "resolver",
   "frontend_ui",
   "debugger",
   "ops_sec",
   "doc_writer",
   "tester",
   "deliverer",
-  "triage",
-  "resolver",
 ];
 
 function cloneRosterConfig(src: RosterConfig): RosterConfig {
@@ -185,6 +191,20 @@ export function LineupView() {
   const statusByProvider = new Map<string, ProviderRuntimeStatus>(
     providerStatuses.map((p) => [p.provider_id, p]),
   );
+  const disabledProviderIds = new Set(
+    (providersConfig?.providers ?? [])
+      .filter((p) => !p.enabled)
+      .map((p) => p.id),
+  );
+  const isProviderVisible = (providerId: string): boolean => {
+    if (disabledProviderIds.has(providerId)) return false;
+    const st = statusByProvider.get(providerId)?.status;
+    return st !== "unavailable";
+  };
+  const visibleProviders = providerStatuses.filter((p) =>
+    isProviderVisible(p.provider_id),
+  );
+
   const customModelsByProvider = new Map<string, string[]>();
   const quotaBudgetByProvider = new Map<string, number>();
   if (providersConfig) {
@@ -198,18 +218,20 @@ export function LineupView() {
 
   const providerChoices = Array.from(
     new Map<string, { id: string; label: string; status: ProviderRuntimeStatus["status"] }>([
-      ...providerStatuses.map((p): [string, { id: string; label: string; status: ProviderRuntimeStatus["status"] }] => [
+      ...visibleProviders.map((p): [string, { id: string; label: string; status: ProviderRuntimeStatus["status"] }] => [
         p.provider_id,
         { id: p.provider_id, label: p.label, status: p.status },
       ]),
-      ...agents.map((a): [string, { id: string; label: string; status: ProviderRuntimeStatus["status"] }] => [
-        a.id,
-        {
-          id: a.id,
-          label: a.label ?? a.id,
-          status: statusByProvider.get(a.id)?.status ?? "ready",
-        },
-      ]),
+      ...agents
+        .filter((a) => isProviderVisible(a.id))
+        .map((a): [string, { id: string; label: string; status: ProviderRuntimeStatus["status"] }] => [
+          a.id,
+          {
+            id: a.id,
+            label: a.label ?? a.id,
+            status: statusByProvider.get(a.id)?.status ?? "ready",
+          },
+        ]),
     ]).values(),
   );
 
@@ -252,14 +274,30 @@ export function LineupView() {
     if (!existing) return;
     const nextEnabled = !existing.enabled;
     const patch: Partial<RosterEntry> = { enabled: nextEnabled };
-    if (nextEnabled && existing.mode === "agent" && !existing.primary) {
+    if (
+      nextEnabled &&
+      (existing.mode === "agent" || existing.mode === "on_conflict") &&
+      !existing.primary
+    ) {
       patch.primary = pickDefaultBinding();
     }
     updateRole(roleId, patch);
   };
 
+  const resolveDerivedAncestor = (roleId: string): string | null => {
+    const chain = DERIVED_ROSTER_INHERITANCE[roleId];
+    if (!chain) return null;
+    for (const ancId of chain) {
+      const anc = rosterDraft.roster[ancId];
+      if (anc?.enabled && anc.mode === "agent" && anc.primary) {
+        return ancId;
+      }
+    }
+    return null;
+  };
+
   const resolveBindingStatus = (
-    roleId: string,
+    _roleId: string,
     entry: RosterEntry,
   ): {
     effective: RosterModelBinding | null;
@@ -279,14 +317,32 @@ export function LineupView() {
       };
     }
 
+    const avoidStages: StageId[] = entry.avoid_same_as
+      ? Array.isArray(entry.avoid_same_as)
+        ? entry.avoid_same_as
+        : [entry.avoid_same_as]
+      : [];
     const impl = rosterDraft.roster.main_dev?.primary;
-    const avoidSame =
-      rosterDraft.heterogeneous_review &&
-      entry.avoid_same_as === "implement" &&
-      Boolean(impl);
+    const planEntry = rosterDraft.roster.architect;
+    const planAncId = !planEntry?.enabled ? resolveDerivedAncestor("architect") : null;
+    const planBinding = planEntry?.enabled
+      ? planEntry.primary
+      : planAncId
+        ? rosterDraft.roster[planAncId]?.primary
+        : undefined;
+
+    const avoidImpl = rosterDraft.heterogeneous_review && avoidStages.includes("implement") && Boolean(impl);
+    const avoidPlan = rosterDraft.heterogeneous_review && avoidStages.includes("plan") && Boolean(planBinding);
 
     const sameAsImpl = (b: RosterModelBinding): boolean =>
-      Boolean(avoidSame && impl && b.provider === impl.provider && b.model === impl.model);
+      Boolean(avoidImpl && impl && b.provider === impl.provider && b.model === impl.model);
+    const sameAsPlan = (b: RosterModelBinding): boolean =>
+      Boolean(
+        avoidPlan &&
+          planBinding &&
+          b.provider === planBinding.provider &&
+          b.model === planBinding.model,
+      );
 
     const isUnavailable = (b: RosterModelBinding): boolean => {
       const st = statusByProvider.get(b.provider)?.status;
@@ -294,9 +350,10 @@ export function LineupView() {
     };
 
     const primaryBlocked = isUnavailable(entry.primary);
-    const primaryClashes = sameAsImpl(entry.primary);
+    const primaryClashesImpl = sameAsImpl(entry.primary);
+    const primaryClashesPlan = sameAsPlan(entry.primary);
 
-    if (!primaryBlocked && !primaryClashes) {
+    if (!primaryBlocked && !primaryClashesImpl && !primaryClashesPlan) {
       return {
         effective: entry.primary,
         isFallback: false,
@@ -308,21 +365,35 @@ export function LineupView() {
 
     for (let i = 0; i < entry.fallbacks.length; i++) {
       const fb = entry.fallbacks[i]!;
-      if (!isUnavailable(fb) && !sameAsImpl(fb)) {
+      if (!isUnavailable(fb) && !sameAsImpl(fb) && !sameAsPlan(fb)) {
         return {
           effective: fb,
           isFallback: true,
           fallbackIdx: i,
-          heteroSwitched: primaryClashes,
+          heteroSwitched: primaryClashesImpl || primaryClashesPlan,
           clash: false,
-          warning: primaryClashes
-            ? `主模型与主力开发撞车，派发时自动切到备选 #${i + 1} (${fb.provider} / ${fb.model})`
-            : `主订阅当前不可用，备选 #${i + 1} (${fb.provider} / ${fb.model}) 将自动接棒`,
+          warning:
+            primaryClashesImpl || primaryClashesPlan
+              ? `主模型与上游撞车，派发时自动切到异构备选 #${i + 1} (${fb.provider} / ${fb.model})`
+              : `主订阅当前不可用，备选 #${i + 1} (${fb.provider} / ${fb.model}) 将自动接棒`,
         };
       }
     }
 
-    if (primaryClashes) {
+    if (primaryClashesImpl) {
+      for (let i = 0; i < entry.fallbacks.length; i++) {
+        const fb = entry.fallbacks[i]!;
+        if (!isUnavailable(fb) && !sameAsImpl(fb)) {
+          return {
+            effective: fb,
+            isFallback: true,
+            fallbackIdx: i,
+            heteroSwitched: true,
+            clash: false,
+            warning: `仅单重异构：备选 #${i + 1} 已避开实施模型，但仍与方案模型相同`,
+          };
+        }
+      }
       return {
         effective: entry.primary,
         isFallback: false,
@@ -330,6 +401,17 @@ export function LineupView() {
         heteroSwitched: false,
         clash: true,
         warning: `${entry.name}与主力开发同模型 (${entry.primary.provider} / ${entry.primary.model})，请更换模型或添加不同家族备选`,
+      };
+    }
+
+    if (primaryClashesPlan && !primaryBlocked) {
+      return {
+        effective: entry.primary,
+        isFallback: false,
+        fallbackIdx: -1,
+        heteroSwitched: false,
+        clash: false,
+        warning: `仅单重异构：已避开实施模型，但与方案模型同款 (${entry.primary.provider} / ${entry.primary.model})`,
       };
     }
 
@@ -354,7 +436,7 @@ export function LineupView() {
     ? resolveBindingStatus("reviewer", reviewerEntry)
     : null;
 
-  const readyCount = providerStatuses.filter((p) => p.status === "ready").length;
+  const readyCount = visibleProviders.filter((p) => p.status === "ready").length;
   const enabledCount = roleIds.filter((id) => rosterDraft.roster[id]?.enabled).length;
 
   const groups: ReadonlyArray<{
@@ -400,7 +482,11 @@ export function LineupView() {
     if (refreshBusy) return;
     setRefreshBusy(true);
     try {
-      await Promise.all([store.refreshProviders(), store.refreshAgents(true)]);
+      await Promise.all([
+        store.refreshProviders(),
+        store.refreshAgents(true),
+        ...(authMode === "local" ? [store.refreshProvidersConfig()] : []),
+      ]);
     } finally {
       setRefreshBusy(false);
     }
@@ -472,17 +558,17 @@ export function LineupView() {
   };
 
   const renderPool = () => {
-    if (providerStatuses.length === 0) {
+    if (visibleProviders.length === 0) {
       return (
         <div className="empty" style={{ padding: "16px 0" }}>
-          尚未探测到订阅 Provider，请在「设置 → Providers 订阅底座」检查本机 CLI。
+          当前没有可用的本机订阅 Provider，请在「设置 → Providers 订阅底座」检查本机 CLI。
         </div>
       );
     }
 
     return (
       <div className="pool">
-        {providerStatuses.map((p) => {
+        {visibleProviders.map((p) => {
           const isCooldown = p.status === "cooldown";
           const isDown = p.status === "unavailable" || p.status === "auth_required";
           const softBudget = quotaBudgetByProvider.get(p.provider_id);
@@ -677,7 +763,15 @@ export function LineupView() {
           {!selectedEntry.enabled ? (
             <div className="note">
               <WarnCircleIcon />
-              <span>已停用，PM 排兵时不会点将此角色。</span>
+              <span>
+                {(() => {
+                  const ancId = resolveDerivedAncestor(selectedId);
+                  if (ancId && rosterDraft.roster[ancId]) {
+                    return `未单独覆写：派发时自动继承「${rosterDraft.roster[ancId]!.name}」的模型绑定。`;
+                  }
+                  return "已停用，PM 排兵时不会点将此角色。";
+                })()}
+              </span>
             </div>
           ) : selectedResolved?.warning ? (
             <div className={`note ${selectedResolved.clash ? "note-bad" : "note-ask"}`}>
@@ -707,6 +801,89 @@ export function LineupView() {
               })
             }
           />
+          <div className="primary-grid" style={{ marginTop: "8px" }}>
+            <label className="modal-field" style={{ gap: "4px" }}>
+              <span style={{ fontSize: "11.5px" }} className="muted">模型档位定位</span>
+              <select
+                className="select select-sm"
+                aria-label="模型档位定位"
+                value={selectedEntry.tier_hint ?? ""}
+                onChange={(e) => {
+                  const val = (e.currentTarget as HTMLSelectElement).value;
+                  if (val === "") {
+                    mutateRoster((prev) => {
+                      const cur = prev.roster[selectedId];
+                      if (!cur) return prev;
+                      const { tier_hint: _dropped, ...rest } = cur;
+                      return { ...prev, roster: { ...prev.roster, [selectedId]: rest } };
+                    });
+                  } else {
+                    updateRole(selectedId, { tier_hint: val as RosterTierHint });
+                  }
+                }}
+              >
+                <option value="">未标注</option>
+                {ROSTER_TIER_HINTS.map((t) => (
+                  <option key={t} value={t}>
+                    {TIER_HINT_LABELS[t]} ({t})
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {selectedEntry.stage === "implement" ? (
+              <label className="modal-field" style={{ gap: "4px" }}>
+                <span style={{ fontSize: "11.5px" }} className="muted">失败自动升档目标</span>
+                <select
+                  className="select select-sm"
+                  aria-label="失败自动升档目标"
+                  value={selectedEntry.escalation_target ?? ""}
+                  onChange={(e) => {
+                    const val = (e.currentTarget as HTMLSelectElement).value;
+                    if (!val) {
+                      mutateRoster((prev) => {
+                        const cur = prev.roster[selectedId];
+                        if (!cur) return prev;
+                        const { escalation_target: _dropped, ...rest } = cur;
+                        return { ...prev, roster: { ...prev.roster, [selectedId]: rest } };
+                      });
+                    } else {
+                      updateRole(selectedId, { escalation_target: val });
+                    }
+                  }}
+                >
+                  <option value="">不自动升档</option>
+                  {roleIds
+                    .filter((rid) => rid !== selectedId && rosterDraft.roster[rid]?.stage === "implement")
+                    .map((rid) => (
+                      <option key={rid} value={rid}>
+                        {rosterDraft.roster[rid]!.name} ({rid})
+                      </option>
+                    ))}
+                </select>
+              </label>
+            ) : null}
+          </div>
+          <textarea
+            className="role-trait-in"
+            style={{ marginTop: "8px", minHeight: "52px" }}
+            aria-label="槽位专属指令"
+            value={selectedEntry.custom_instructions ?? ""}
+            placeholder="可选：注入该槽位专属领域提示（不微操 CLI 内部工具，留空则不额外注入）"
+            onChange={(e) => {
+              const val = (e.currentTarget as HTMLTextAreaElement).value;
+              if (!val.trim()) {
+                mutateRoster((prev) => {
+                  const cur = prev.roster[selectedId];
+                  if (!cur) return prev;
+                  const { custom_instructions: _dropped, ...rest } = cur;
+                  return { ...prev, roster: { ...prev.roster, [selectedId]: rest } };
+                });
+              } else {
+                updateRole(selectedId, { custom_instructions: val });
+              }
+            }}
+          />
         </div>
 
         {canToggleKernelMode ? (
@@ -723,9 +900,25 @@ export function LineupView() {
                 >
                   内核
                 </button>
+                {selectedEntry.stage === "deliver" ? (
+                  <button
+                    type="button"
+                    className={selectedEntry.mode === "on_conflict" ? "on" : ""}
+                    onClick={() =>
+                      updateRole(selectedId, {
+                        mode: "on_conflict",
+                        ...(selectedEntry.primary
+                          ? {}
+                          : { primary: pickDefaultBinding() }),
+                      })
+                    }
+                  >
+                    冲突按需
+                  </button>
+                ) : null}
                 <button
                   type="button"
-                  className={!isKernelMode ? "on" : ""}
+                  className={selectedEntry.mode === "agent" ? "on" : ""}
                   onClick={() =>
                     updateRole(selectedId, {
                       mode: "agent",
@@ -741,7 +934,11 @@ export function LineupView() {
             </div>
             {isKernelMode ? (
               <div className="kernel-box">
-                当前由确定性内核直接执行（0 Token），不调用订阅模型；若需 Agent 介入或复杂冲突处理，可切换为 Agent 模式。
+                当前由确定性内核直接执行（0 Token），不调用订阅模型；若需 Agent 介入或复杂冲突处理，可切换为{selectedEntry.stage === "deliver" ? "「冲突按需」或" : ""} Agent 模式。
+              </div>
+            ) : selectedEntry.mode === "on_conflict" ? (
+              <div className="kernel-box">
+                平时仍由内核 0 Token 自动合并主分支；仅当 merge_main 遇到合并冲突时唤起绑定模型在隔离工作树解冲突，并强制重过确定性 verify 门禁。
               </div>
             ) : null}
           </div>
@@ -781,7 +978,7 @@ export function LineupView() {
                     </option>
                   ))}
                   {!providerChoices.some((p) => p.id === primaryProvider) ? (
-                    <option value={primaryProvider}>{primaryProvider}</option>
+                    <option value={primaryProvider}>{primaryProvider}（不可用）</option>
                   ) : null}
                 </select>
 
@@ -1288,7 +1485,47 @@ export function LineupView() {
                     />
                     <span />
                   </span>
-                  <span>审查模型必须避开实施模型</span>
+                  <span>审查模型优先同时避开实施与方案</span>
+                </label>
+
+                <label className="rule">
+                  <span className="switch">
+                    <input
+                      type="checkbox"
+                      checked={rosterDraft.pm_orchestration.intake_auto_recon ?? true}
+                      onChange={(e) =>
+                        mutateRoster((prev) => ({
+                          ...prev,
+                          pm_orchestration: {
+                            ...prev.pm_orchestration,
+                            intake_auto_recon: (e.currentTarget as HTMLInputElement).checked,
+                          },
+                        }))
+                      }
+                    />
+                    <span />
+                  </span>
+                  <span>立项首轮自动快探项目上下文</span>
+                </label>
+
+                <label className="rule">
+                  <span className="switch">
+                    <input
+                      type="checkbox"
+                      checked={rosterDraft.pm_orchestration.plan_prefers_fast_exec ?? true}
+                      onChange={(e) =>
+                        mutateRoster((prev) => ({
+                          ...prev,
+                          pm_orchestration: {
+                            ...prev.pm_orchestration,
+                            plan_prefers_fast_exec: (e.currentTarget as HTMLInputElement).checked,
+                          },
+                        }))
+                      }
+                    />
+                    <span />
+                  </span>
+                  <span>有 PLAN.md 时优先快修执行再按需升档</span>
                 </label>
               </div>
             </section>
@@ -1363,6 +1600,24 @@ export function LineupView() {
                                     <span className={`perm perm-${perm.tone}`}>
                                       {perm.label}
                                     </span>
+                                    {entry.tier_hint ? (
+                                      <span className="chip" style={{ height: "18px", fontSize: "10.5px" }}>
+                                        {TIER_HINT_LABELS[entry.tier_hint]}
+                                      </span>
+                                    ) : null}
+                                    {entry.escalation_target ? (
+                                      <span className="chip" style={{ height: "18px", fontSize: "10.5px" }}>
+                                        升档→{rosterDraft.roster[entry.escalation_target]?.name ?? entry.escalation_target}
+                                      </span>
+                                    ) : null}
+                                    {!entry.enabled ? (() => {
+                                      const ancId = resolveDerivedAncestor(id);
+                                      return ancId ? (
+                                        <span className="chip" style={{ height: "18px", fontSize: "10.5px" }}>
+                                          自动继承 {rosterDraft.roster[ancId]?.name ?? ancId}
+                                        </span>
+                                      ) : null;
+                                    })() : null}
                                     {!entry.builtin ? (
                                       <span className="chip" style={{ height: "18px", fontSize: "10.5px" }}>
                                         自定义
@@ -1381,7 +1636,9 @@ export function LineupView() {
                                   ) : (
                                     <>
                                       <ProviderAvatar providerId={used.provider} />
-                                      <span>{used.model}</span>
+                                      <span>
+                                        {entry.mode === "on_conflict" ? `冲突按需 · ${used.model}` : used.model}
+                                      </span>
                                       {used.effort ? <em>{used.effort}</em> : null}
                                     </>
                                   )}

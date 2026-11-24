@@ -1,13 +1,15 @@
-import type {
-  BackendCapabilities,
-  ReasoningEffort,
-  RoleId,
-  RolesConfig,
-  RosterConfig,
-  RosterEntry,
-  RosterModelBinding,
-  RosterPermission,
-  StageId,
+import {
+  DERIVED_ROSTER_INHERITANCE,
+  type BackendCapabilities,
+  type ReasoningEffort,
+  type RoleId,
+  type RolesConfig,
+  type RosterConfig,
+  type RosterEntry,
+  type RosterExecutionMode,
+  type RosterModelBinding,
+  type RosterPermission,
+  type StageId,
 } from "@kiln/protocol";
 import { IneligibleRoleAgentError } from "../backend/types.js";
 import type { RateLimitKey } from "./locks.js";
@@ -85,6 +87,11 @@ export interface ResolveRoleAssignmentOptions {
 export interface ResolvedRoleAssignment {
   role: RoleId;
   rosterRoleId?: string;
+  inheritedFrom?: string;
+  escalatedFrom?: string;
+  heterogeneityLevel?: "dual" | "single" | "none";
+  customInstructions?: string;
+  rosterMode?: RosterExecutionMode;
   perm?: RosterPermission;
   backendId?: string;
   agent: string;
@@ -111,6 +118,9 @@ export class RosterRoleUnavailableError extends Error {
 export interface ResolveRosterStageOptions {
   rosterRoleId?: string;
   avoidAgentModel?: { agent: string; model: string } | null;
+  avoidPeers?: ReadonlyArray<{ stage: StageId; agent: string; model: string }>;
+  allowOnConflictDeliverer?: boolean;
+  escalateFromRole?: string;
   agentCapabilitiesMap?: ReadonlyMap<string, BackendCapabilities>;
   isCoolingDown?: (key: RateLimitKey) => boolean;
 }
@@ -118,7 +128,7 @@ export interface ResolveRosterStageOptions {
 const DEFAULT_ROSTER_KEY_BY_STAGE: Readonly<Record<StageId, string>> = {
   intake: "pm",
   plan: "architect",
-  advise: "architect",
+  advise: "advisor",
   research: "researcher",
   implement: "main_dev",
   verify: "tester",
@@ -129,6 +139,7 @@ const DEFAULT_ROSTER_KEY_BY_STAGE: Readonly<Record<StageId, string>> = {
 };
 
 const OPTIONAL_STAGES: ReadonlySet<StageId> = new Set<StageId>([
+  "research",
   "plan",
   "accept",
   "verify",
@@ -140,6 +151,21 @@ function sameAgentModel(
   b: { agent: string; model: string },
 ): boolean {
   return a.agent === b.agent && a.model === b.model;
+}
+
+function filterCandidatesAvoidingPeers(
+  candidates: readonly RosterModelBinding[],
+  peers: ReadonlyArray<{ agent: string; model: string }>,
+): RosterModelBinding[] {
+  const diffProvider = candidates.filter(
+    (cand) => !peers.some((p) => p.agent === cand.provider),
+  );
+  if (diffProvider.length > 0) {
+    return diffProvider;
+  }
+  return candidates.filter(
+    (cand) => !peers.some((p) => sameAgentModel({ agent: cand.provider, model: cand.model }, p)),
+  );
 }
 
 /**
@@ -240,6 +266,7 @@ export function resolveRosterStageAssignment(
 ): ResolvedRoleAssignment | null {
   let rosterRoleId: string;
   let entry: RosterEntry | undefined;
+  let inheritedFrom: string | undefined;
 
   if (options?.rosterRoleId !== undefined) {
     rosterRoleId = options.rosterRoleId;
@@ -253,7 +280,38 @@ export function resolveRosterStageAssignment(
   } else {
     rosterRoleId = role === "resolver" ? "resolver" : DEFAULT_ROSTER_KEY_BY_STAGE[stage];
     entry = rosterConfig.roster[rosterRoleId];
+    if ((!entry || !entry.enabled) && stage === "advise") {
+      const legacyArchitect = rosterConfig.roster.architect;
+      if (legacyArchitect?.enabled && legacyArchitect.secondary_stages.includes("advise")) {
+        rosterRoleId = "architect";
+        entry = legacyArchitect;
+      }
+    }
     if (!entry || !entry.enabled) {
+      const inheritChain = DERIVED_ROSTER_INHERITANCE[rosterRoleId];
+      if (inheritChain) {
+        for (const ancestorId of inheritChain) {
+          const ancestor = rosterConfig.roster[ancestorId];
+          if (ancestor?.enabled && ancestor.mode === "agent" && ancestor.primary) {
+            inheritedFrom = ancestorId;
+            entry = {
+              ...ancestor,
+              perm: entry?.perm ?? (role === "resolver" ? "read_only_draft" : "read_only"),
+              stage,
+              secondary_stages: [],
+              ...(entry?.avoid_same_as !== undefined
+                ? { avoid_same_as: entry.avoid_same_as }
+                : {}),
+              ...(entry?.custom_instructions !== undefined
+                ? { custom_instructions: entry.custom_instructions }
+                : {}),
+            };
+            break;
+          }
+        }
+      }
+    }
+    if (!entry || (!entry.enabled && inheritedFrom === undefined)) {
       if (OPTIONAL_STAGES.has(stage)) {
         return null;
       }
@@ -262,6 +320,9 @@ export function resolveRosterStageAssignment(
   }
 
   if (entry.mode === "kernel") {
+    return null;
+  }
+  if (entry.mode === "on_conflict" && !options?.allowOnConflictDeliverer) {
     return null;
   }
 
@@ -278,33 +339,90 @@ export function resolveRosterStageAssignment(
 
   const heterogeneousEnabled = rosterConfig.heterogeneous_review ?? true;
   let filteredCandidates = allCandidates;
+  let heterogeneityLevel: "dual" | "single" | "none" | undefined;
   if (heterogeneousEnabled && (role === "reviewer" || entry.avoid_same_as !== undefined)) {
-    const peerStage = entry.avoid_same_as ?? "implement";
-    const peerDefaultKey = DEFAULT_ROSTER_KEY_BY_STAGE[peerStage];
-    const peerEntry = rosterConfig.roster[peerDefaultKey];
-    const peerAgentModel =
-      options?.avoidAgentModel ??
-      (peerEntry?.enabled && peerEntry.primary
-        ? { agent: peerEntry.primary.provider, model: peerEntry.primary.model }
-        : null);
+    const rawAvoid = entry.avoid_same_as;
+    const avoidStages: StageId[] =
+      rawAvoid !== undefined
+        ? Array.isArray(rawAvoid)
+          ? rawAvoid
+          : [rawAvoid]
+        : ["implement"];
+    const peers: Array<{ stage: StageId; agent: string; model: string }> = [];
+    for (const peerStage of avoidStages) {
+      if (peerStage === stage) continue;
+      const fromOpts = options?.avoidPeers?.find((p) => p.stage === peerStage);
+      if (fromOpts) {
+        peers.push(fromOpts);
+        continue;
+      }
+      if (peerStage === "implement" && options?.avoidAgentModel) {
+        peers.push({
+          stage: "implement",
+          agent: options.avoidAgentModel.agent,
+          model: options.avoidAgentModel.model,
+        });
+        continue;
+      }
+      const peerKey = DEFAULT_ROSTER_KEY_BY_STAGE[peerStage];
+      let peerEntry = rosterConfig.roster[peerKey];
+      if ((!peerEntry || !peerEntry.enabled) && DERIVED_ROSTER_INHERITANCE[peerKey]) {
+        for (const ancId of DERIVED_ROSTER_INHERITANCE[peerKey]!) {
+          const anc = rosterConfig.roster[ancId];
+          if (anc?.enabled && anc.mode === "agent" && anc.primary) {
+            peerEntry = anc;
+            break;
+          }
+        }
+      }
+      if (peerEntry?.enabled && peerEntry.primary) {
+        peers.push({
+          stage: peerStage,
+          agent: peerEntry.primary.provider,
+          model: peerEntry.primary.model,
+        });
+      }
+    }
 
-    if (peerAgentModel && peerStage !== stage) {
-      filteredCandidates = allCandidates.filter(
-        (cand) =>
-          !sameAgentModel({ agent: cand.provider, model: cand.model }, peerAgentModel),
-      );
-      if (filteredCandidates.length === 0) {
+    if (peers.length > 0) {
+      const fullPass = filterCandidatesAvoidingPeers(allCandidates, peers);
+      if (fullPass.length > 0) {
+        filteredCandidates = fullPass;
+        heterogeneityLevel = peers.length >= 2 ? "dual" : "single";
+      } else if (peers.length > 1) {
+        const primaryPeer = peers[0]!;
+        const singlePass = filterCandidatesAvoidingPeers(allCandidates, [primaryPeer]);
+        if (singlePass.length > 0) {
+          filteredCandidates = singlePass;
+          heterogeneityLevel = "single";
+        } else {
+          throw new HeterogeneousReviewConflictError(
+            role,
+            primaryPeer.stage === "implement" ? "worker" : role,
+            primaryPeer.agent,
+            primaryPeer.model,
+            allCandidates.length === 1
+              ? "no valid fallback configured"
+              : "all configured fallbacks collide with peer role",
+          );
+        }
+      } else {
+        const onlyPeer = peers[0]!;
         throw new HeterogeneousReviewConflictError(
           role,
-          peerStage === "implement" ? "worker" : role,
-          peerAgentModel.agent,
-          peerAgentModel.model,
+          onlyPeer.stage === "implement" ? "worker" : role,
+          onlyPeer.agent,
+          onlyPeer.model,
           allCandidates.length === 1
             ? "no valid fallback configured"
             : "all configured fallbacks collide with peer role",
         );
       }
+    } else if (role === "reviewer") {
+      heterogeneityLevel = "none";
     }
+  } else if (role === "reviewer") {
+    heterogeneityLevel = "none";
   }
 
   const preferUnthrottled = rosterConfig.pm_orchestration?.prefer_unthrottled ?? true;
@@ -338,12 +456,22 @@ export function resolveRosterStageAssignment(
   return {
     role,
     rosterRoleId,
+    ...(inheritedFrom !== undefined ? { inheritedFrom } : {}),
+    ...(options?.escalateFromRole !== undefined
+      ? { escalatedFrom: options.escalateFromRole }
+      : {}),
+    ...(heterogeneityLevel !== undefined ? { heterogeneityLevel } : {}),
+    ...(entry.custom_instructions !== undefined
+      ? { customInstructions: entry.custom_instructions }
+      : {}),
+    rosterMode: entry.mode,
     perm: entry.perm,
     ...(selected.backend_id !== undefined ? { backendId: selected.backend_id } : {}),
     agent: selected.provider,
     model: selected.model,
     ...(selected.effort !== undefined ? { reasoningEffort: selected.effort } : {}),
-    freshContext: FRESH_CONTEXT_ROLES.has(role),
+    freshContext:
+      FRESH_CONTEXT_ROLES.has(role) || options?.escalateFromRole !== undefined,
     allowFullAccessFallback: entry.allow_full_access_fallback ?? false,
     usedFallback,
   };

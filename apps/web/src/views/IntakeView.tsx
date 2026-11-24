@@ -521,6 +521,60 @@ export function IntakeView() {
                   ) : null}
                 </div>
 
+                {isProjectMode &&
+                selectedProject &&
+                (intakeForm.research_markdown.trim().length > 0 ||
+                  state.roster.roster.researcher?.enabled) ? (
+                  <details className="pm-assign" open={false}>
+                    <summary
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "8px",
+                        cursor: "pointer",
+                        listStyle: "none",
+                      }}
+                    >
+                      <span style={{ fontWeight: 600, fontSize: "12px" }}>
+                        前置侦察简报 (RESEARCH.md)
+                      </span>
+                      <span
+                        className={`chip ${
+                          intakeForm.research_markdown.trim() ? "chip-live" : ""
+                        }`}
+                      >
+                        {intakeForm.research_markdown.trim() ? "已就绪" : "待侦察"}
+                      </span>
+                      <span className="sp" />
+                      {state.roster.roster.researcher?.enabled ? (
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          disabled={intakeBusy || state.reconBusy}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            void store.refreshIntakeRecon(intakeForm.title || chatInput);
+                          }}
+                        >
+                          {state.reconBusy ? "侦察中…" : "刷新侦察"}
+                        </button>
+                      ) : null}
+                    </summary>
+                    <div style={{ marginTop: "8px" }}>
+                      {intakeForm.research_markdown.trim() ? (
+                        <div className="brief-preview">
+                          <MarkdownContent text={intakeForm.research_markdown} />
+                        </div>
+                      ) : (
+                        <p className="muted" style={{ fontSize: "12px", margin: 0 }}>
+                          发出首条需求时将自动由 researcher 扫描项目结构与测试基线，也可手动点击「刷新侦察」。
+                        </p>
+                      )}
+                    </div>
+                  </details>
+                ) : null}
+
                 {openQuestions.length > 0 ? (
                   <div className="open-questions" aria-label="待拍板事项">
                     <div className="oq-title">待拍板（{openQuestions.length}）</div>

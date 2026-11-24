@@ -57,6 +57,7 @@ export const CODEX_APP_SERVER_CAPABILITIES: BackendCapabilities = {
   contextWindowTelemetry: true,
   nativeQuotaWindow: true,
   readOnlySandbox: true,
+  warmSessionReuse: true,
 };
 
 const CODEX_MODES: readonly BackendModeDescriptor[] = [

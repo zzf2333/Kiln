@@ -1,21 +1,26 @@
 import fs from "node:fs";
 import {
+  GateReportSchema,
   LimitsConfigSchema,
   PRIORITY_RANK,
   RunMetaSchema,
-  flattenWorkflowSteps,
+  getWorkflowFlatSteps,
   getStageNodeKind,
-  resolveTaskWorkflow,
+  isReadOnlyRosterPermission,
+  parseFrontmatterMarkdown,
+  resolveWorkflowStepAt,
   type BackendCapabilities,
   type LimitsConfig,
   type Priority,
   type RoleId,
   type RolesConfig,
   type RosterConfig,
+  type RosterPermission,
   type StageId,
   type StateEvent,
   type TaskCard,
   type TaskStatus,
+  type WorkflowAtomicNode,
 } from "@kiln/protocol";
 import type { ProviderHealthTracker } from "../backend/provider-health.js";
 import {
@@ -51,6 +56,7 @@ export interface DispatchPlan {
   taskId: string;
   card: TaskCard;
   stage: StageId;
+  stepIndex: number | null;
   round: number;
   role: RoleId | null;
   effectivePriority: Priority;
@@ -86,6 +92,8 @@ export interface SchedulerTickResult {
   nextCooldownWakeAtMs: number | null;
 }
 
+const DEFAULT_CACHE_AFFINITY_STARVATION_MS = 15 * 60_000;
+
 export interface KilnSchedulerOptions {
   store: KilnStore;
   stateMachine?: TaskStateMachine;
@@ -95,6 +103,11 @@ export interface KilnSchedulerOptions {
   providerHealth?: ProviderHealthTracker;
   agentCapabilitiesMap?: ReadonlyMap<string, BackendCapabilities>;
   resolveHostTargetPaths?: (card: TaskCard, store: KilnStore) => readonly string[];
+  getCacheAffinity?: (
+    candidate: { taskId: string; space: string; stage: StageId },
+    nowMs: number,
+  ) => 0 | 1 | 2;
+  cacheAffinityStarvationMs?: number;
   now?: () => number;
   onDispatch: (plan: DispatchPlan) => Promise<void> | void;
   onWaitingAttentionBlocked?: (event: WaitingAttentionBlockedEvent) => void;
@@ -126,9 +139,10 @@ function compareStringAsc(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-function findLatestImplementAgentModel(
+function findLatestStageAgentModel(
   store: KilnStore,
   taskId: string,
+  stage: StageId,
 ): { agent: string; model: string } | null {
   const runsDir = store.paths.runsDir(taskId);
   if (!fs.existsSync(runsDir)) {
@@ -141,11 +155,114 @@ function findLatestImplementAgentModel(
     .sort((a, b) => b.localeCompare(a));
   for (const dirName of dirs) {
     const meta = readYamlOptional(store.paths.runYaml(taskId, dirName), RunMetaSchema);
-    if (meta && meta.stage === "implement") {
+    if (meta && meta.stage === stage) {
       return { agent: meta.agent, model: meta.model };
     }
   }
   return null;
+}
+
+function isGateReportPassing(store: KilnStore, taskId: string, dirName: string): boolean | null {
+  const gate = readYamlOptional(store.paths.gateYaml(taskId, dirName), GateReportSchema);
+  if (!gate) {
+    return null;
+  }
+  return (
+    gate.schema_ok &&
+    gate.scope_ok &&
+    gate.frozen_files_changed.length === 0 &&
+    gate.artifacts_ok !== false &&
+    gate.accept_exit_code === 0
+  );
+}
+
+function resolveImplementRosterRole(
+  store: KilnStore,
+  card: TaskCard,
+  rosterConfig: RosterConfig,
+  explicitRosterRoleId?: string,
+): { rosterRoleId: string; escalateFromRole?: string } {
+  let candidateId = explicitRosterRoleId;
+  if (!candidateId) {
+    const prefersFast = rosterConfig.pm_orchestration?.plan_prefers_fast_exec !== false;
+    const planPath = store.paths.planMd(card.id);
+    const hasPlanMd =
+      fs.existsSync(planPath) && fs.readFileSync(planPath, "utf8").trim().length > 0;
+    const fastFix = rosterConfig.roster.fast_fix;
+    if (prefersFast && hasPlanMd && fastFix?.enabled && fastFix.mode === "agent" && fastFix.primary) {
+      candidateId = "fast_fix";
+    } else {
+      candidateId = "main_dev";
+    }
+  }
+
+  const candidateEntry = rosterConfig.roster[candidateId];
+  const escalationTargetId = candidateEntry?.escalation_target;
+  if (!escalationTargetId || escalationTargetId === candidateId) {
+    return { rosterRoleId: candidateId };
+  }
+
+  const targetEntry = rosterConfig.roster[escalationTargetId];
+  if (!targetEntry || !targetEntry.enabled || targetEntry.mode !== "agent" || !targetEntry.primary) {
+    return { rosterRoleId: candidateId };
+  }
+
+  const runsDir = store.paths.runsDir(card.id);
+  if (!fs.existsSync(runsDir)) {
+    return { rosterRoleId: candidateId };
+  }
+
+  const dirs = fs
+    .readdirSync(runsDir, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && !d.name.startsWith("."))
+    .map((d) => d.name)
+    .sort((a, b) => a.localeCompare(b));
+
+  let seenCandidateRun = false;
+  let candidateFailedGates = 0;
+  let complexityEscalated = false;
+  let adviseAfterCandidate = false;
+
+  for (const dirName of dirs) {
+    const meta = readYamlOptional(store.paths.runYaml(card.id, dirName), RunMetaSchema);
+    if (!meta || meta.contract_version !== card.contract_version) {
+      continue;
+    }
+    if (meta.stage === "advise" && seenCandidateRun) {
+      adviseAfterCandidate = true;
+    }
+    if (meta.stage === "implement") {
+      const effectiveRole = meta.roster_role ?? "main_dev";
+      if (effectiveRole !== candidateId) {
+        continue;
+      }
+      seenCandidateRun = true;
+      const gatePassed = isGateReportPassing(store, card.id, dirName);
+      if (gatePassed === false) {
+        candidateFailedGates++;
+      }
+      const receiptPath = store.paths.receiptMd(card.id, dirName);
+      if (fs.existsSync(receiptPath)) {
+        try {
+          const parsed = parseFrontmatterMarkdown(fs.readFileSync(receiptPath, "utf8"));
+          if (parsed.frontmatter.complexity_escalate === true) {
+            complexityEscalated = true;
+          }
+        } catch {
+          // Ignore malformed partial receipt
+        }
+      }
+    }
+  }
+
+  if (complexityEscalated || candidateFailedGates >= 2 || adviseAfterCandidate) {
+    return {
+      rosterRoleId: escalationTargetId,
+      escalateFromRole: candidateId,
+    };
+  }
+
+  return { rosterRoleId: candidateId };
 }
 
 function getRoleForStage(stage: StageId): RoleId | null {
@@ -215,22 +332,76 @@ function computeBlockedDownstreamCounts(
   return counts;
 }
 
+function isReadOnlyStage(
+  stage: StageId | null,
+  perm?: RosterPermission,
+): boolean {
+  if (
+    stage === "plan" ||
+    stage === "research" ||
+    stage === "review" ||
+    stage === "triage" ||
+    stage === "advise"
+  ) {
+    return true;
+  }
+  if (
+    stage !== "implement" &&
+    stage !== "deliver" &&
+    perm !== undefined &&
+    isReadOnlyRosterPermission(perm)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function computeNextStageAndRound(
   card: TaskCard,
   derived: DerivedTaskState,
   events: readonly StateEvent[],
-): { stage: StageId; round: number } {
-  const pipeline = getTaskPipelineStages(card, derived.track);
-  const stage: StageId = derived.stage ?? pipeline[0]!;
+): {
+  stage: StageId;
+  stepIndex: number | null;
+  stageNode: WorkflowAtomicNode | null;
+  round: number;
+} {
+  let stage: StageId;
+  let stepIndex: number | null = null;
+  let stageNode: WorkflowAtomicNode | null = null;
+
+  if (derived.stage === "triage" || derived.stage === "advise") {
+    stage = derived.stage;
+  } else {
+    const resolved = resolveWorkflowStepAt(
+      card,
+      derived.stepIndex,
+      derived.stage,
+      derived.track,
+    );
+    if (resolved) {
+      stage = resolved.node.stage;
+      stepIndex = resolved.stepIndex;
+      stageNode = resolved.node;
+    } else {
+      const pipeline = getTaskPipelineStages(card, derived.track);
+      stage = derived.stage ?? pipeline[0]!;
+    }
+  }
 
   let maxRound = 0;
   for (const ev of events) {
-    if (ev.type === "running" && ev.stage === stage && ev.round > maxRound) {
+    if (
+      ev.type === "running" &&
+      ev.stage === stage &&
+      (stepIndex === null || ev.step_index === undefined || ev.step_index === stepIndex) &&
+      ev.round > maxRound
+    ) {
       maxRound = ev.round;
     }
   }
 
-  return { stage, round: maxRound + 1 };
+  return { stage, stepIndex, stageNode, round: maxRound + 1 };
 }
 
 function emptyTickResult(nextCooldownWakeAtMs: number | null = null): SchedulerTickResult {
@@ -263,6 +434,8 @@ export class KilnScheduler {
   private readonly resolveHostTargetPaths:
     | ((card: TaskCard, store: KilnStore) => readonly string[])
     | undefined;
+  private readonly getCacheAffinity: KilnSchedulerOptions["getCacheAffinity"];
+  private readonly cacheAffinityStarvationMs: number;
   private readonly now: () => number;
   private readonly onDispatch: (plan: DispatchPlan) => Promise<void> | void;
   private readonly onWaitingAttentionBlocked:
@@ -295,6 +468,9 @@ export class KilnScheduler {
     this.providerHealth = options.providerHealth;
     this.agentCapabilitiesMap = options.agentCapabilitiesMap;
     this.resolveHostTargetPaths = options.resolveHostTargetPaths;
+    this.getCacheAffinity = options.getCacheAffinity;
+    this.cacheAffinityStarvationMs =
+      options.cacheAffinityStarvationMs ?? DEFAULT_CACHE_AFFINITY_STARVATION_MS;
     this.now = options.now ?? (() => Date.now());
     this.onDispatch = options.onDispatch;
     this.onWaitingAttentionBlocked = options.onWaitingAttentionBlocked;
@@ -494,23 +670,26 @@ export class KilnScheduler {
           activeSlotTaskIds.add(taskId);
         }
 
-        if (snap.card.workspace_mode === "git_worktree") {
-          activeGitWorktrees.push({
-            space: snap.card.space,
-            scope: snap.card.contract.scope,
-          });
-        } else if (snap.card.workspace_mode === "host_scoped") {
-          activeHostParticipants.push({
-            taskId,
-            scope: snap.card.contract.scope,
-            plannedCanonicalPaths:
-              inFlight?.hostTargets ??
-              resolveTaskPlannedHostPaths(
-                snap.card,
-                this.store,
-                this.resolveHostTargetPaths,
-              ),
-          });
+        // Read-only stages (plan, research, review, triage, advise) do not hold workspace write locks.
+        if (!isReadOnlyStage(snap.derived.stage)) {
+          if (snap.card.workspace_mode === "git_worktree") {
+            activeGitWorktrees.push({
+              space: snap.card.space,
+              scope: snap.card.contract.scope,
+            });
+          } else if (snap.card.workspace_mode === "host_scoped") {
+            activeHostParticipants.push({
+              taskId,
+              scope: snap.card.contract.scope,
+              plannedCanonicalPaths:
+                inFlight?.hostTargets ??
+                resolveTaskPlannedHostPaths(
+                  snap.card,
+                  this.store,
+                  this.resolveHostTargetPaths,
+                ),
+            });
+          }
         }
       }
     }
@@ -540,6 +719,40 @@ export class KilnScheduler {
       candidates.push(snap);
     }
 
+    const candidateAffinity = new Map<string, 0 | 1 | 2>();
+    const starvingGroups = new Set<string>();
+    if (this.getCacheAffinity && candidates.length > 1) {
+      for (const snap of candidates) {
+        let stageHint: StageId = snap.derived.stage ?? "implement";
+        try {
+          stageHint = computeNextStageAndRound(snap.card, snap.derived, snap.events).stage;
+        } catch {
+          // Invalid track/blueprint errors are handled inside candidate validation below.
+        }
+        const tier = this.getCacheAffinity(
+          {
+            taskId: snap.card.id,
+            space: snap.card.space,
+            stage: stageHint,
+          },
+          nowMs,
+        );
+        candidateAffinity.set(snap.card.id, tier);
+        if (tier === 0) {
+          const prio = effectivePriorities.get(snap.card.id) ?? snap.derived.priority;
+          const blocked = blockedCounts.get(snap.card.id) ?? 0;
+          const waitIso = snap.derived.updatedAt || snap.card.created_at;
+          const waitMs = Date.parse(waitIso);
+          if (
+            Number.isFinite(waitMs) &&
+            nowMs - waitMs >= this.cacheAffinityStarvationMs
+          ) {
+            starvingGroups.add(`${prio}:${blocked}`);
+          }
+        }
+      }
+    }
+
     candidates.sort((a, b) => {
       const prioA = effectivePriorities.get(a.card.id) ?? a.derived.priority;
       const prioB = effectivePriorities.get(b.card.id) ?? b.derived.priority;
@@ -548,10 +761,20 @@ export class KilnScheduler {
         return rankDiff;
       }
 
-      const blockedDiff =
-        (blockedCounts.get(b.card.id) ?? 0) - (blockedCounts.get(a.card.id) ?? 0);
+      const blockedA = blockedCounts.get(a.card.id) ?? 0;
+      const blockedB = blockedCounts.get(b.card.id) ?? 0;
+      const blockedDiff = blockedB - blockedA;
       if (blockedDiff !== 0) {
         return blockedDiff;
+      }
+
+      if (this.getCacheAffinity && !starvingGroups.has(`${prioA}:${blockedA}`)) {
+        const affDiff =
+          (candidateAffinity.get(b.card.id) ?? 0) -
+          (candidateAffinity.get(a.card.id) ?? 0);
+        if (affDiff !== 0) {
+          return affDiff;
+        }
       }
 
       const waitA = a.derived.updatedAt || a.card.created_at;
@@ -599,39 +822,11 @@ export class KilnScheduler {
         continue;
       }
 
-      // Write-lock checks: git_worktree same-space scope overlap and host_scoped path conflicts.
-      let candidateHostTargets: string[] = [];
-      if (snap.card.workspace_mode === "git_worktree") {
-        const scopeBlocked = activeGitWorktrees.some(
-          (active) =>
-            active.space === snap.card.space &&
-            scopesOverlap(snap.card.contract.scope, active.scope),
-        );
-        if (scopeBlocked) {
-          continue;
-        }
-      } else if (snap.card.workspace_mode === "host_scoped") {
-        candidateHostTargets = resolveTaskPlannedHostPaths(
-          snap.card,
-          this.store,
-          this.resolveHostTargetPaths,
-        );
-        const hostBlocked = hasHostScopedConflict(
-          {
-            taskId,
-            scope: snap.card.contract.scope,
-            plannedCanonicalPaths: candidateHostTargets,
-          },
-          existingHostLocks,
-          activeHostParticipants,
-        );
-        if (hostBlocked) {
-          continue;
-        }
-      }
-
-      // Stage & role resolution + rate-limit check (before reserving slots or write locks).
+      // Stage & role resolution + rate-limit check BEFORE write-lock checks so read-only
+      // stages (plan/research/review/triage/advise) are never blocked by workspace write locks.
       let stage: StageId;
+      let stepIndex: number | null;
+      let stageNode: WorkflowAtomicNode | null;
       let round: number;
       let role: RoleId | null;
       let roleAssignment: ResolvedRoleAssignment | null = null;
@@ -643,43 +838,102 @@ export class KilnScheduler {
           snap.events,
         );
         stage = resolvedStage.stage;
+        stepIndex = resolvedStage.stepIndex;
+        stageNode = resolvedStage.stageNode;
         round = resolvedStage.round;
-        role =
-          stage === "accept" && getStageNodeKind(snap.card, "accept") === "approval"
-            ? null
-            : getRoleForStage(stage);
 
-        if (rosterConfig !== null && role !== null) {
-          const workflowNodes = flattenWorkflowSteps(resolveTaskWorkflow(snap.card));
-          const stageNode = workflowNodes.find(
-            (n) => n.kind === "agent" && n.stage === stage,
-          );
-          let avoidAgentModel: { agent: string; model: string } | null = null;
+        const isAcceptApproval =
+          stage === "accept" &&
+          (stageNode !== null
+            ? stageNode.kind === "approval"
+            : getStageNodeKind(snap.card, "accept") === "approval");
+
+        if (isAcceptApproval) {
+          role = null;
+        } else if (stage === "verify" || stage === "deliver") {
+          if (rosterConfig !== null) {
+            roleAssignment = resolveRosterStageAssignment(rosterConfig, stage, "worker", {
+              ...(stageNode?.kind === "agent" && stageNode.roster_role
+                ? { rosterRoleId: stageNode.roster_role }
+                : {}),
+              ...(stage === "deliver" ? { allowOnConflictDeliverer: true } : {}),
+              ...(this.agentCapabilitiesMap !== undefined
+                ? { agentCapabilitiesMap: this.agentCapabilitiesMap }
+                : {}),
+              isCoolingDown: (key) =>
+                this.rateLimitTracker.getCooldownUntil(key, nowMs) !== null ||
+                (this.providerHealth?.isInCooldown(key.agent, nowMs) ?? false),
+            });
+            role = roleAssignment ? "worker" : null;
+          } else {
+            role = null;
+          }
+        } else {
+          role = getRoleForStage(stage);
+        }
+
+        if (
+          rosterConfig !== null &&
+          role !== null &&
+          stage !== "verify" &&
+          stage !== "deliver"
+        ) {
+          const workflowNodes = getWorkflowFlatSteps(snap.card, snap.derived.track);
+          const effectiveNode =
+            stageNode ??
+            workflowNodes.find((n) => n.kind === "agent" && n.stage === stage) ??
+            null;
+          const explicitRosterRoleId =
+            effectiveNode?.kind === "agent" && effectiveNode.roster_role
+              ? effectiveNode.roster_role
+              : undefined;
+
+          let resolvedRosterRoleId = explicitRosterRoleId;
+          let escalateFromRole: string | undefined;
+          if (stage === "implement") {
+            const implChoice = resolveImplementRosterRole(
+              this.store,
+              snap.card,
+              rosterConfig,
+              explicitRosterRoleId,
+            );
+            resolvedRosterRoleId = implChoice.rosterRoleId;
+            escalateFromRole = implChoice.escalateFromRole;
+          }
+
+          const avoidPeers: Array<{ stage: StageId; agent: string; model: string }> = [];
           if (stage === "review") {
-            avoidAgentModel = findLatestImplementAgentModel(this.store, taskId);
-            if (!avoidAgentModel) {
-              const implNode = workflowNodes.find(
-                (n) => n.kind === "agent" && n.stage === "implement",
-              );
+            const implPeer = findLatestStageAgentModel(this.store, taskId, "implement");
+            if (implPeer) {
+              avoidPeers.push({ stage: "implement", ...implPeer });
+            } else {
+              const implNode = [...workflowNodes]
+                .reverse()
+                .find((n) => n.kind === "agent" && n.stage === "implement");
               const implKey =
                 implNode?.kind === "agent" && implNode.roster_role
                   ? implNode.roster_role
                   : "main_dev";
               const implEntry = rosterConfig.roster[implKey];
               if (implEntry?.enabled && implEntry.primary) {
-                avoidAgentModel = {
+                avoidPeers.push({
+                  stage: "implement",
                   agent: implEntry.primary.provider,
                   model: implEntry.primary.model,
-                };
+                });
               }
+            }
+
+            const planPeer = findLatestStageAgentModel(this.store, taskId, "plan");
+            if (planPeer) {
+              avoidPeers.push({ stage: "plan", ...planPeer });
             }
           }
 
           roleAssignment = resolveRosterStageAssignment(rosterConfig, stage, role, {
-            ...(stageNode?.kind === "agent" && stageNode.roster_role
-              ? { rosterRoleId: stageNode.roster_role }
-              : {}),
-            ...(avoidAgentModel !== null ? { avoidAgentModel } : {}),
+            ...(resolvedRosterRoleId !== undefined ? { rosterRoleId: resolvedRosterRoleId } : {}),
+            ...(escalateFromRole !== undefined ? { escalateFromRole } : {}),
+            ...(avoidPeers.length > 0 ? { avoidPeers } : {}),
             ...(this.agentCapabilitiesMap !== undefined
               ? { agentCapabilitiesMap: this.agentCapabilitiesMap }
               : {}),
@@ -687,7 +941,15 @@ export class KilnScheduler {
               this.rateLimitTracker.getCooldownUntil(key, nowMs) !== null ||
               (this.providerHealth?.isInCooldown(key.agent, nowMs) ?? false),
           });
-        } else if (rolesConfig && role !== null) {
+          if (stage === "research" && roleAssignment === null) {
+            role = null;
+          }
+        } else if (
+          rolesConfig &&
+          role !== null &&
+          stage !== "verify" &&
+          stage !== "deliver"
+        ) {
           const shouldResolveRole =
             (stage !== "accept" && stage !== "plan") ||
             rolesConfig.roles[role] !== undefined;
@@ -741,21 +1003,57 @@ export class KilnScheduler {
         }
       }
 
+      // Write-lock checks: only mutating stages hold git_worktree scope / host_scoped path locks.
+      const isReadOnlyCandidate = isReadOnlyStage(stage, roleAssignment?.perm);
+      let candidateHostTargets: string[] = [];
+      if (!isReadOnlyCandidate) {
+        if (snap.card.workspace_mode === "git_worktree") {
+          const scopeBlocked = activeGitWorktrees.some(
+            (active) =>
+              active.space === snap.card.space &&
+              scopesOverlap(snap.card.contract.scope, active.scope),
+          );
+          if (scopeBlocked) {
+            continue;
+          }
+        } else if (snap.card.workspace_mode === "host_scoped") {
+          candidateHostTargets = resolveTaskPlannedHostPaths(
+            snap.card,
+            this.store,
+            this.resolveHostTargetPaths,
+          );
+          const hostBlocked = hasHostScopedConflict(
+            {
+              taskId,
+              scope: snap.card.contract.scope,
+              plannedCanonicalPaths: candidateHostTargets,
+            },
+            existingHostLocks,
+            activeHostParticipants,
+          );
+          if (hostBlocked) {
+            continue;
+          }
+        }
+      }
+
       // Approved: synchronously update active reservations before any async dispatch.
       if (!parentIdsWithChildren.has(taskId)) {
         virtualRunningCount++;
       }
-      if (snap.card.workspace_mode === "git_worktree") {
-        activeGitWorktrees.push({
-          space: snap.card.space,
-          scope: snap.card.contract.scope,
-        });
-      } else if (snap.card.workspace_mode === "host_scoped") {
-        activeHostParticipants.push({
-          taskId,
-          scope: snap.card.contract.scope,
-          plannedCanonicalPaths: candidateHostTargets,
-        });
+      if (!isReadOnlyCandidate) {
+        if (snap.card.workspace_mode === "git_worktree") {
+          activeGitWorktrees.push({
+            space: snap.card.space,
+            scope: snap.card.contract.scope,
+          });
+        } else if (snap.card.workspace_mode === "host_scoped") {
+          activeHostParticipants.push({
+            taskId,
+            scope: snap.card.contract.scope,
+            plannedCanonicalPaths: candidateHostTargets,
+          });
+        }
       }
 
       this.inFlightDispatches.set(taskId, {
@@ -768,6 +1066,7 @@ export class KilnScheduler {
           taskId,
           card: snap.card,
           stage,
+          stepIndex,
           round,
           role,
           effectivePriority,

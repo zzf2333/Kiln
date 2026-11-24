@@ -36,6 +36,7 @@ import {
   type McpStdioMountSpec,
   type RunAttachmentInput,
 } from "../backend/index.js";
+import { RoleNotConfiguredError, resolveRosterStageAssignment } from "../scheduler/index.js";
 import type { TaskStateMachine } from "../state/index.js";
 import {
   appendNdjsonLine,
@@ -980,31 +981,87 @@ export class KilnChatEngine {
     }
   }
 
+  private async findBackendForAgent(
+    agent: string,
+    backendId?: string,
+  ): Promise<ExecutionBackend | null> {
+    if (backendId) {
+      return this.backendRegistry.has(backendId)
+        ? this.backendRegistry.get(backendId)
+        : null;
+    }
+    for (const candidate of this.backendRegistry.list()) {
+      try {
+        const listed = await candidate.listAgents();
+        if (listed.some((a) => a.id === agent)) {
+          return candidate;
+        }
+      } catch {
+        // Try remaining registered backends
+      }
+    }
+    return null;
+  }
+
   private async resolveInteractiveExecutor(
     role: "intake" | "resolver",
   ): Promise<ResolvedInteractiveExecutor | null> {
+    const rosterConfig = this.store.readEffectiveRosterConfig();
+    let rosterAssignment: ReturnType<typeof resolveRosterStageAssignment> = null;
+    try {
+      rosterAssignment = resolveRosterStageAssignment(
+        rosterConfig,
+        role === "intake" ? "intake" : "advise",
+        role,
+        {
+          isCoolingDown: (key) =>
+            this.providerHealth?.isInCooldown(key.agent) ?? false,
+        },
+      );
+    } catch (err) {
+      if (!(err instanceof RoleNotConfiguredError)) {
+        throw err;
+      }
+    }
+
+    if (rosterAssignment) {
+      const targetBackend = await this.findBackendForAgent(
+        rosterAssignment.agent,
+        rosterAssignment.backendId,
+      );
+      if (targetBackend) {
+        const caps = await targetBackend.capabilities(rosterAssignment.agent);
+        assertRoleAgentEligible(role, rosterAssignment.agent, caps);
+        return {
+          backend: targetBackend,
+          agent: rosterAssignment.agent,
+          model: rosterAssignment.model,
+          ...(rosterAssignment.reasoningEffort !== undefined
+            ? { reasoningEffort: rosterAssignment.reasoningEffort }
+            : {}),
+          allowFullAccessFallback: rosterAssignment.allowFullAccessFallback,
+          mcpEnabled: caps.mcpInjection,
+        };
+      }
+      if (this.chatResponder) {
+        return null;
+      }
+      throw new ServerHttpError(409, {
+        error: "backend_unavailable",
+        role,
+        agent: rosterAssignment.agent,
+        message: `No connected ExecutionBackend exposes agent "${rosterAssignment.agent}" for role "${role}"`,
+      });
+    }
+
     const rolesConfig = this.store.readConfig("roles");
     const assignment = rolesConfig?.roles[role];
 
     if (assignment) {
-      let targetBackend: ExecutionBackend | null = null;
-      if (assignment.backend_id) {
-        if (this.backendRegistry.has(assignment.backend_id)) {
-          targetBackend = this.backendRegistry.get(assignment.backend_id);
-        }
-      } else {
-        for (const candidate of this.backendRegistry.list()) {
-          try {
-            const listed = await candidate.listAgents();
-            if (listed.some((a) => a.id === assignment.agent)) {
-              targetBackend = candidate;
-              break;
-            }
-          } catch {
-            // Try remaining registered backends
-          }
-        }
-      }
+      const targetBackend = await this.findBackendForAgent(
+        assignment.agent,
+        assignment.backend_id,
+      );
 
       if (!targetBackend) {
         if (this.chatResponder) {
@@ -1549,18 +1606,28 @@ export class KilnChatEngine {
         ? `当前已记录的《产品方案 (BRIEF.md)》：\n${currentBrief.trim()}`
         : "(尚未生成《产品方案 (BRIEF.md)》，请在本轮完成后输出并同步)";
 
+    const draftResearch = this.store.readDraftResearch(draft.id);
+    const draftResearchSection =
+      draftResearch && draftResearch.trim().length > 0
+        ? [
+            `## 前置侦察简报 (RESEARCH.md · 由用户配置的 researcher 生成)`,
+            `以下为立项前只读扫描产出的项目环境与代码地图，请先基于此简报与用户确认方案与验收边界；仅对存疑细节做定点核查，避免重复全仓扫盘：`,
+            draftResearch.trim(),
+          ].join("\n")
+        : "";
+
     const pmWorkflowProtocol = [
       `你的职责是 Kiln 的产品经理与技术立项架构师（intake）：将用户的原始想法打磨为清晰、无歧义、可执行的产品设计方案（BRIEF.md）与工程契约，并将确认后的方案无损传递给下游执行角色。`,
       `核心工作方法（四步协议 + D25/D26 规则）：`,
       `1. **三档自适应对话节奏（D26）**：明确小活 0–1 轮直接推导并补齐完整字段供一语发车；有边界盲区 1–2 轮给出带「推荐」与代价的结构化分叉选项；模糊或较大需求围绕《产品方案 (BRIEF.md)》收敛；需求过大时主动拆出 2–12 张带 \`depends_on_temp_ids\` 依赖关系的垂直切片（可调用 \`wb_plan(mode: "commit_split_cards")\`）。`,
-      `2. **先查代码、账本与常备阵容（D25）**：若在项目仓库目录，先只读检索相关源码、脚本与空间长期账本（ledger），并结合下方「当前待命 Agent 阵容池」的名称、特性（traits）、权限（perm）与实时冷却状态，只点将本任务真正需要的角色（设计了不必全上，在 \`workflow.steps[].roster_role\` 与 \`rationale\` 及 \`workflow.pm_rationale\` 说明排兵理由；严禁将 \`read_only\` 角色点将到 \`implement\`）。`,
+      `2. **先查侦察简报、账本与常备阵容（D25）**：若上方已提供前置侦察简报（RESEARCH.md）则优先直接采用；否则在项目仓库只读核查关键源码、脚本与空间账本（ledger）。结合下方「当前待命 Agent 阵容池」的角色定位、档位（tier）、特性（traits）、权限（perm）与冷却状态，只点将本任务真正需要的角色（设计了不必全上，在 \`workflow.steps[].roster_role\` 与 \`rationale\` 及 \`workflow.pm_rationale\` 说明排兵理由；严禁将 \`read_only\` 角色点将到 \`implement\`）。`,
       `3. **清晰目标与明确不做什么（non_goals）**：只聚焦产品目标、规则、外部行为与范围边界，显式锁定 \`contract.non_goals\`；若存在关键分歧在 \`open_questions\` 维护待决事项（确认后置空 []）。`,
       `4. **L1 / L2 自适应探索深度**：`,
       draft.track === "L1"
         ? `- 当前为 **L1 快车道**：保持 1–2 轮高效收敛，避免过度访谈；生成精简 4 段设计稿（目标与改动、边界约束、方案要点、验收命令）并尽快补齐全部契约字段。`
         : `- 当前为 **L2 标准交付**：确保业务规则、多状态流转、异常边界与人工兜底全部梳理清晰，直至 open_questions 清零；BRIEF.md 固定采用 5 段结构：\n  ## 1. 目标与用户场景\n  ## 2. 已确认规则与关键流程 / 边界\n  ## 3. 选定落地方案与关键取舍\n  ## 4. 范围边界（做什么 / 明确不做什么）\n  ## 5. 可观察验收场景`,
       `自动补全与安全边界：用户已在前端通过 Tab 选定了项目空间、优先级或轨道；请主动替用户推导并回填 title、end、accept_cmd、scope、non_goals、depends_on、open_questions 与 brief_markdown，严禁私自调用 commit_card 直接建卡（必须由用户点击「开始推进」确认）。`,
-      `5. **可组合流程蓝图预设**：按任务复杂度优先选用 4 套配方之一：\`quick\`（快速通道：实施→验真→交付，适合简单脚本/小改）、\`host_op\`（本机两阶段操作：实施暂存 dry-run→staged_only 门禁→单一交付审批后由内核原子落盘+执行+终审）、\`standard_dev\`（标准开发：实施⇄审查循环→交付，默认项目开发）、\`full_delivery\`（完整交付：顾问出方案 PLAN.md→实施⇄审查→独立验收→交付审批）。若为 \`host_op\` 涉及本机实际执行命令，应把待执行命令放入 \`contract.deliver: { mode: "run_cmd", cmd: "..." }\`、把最终校验命令放入 \`contract.accept_cmd\`，Phase 1 只生成暂存脚本与校验报告，切勿让正式宿主验收命令在审批落盘前执行。`,
+      `5. **可组合流程蓝图预设**：按任务复杂度优先选用 4 套配方之一：\`quick\`（快速通道：实施→验真→交付，适合简单脚本/小改）、\`host_op\`（本机两阶段操作：实施暂存 dry-run→staged_only 门禁→单一交付审批后由内核原子落盘+执行+终审）、\`standard_dev\`（标准开发：实施⇄审查循环→交付，默认项目开发）、\`full_delivery\`（完整交付：顾问出方案 PLAN.md→实施⇄审查→独立验收→交付审批）。跨模块深挖可前置加入 \`research\` 节点（\`research -> plan\`），由 \`researcher\` 先补齐深层代码地图后再交 \`architect\` 设计 \`PLAN.md\`。若为 \`host_op\` 涉及本机实际执行命令，应把待执行命令放入 \`contract.deliver: { mode: "run_cmd", cmd: "..." }\`、把最终校验命令放入 \`contract.accept_cmd\`，Phase 1 只生成暂存脚本与校验报告，切勿让正式宿主验收命令在审批落盘前执行。`,
     ].join("\n");
 
     const rosterConfig = this.store.readEffectiveRosterConfig();
@@ -1575,12 +1642,18 @@ export class KilnChatEngine {
                 ? `${entry.primary.provider}/${entry.primary.model}`
                 : entry.mode === "kernel"
                   ? "kernel(0-token)"
-                  : "unset";
+                  : entry.mode === "on_conflict"
+                    ? "unset(on_conflict)"
+                    : "unset";
+              const tierLabel = entry.tier_hint ? `tier=${entry.tier_hint} | ` : "";
+              const escLabel = entry.escalation_target
+                ? `escalate->${entry.escalation_target} | `
+                : "";
               const cooling =
                 entry.primary && this.providerHealth?.isInCooldown(entry.primary.provider)
                   ? " [冷却中]"
                   : "";
-              return `- ${id} (${entry.name}) | stage=${entry.stage} | perm=${entry.perm} | primary=${primaryLabel}${cooling} | traits=${entry.traits}`;
+              return `- ${id} (${entry.name}) | stage=${entry.stage} | perm=${entry.perm} | ${tierLabel}${escLabel}primary=${primaryLabel}${cooling} | traits=${entry.traits}`;
             })
             .join("\n")
         : "(当前暂无已启用 Agent 阵容，将按默认流程推进)";
@@ -1608,6 +1681,7 @@ export class KilnChatEngine {
       `当前待命 Agent 阵容池（enabled=true，严禁点将禁用角色或将 read_only 角色点将至 implement）：\n${rosterLines}`,
       `已登记项目空间列表：\n${registeredSpacesText}`,
       draftSummary,
+      draftResearchSection,
       attachmentsSection,
       currentBriefSection,
       `当前在途任务：\n${taskLines}`,
@@ -1653,6 +1727,132 @@ export class KilnChatEngine {
     ]
       .filter(Boolean)
       .join("\n\n");
+  }
+
+  private async executeDraftRecon(
+    safeDraftId: string,
+    hint: string,
+    options?: { force?: boolean; timeoutMs?: number },
+  ): Promise<{ ran: boolean; researchMarkdown: string | null; skippedReason?: string }> {
+    const draft = this.store.readDraft(safeDraftId);
+    if (!draft) {
+      throw new ServerHttpError(404, {
+        error: "draft_not_found",
+        draftId: safeDraftId,
+        message: `Draft "${safeDraftId}" does not exist`,
+      });
+    }
+
+    const existing = this.store.readDraftResearch(safeDraftId);
+    if (!options?.force && existing && existing.trim().length > 0) {
+      return { ran: false, researchMarkdown: existing, skippedReason: "already_exists" };
+    }
+
+    const workspace = this.resolveIntakeWorkspace(draft, safeDraftId);
+    if (!workspace.isProjectRepo && !options?.force) {
+      return { ran: false, researchMarkdown: null, skippedReason: "not_project_repo" };
+    }
+
+    const rosterConfig = this.store.readEffectiveRosterConfig();
+    if (!options?.force && rosterConfig.pm_orchestration?.intake_auto_recon === false) {
+      return { ran: false, researchMarkdown: null, skippedReason: "disabled_by_policy" };
+    }
+
+    const researcher = rosterConfig.roster.researcher;
+    if (!researcher || !researcher.enabled || researcher.mode !== "agent" || !researcher.primary) {
+      return { ran: false, researchMarkdown: null, skippedReason: "researcher_not_enabled" };
+    }
+
+    const candidates = [researcher.primary, ...researcher.fallbacks];
+    const pickedBinding =
+      candidates.find((b) => !(this.providerHealth?.isInCooldown(b.provider) ?? false)) ??
+      candidates[0];
+    if (!pickedBinding) {
+      return { ran: false, researchMarkdown: null, skippedReason: "no_model_binding" };
+    }
+
+    const backend = await this.findBackendForAgent(
+      pickedBinding.provider,
+      pickedBinding.backend_id,
+    );
+    if (!backend) {
+      return { ran: false, researchMarkdown: null, skippedReason: "backend_unavailable" };
+    }
+
+    const runId = `recon-${safeDraftId}-${randomUUID().slice(0, 6)}`;
+    const reconPrompt = [
+      `你是 Kiln 立项前置只读侦察员 (researcher · 严格只读)。`,
+      `当前目标工作区: ${workspace.cwd}（空间 ${draft.space}）`,
+      `用户需求线索: ${hint.trim() || "(请扫描项目核心目录结构、技术栈与可用测试脚本)"}`,
+      ``,
+      `请快速只读检索该工作区，严禁修改任何文件，也不要直接拍板产品或架构设计；只汇报客观事实，严格输出以下 4 个 Markdown 二级标题章节（精炼高密度，给下游 PM 与架构师直接建立项目地图）：`,
+      `## 项目环境与运行基线`,
+      `## 相关文件与精确符号`,
+      `## 现有调用链与约束`,
+      `## 可用验收命令与风险点`,
+    ].join("\n");
+
+    const timeoutMs = options?.timeoutMs ?? 50_000;
+    let sessionRef: SessionRef | null = null;
+    try {
+      sessionRef = await backend.start({
+        runId,
+        taskId: safeDraftId,
+        role: "advisor",
+        agent: pickedBinding.provider,
+        model: pickedBinding.model,
+        ...(pickedBinding.effort !== undefined
+          ? { reasoningEffort: pickedBinding.effort }
+          : {}),
+        cwd: workspace.cwd,
+        prompt: reconPrompt,
+        freshContext: true,
+        readOnly: true,
+        allowFullAccessFallback: researcher.allow_full_access_fallback ?? false,
+      });
+
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const result = await Promise.race([
+        this.consumeTurnEvents(backend, sessionRef, "intake"),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("draft recon timeout")), timeoutMs);
+          if (typeof timer === "object" && timer !== null && "unref" in timer) {
+            (timer as { unref?: () => void }).unref?.();
+          }
+        }),
+      ]).finally(() => {
+        if (timer !== null) {
+          clearTimeout(timer);
+        }
+      });
+
+      const researchText = result.replyText.trim();
+      if (researchText.length === 0) {
+        return { ran: false, researchMarkdown: null, skippedReason: "empty_output" };
+      }
+      this.store.writeDraftResearch(safeDraftId, researchText);
+      return { ran: true, researchMarkdown: researchText };
+    } catch (err) {
+      if (sessionRef) {
+        await backend.cancel(sessionRef).catch(() => {});
+      }
+      return {
+        ran: false,
+        researchMarkdown: existing ?? null,
+        skippedReason: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  async runDraftRecon(
+    draftId: string,
+    hint = "",
+    options?: { force?: boolean; timeoutMs?: number },
+  ): Promise<{ ran: boolean; researchMarkdown: string | null; skippedReason?: string }> {
+    const safeDraftId = assertSafeSegment(draftId, "draftId");
+    return await this.runSerialized(`draft:${safeDraftId}`, async () => {
+      return await this.executeDraftRecon(safeDraftId, hint, options);
+    });
   }
 
   async sendDraftChat(
@@ -1772,6 +1972,9 @@ export class KilnChatEngine {
           const promptForAgent = this.composePromptForAgent(effectiveMessage, contextLines);
           await activeBackend.send(sessionRef, promptForAgent);
         } else {
+          if (resolvedWorkspace.isProjectRepo && !this.store.readDraftResearch(safeDraftId)) {
+            await this.executeDraftRecon(safeDraftId, trimmed);
+          }
           const allSpaces = this.store.listSpaces();
           const firstTurnPrompt = this.composePromptForAgent(
             effectiveMessage,

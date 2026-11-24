@@ -53,6 +53,7 @@ export const CLAUDE_DIRECT_CAPABILITIES: BackendCapabilities = {
   contextWindowTelemetry: false,
   nativeQuotaWindow: false,
   readOnlySandbox: true,
+  warmSessionReuse: true,
 };
 
 const CLAUDE_MODES: readonly BackendModeDescriptor[] = [

@@ -369,6 +369,58 @@ export function UsageView() {
         </section>
 
         <section className="u-section">
+          <h3>阶段缓存与热复用效率</h3>
+          {usage.warmSessionStats && usage.warmSessionStats.totalImplementRuns > 0 && (
+            <p className="muted" style={{ fontSize: "12.5px", marginBottom: "8px" }}>
+              implement 热复用 {usage.warmSessionStats.reusedImplementRuns}/
+              {usage.warmSessionStats.totalImplementRuns} 次 · 热命中{" "}
+              {usage.warmSessionStats.warmCacheHitRate}% vs 冷命中{" "}
+              {usage.warmSessionStats.coldCacheHitRate}%
+            </p>
+          )}
+          {usage.byStage && Object.keys(usage.byStage).length > 0 ? (
+            <table className="u-table">
+              <thead>
+                <tr>
+                  <th>阶段</th>
+                  <th>Run 数</th>
+                  <th>热复用</th>
+                  <th>缓存命中率</th>
+                  <th>缓存净省</th>
+                  <th>费用</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(usage.byStage).map(([stageName, bucket]) => {
+                  const hitPct =
+                    bucket.inputTokens > 0
+                      ? `${Math.round((bucket.cachedInputTokens / bucket.inputTokens) * 100)}%`
+                      : "—";
+                  return (
+                    <tr key={`stage-${stageName}`}>
+                      <td className="mono">{stageName}</td>
+                      <td>{bucket.runCount}</td>
+                      <td>{bucket.reusedRunCount > 0 ? bucket.reusedRunCount : "—"}</td>
+                      <td>{hitPct}</td>
+                      <td>
+                        {(bucket.cacheNetSavedUsd ?? 0) > 0
+                          ? fmtUsd(bucket.cacheNetSavedUsd ?? 0)
+                          : "—"}
+                      </td>
+                      <td>{fmtUsd(bucket.costUsd)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : (
+            <p className="muted" style={{ fontSize: "12.5px" }}>
+              尚无分阶段缓存观测数据（执行新 Run 后自动记录）
+            </p>
+          )}
+        </section>
+
+        <section className="u-section">
           <h3>按任务（本卡真实累计消耗，与任务详情一致）</h3>
           {rankedTasks.length > 0 ? (
             rankedTasks.map(({ task, cost }) => (

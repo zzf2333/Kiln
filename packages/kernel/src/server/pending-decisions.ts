@@ -51,6 +51,18 @@ export interface UsageBucketSummary {
   cacheNetSavedUsd: number;
 }
 
+export interface StageUsageBucketSummary extends UsageBucketSummary {
+  runCount: number;
+  reusedRunCount: number;
+}
+
+export interface WarmSessionStats {
+  totalImplementRuns: number;
+  reusedImplementRuns: number;
+  warmCacheHitRate: number;
+  coldCacheHitRate: number;
+}
+
 export interface UsageSnapshot {
   inputTokens: number;
   cachedInputTokens: number;
@@ -63,6 +75,9 @@ export interface UsageSnapshot {
   unknownPricingModels: string[];
   byAgent: Record<string, UsageBucketSummary>;
   byModel: Record<string, UsageBucketSummary>;
+  byStage?: Record<string, StageUsageBucketSummary>;
+  byRosterRole?: Record<string, StageUsageBucketSummary>;
+  warmSessionStats?: WarmSessionStats;
 }
 
 /**
@@ -127,6 +142,18 @@ export function computeUsageSnapshot(
 
   const byAgent: Record<string, UsageBucketSummary> = {};
   const byModel: Record<string, UsageBucketSummary> = {};
+  const byStage: Record<string, StageUsageBucketSummary> = {};
+  const byRosterRole: Record<string, StageUsageBucketSummary> = {};
+  const stageRuns = new Map<string, Set<string>>();
+  const stageReusedRuns = new Map<string, Set<string>>();
+  const rosterRuns = new Map<string, Set<string>>();
+  const rosterReusedRuns = new Map<string, Set<string>>();
+  const implTotalRuns = new Set<string>();
+  const implReusedRuns = new Set<string>();
+  let warmInputTokens = 0;
+  let warmCachedTokens = 0;
+  let coldInputTokens = 0;
+  let coldCachedTokens = 0;
 
   const accumulateBucket = (
     map: Record<string, UsageBucketSummary>,
@@ -156,6 +183,35 @@ export function computeUsageSnapshot(
     existing.costUsd += turnCost;
     existing.cacheNetSavedUsd += turnSaved;
     map[key] = existing;
+  };
+
+  const accumulateStageBucket = (
+    map: Record<string, StageUsageBucketSummary>,
+    runMap: Map<string, Set<string>>,
+    reusedMap: Map<string, Set<string>>,
+    key: string,
+    turn: UsageTurnRow,
+    turnCost: number,
+    turnSaved: number,
+  ): void => {
+    accumulateBucket(map, key, turn, turnCost, turnSaved);
+    let runsSet = runMap.get(key);
+    if (!runsSet) {
+      runsSet = new Set<string>();
+      runMap.set(key, runsSet);
+    }
+    runsSet.add(turn.run_id);
+
+    let reusedSet = reusedMap.get(key);
+    if (!reusedSet) {
+      reusedSet = new Set<string>();
+      reusedMap.set(key, reusedSet);
+    }
+    if (Boolean(turn.session_reused)) {
+      reusedSet.add(turn.run_id);
+    }
+    map[key]!.runCount = runsSet.size;
+    map[key]!.reusedRunCount = reusedSet.size;
   };
 
   for (const turn of turns) {
@@ -197,6 +253,39 @@ export function computeUsageSnapshot(
 
     accumulateBucket(byAgent, turn.agent, turn, turnCost, turnSaved);
     accumulateBucket(byModel, turn.model, turn, turnCost, turnSaved);
+    if (turn.stage) {
+      accumulateStageBucket(
+        byStage,
+        stageRuns,
+        stageReusedRuns,
+        turn.stage,
+        turn,
+        turnCost,
+        turnSaved,
+      );
+      if (turn.stage === "implement") {
+        implTotalRuns.add(turn.run_id);
+        if (Boolean(turn.session_reused)) {
+          implReusedRuns.add(turn.run_id);
+          warmInputTokens += turn.input_tokens;
+          warmCachedTokens += turn.cached_input_tokens;
+        } else {
+          coldInputTokens += turn.input_tokens;
+          coldCachedTokens += turn.cached_input_tokens;
+        }
+      }
+    }
+    if (turn.roster_role) {
+      accumulateStageBucket(
+        byRosterRole,
+        rosterRuns,
+        rosterReusedRuns,
+        turn.roster_role,
+        turn,
+        turnCost,
+        turnSaved,
+      );
+    }
   }
 
   return {
@@ -211,6 +300,16 @@ export function computeUsageSnapshot(
     unknownPricingModels: Array.from(unknownPricingSet).sort(),
     byAgent,
     byModel,
+    byStage,
+    byRosterRole,
+    warmSessionStats: {
+      totalImplementRuns: implTotalRuns.size,
+      reusedImplementRuns: implReusedRuns.size,
+      warmCacheHitRate:
+        warmInputTokens > 0 ? Math.round((warmCachedTokens / warmInputTokens) * 100) : 0,
+      coldCacheHitRate:
+        coldInputTokens > 0 ? Math.round((coldCachedTokens / coldInputTokens) * 100) : 0,
+    },
   };
 }
 

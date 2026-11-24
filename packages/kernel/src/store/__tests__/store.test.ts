@@ -14,7 +14,11 @@ import type {
   SpaceConfig,
   TaskCard,
 } from "@kiln/protocol";
-import { TaskCardSchema } from "@kiln/protocol";
+import {
+  RosterConfigSchema,
+  TaskCardSchema,
+  createDefaultBuiltinRosterMetadata,
+} from "@kiln/protocol";
 import {
   KilnPaths,
   KilnStore,
@@ -941,5 +945,36 @@ describe("KilnStore concurrency, contract bump, locks, usage, and isolation", ()
     expect(retried).toEqual({ accepted: true, receiptPath });
     expect(store.getStageLease("t-atomic")?.state).toBe("completed");
     expect(fs.readFileSync(receiptPath, "utf8")).toBe("# Committed on retry");
+  });
+
+  it("readEffectiveRosterConfig backfills missing built-in entries (e.g. advisor) without overwriting existing entries", () => {
+    const seed = createDefaultBuiltinRosterMetadata();
+    const { advisor: _omitted, ...legacyRoster } = seed;
+    store.writeConfig(
+      "roster",
+      RosterConfigSchema.parse({
+        schema_version: 2,
+        roster: {
+          ...legacyRoster,
+          architect: {
+            ...seed.architect,
+            enabled: true,
+            primary: { provider: "codex", model: "gpt-5.4" },
+          },
+        },
+      }),
+    );
+
+    const effective = store.readEffectiveRosterConfig();
+    expect(effective.roster.advisor).toMatchObject({
+      group: "core",
+      name: "技术顾问",
+      stage: "advise",
+      perm: "read_only",
+      enabled: false,
+      builtin: true,
+    });
+    expect(effective.roster.architect?.enabled).toBe(true);
+    expect(effective.roster.architect?.primary?.model).toBe("gpt-5.4");
   });
 });

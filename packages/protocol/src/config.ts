@@ -1,9 +1,11 @@
 import { z } from "zod";
 import {
   BUILTIN_ROSTER_ROLE_IDS,
+  CORE_COGNITIVE_ROSTER_IDS,
   COST_SOURCES,
   DEFAULT_LOCAL_PORT,
   DEFAULT_REMOTE_PORT,
+  DERIVED_ROSTER_INHERITANCE,
   PRIORITIES,
   PROVIDER_ADAPTER_KINDS,
   PROVIDER_USAGE_SCOPES,
@@ -13,6 +15,7 @@ import {
   ROSTER_EXECUTION_MODES,
   ROSTER_GROUPS,
   ROSTER_PERMISSIONS,
+  ROSTER_TIER_HINTS,
   SHA256_HEX_RE,
   STAGE_IDS,
   isReadOnlyRosterPermission,
@@ -28,14 +31,17 @@ import {
   type RosterExecutionMode,
   type RosterGroup,
   type RosterPermission,
+  type RosterTierHint,
   type StageId,
 } from "./constants.js";
 
 export {
   BUILTIN_ROSTER_ROLE_IDS,
+  CORE_COGNITIVE_ROSTER_IDS,
   COST_SOURCES,
   DEFAULT_LOCAL_PORT,
   DEFAULT_REMOTE_PORT,
+  DERIVED_ROSTER_INHERITANCE,
   PROVIDER_ADAPTER_KINDS,
   PROVIDER_USAGE_SCOPES,
   REASONING_EFFORTS,
@@ -44,6 +50,7 @@ export {
   ROSTER_EXECUTION_MODES,
   ROSTER_GROUPS,
   ROSTER_PERMISSIONS,
+  ROSTER_TIER_HINTS,
   SHA256_HEX_RE,
   isReadOnlyRosterPermission,
   isWriteCapableRosterPermission,
@@ -57,6 +64,7 @@ export {
   type RosterExecutionMode,
   type RosterGroup,
   type RosterPermission,
+  type RosterTierHint,
 };
 
 export const RoleIdSchema = z.enum(ROLE_IDS);
@@ -110,6 +118,7 @@ export const LimitsConfigSchema = z.object({
   review_rounds: z.number().int().min(0).default(2),
   advisor_calls: z.number().int().min(0).default(1),
   max_card_tokens: z.number().int().min(1).default(250_000),
+  warm_cache_ttl_sec: z.number().int().min(30).max(3600).optional(),
 });
 export type LimitsConfig = z.infer<typeof LimitsConfigSchema>;
 
@@ -424,6 +433,7 @@ export function createDefaultProvidersConfig(): ProvidersConfig {
 export const RosterGroupSchema = z.enum(ROSTER_GROUPS);
 export const RosterPermissionSchema = z.enum(ROSTER_PERMISSIONS);
 export const RosterExecutionModeSchema = z.enum(ROSTER_EXECUTION_MODES);
+export const RosterTierHintSchema = z.enum(ROSTER_TIER_HINTS);
 const RosterStageIdSchema = z.enum(STAGE_IDS);
 
 export const RosterModelBindingSchema = z
@@ -442,6 +452,8 @@ export const PmOrchestrationPolicySchema = z
     allow_auto_tester: z.boolean().default(true),
     prefer_unthrottled: z.boolean().default(true),
     require_review_for_core: z.boolean().default(true),
+    intake_auto_recon: z.boolean().optional(),
+    plan_prefers_fast_exec: z.boolean().optional(),
   })
   .strict();
 export type PmOrchestrationPolicy = z.infer<typeof PmOrchestrationPolicySchema>;
@@ -456,15 +468,26 @@ export const RosterEntrySchema = z
     perm: RosterPermissionSchema,
     traits: z.string().min(1),
     mode: RosterExecutionModeSchema.default("agent"),
+    tier_hint: RosterTierHintSchema.optional(),
     primary: RosterModelBindingSchema.optional(),
     fallbacks: z.array(RosterModelBindingSchema).default([]),
-    avoid_same_as: RosterStageIdSchema.optional(),
+    escalation_target: z
+      .string()
+      .regex(
+        PROVIDER_OR_ROLE_ID_RE,
+        "escalation_target must match ^[a-z0-9][a-z0-9_-]{0,47}$",
+      )
+      .optional(),
+    custom_instructions: z.string().trim().min(1).max(4000).optional(),
+    avoid_same_as: z
+      .union([RosterStageIdSchema, z.array(RosterStageIdSchema).min(1)])
+      .optional(),
     allow_full_access_fallback: z.boolean().default(false),
     builtin: z.boolean().default(false),
   })
   .strict()
   .superRefine((entry, ctx) => {
-    if (entry.mode === "agent" && entry.enabled && !entry.primary) {
+    if ((entry.mode === "agent" || entry.mode === "on_conflict") && entry.enabled && !entry.primary) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "Enabled agent-mode roster entry requires a primary model binding",
@@ -512,6 +535,7 @@ const DEFAULT_ROSTER_SEED: Record<
     perm: "read_only_draft",
     traits: "需求摸底、收敛分叉、拆片评估与按各 Agent 名称及特性自主排兵点将",
     mode: "agent",
+    tier_hint: "flagship",
     builtin: true,
   },
   researcher: {
@@ -521,8 +545,9 @@ const DEFAULT_ROSTER_SEED: Record<
     stage: "research",
     secondary_stages: [],
     perm: "read_only",
-    traits: "跨文件广度摸底、文档查证、三方探针与选型对比（严格只读）",
+    traits: "立项前置快速侦察项目结构、测试基线与约束，为 PM/架构补齐代码地图（严格只读）",
     mode: "agent",
+    tier_hint: "economy",
     builtin: true,
   },
   architect: {
@@ -530,10 +555,23 @@ const DEFAULT_ROSTER_SEED: Record<
     enabled: false,
     name: "架构方案",
     stage: "plan",
-    secondary_stages: ["advise"],
+    secondary_stages: [],
     perm: "read_only",
-    traits: "事前疑难拆解出 PLAN.md，事中兼任技术顾问裁决技术分歧与停滞破局",
+    traits: "事前疑难拆解、架构权衡与实施方案设计，产出 PLAN.md（严格只读，未单配时自动继承技术顾问）",
     mode: "agent",
+    tier_hint: "flagship",
+    builtin: true,
+  },
+  advisor: {
+    group: "core",
+    enabled: false,
+    name: "技术顾问",
+    stage: "advise",
+    secondary_stages: [],
+    perm: "read_only",
+    traits: "最高智商核心大脑：负责全新上下文裁决技术分歧与连续卡壳破局（同时作为架构/研判默认继承源）",
+    mode: "agent",
+    tier_hint: "flagship",
     builtin: true,
   },
   main_dev: {
@@ -543,8 +581,9 @@ const DEFAULT_ROSTER_SEED: Record<
     stage: "implement",
     secondary_stages: [],
     perm: "workspace_write",
-    traits: "复杂功能、跨文件重构与核心状态机实现，推理严谨稳定",
+    traits: "复杂功能、跨文件重构与核心状态机实现，推理严谨稳定，并作为快修失败时的自动升档兜底",
     mode: "agent",
+    tier_hint: "standard",
     builtin: true,
   },
   fast_fix: {
@@ -554,8 +593,10 @@ const DEFAULT_ROSTER_SEED: Record<
     stage: "implement",
     secondary_stages: [],
     perm: "workspace_write",
-    traits: "低风险单点微调、文案细节修改与小修，极速低成本",
+    traits: "有清晰 PLAN.md 时的首选高性价比执行位及低风险单点微调，遇阻自动升档至主力开发",
     mode: "agent",
+    tier_hint: "economy",
+    escalation_target: "main_dev",
     builtin: true,
   },
   reviewer: {
@@ -565,9 +606,10 @@ const DEFAULT_ROSTER_SEED: Record<
     stage: "review",
     secondary_stages: [],
     perm: "read_only",
-    traits: "全新上下文只读固定提交与回归拦截，强制避开当前实施者模型家族",
+    traits: "全新上下文只读固定提交与回归拦截，优先同时避开实施与方案模型家族",
     mode: "agent",
-    avoid_same_as: "implement",
+    tier_hint: "flagship",
+    avoid_same_as: ["implement", "plan"],
     builtin: true,
   },
   verifier: {
@@ -643,7 +685,7 @@ const DEFAULT_ROSTER_SEED: Record<
     stage: "deliver",
     secondary_stages: [],
     perm: "kernel_gate",
-    traits: "默认内核 0 Token 执行 merge_main 或两阶段原子落盘；复杂冲突可切 Agent",
+    traits: "默认内核 0 Token 执行 merge_main 或两阶段原子落盘；可选切「冲突按需」仅遇冲突时唤起模型解冲突",
     mode: "kernel",
     builtin: true,
   },
@@ -687,7 +729,7 @@ export function createDefaultBuiltinRosterMetadata(): Record<BuiltinRosterRoleId
 const LEGACY_TO_ROSTER_KEY: Readonly<Record<RoleId, BuiltinRosterRoleId>> = {
   intake: "pm",
   worker: "main_dev",
-  advisor: "architect",
+  advisor: "advisor",
   reviewer: "reviewer",
   verifier: "verifier",
   triage: "triage",
@@ -764,7 +806,13 @@ export function deriveLegacyRolesConfigFromRoster(rosterConfig: RosterConfig): R
   const roles: Partial<Record<RoleId, RoleAssignment>> = {};
   for (const roleId of ROLE_IDS) {
     const rosterKey = LEGACY_TO_ROSTER_KEY[roleId];
-    const entry = rosterConfig.roster[rosterKey];
+    let entry = rosterConfig.roster[rosterKey];
+    if (roleId === "advisor" && (!entry || !entry.enabled)) {
+      const legacyArchitect = rosterConfig.roster.architect;
+      if (legacyArchitect?.enabled && legacyArchitect.secondary_stages.includes("advise")) {
+        entry = legacyArchitect;
+      }
+    }
     if (!entry || !entry.enabled) continue;
     const mapped = toLegacyAssignment(entry, roleId === "reviewer" ? "worker" : undefined);
     if (mapped) {

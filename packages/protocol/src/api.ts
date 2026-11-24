@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DecisionActionSchema, PrioritySchema, SpaceScriptsSchema } from "./card.js";
+import { DecisionActionSchema, PrioritySchema, SpaceScriptsSchema, StageIdSchema } from "./card.js";
 import {
   PricingConfigSchema,
   PricingSyncSourceSchema,
@@ -310,3 +310,19 @@ export const CommitPrActionRequestSchema = z.object({
   confirm: z.literal(true),
 });
 export type CommitPrActionRequest = z.infer<typeof CommitPrActionRequestSchema>;
+
+export const SteerTaskRequestSchema = z.object({
+  message: z.string().trim().min(1).max(4000),
+  interrupt: z.boolean().default(false),
+});
+export type SteerTaskRequest = z.infer<typeof SteerTaskRequestSchema>;
+
+export const SteerNoteSchema = z.object({
+  id: z.string().min(1),
+  at: z.string().min(1),
+  message: z.string().min(1),
+  interrupt: z.boolean(),
+  contract_version: z.number().int().positive(),
+  stage: StageIdSchema.optional(),
+});
+export type SteerNote = z.infer<typeof SteerNoteSchema>;

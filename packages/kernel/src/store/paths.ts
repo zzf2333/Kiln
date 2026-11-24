@@ -173,6 +173,10 @@ export class KilnPaths {
     return path.join(this.draftDir(draftId), "BRIEF.md");
   }
 
+  draftResearchMd(draftId: string): string {
+    return path.join(this.draftDir(draftId), "RESEARCH.md");
+  }
+
   draftEvents(draftId: string): string {
     return path.join(this.draftDir(draftId), "events.ndjson");
   }

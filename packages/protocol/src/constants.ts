@@ -178,13 +178,33 @@ export const ROSTER_PERMISSIONS = [
 ] as const;
 export type RosterPermission = (typeof ROSTER_PERMISSIONS)[number];
 
-export const ROSTER_EXECUTION_MODES = ["agent", "kernel"] as const;
+export const ROSTER_EXECUTION_MODES = ["agent", "kernel", "on_conflict"] as const;
 export type RosterExecutionMode = (typeof ROSTER_EXECUTION_MODES)[number];
+
+export const ROSTER_TIER_HINTS = ["economy", "standard", "flagship"] as const;
+export type RosterTierHint = (typeof ROSTER_TIER_HINTS)[number];
+
+export const CORE_COGNITIVE_ROSTER_IDS = [
+  "researcher",
+  "pm",
+  "advisor",
+  "fast_fix",
+  "main_dev",
+  "reviewer",
+  "verifier",
+] as const;
+
+export const DERIVED_ROSTER_INHERITANCE: Readonly<Record<string, readonly string[]>> = {
+  architect: ["advisor", "pm"],
+  triage: ["advisor", "pm"],
+  resolver: ["pm"],
+};
 
 export const BUILTIN_ROSTER_ROLE_IDS = [
   "pm",
   "researcher",
   "architect",
+  "advisor",
   "main_dev",
   "fast_fix",
   "reviewer",

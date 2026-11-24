@@ -100,7 +100,13 @@ export class ProviderHealthTracker {
     let status: ProviderRuntimeStatus["status"] = "ready";
     let detail = avail?.detail;
 
-    if (cooldownUntil !== null) {
+    if (!entry.enabled) {
+      status = "unavailable";
+      detail =
+        avail && !avail.available && avail.detail
+          ? avail.detail
+          : "Provider is disabled";
+    } else if (cooldownUntil !== null) {
       status = "cooldown";
       detail = this.cooldowns.get(entry.id)?.detail ?? detail;
     } else if (avail?.authRequired) {

@@ -33,6 +33,7 @@ import {
   type RemoteConfig,
   type RolesConfig,
   type RosterConfig,
+  type RosterEntry,
   type RunEvent,
   type RunMeta,
   type SpaceConfig,
@@ -108,6 +109,7 @@ const RESTRICTED_CONFIG_NAMES: ReadonlySet<KilnConfigName> = new Set([
 export interface DerivedTaskState {
   status: TaskStatus;
   stage: StageId | null;
+  stepIndex: number | null;
   round: number | null;
   activeRunId: string | null;
   priority: Priority;
@@ -152,6 +154,7 @@ export function deriveTaskStatus(
 ): DerivedTaskState {
   let status: TaskStatus = "queued";
   let stage: StageId | null = null;
+  let stepIndex: number | null = null;
   let round: number | null = null;
   let activeRunId: string | null = null;
   let priority: Priority = card.priority;
@@ -172,6 +175,9 @@ export function deriveTaskStatus(
       case "running":
         status = "running";
         stage = event.stage;
+        if (event.step_index !== undefined) {
+          stepIndex = event.step_index;
+        }
         round = event.round;
         activeRunId = event.run_id;
         break;
@@ -180,11 +186,15 @@ export function deriveTaskStatus(
         if (event.stage !== undefined) {
           stage = event.stage;
         }
+        if (event.step_index !== undefined) {
+          stepIndex = event.step_index;
+        }
         activeRunId = null;
         break;
       case "resumed":
         status = "queued";
         stage = event.stage;
+        stepIndex = event.step_index ?? null;
         activeRunId = null;
         break;
       case "waiting":
@@ -195,9 +205,15 @@ export function deriveTaskStatus(
         activeRunId = null;
         if (event.action === "resume") {
           status = "queued";
+          if (event.step_index !== undefined) {
+            stepIndex = event.step_index;
+          }
           if (event.target_stage !== undefined) {
             stage = event.target_stage;
             round = null;
+            if (event.step_index === undefined) {
+              stepIndex = null;
+            }
           }
         } else if (event.action === "return_external") {
           status = "external";
@@ -206,6 +222,8 @@ export function deriveTaskStatus(
         } else if (event.action === "cancel") {
           status = "cancelled";
         }
+        break;
+      case "steered":
         break;
       case "external":
         status = "external";
@@ -230,6 +248,7 @@ export function deriveTaskStatus(
           if (earliestAffected !== undefined) {
             stage = earliestAffected;
             round = null;
+            stepIndex = null;
           }
         }
         if (status === "running") {
@@ -251,6 +270,7 @@ export function deriveTaskStatus(
   return {
     status,
     stage,
+    stepIndex,
     round,
     activeRunId,
     priority,
@@ -478,6 +498,7 @@ export class KilnStore {
       type: "running",
       at: parsed.started_at,
       stage: parsed.stage,
+      ...(parsed.step_index !== undefined ? { step_index: parsed.step_index } : {}),
       round: parsed.round,
       run_id: parsed.run_id,
     });
@@ -727,7 +748,7 @@ export class KilnStore {
     const safeRunDir = assertSafeSegment(runDirName, "runDirName");
     const parsedEvent = RunEventSchema.parse(event);
 
-    let usageRunId: string | null = null;
+    let usageRunMeta: RunMeta | null = null;
     if (parsedEvent.kind === "usage") {
       const runMeta = readYamlValidated(
         this.paths.runYaml(safeTaskId, safeRunDir),
@@ -738,14 +759,14 @@ export class KilnStore {
           `RUN.yaml task_id "${runMeta.task_id}" does not match "${safeTaskId}"`,
         );
       }
-      usageRunId = runMeta.run_id;
+      usageRunMeta = runMeta;
     }
 
     appendNdjsonLine(this.paths.runEventsNdjson(safeTaskId, safeRunDir), parsedEvent);
 
-    if (parsedEvent.kind === "usage" && usageRunId !== null) {
+    if (parsedEvent.kind === "usage" && usageRunMeta !== null) {
       this.sqlite.upsertUsageTurn({
-        run_id: usageRunId,
+        run_id: usageRunMeta.run_id,
         turn_id: parsedEvent.turnId,
         task_id: safeTaskId,
         agent: parsedEvent.agent,
@@ -757,6 +778,9 @@ export class KilnStore {
         reasoning_tokens: parsedEvent.reasoningTokens ?? 0,
         provider_cost_usd: parsedEvent.providerCostUsd ?? null,
         cost_source: parsedEvent.costSource ?? null,
+        stage: usageRunMeta.stage,
+        roster_role: usageRunMeta.roster_role ?? null,
+        session_reused: usageRunMeta.session_reused ? 1 : 0,
         recorded_at: parsedEvent.at,
       });
     }
@@ -794,7 +818,21 @@ export class KilnStore {
   readEffectiveRosterConfig(): RosterConfig {
     const roster = this.readConfig("roster");
     if (roster !== null) {
-      return roster;
+      const defaults = createDefaultBuiltinRosterMetadata();
+      let mergedRoster: Record<string, RosterEntry> | null = null;
+      for (const [id, defaultEntry] of Object.entries(defaults)) {
+        if (!Object.prototype.hasOwnProperty.call(roster.roster, id)) {
+          mergedRoster ??= { ...roster.roster };
+          mergedRoster[id] = defaultEntry;
+        }
+      }
+      if (!mergedRoster) {
+        return roster;
+      }
+      return {
+        ...roster,
+        roster: mergedRoster,
+      };
     }
     const legacyRoles = this.readConfig("roles");
     if (legacyRoles !== null) {
@@ -885,6 +923,39 @@ export class KilnStore {
     }
     const content = markdown.endsWith("\n") ? markdown : `${markdown}\n`;
     writeFileAtomic(briefPath, content);
+  }
+
+  readDraftResearch(draftId: string): string | null {
+    const safeId = assertSafeSegment(draftId, "draftId");
+    try {
+      return fs.readFileSync(this.paths.draftResearchMd(safeId), "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  writeDraftResearch(draftId: string, markdown: string): void {
+    const safeId = assertSafeSegment(draftId, "draftId");
+    const researchPath = this.paths.draftResearchMd(safeId);
+    if (markdown.trim().length === 0) {
+      fs.rmSync(researchPath, { force: true });
+      return;
+    }
+    const content = markdown.endsWith("\n") ? markdown : `${markdown}\n`;
+    writeFileAtomic(researchPath, content);
+  }
+
+  writeTaskResearch(taskId: string, markdown: string): void {
+    const safeId = assertSafeSegment(taskId, "taskId");
+    const researchPath = this.paths.researchMd(safeId);
+    if (markdown.trim().length === 0) {
+      return;
+    }
+    const content = markdown.endsWith("\n") ? markdown : `${markdown}\n`;
+    writeFileAtomic(researchPath, content);
   }
 
   deleteDraft(draftId: string): boolean {
@@ -1070,6 +1141,9 @@ export class KilnStore {
                     reasoning_tokens: ev.reasoningTokens ?? 0,
                     provider_cost_usd: ev.providerCostUsd ?? null,
                     cost_source: ev.costSource ?? null,
+                    stage: run.runMeta.stage,
+                    roster_role: run.runMeta.roster_role ?? null,
+                    session_reused: run.runMeta.session_reused ? 1 : 0,
                     recorded_at: ev.at,
                   });
                 }

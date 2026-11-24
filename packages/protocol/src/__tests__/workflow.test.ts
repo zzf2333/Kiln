@@ -5,14 +5,18 @@ import {
   buildWorkflowPreset,
   ensureWorkflowIncludesReview,
   extractWorkflowToggles,
+  findLoopRestartStepIndex,
   flattenWorkflowSteps,
   getDeliverCommandPolicy,
   getImplementAgentMode,
   getStageNodeKind,
   getVerifyGateCheckMode,
+  getWorkflowFlatSteps,
   getWorkflowLoopPolicy,
   getWorkflowStages,
+  nextWorkflowStepAfter,
   resolveTaskWorkflow,
+  resolveWorkflowStepAt,
   validateWorkflowBlueprint,
 } from "../workflow.js";
 
@@ -299,5 +303,106 @@ describe("workflow composable blueprint schemas & helpers", () => {
     if (!acceptOnlyApproval.ok) {
       expect(acceptOnlyApproval.errors.some((e) => e.includes("deliver approval"))).toBe(true);
     }
+  });
+
+  it("resolves step_index cursors across multi-specialist same-stage blueprints and legacy cards", () => {
+    const multiSpec = WorkflowBlueprintSchema.parse({
+      schema_version: 1,
+      preset: "custom",
+      pm_rationale: "先后端再前端视觉精修",
+      steps: [
+        { kind: "agent", stage: "plan", role: "advisor", fresh_context: true, roster_role: "architect" },
+        { kind: "agent", stage: "implement", role: "worker", fresh_context: false, roster_role: "main_dev" },
+        { kind: "agent", stage: "implement", role: "worker", fresh_context: false, roster_role: "frontend_ui" },
+        { kind: "gate", stage: "verify", check: "full" },
+        {
+          kind: "loop",
+          max_rounds: 2,
+          stuck_threshold: 2,
+          steps: [
+            { kind: "agent", stage: "review", role: "reviewer", fresh_context: true, roster_role: "reviewer" },
+            { kind: "agent", stage: "implement", role: "worker", fresh_context: false, roster_role: "main_dev" },
+            { kind: "gate", stage: "verify", check: "full" },
+          ],
+        },
+        {
+          kind: "command",
+          stage: "deliver",
+          apply_staged: false,
+          run_deliver_cmd: false,
+          verify_sha256: false,
+          final_accept_gate: false,
+        },
+      ],
+    });
+    const card = {
+      track: "L2" as const,
+      workspace_mode: "git_worktree" as const,
+      contract: {},
+      workflow: multiSpec,
+    };
+
+    const flat = getWorkflowFlatSteps(card);
+    expect(flat.map((s) => `${s.stage}:${s.kind === "agent" ? s.roster_role : s.kind}`)).toEqual([
+      "plan:architect",
+      "implement:main_dev",
+      "implement:frontend_ui",
+      "verify:gate",
+      "review:reviewer",
+      "implement:main_dev",
+      "verify:gate",
+      "deliver:command",
+    ]);
+
+    // Step 0 -> 1 (main_dev) -> 2 (frontend_ui) -> 3 (verify)
+    expect(resolveWorkflowStepAt(card, null, null)).toMatchObject({
+      stepIndex: 0,
+      node: { stage: "plan", roster_role: "architect" },
+    });
+    const s1 = nextWorkflowStepAfter(card, 0, "plan");
+    expect(s1).toMatchObject({ stepIndex: 1, stage: "implement", node: { roster_role: "main_dev" } });
+    const s2 = nextWorkflowStepAfter(card, s1!.stepIndex, "implement");
+    expect(s2).toMatchObject({ stepIndex: 2, stage: "implement", node: { roster_role: "frontend_ui" } });
+    const s3 = nextWorkflowStepAfter(card, s2!.stepIndex, "implement");
+    expect(s3).toMatchObject({ stepIndex: 3, stage: "verify", node: { kind: "gate" } });
+
+    // Review loop restart targets the loop-local implement step (index 5), not index 1
+    expect(findLoopRestartStepIndex(card, "implement")).toBe(5);
+    // Out-of-blueprint stage (e.g. triage/advise) returns null so scheduler keeps raw stage
+    expect(resolveWorkflowStepAt(card, null, "advise")).toBeNull();
+  });
+
+  it("supports research -> plan ordering with includeResearch and rejects research after plan/implement", () => {
+    const withResearch = WorkflowBlueprintSchema.parse(
+      buildWorkflowPreset("full_delivery", { includeResearch: true }),
+    );
+    expect(
+      getWorkflowStages({
+        track: "L2",
+        workspace_mode: "git_worktree",
+        contract: {},
+        workflow: withResearch,
+      }),
+    ).toEqual(["research", "plan", "implement", "verify", "review", "accept", "deliver"]);
+    expect(extractWorkflowToggles(withResearch).includeResearch).toBe(true);
+
+    const researchAfterPlan = validateWorkflowBlueprint({
+      schema_version: 1,
+      preset: "custom",
+      steps: [
+        { kind: "agent", stage: "plan", role: "advisor", fresh_context: true },
+        { kind: "agent", stage: "research", role: "advisor", fresh_context: true },
+        { kind: "agent", stage: "implement", role: "worker", fresh_context: false },
+        {
+          kind: "command",
+          stage: "deliver",
+          apply_staged: false,
+          run_deliver_cmd: false,
+          verify_sha256: false,
+          final_accept_gate: false,
+        },
+      ],
+    });
+    expect(researchAfterPlan.ok).toBe(false);
   });
 });

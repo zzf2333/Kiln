@@ -104,13 +104,28 @@ describe("v0.0.5 protocol contracts", () => {
     ).toBe(false);
   });
 
-  it("validates 15 built-in roster entries and upgrades/projects v0.0.4 roles.yaml cleanly", () => {
+  it("validates 16 built-in roster entries (with standalone advisor) and upgrades/projects v0.0.4 roles.yaml cleanly", () => {
     const seed = createDefaultBuiltinRosterMetadata();
     expect(Object.keys(seed)).toHaveLength(BUILTIN_ROSTER_ROLE_IDS.length);
     expect(seed.tester.mode).toBe("kernel");
     expect(seed.tester.enabled).toBe(true);
     expect(seed.deliverer.mode).toBe("kernel");
     expect(seed.main_dev.enabled).toBe(false);
+    expect(seed.architect).toMatchObject({
+      group: "core",
+      stage: "plan",
+      secondary_stages: [],
+      perm: "read_only",
+      enabled: false,
+    });
+    expect(seed.advisor).toMatchObject({
+      group: "core",
+      stage: "advise",
+      secondary_stages: [],
+      perm: "read_only",
+      enabled: false,
+      name: "技术顾问",
+    });
 
     // Enabled agent entry must bind primary model
     expect(
@@ -156,13 +171,46 @@ describe("v0.0.5 protocol contracts", () => {
     expect(upgraded.roster.main_dev?.fallbacks).toEqual([
       { provider: "pi", model: "magpie/group/work" },
     ]);
-    expect(upgraded.roster.architect?.primary?.model).toBe("claude-opus-4-6");
+    expect(upgraded.roster.advisor?.primary?.model).toBe("claude-opus-4-6");
+    expect(upgraded.roster.advisor?.enabled).toBe(true);
+    expect(upgraded.roster.architect?.enabled).toBe(false);
 
     const projected = deriveLegacyRolesConfigFromRoster(upgraded);
     expect(projected.roles.intake?.model).toBe("claude-sonnet-4-6");
     expect(projected.roles.worker?.fallback?.agent).toBe("pi");
     expect(projected.roles.reviewer?.avoid_same_model_as).toBe("worker");
     expect(projected.roles.advisor?.model).toBe("claude-opus-4-6");
+
+    // New roster with only architect enabled (no advise secondary stage) does NOT populate legacy advisor
+    const architectOnlyRoster = RosterConfigSchema.parse({
+      schema_version: 2,
+      roster: {
+        ...seed,
+        architect: {
+          ...seed.architect,
+          enabled: true,
+          primary: { provider: "codex", model: "gpt-5.4" },
+        },
+      },
+    });
+    expect(deriveLegacyRolesConfigFromRoster(architectOnlyRoster).roles.advisor).toBeUndefined();
+
+    // Legacy v0.0.5-early roster where architect still carries secondary_stages: ["advise"] retains compatibility
+    const legacyArchitectAdviseRoster = RosterConfigSchema.parse({
+      schema_version: 2,
+      roster: {
+        ...seed,
+        architect: {
+          ...seed.architect,
+          enabled: true,
+          secondary_stages: ["advise"],
+          primary: { provider: "claude", model: "claude-sonnet-4-6" },
+        },
+      },
+    });
+    expect(deriveLegacyRolesConfigFromRoster(legacyArchitectAdviseRoster).roles.advisor?.model).toBe(
+      "claude-sonnet-4-6",
+    );
   });
 
   it("supports 5-field pricing, cache-write fallback, orthogonal billing, and CacheNetSavedUsd", () => {

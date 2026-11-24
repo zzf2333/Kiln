@@ -103,6 +103,7 @@ export interface WorkflowCardLike {
 
 export interface WorkflowPresetOptions {
   humanAccept?: boolean;
+  includeResearch?: boolean;
   includePlan?: boolean;
   deliverApproval?: boolean;
   hasDeliverCmd?: boolean;
@@ -112,6 +113,7 @@ export interface WorkflowPresetOptions {
 
 export interface ComposableWorkflowOptions {
   preset?: WorkflowPreset;
+  includeResearch?: boolean;
   includePlan: boolean;
   includeReview: boolean;
   includeAccept: boolean;
@@ -133,8 +135,8 @@ const EXPECTED_ROLE_BY_STAGE: Readonly<Record<WorkflowAgentStage, WorkflowAgentR
 
 const STAGE_SEQUENCE_ORDER: Readonly<Record<StageId, number>> = {
   intake: 0,
-  plan: 1,
-  research: 2,
+  research: 1,
+  plan: 2,
   implement: 3,
   verify: 4,
   review: 5,
@@ -178,6 +180,15 @@ export function buildCustomWorkflow(options: ComposableWorkflowOptions): Workflo
   const hasDeliverCmd = options.hasDeliverCmd;
   const maxRounds = clampInt(options.maxRounds, 1, 10, 3);
   const stuckThreshold = clampInt(options.stuckThreshold, 1, 5, 2);
+
+  if (options.includeResearch) {
+    steps.push({
+      kind: "agent",
+      stage: "research",
+      role: "advisor",
+      fresh_context: true,
+    });
+  }
 
   if (options.includePlan) {
     steps.push({
@@ -277,6 +288,7 @@ export function buildWorkflowPreset(
     case "quick":
       return buildCustomWorkflow({
         preset: "quick",
+        includeResearch: options.includeResearch ?? false,
         includePlan: options.includePlan ?? false,
         includeReview: false,
         includeAccept: options.humanAccept ?? false,
@@ -290,6 +302,7 @@ export function buildWorkflowPreset(
     case "host_op":
       return buildCustomWorkflow({
         preset: "host_op",
+        includeResearch: options.includeResearch ?? false,
         includePlan: options.includePlan ?? false,
         includeReview: false,
         includeAccept: false,
@@ -302,6 +315,7 @@ export function buildWorkflowPreset(
     case "standard_dev":
       return buildCustomWorkflow({
         preset: "standard_dev",
+        includeResearch: options.includeResearch ?? false,
         includePlan: options.includePlan ?? false,
         includeReview: true,
         includeAccept: options.humanAccept ?? false,
@@ -315,6 +329,7 @@ export function buildWorkflowPreset(
     case "full_delivery":
       return buildCustomWorkflow({
         preset: "full_delivery",
+        includeResearch: options.includeResearch ?? false,
         includePlan: options.includePlan ?? true,
         includeReview: true,
         includeAccept: true,
@@ -359,6 +374,7 @@ export function extractWorkflowToggles(blueprint: WorkflowBlueprint): Composable
 
   return {
     preset: blueprint.preset,
+    includeResearch: flat.some((n) => n.kind === "agent" && n.stage === "research"),
     includePlan: flat.some((n) => n.kind === "agent" && n.stage === "plan"),
     includeReview: flat.some((n) => n.kind === "agent" && n.stage === "review"),
     includeAccept: Boolean(acceptAgent || acceptApproval),
@@ -428,6 +444,7 @@ export function validateWorkflowBlueprint(
   let seenStagedOnlyGate = false;
   let seenFinalAcceptGateAfterStaged = false;
   let maxStageRankSeen = -1;
+  let seenResearchIdx = -1;
   let seenPlanRank = -1;
   let firstImplementIdx = -1;
 
@@ -450,6 +467,9 @@ export function validateWorkflowBlueprint(
         if (firstImplementIdx === -1) {
           firstImplementIdx = i;
         }
+      }
+      if (node.stage === "research" && seenResearchIdx === -1) {
+        seenResearchIdx = i;
       }
       if (node.stage === "plan") {
         seenPlanRank = i;
@@ -484,6 +504,12 @@ export function validateWorkflowBlueprint(
 
   if (!hasImplement) {
     errors.push('Workflow blueprint must contain at least one "implement" agent node');
+  }
+  if (seenResearchIdx !== -1 && seenPlanRank !== -1 && seenResearchIdx > seenPlanRank) {
+    errors.push('Stage "research" must appear before "plan"');
+  }
+  if (seenResearchIdx !== -1 && firstImplementIdx !== -1 && seenResearchIdx > firstImplementIdx) {
+    errors.push('Stage "research" must appear before "implement"');
   }
   if (seenPlanRank !== -1 && firstImplementIdx !== -1 && seenPlanRank > firstImplementIdx) {
     errors.push('Stage "plan" must appear before "implement"');
@@ -593,24 +619,129 @@ export function ensureWorkflowIncludesReview(blueprint: WorkflowBlueprint): Work
  * (excluding `"intake"`, preserving stage order, and injecting `"review"` on L1->L2 escalation).
  */
 export function getWorkflowStages(card: WorkflowCardLike, effectiveTrack?: Track): StageId[] {
-  const resolved = resolveTaskWorkflow(card);
-  const flat = flattenWorkflowSteps(resolved);
+  const flat = getWorkflowFlatSteps(card, effectiveTrack);
   const stages: StageId[] = [];
   for (const node of flat) {
     if (!stages.includes(node.stage)) {
       stages.push(node.stage);
     }
   }
+  return stages;
+}
 
+/**
+ * Returns the full flattened sequence of atomic workflow steps (preserving multiple
+ * same-stage steps such as consecutive specialist `implement` nodes and injecting
+ * `review` if an L1 card escalated to L2 without one).
+ */
+export function getWorkflowFlatSteps(
+  card: WorkflowCardLike,
+  effectiveTrack?: Track,
+): WorkflowAtomicNode[] {
+  let resolved = resolveTaskWorkflow(card);
   const targetTrack = effectiveTrack ?? card.track;
-  if (card.track === "L1" && targetTrack === "L2" && !stages.includes("review")) {
-    const verifyIdx = stages.indexOf("verify");
-    const implIdx = stages.indexOf("implement");
-    const insertAt = verifyIdx >= 0 ? verifyIdx + 1 : implIdx >= 0 ? implIdx + 1 : stages.length;
-    stages.splice(insertAt, 0, "review");
+  if (card.track === "L1" && targetTrack === "L2") {
+    resolved = ensureWorkflowIncludesReview(resolved);
+  }
+  return flattenWorkflowSteps(resolved);
+}
+
+/**
+ * Resolves the active atomic workflow node at `(stepIndex, fallbackStage)`.
+ * Returns `null` when `fallbackStage` is outside the blueprint (e.g. `triage`/`advise`).
+ */
+export function resolveWorkflowStepAt(
+  card: WorkflowCardLike,
+  stepIndex: number | null,
+  fallbackStage: StageId | null,
+  effectiveTrack?: Track,
+): { stepIndex: number; node: WorkflowAtomicNode } | null {
+  const flat = getWorkflowFlatSteps(card, effectiveTrack);
+  if (flat.length === 0) {
+    return null;
   }
 
-  return stages;
+  if (
+    stepIndex !== null &&
+    Number.isInteger(stepIndex) &&
+    stepIndex >= 0 &&
+    stepIndex < flat.length
+  ) {
+    const candidate = flat[stepIndex]!;
+    if (fallbackStage === null || candidate.stage === fallbackStage) {
+      return { stepIndex, node: candidate };
+    }
+  }
+
+  if (fallbackStage !== null) {
+    const idx = flat.findIndex((n) => n.stage === fallbackStage);
+    if (idx >= 0) {
+      return { stepIndex: idx, node: flat[idx]! };
+    }
+    return null;
+  }
+
+  return { stepIndex: 0, node: flat[0]! };
+}
+
+/**
+ * Resolves the next sequential workflow step after `(currentStepIndex, currentStage)`.
+ */
+export function nextWorkflowStepAfter(
+  card: WorkflowCardLike,
+  currentStepIndex: number | null,
+  currentStage: StageId,
+  effectiveTrack?: Track,
+): { stepIndex: number; stage: StageId; node: WorkflowAtomicNode } | null {
+  const flat = getWorkflowFlatSteps(card, effectiveTrack);
+  const resolved = resolveWorkflowStepAt(card, currentStepIndex, currentStage, effectiveTrack);
+  if (!resolved) {
+    return null;
+  }
+  const nextIdx = resolved.stepIndex + 1;
+  if (nextIdx >= flat.length) {
+    return null;
+  }
+  const nextNode = flat[nextIdx]!;
+  return {
+    stepIndex: nextIdx,
+    stage: nextNode.stage,
+    node: nextNode,
+  };
+}
+
+/**
+ * Finds the step index to restart at when looping back (e.g. review -> implement),
+ * preferring the first matching stage inside a `loop` block if one exists.
+ */
+export function findLoopRestartStepIndex(
+  card: WorkflowCardLike,
+  targetStage: StageId,
+  effectiveTrack?: Track,
+): number | null {
+  let resolved = resolveTaskWorkflow(card);
+  const targetTrack = effectiveTrack ?? card.track;
+  if (card.track === "L1" && targetTrack === "L2") {
+    resolved = ensureWorkflowIncludesReview(resolved);
+  }
+
+  let offset = 0;
+  for (const step of resolved.steps) {
+    if (step.kind === "loop") {
+      for (let i = 0; i < step.steps.length; i++) {
+        if (step.steps[i]!.stage === targetStage) {
+          return offset + i;
+        }
+      }
+      offset += step.steps.length;
+    } else {
+      offset += 1;
+    }
+  }
+
+  const flat = flattenWorkflowSteps(resolved);
+  const idx = flat.findIndex((n) => n.stage === targetStage);
+  return idx >= 0 ? idx : null;
 }
 
 export function getWorkflowLoopPolicy(

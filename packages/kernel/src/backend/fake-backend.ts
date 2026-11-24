@@ -44,6 +44,13 @@ export type FakeScriptStep =
       outputTokens: number;
       delayMs?: number;
     }
+  | {
+      kind: "context_window";
+      usedTokens: number;
+      contextWindowTokens: number;
+      percent?: number;
+      delayMs?: number;
+    }
   | { kind: "wait_for_cancel" }
   | { kind: "exit"; reason: "completed" | "cancelled" | "failed"; detail?: string };
 
@@ -318,6 +325,7 @@ export class FakeBackend implements ExecutionBackend {
   private readonly approvalHandlers = new Set<ApprovalHandler>();
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly recordedSpecs: BackendRunSpec[] = [];
+  private readonly recordedSends: Array<{ sessionRef: SessionRef; message: string }> = [];
 
   private sessionSeq = 0;
   private approvalSeq = 0;
@@ -351,6 +359,13 @@ export class FakeBackend implements ExecutionBackend {
 
   getRecordedSpecs(): readonly BackendRunSpec[] {
     return this.recordedSpecs.map(cloneRunSpec);
+  }
+
+  getRecordedSends(): ReadonlyArray<{ sessionRef: SessionRef; message: string }> {
+    return this.recordedSends.map((entry) => ({
+      sessionRef: cloneSessionRef(entry.sessionRef),
+      message: entry.message,
+    }));
   }
 
   getSelectedModeId(sessionRef: SessionRef): string | undefined {
@@ -421,6 +436,10 @@ export class FakeBackend implements ExecutionBackend {
       );
     }
 
+    this.recordedSends.push({
+      sessionRef: cloneSessionRef(sessionRef),
+      message,
+    });
     this.launchTurn(session, message);
   }
 
@@ -709,6 +728,16 @@ export class FakeBackend implements ExecutionBackend {
               kind: "usage",
               at: new Date().toISOString(),
               ...parsedUsage,
+            });
+            break;
+          }
+          case "context_window": {
+            this.pushEvent(turn, {
+              kind: "context_window",
+              at: new Date().toISOString(),
+              usedTokens: step.usedTokens,
+              contextWindowTokens: step.contextWindowTokens,
+              ...(step.percent !== undefined ? { percent: step.percent } : {}),
             });
             break;
           }

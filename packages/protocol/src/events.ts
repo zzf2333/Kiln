@@ -14,6 +14,7 @@ export const BackendCapabilitiesSchema = z.object({
   contextWindowTelemetry: z.boolean().optional(),
   nativeQuotaWindow: z.boolean().optional(),
   readOnlySandbox: z.boolean().optional(),
+  warmSessionReuse: z.boolean().optional(),
 });
 export type BackendCapabilities = z.infer<typeof BackendCapabilitiesSchema>;
 
