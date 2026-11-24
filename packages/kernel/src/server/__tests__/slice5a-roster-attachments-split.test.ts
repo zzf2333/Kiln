@@ -22,7 +22,7 @@ import {
   type ExecutionBackend,
 } from "../../backend/index.js";
 import { UnsupportedTrackError, getTrackStages } from "../../state/index.js";
-import { KilnStore, ensureDir, writeFileAtomic } from "../../store/index.js";
+import { KilnStore, writeFileAtomic } from "../../store/index.js";
 import { KilndServer } from "../index.js";
 
 // Valid 1x1 transparent PNG (68 bytes)

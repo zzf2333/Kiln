@@ -274,7 +274,7 @@ describe("M1 zero-token full-stack headless kernel E2E", () => {
         dispatches.push(plan);
       },
     });
-    scheduler.start();
+    await scheduler.start();
 
     try {
       const tick1 = await scheduler.wake();

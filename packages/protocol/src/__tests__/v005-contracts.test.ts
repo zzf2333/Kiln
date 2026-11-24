@@ -19,7 +19,6 @@ import {
 import {
   BUILTIN_ROSTER_ROLE_IDS,
   COST_SOURCES,
-  MAX_ATTACHMENT_BYTES,
   ModelPricingSchema,
   PROVIDER_ADAPTER_KINDS,
   ProvidersConfigSchema,
@@ -30,6 +29,7 @@ import {
   deriveLegacyRolesConfigFromRoster,
   migrateRolesConfigToRoster,
 } from "../config.js";
+import { MAX_ATTACHMENT_BYTES } from "../constants.js";
 import {
   BackendCapabilitiesSchema,
   RunEventSchema,

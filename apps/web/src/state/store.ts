@@ -11,7 +11,6 @@ import {
   validateSplitCardsDag,
   validateWorkflowBlueprint,
   type AttachmentMimeType,
-  type BudgetScopeStatus,
   type ComposableWorkflowOptions,
   type DraftCard,
   type GlobalBudgetStatus,
@@ -3977,7 +3976,7 @@ export class KilnWebStore {
   async toggleSpacePin(spaceId: string): Promise<void> {
     const sp = this.state.spaces[spaceId];
     if (!isProjectSpace(sp)) return;
-    const nextPinned = !Boolean(sp.pinned);
+    const nextPinned = !sp.pinned;
     try {
       const res = await apiUpsertSpace(spaceId, {
         name: sp.name,

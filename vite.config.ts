@@ -15,6 +15,15 @@ export default defineConfig({
     hookTimeout: 30_000,
   },
   lint: {
+    options: {
+      typeAware: true,
+      typeCheck: true,
+    },
+    rules: {
+      "no-control-regex": "off",
+      "typescript/no-base-to-string": "off",
+      "unicorn/no-useless-fallback-in-spread": "off",
+    },
     ignorePatterns: [
       "**/dist/**",
       "packages/cli/mcp/dist/**",

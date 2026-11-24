@@ -5,13 +5,11 @@ import {
   GateReportSchema,
   RetroAttributionSchema,
   RunMetaSchema,
-  TaskCardSchema,
   TaskRetroReportSchema,
   parseAndValidateReceipt,
   type ImprovementProposal,
   type RetroAttribution,
   type RunEvent,
-  type TaskCard,
   type TaskRetroMetrics,
   type TaskRetroReport,
 } from "@kiln/protocol";

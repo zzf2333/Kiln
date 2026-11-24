@@ -1,14 +1,12 @@
 import {
   calculateTurnCostUsd,
   type RunEvent,
-  type SessionRef,
 } from "@kiln/protocol";
 import { describe, expect, it, vi } from "vitest";
 import {
   type ApprovalRequestEvent,
   type BackendRunSpec,
   FullAccessOnlyProviderError,
-  IneligibleRoleAgentError,
 } from "../../types.js";
 import { verifyBackendContract } from "../../__tests__/contract.suite.js";
 import * as publicPaseoExports from "../index.js";
@@ -523,22 +521,22 @@ class MockPaseoDaemon implements PaseoDaemonLike {
     if (!listeners) {
       return;
     }
-    for (const listener of [...listeners]) {
+    for (const listener of Array.from(listeners)) {
       listener(msg);
     }
   }
 
   emitDaemonEvent(event: PaseoDaemonEvent): void {
-    for (const listener of [...this.daemonListeners]) {
+    for (const listener of Array.from(this.daemonListeners)) {
       listener(event);
     }
-    for (const observer of [...this.eventObservers]) {
+    for (const observer of Array.from(this.eventObservers)) {
       observer(event);
     }
   }
 
   emitConnectionState(state: PaseoConnectionState): void {
-    for (const listener of [...this.connectionListeners]) {
+    for (const listener of Array.from(this.connectionListeners)) {
       listener(state);
     }
   }

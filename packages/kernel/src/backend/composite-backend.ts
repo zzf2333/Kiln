@@ -245,7 +245,7 @@ export class CompositeBackend implements ProviderTelemetryBackend {
     const toDispose: ProviderTelemetryBackend[] = [];
     this.applyProvidersConfigSync(nextConfig, toDispose);
     if (toDispose.length > 0) {
-      await Promise.allSettled(toDispose.map((a) => a.dispose?.()));
+      await Promise.allSettled(toDispose.map((a) => Promise.resolve(a.dispose?.())));
     }
   }
 
@@ -584,7 +584,7 @@ export class CompositeBackend implements ProviderTelemetryBackend {
     for (const b of bindings) {
       b.unsubApproval();
     }
-    await Promise.allSettled(bindings.map((b) => b.adapter.dispose?.()));
+    await Promise.allSettled(bindings.map((b) => Promise.resolve(b.adapter.dispose?.())));
   }
 
   private buildStatusForEntry(entry: ProviderEntry): ProviderRuntimeStatus {

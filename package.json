@@ -11,6 +11,10 @@
     "build": "pnpm -r --if-present build",
     "build:binary": "node scripts/build-binary.mjs",
     "typecheck": "pnpm -r --if-present typecheck",
+    "lint": "vp lint",
+    "fmt": "vp fmt",
+    "fmt:check": "vp fmt --check",
+    "check": "vp check",
     "test": "vp test run",
     "test:socket": "vp test run --config vitest.socket.config.ts",
     "test:watch": "vp test"

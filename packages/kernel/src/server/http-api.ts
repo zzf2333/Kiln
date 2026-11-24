@@ -3125,7 +3125,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
           backendRegistry,
           request: body,
         });
-    onSettingsUpdated?.("pricing");
+    await onSettingsUpdated?.("pricing");
     return c.json(result);
   });
 

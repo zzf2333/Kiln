@@ -24,7 +24,6 @@ import {
 } from "@kiln/protocol";
 import type { ProviderHealthTracker } from "../backend/provider-health.js";
 import {
-  UnsupportedTrackError,
   computeEffectivePriorities,
   getTaskPipelineStages,
   type PriorityGraphNode,
@@ -961,11 +960,13 @@ export class KilnScheduler {
             (stage !== "accept" && stage !== "plan") ||
             rolesConfig.roles[role] !== undefined;
           if (shouldResolveRole) {
-            roleAssignment = resolveRoleAssignment(rolesConfig, role, {
-              ...(this.agentCapabilitiesMap !== undefined
+            roleAssignment = resolveRoleAssignment(
+              rolesConfig,
+              role,
+              this.agentCapabilitiesMap !== undefined
                 ? { agentCapabilitiesMap: this.agentCapabilitiesMap }
-                : {}),
-            });
+                : {},
+            );
           }
         }
       } catch (error) {

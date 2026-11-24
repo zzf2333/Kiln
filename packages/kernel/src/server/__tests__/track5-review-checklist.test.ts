@@ -11,7 +11,6 @@ import {
 import { TaskStateMachine } from "../../state/index.js";
 import {
   KilnStore,
-  deriveTaskStatus,
   writeFileAtomic,
   writeYamlAtomic,
 } from "../../store/index.js";

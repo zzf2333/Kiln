@@ -904,7 +904,7 @@ export class KilnOrchestrator {
     if (this.activeRuns.get(handle.taskId)?.runId === handle.runId) {
       this.activeRuns.delete(handle.taskId);
     }
-    await this.warmPool.evictTask(handle.taskId);
+    this.warmPool.evictTask(handle.taskId);
     if (handle.stage === "accept") {
       await this.stopAcceptEnv(handle.taskId).catch(() => {});
       this.activeAcceptEnvConfigs.delete(handle.taskId);

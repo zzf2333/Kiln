@@ -1451,7 +1451,9 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     ]);
     expect(r1.status).toBe(200);
     expect(r2.status).toBe(200);
-    const acceptedFlags = [Boolean(r1.json.accepted), Boolean(r2.json.accepted)].sort();
+    const acceptedFlags = [Boolean(r1.json.accepted), Boolean(r2.json.accepted)].sort(
+      (a, b) => Number(a) - Number(b),
+    );
     expect(acceptedFlags).toEqual([false, true]);
 
     // SSE replay via ?lastEventId= query param + invalid lastEventId 400

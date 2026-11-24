@@ -210,7 +210,7 @@ export function computeUsageSnapshot(
       reusedSet = new Set<string>();
       reusedMap.set(key, reusedSet);
     }
-    if (Boolean(turn.session_reused)) {
+    if (turn.session_reused) {
       reusedSet.add(turn.run_id);
     }
     map[key]!.runCount = runsSet.size;
@@ -268,7 +268,7 @@ export function computeUsageSnapshot(
       );
       if (turn.stage === "implement") {
         implTotalRuns.add(turn.run_id);
-        if (Boolean(turn.session_reused)) {
+        if (turn.session_reused) {
           implReusedRuns.add(turn.run_id);
           warmInputTokens += turn.input_tokens;
           warmCachedTokens += turn.cached_input_tokens;

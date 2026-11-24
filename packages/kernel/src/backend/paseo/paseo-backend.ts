@@ -21,7 +21,6 @@ import {
   type BackendModelDescriptor,
   type BackendRunSpec,
   type ExecutionBackend,
-  FullAccessOnlyProviderError,
   isFullAccessMode,
   selectSafeModeId,
   type SessionProbeResult,
@@ -1633,7 +1632,7 @@ export class PaseoBackend implements ExecutionBackend {
       at,
     };
 
-    for (const handler of [...this.approvalHandlers]) {
+    for (const handler of Array.from(this.approvalHandlers)) {
       try {
         const result = handler(approvalEvent);
         if (result && typeof (result as Promise<void>).then === "function") {

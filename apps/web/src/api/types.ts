@@ -82,7 +82,6 @@ import type {
   StageId,
   StateEvent,
   SteerNote,
-  SteerTaskRequest,
   SyncPricingRequest,
   SyncPricingResponse,
   TailscaleStatusResponse,

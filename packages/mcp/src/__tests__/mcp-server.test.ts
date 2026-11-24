@@ -201,7 +201,9 @@ describe("@kiln/mcp server & client", () => {
     expect(wbPlanTool?.inputSchema.properties).toHaveProperty("brief_markdown");
     expect(wbPlanTool?.inputSchema.properties).toHaveProperty("open_questions");
     expect(Array.isArray(wbPlanTool?.inputSchema.anyOf)).toBe(true);
-    expect((wbPlanTool?.inputSchema.anyOf as unknown[]).length).toBe(4);
+    expect(
+      Array.isArray(wbPlanTool?.inputSchema.anyOf) ? wbPlanTool.inputSchema.anyOf.length : -1,
+    ).toBe(4);
     const modeProp = wbPlanTool?.inputSchema.properties?.mode as { enum?: string[] } | undefined;
     expect(modeProp?.enum).toContain("commit_split_cards");
   });

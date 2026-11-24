@@ -142,9 +142,11 @@ function seedFinishedTask(
   },
 ): void {
   const space = opts.space ?? "proj-a";
-  const card = makeTaskCard(opts.id, space, {
-    ...(opts.preset ? { workflow: buildWorkflowPreset(opts.preset) } : {}),
-  });
+  const card = makeTaskCard(
+    opts.id,
+    space,
+    opts.preset ? { workflow: buildWorkflowPreset(opts.preset) } : {},
+  );
   store.createTask(card, `# ${opts.id}\nBrief body`);
 
   // Run 1: implement

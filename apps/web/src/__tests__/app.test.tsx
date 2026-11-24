@@ -23,7 +23,6 @@ function jsonResponse(body: unknown, status = 200): Response {
 function makeBaseBootstrap(
   overrides: Partial<BootstrapResponse> = {},
 ): BootstrapResponse {
-  const now = new Date().toISOString();
   return {
     tasks: [],
     pendingDecisions: [],
@@ -1536,7 +1535,12 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
         return id;
       });
 
-    const originalGetContext = HTMLCanvasElement.prototype.getContext;
+    const originalGetContextDesc = Object.getOwnPropertyDescriptor(
+      HTMLCanvasElement.prototype,
+      "getContext",
+    );
+    const originalGetContext = originalGetContextDesc?.value as
+      typeof HTMLCanvasElement.prototype.getContext;
     let drawCount = 0;
     const mockCtx = {
       createRadialGradient: () => ({ addColorStop: () => {} }),
@@ -3684,15 +3688,15 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     expect(rows[0]?.getAttribute("title")).toContain("run_command");
 
     // Static CSS regression guards: prevent flex-basis: 200px in vertical container & global scrollbar-width disabling webkit styling
-    const [{ existsSync, readFileSync }, { resolve }] = await Promise.all([
+    const [{ existsSync, readFileSync }, pathMod] = await Promise.all([
       import("node:fs"),
       import("node:path"),
     ]);
-    const stylesDir = existsSync(resolve(process.cwd(), "apps/web/src/styles/tokens.css"))
-      ? resolve(process.cwd(), "apps/web/src/styles")
-      : resolve(process.cwd(), "src/styles");
-    const tokensCss = readFileSync(resolve(stylesDir, "tokens.css"), "utf8");
-    const layoutCss = readFileSync(resolve(stylesDir, "layout.css"), "utf8");
+    const stylesDir = existsSync(pathMod.resolve(process.cwd(), "apps/web/src/styles/tokens.css"))
+      ? pathMod.resolve(process.cwd(), "apps/web/src/styles")
+      : pathMod.resolve(process.cwd(), "src/styles");
+    const tokensCss = readFileSync(pathMod.resolve(stylesDir, "tokens.css"), "utf8");
+    const layoutCss = readFileSync(pathMod.resolve(stylesDir, "layout.css"), "utf8");
     expect(tokensCss.length).toBeGreaterThan(200);
     expect(layoutCss.length).toBeGreaterThan(2000);
     expect(tokensCss).not.toContain("scrollbar-width:");

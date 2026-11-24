@@ -3,7 +3,6 @@ import {
   type BackendCapabilities,
   type ProviderEntry,
   type ProviderNativeQuota,
-  type RoleId,
   type RunEvent,
   type SessionRef,
 } from "@kiln/protocol";

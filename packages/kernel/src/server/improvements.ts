@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
-import path from "node:path";
 import {
   GateReportSchema,
   AcceptVerificationReportSchema,
@@ -20,12 +19,10 @@ import {
   type PolicyMetricWindow,
   type RosterConfig,
   type SpaceConfig,
-  type TaskCard,
   parseAndValidateReceipt,
 } from "@kiln/protocol";
 import {
   KilnStore,
-  deriveTaskStatus,
   ensureDir,
   readNdjsonValidated,
   readYamlOptional,
@@ -363,7 +360,7 @@ function summarizeMetricWindow(records: readonly TaskStatRecord[]): PolicyMetric
   const firstPassCount = records.filter((r) => r.firstPass).length;
   const totalRework = records.reduce((acc, r) => acc + r.reworkRounds, 0);
   const avgCache = records.reduce((acc, r) => acc + r.cacheHitRate, 0) / n;
-  const sortedCosts = [...records.map((r) => r.costUsd)].sort((a, b) => a - b);
+  const sortedCosts = records.map((r) => r.costUsd).sort((a, b) => a - b);
   const mid = Math.floor(sortedCosts.length / 2);
   const medianCost =
     sortedCosts.length % 2 === 1

@@ -852,7 +852,7 @@ export class FakeBackend implements ExecutionBackend {
       at,
     };
 
-    for (const handler of [...this.approvalHandlers]) {
+    for (const handler of Array.from(this.approvalHandlers)) {
       try {
         const result = handler(requestEvent);
         if (result && typeof (result as Promise<void>).then === "function") {

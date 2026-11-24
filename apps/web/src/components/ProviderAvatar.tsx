@@ -48,6 +48,6 @@ const ADAPTER_LABELS: Record<ProviderAdapterKind, string> = {
   paseo: "Paseo Bridge",
 };
 
-export function formatAdapterLabel(adapter: ProviderAdapterKind | string): string {
+export function formatAdapterLabel(adapter: ProviderAdapterKind | (string & {})): string {
   return ADAPTER_LABELS[adapter as ProviderAdapterKind] ?? adapter;
 }

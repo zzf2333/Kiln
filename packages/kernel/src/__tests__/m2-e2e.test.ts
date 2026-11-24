@@ -2358,11 +2358,6 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
               .getRecordedSpecs()
               .find((s) => s.runId === ctx.runId)
               ?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
-          const runDir = fs
-            .readdirSync(server.store.paths.runsDir(ctx.taskId))
-            .filter((d) => d.endsWith("-implement"))
-            .sort()
-            .at(-1)!;
           const wsDir = server.store.paths.workspaceDir(ctx.taskId);
 
           if (req.action === "r1d_empty_scratch") {
@@ -3988,7 +3983,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     const slowFlags = [
       Boolean((slowSub1.body as { accepted: boolean }).accepted),
       Boolean((slowSub2.body as { accepted: boolean }).accepted),
-    ].sort();
+    ].sort((a, b) => Number(a) - Number(b));
     expect(slowFlags).toEqual([false, true]);
     const slowRejectedBody = (slowSub1.body as { accepted: boolean }).accepted
       ? (slowSub2.body as { reason: string; archivedPath: string })

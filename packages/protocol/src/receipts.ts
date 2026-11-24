@@ -256,8 +256,8 @@ const EMPTY_FINDING_PLACEHOLDER_RE =
   /^(?:[-*+]\s*)?(?:无|暂无|none|n\/a|无缺陷|未发现缺陷|no\s+findings)[。.\s]*$/i;
 const FINDING_BULLET_START_RE = /^(?:[-*+]|\d+[.)]|#{3})\s+(.+)$/;
 const LEADING_SEVERITY_TAG_RE =
-  /^(?:[\[(【*]*(P[012])[\])】*]*[\s:：\-–—]*)+/i;
-const INLINE_SEVERITY_TAG_RE = /[\[(【\b](P[012])[\])】\b]/i;
+  /^(?:[[(【*]*(P[012])[\])】*]*[\s:：\-–—]*)+/i;
+const INLINE_SEVERITY_TAG_RE = /[[(【\b](P[012])[\])】\b]/i;
 const INLINE_BACKTICK_PATH_RE = /`([^`\s]*[/.][^`\s]*)`/;
 
 function toSeverityUpper(raw: string): ReviewFindingSeverity {
@@ -372,7 +372,7 @@ export function extractReviewFindingsFromReceipt(
     if (!trimmedRight.trim()) {
       continue;
     }
-    const isIndented = /^\s{2,}/.test(rawLine) || /^\t/.test(rawLine);
+    const isIndented = /^\s{2,}/.test(rawLine) || rawLine.startsWith("\t");
     const bulletMatch = !isIndented ? FINDING_BULLET_START_RE.exec(trimmedRight) : null;
     if (bulletMatch && bulletMatch[1]) {
       blocks.push({ head: bulletMatch[1], continuation: [] });

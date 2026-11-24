@@ -35,7 +35,7 @@ export const WORKFLOW_PRESET_LABEL: Record<WorkflowPreset, string> = {
   custom: "自定义蓝图",
 };
 
-export function stageMeta(stage: StageId | string | null | undefined): StageMeta {
+export function stageMeta(stage: StageId | (string & {}) | null | undefined): StageMeta {
   if (stage && stage in STAGE_META) {
     return STAGE_META[stage as StageId];
   }
