@@ -425,6 +425,7 @@ export const AdvisorRequestSchema = z.object({
     "stuck_same_failure",
     "review_deadlock",
     "triage_escalation",
+    "run_stalled",
   ]),
   source_stage: StageIdSchema,
   source_run_id: z.string().min(1),

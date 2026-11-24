@@ -7,6 +7,7 @@ import {
   DecisionRecordSchema,
   GateReportSchema,
   PendingDecisionSchema,
+  RunEventSchema,
   RunMetaSchema,
   TaskCardSchema,
   deriveLegacyRolesConfigFromRoster,
@@ -47,6 +48,7 @@ import {
   type ExecutionBackend,
   type McpStdioMountSpec,
   type RunAttachmentInput,
+  type SessionProbeResult,
 } from "../backend/index.js";
 import {
   checkScope,
@@ -85,6 +87,7 @@ import {
   assertSafeSegment,
   deriveTaskStatus,
   ensureDir,
+  readNdjsonValidated,
   readYamlOptional,
   writeFileAtomic,
   writeYamlAtomic,
@@ -151,6 +154,13 @@ import {
 import type { LiveRateTracker } from "./rate-tracker.js";
 import type { KilnScriptRunner } from "./script-runner.js";
 import type { SseHub } from "./sse.js";
+import {
+  DEFAULT_STALL_CHECK_INTERVAL_MS,
+  DEFAULT_STALL_TIMEOUT_SEC,
+  evaluateRunStallState,
+  probeSessionWithTimeout,
+  type EvaluateRunStallResult,
+} from "./stall-watchdog.js";
 import { z } from "zod";
 
 const RATE_LIMIT_MESSAGE_RE = /\b429\b|rate[_ -]?limit|too many requests|quota exceeded/i;
@@ -196,6 +206,8 @@ export interface KilnOrchestratorOptions {
   scriptRunner?: KilnScriptRunner;
   remoteNotifier?: RemoteNotifier;
   acceptEnvStarter?: AcceptEnvStarterFn;
+  stallCheckIntervalMs?: number;
+  nowMs?: () => number;
 }
 
 interface ActiveRunHandle {
@@ -205,11 +217,16 @@ interface ActiveRunHandle {
   role: RoleId;
   stage: StageId;
   contractVersion: number;
+  runMeta: RunMeta;
   backend: ExecutionBackend;
   sessionRef: SessionRef;
   abortController: AbortController;
   consumePromise: Promise<void>;
   cancelledByControl: boolean;
+  startedAtMs: number;
+  lastEventAtMs: number;
+  stallWarnedAtMs: number | null;
+  stallRecovering: boolean;
 }
 
 interface InFlightStageOperation {
@@ -409,10 +426,14 @@ export class KilnOrchestrator {
   private readonly recentSpaceCompletedAtMs = new Map<string, number>();
   private readonly sessionKeyByRunId = new Map<string, string>();
   private readonly reuseCountByRunId = new Map<string, number>();
+  private readonly stallCheckIntervalMs: number;
+  private readonly nowMs: () => number;
 
   private startingBackendCount = 0;
   private started = false;
   private stopped = false;
+  private stallCheckTimer: ReturnType<typeof setInterval> | null = null;
+  private stallSweepInFlight = false;
 
   constructor(options: KilnOrchestratorOptions) {
     this.store = options.store;
@@ -433,6 +454,11 @@ export class KilnOrchestrator {
     this.scriptRunner = options.scriptRunner;
     this.remoteNotifier = options.remoteNotifier;
     this.acceptEnvStarter = options.acceptEnvStarter ?? startAcceptEnvSession;
+    this.stallCheckIntervalMs = Math.max(
+      20,
+      options.stallCheckIntervalMs ?? DEFAULT_STALL_CHECK_INTERVAL_MS,
+    );
+    this.nowMs = options.nowMs ?? (() => Date.now());
 
     this.scheduler = new KilnScheduler({
       store: this.store,
@@ -610,11 +636,22 @@ export class KilnOrchestrator {
     this.registerApprovalListeners();
     await this.syncAgentCapabilities();
     await this.scheduler.start();
+    if (this.stallCheckTimer) {
+      clearInterval(this.stallCheckTimer);
+    }
+    this.stallCheckTimer = setInterval(() => {
+      void this.checkStalledRunsNow();
+    }, this.stallCheckIntervalMs);
+    this.stallCheckTimer.unref?.();
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
     this.started = false;
+    if (this.stallCheckTimer) {
+      clearInterval(this.stallCheckTimer);
+      this.stallCheckTimer = null;
+    }
     this.scheduler.stop();
     this.clearApprovalListeners();
     this.deferredApprovals.length = 0;
@@ -704,6 +741,301 @@ export class KilnOrchestrator {
         this.inFlightOperations.delete(safeTaskId);
       }
     }
+  }
+
+  /**
+   * Sweeps all active running turns under the Witness heartbeat policy:
+   * - At `1x stall_timeout_sec` without new events, probes session liveness (5s timeout).
+   * - If dead/closed, aborts immediately; if alive and unwarned, emits a single `soft_warning`.
+   * - At `2x stall_timeout_sec`, force-aborts even if alive and drives bounded recovery
+   *   (`retry_stage` -> `invoke_advisor` (`run_stalled`) -> `escalate_failure`).
+   */
+  async checkStalledRunsNow(): Promise<void> {
+    if (this.stopped || this.stallSweepInFlight) {
+      return;
+    }
+    const timeoutSec =
+      this.store.readConfig("limits")?.stall_timeout_sec ?? DEFAULT_STALL_TIMEOUT_SEC;
+    if (timeoutSec <= 0) {
+      return;
+    }
+
+    this.stallSweepInFlight = true;
+    try {
+      const stallTimeoutMs = timeoutSec * 1_000;
+      const handles = Array.from(this.activeRuns.values());
+      for (const handle of handles) {
+        if (
+          this.stopped ||
+          handle.cancelledByControl ||
+          handle.stallRecovering ||
+          handle.abortController.signal.aborted
+        ) {
+          continue;
+        }
+        const current = this.activeRuns.get(handle.taskId);
+        if (!current || current.runId !== handle.runId) {
+          continue;
+        }
+
+        const now = this.nowMs();
+        const silentMs = Math.max(0, now - handle.lastEventAtMs);
+        if (silentMs < stallTimeoutMs) {
+          continue;
+        }
+
+        const probeResult = await probeSessionWithTimeout(handle.backend, handle.sessionRef);
+        if (
+          this.stopped ||
+          handle.cancelledByControl ||
+          handle.stallRecovering ||
+          handle.abortController.signal.aborted ||
+          this.activeRuns.get(handle.taskId)?.runId !== handle.runId
+        ) {
+          continue;
+        }
+
+        const afterProbeNow = this.nowMs();
+        const afterProbeSilentMs = Math.max(0, afterProbeNow - handle.lastEventAtMs);
+        const evalResult = evaluateRunStallState({
+          silentMs: afterProbeSilentMs,
+          stallTimeoutMs,
+          alreadyWarned: handle.stallWarnedAtMs !== null,
+          probeResult,
+        });
+
+        if (evalResult.action === "soft_warn") {
+          handle.stallWarnedAtMs = afterProbeNow;
+          const warnEvent: RunEvent = {
+            kind: "stall_warning",
+            at: new Date(afterProbeNow).toISOString(),
+            phase: "soft_warning",
+            silentSec: evalResult.silentSec,
+            probeAlive: probeResult ? probeResult.alive : null,
+            ...(probeResult ? { probeStatus: probeResult.status } : {}),
+            action: "warn",
+            detail: `No run events for ${evalResult.silentSec}s while session status is ${probeResult?.status ?? "unknown"}`,
+          };
+          this.store.recordRunEvent(handle.taskId, handle.runDirName, warnEvent);
+          this.sseHub.publish({
+            type: "run.event",
+            taskId: handle.taskId,
+            runId: handle.runId,
+            event: warnEvent,
+          });
+          void this.remoteNotifier?.notifyRunStalled({
+            taskId: handle.taskId,
+            stage: handle.stage,
+            silentSec: evalResult.silentSec,
+            phase: "soft_warning",
+          });
+          continue;
+        }
+
+        if (
+          evalResult.action === "abort_dead" ||
+          evalResult.action === "abort_hard_timeout"
+        ) {
+          await this.recoverStalledRun(handle, evalResult, probeResult);
+        }
+      }
+    } finally {
+      this.stallSweepInFlight = false;
+    }
+  }
+
+  private countPriorAbortedStallsInWindow(
+    taskId: string,
+    card: TaskCard,
+    stage: StageId,
+    excludeRunId: string,
+  ): number {
+    let count = 0;
+    const windowRuns = this.listCurrentWindowRuns(taskId, card);
+    for (const r of windowRuns) {
+      if (r.meta.stage !== stage || r.meta.run_id === excludeRunId) {
+        continue;
+      }
+      const evs = readNdjsonValidated(
+        this.store.paths.runEventsNdjson(taskId, r.dirName),
+        RunEventSchema,
+      );
+      if (evs.some((ev) => ev.kind === "stall_warning" && ev.phase === "aborted")) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  private async recoverStalledRun(
+    handle: ActiveRunHandle,
+    evalResult: Extract<EvaluateRunStallResult, { action: "abort_dead" | "abort_hard_timeout" }>,
+    probeResult: SessionProbeResult | null,
+  ): Promise<void> {
+    if (
+      this.stopped ||
+      handle.cancelledByControl ||
+      handle.stallRecovering ||
+      handle.abortController.signal.aborted ||
+      !this.isRunStillCurrent(handle.taskId, handle.runId, handle.contractVersion)
+    ) {
+      return;
+    }
+
+    handle.stallRecovering = true;
+    handle.cancelledByControl = true;
+    handle.abortController.abort();
+    this.rateTracker.clearTask(handle.taskId);
+
+    await handle.backend.cancel(handle.sessionRef).catch(() => {});
+    await Promise.race([
+      handle.consumePromise.catch(() => {}),
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 2_000);
+        timer.unref?.();
+      }),
+    ]);
+
+    this.latestContextPercentByRunId.delete(handle.runId);
+    this.sessionKeyByRunId.delete(handle.runId);
+    this.reuseCountByRunId.delete(handle.runId);
+    if (this.activeRuns.get(handle.taskId)?.runId === handle.runId) {
+      this.activeRuns.delete(handle.taskId);
+    }
+    await this.warmPool.evictTask(handle.taskId);
+    if (handle.stage === "accept") {
+      await this.stopAcceptEnv(handle.taskId).catch(() => {});
+      this.activeAcceptEnvConfigs.delete(handle.taskId);
+    }
+
+    if (!this.isRunStillCurrent(handle.taskId, handle.runId, handle.contractVersion)) {
+      this.syncCaffeinate();
+      return;
+    }
+
+    const nowIso = new Date(this.nowMs()).toISOString();
+    this.store.sqlite.expireActiveLeaseByTask(handle.taskId, nowIso, "expired");
+
+    const card = this.store.readTaskCard(handle.taskId);
+    const { counters } = this.computeStageCounters(
+      handle.taskId,
+      card,
+      handle.stage,
+      handle.runId,
+    );
+    const priorStalls = this.countPriorAbortedStallsInWindow(
+      handle.taskId,
+      card,
+      handle.stage,
+      handle.runId,
+    );
+    const stalledCountOnStage = priorStalls + 1;
+    const canAdvise =
+      handle.stage !== "advise" &&
+      handle.stage !== "triage" &&
+      this.isAdvisorConfigured() &&
+      counters.advisorCalls < card.limits.advisor_calls;
+
+    let recoveryAction: "retry_stage" | "invoke_advisor" | "escalate_failure";
+    if (stalledCountOnStage === 1 && counters.stageRetries < card.limits.retries_per_stage) {
+      recoveryAction = "retry_stage";
+    } else if (canAdvise) {
+      recoveryAction = "invoke_advisor";
+    } else {
+      recoveryAction = "escalate_failure";
+    }
+
+    const abortReason =
+      evalResult.action === "abort_dead"
+        ? `Session probe reported dead/closed after ${evalResult.silentSec}s silence`
+        : `Hard stall timeout reached after ${evalResult.silentSec}s silence`;
+
+    const abortEvent: RunEvent = {
+      kind: "stall_warning",
+      at: nowIso,
+      phase: "aborted",
+      silentSec: evalResult.silentSec,
+      probeAlive: probeResult ? probeResult.alive : null,
+      ...(probeResult ? { probeStatus: probeResult.status } : {}),
+      action: recoveryAction,
+      detail: abortReason,
+    };
+    const exitEvent: RunEvent = {
+      kind: "exit",
+      at: nowIso,
+      reason: "failed",
+      detail: `run_stalled: ${abortReason}`,
+    };
+
+    this.store.recordRunEvent(handle.taskId, handle.runDirName, abortEvent);
+    this.store.recordRunEvent(handle.taskId, handle.runDirName, exitEvent);
+    this.sseHub.publish({
+      type: "run.event",
+      taskId: handle.taskId,
+      runId: handle.runId,
+      event: abortEvent,
+    });
+    this.sseHub.publish({
+      type: "run.event",
+      taskId: handle.taskId,
+      runId: handle.runId,
+      event: exitEvent,
+    });
+
+    void this.remoteNotifier?.notifyRunStalled({
+      taskId: handle.taskId,
+      stage: handle.stage,
+      silentSec: evalResult.silentSec,
+      phase: "aborted",
+      recoveryAction,
+      priority: card.priority,
+    });
+
+    const guard: ExpectedRunGuard = {
+      runId: handle.runId,
+      contractVersion: handle.contractVersion,
+    };
+
+    if (recoveryAction === "retry_stage") {
+      await this.advanceToNextStage(
+        handle.taskId,
+        handle.stage,
+        guard,
+        handle.runMeta.step_index ?? null,
+      );
+      return;
+    }
+
+    if (recoveryAction === "invoke_advisor") {
+      assertCanInvokeAdvisor("kernel");
+      this.writeAdvisorRequest(handle.taskId, {
+        schema_version: 1,
+        contract_version: card.contract_version,
+        trigger: "run_stalled",
+        source_stage: handle.stage,
+        source_run_id: handle.runId,
+        source_role: handle.role,
+        category: "run_stalled",
+        reason: abortReason,
+        question: `任务 "${card.title}" 在阶段 ${handle.stage} 连续第 ${stalledCountOnStage} 次发生心跳停滞（${abortReason}），请在不改动契约目标与 scope 的前提下评估卡点并给出收敛执行方案。`,
+        options: [],
+        consecutive_failures: stalledCountOnStage,
+        created_at: nowIso,
+      });
+      await this.advanceToNextStage(handle.taskId, "advise", guard);
+      return;
+    }
+
+    await this.applyStageFailure(
+      handle.taskId,
+      handle.stage,
+      handle.runMeta,
+      {
+        kind: "runtime_error",
+        message: `run_stalled: ${abortReason}`,
+      },
+      guard,
+    );
   }
 
   /**
@@ -2577,6 +2909,7 @@ export class KilnOrchestrator {
     sessionRef: SessionRef,
   ): void {
     const abortController = new AbortController();
+    const startedAtMs = this.nowMs();
     const handle: ActiveRunHandle = {
       taskId,
       runId: runMeta.run_id,
@@ -2584,11 +2917,16 @@ export class KilnOrchestrator {
       role: runMeta.role,
       stage: runMeta.stage,
       contractVersion: runMeta.contract_version,
+      runMeta,
       backend,
       sessionRef,
       abortController,
       consumePromise: Promise.resolve(),
       cancelledByControl: false,
+      startedAtMs,
+      lastEventAtMs: startedAtMs,
+      stallWarnedAtMs: null,
+      stallRecovering: false,
     };
 
     handle.consumePromise = (async () => {
@@ -2597,6 +2935,12 @@ export class KilnOrchestrator {
       try {
         try {
           for await (const ev of backend.events(sessionRef)) {
+            if (handle.stallRecovering) {
+              break;
+            }
+            handle.lastEventAtMs = this.nowMs();
+            handle.stallWarnedAtMs = null;
+
             this.store.recordRunEvent(taskId, runDirName, ev);
 
             if (ev.kind === "session_bound") {
@@ -2619,6 +2963,7 @@ export class KilnOrchestrator {
                 },
               };
               runMeta = nextMeta;
+              handle.runMeta = nextMeta;
               handle.sessionRef = nextMeta.session_ref;
               writeYamlAtomic(
                 this.store.paths.runYaml(taskId, runDirName),

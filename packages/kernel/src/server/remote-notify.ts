@@ -25,6 +25,15 @@ export interface BudgetAlertNotificationInput {
   priority?: Priority;
 }
 
+export interface StallAlertNotificationInput {
+  taskId: string;
+  stage: string;
+  silentSec: number;
+  phase: "soft_warning" | "aborted";
+  recoveryAction?: string;
+  priority?: Priority;
+}
+
 export interface NotificationDeliveryResult {
   delivered: boolean;
   skipped?: "disabled" | "priority_filtered";
@@ -243,8 +252,65 @@ export class RemoteNotifier {
     });
   }
 
+  /**
+   * Dispatches a non-blocking run heartbeat stall alert (soft warning or recovery abort)
+   * over the configured remote notification channel.
+   */
+  async notifyRunStalled(
+    input: StallAlertNotificationInput,
+  ): Promise<NotificationDeliveryResult> {
+    try {
+      const remoteConfig = this.store.readConfig("remote");
+      if (
+        !remoteConfig ||
+        !remoteConfig.notifications.enabled ||
+        remoteConfig.notifications.url.trim().length === 0
+      ) {
+        return { delivered: false, skipped: "disabled" };
+      }
+
+      const taskRow = this.store.getTaskIndex(input.taskId);
+      const priority: Priority = input.priority ?? taskRow?.effective_priority ?? "P1";
+      const { channel, url, secret, priorities } = remoteConfig.notifications;
+      if (!priorities.includes(priority)) {
+        return { delivered: false, skipped: "priority_filtered", channel };
+      }
+
+      const taskTitle = taskRow?.title ?? input.taskId;
+      const isAborted = input.phase === "aborted";
+      const clickUrl = remoteConfig.public_url
+        ? `${remoteConfig.public_url.replace(/\/+$/, "")}/tasks/${encodeURIComponent(input.taskId)}`
+        : undefined;
+
+      return await this.sendPayload({
+        event: "run.stalled",
+        channel,
+        url,
+        ...(secret !== undefined ? { secret } : {}),
+        priority,
+        taskId: input.taskId,
+        title: `[${priority}] Kiln Run ${isAborted ? "停滞中止" : "停滞预警"} · ${taskTitle}`,
+        asciiTitle: `[${priority}] Kiln Run ${isAborted ? "Stall Aborted" : "Stall Warning"} (${input.taskId})`,
+        body: isAborted
+          ? `阶段 ${input.stage} 已连续 ${input.silentSec}s 无心跳事件，看门狗已中止当前 Run（恢复动作：${input.recoveryAction ?? "retry_stage"}）`
+          : `阶段 ${input.stage} 已连续 ${input.silentSec}s 无心跳事件（软告警，暂未中断当前 Run）`,
+        ...(clickUrl !== undefined ? { clickUrl } : {}),
+      });
+    } catch (err) {
+      return {
+        delivered: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
   private async sendPayload(params: {
-    event: "decision.requested" | "notification.test" | "budget.warning" | "budget.exceeded";
+    event:
+      | "decision.requested"
+      | "notification.test"
+      | "budget.warning"
+      | "budget.exceeded"
+      | "run.stalled";
     channel: RemoteNotificationChannel;
     url: string;
     secret?: string;
@@ -308,7 +374,12 @@ export class RemoteNotifier {
   }
 
   private buildChannelRequest(params: {
-    event: "decision.requested" | "notification.test" | "budget.warning" | "budget.exceeded";
+    event:
+      | "decision.requested"
+      | "notification.test"
+      | "budget.warning"
+      | "budget.exceeded"
+      | "run.stalled";
     channel: RemoteNotificationChannel;
     secret?: string;
     priority: Priority;

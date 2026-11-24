@@ -124,6 +124,8 @@ export interface KilndServerOptions {
   extensionsHomeDir?: string;
   scriptRunner?: KilnScriptRunner;
   prDeliverExec?: PrDeliverExecFn;
+  stallCheckIntervalMs?: number;
+  orchestratorNowMs?: () => number;
 }
 
 export interface KilndServerAddress {
@@ -341,6 +343,12 @@ export class KilndServer {
       remoteNotifier: this.remoteNotifier,
       ...(options.acceptEnvStarter !== undefined
         ? { acceptEnvStarter: options.acceptEnvStarter }
+        : {}),
+      ...(options.stallCheckIntervalMs !== undefined
+        ? { stallCheckIntervalMs: options.stallCheckIntervalMs }
+        : {}),
+      ...(options.orchestratorNowMs !== undefined
+        ? { nowMs: options.orchestratorNowMs }
         : {}),
     });
 

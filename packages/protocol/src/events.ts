@@ -114,6 +114,16 @@ const RunEventBaseUnionSchema = z.discriminatedUnion("kind", [
     at: z.string().min(1),
   }),
   z.object({
+    kind: z.literal("stall_warning"),
+    at: z.string().min(1),
+    phase: z.enum(["soft_warning", "aborted"]),
+    silentSec: z.number().int().nonnegative(),
+    probeAlive: z.boolean().nullable().optional(),
+    probeStatus: z.enum(["running", "idle", "closed", "unknown"]).optional(),
+    action: z.enum(["warn", "retry_stage", "invoke_advisor", "escalate_failure"]).optional(),
+    detail: z.string().optional(),
+  }),
+  z.object({
     kind: z.literal("exit"),
     at: z.string().min(1),
     reason: z.enum(["completed", "cancelled", "failed"]),

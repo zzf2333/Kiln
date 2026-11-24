@@ -131,6 +131,7 @@ export const LimitsConfigSchema = z.object({
   monthly_budget_usd: z.number().finite().positive().optional(),
   budget_soft_warning_ratio: z.number().finite().min(0.1).max(0.99).optional(),
   budget_exclude_subscription_providers: z.boolean().optional(),
+  stall_timeout_sec: z.number().int().min(0).max(86_400).optional(),
 });
 export type LimitsConfig = z.infer<typeof LimitsConfigSchema>;
 

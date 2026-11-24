@@ -283,6 +283,16 @@ export {
   type ImportedGithubIssueInfo,
 } from "./github-bridge.js";
 export {
+  DEFAULT_STALL_CHECK_INTERVAL_MS,
+  DEFAULT_STALL_TIMEOUT_SEC,
+  HARD_STALL_MULTIPLIER,
+  STALL_PROBE_TIMEOUT_MS,
+  evaluateRunStallState,
+  probeSessionWithTimeout,
+  type EvaluateRunStallInput,
+  type EvaluateRunStallResult,
+} from "./stall-watchdog.js";
+export {
   extractDeterministicTaskRetro,
   runAiTaskRetro,
 } from "./retro-engine.js";

@@ -1603,6 +1603,7 @@ export function SettingsView() {
         | "monthly_budget_usd"
         | "budget_soft_warning_ratio"
         | "budget_exclude_subscription_providers"
+        | "stall_timeout_sec"
       >;
       label: string;
       desc: string;
@@ -1818,6 +1819,42 @@ export function SettingsView() {
             />
             <span />
           </label>
+        </div>
+
+        <h3 style={{ fontSize: "13.5px", margin: "22px 0 8px" }}>
+          无人值守看门狗（Witness）
+        </h3>
+
+        <div className="setting-row">
+          <div>
+            <span>Run 心跳停滞静默阈值（秒）</span>
+            <p>
+              当运行中任务超过阈值无新事件时触发一次软告警与探活；若进程已退出或静默达 2 倍阈值，将自动中止并按阶段重入/转顾问；设为 0 可关闭巡检（默认 600 秒）
+            </p>
+          </div>
+          <input
+            type="number"
+            min={0}
+            max={86400}
+            step={10}
+            placeholder="600"
+            className="input mono"
+            aria-label="Run 心跳停滞静默阈值（秒）"
+            value={limitsDraft.stall_timeout_sec ?? 600}
+            onChange={(e) => {
+              const rawStr = (e.currentTarget as HTMLInputElement).value.trim();
+              const next = { ...limitsDraft };
+              if (!rawStr) {
+                delete next.stall_timeout_sec;
+              } else {
+                const val = Math.round(Number(rawStr));
+                if (Number.isFinite(val) && val >= 0 && val <= 86400) {
+                  next.stall_timeout_sec = val;
+                }
+              }
+              setLimitsDraft(next);
+            }}
+          />
         </div>
 
         <div style={{ marginTop: "20px" }}>

@@ -694,6 +694,21 @@ export function DetailView() {
           )
       : undefined;
 
+  const activeSoftStallWarning = (() => {
+    if (taskState.status !== "running") return null;
+    const latestRun = normalizedRuns[normalizedRuns.length - 1]?.raw;
+    if (!latestRun || latestRun.events.length === 0) return null;
+    for (let i = latestRun.events.length - 1; i >= 0; i -= 1) {
+      const ev = latestRun.events[i]!;
+      if (ev.kind === "stall_warning") {
+        return ev.phase === "soft_warning" ? ev : null;
+      }
+      if (ev.kind === "exit") return null;
+      return null;
+    }
+    return null;
+  })();
+
   return (
     <ViewFrame
       left={
@@ -821,6 +836,11 @@ export function DetailView() {
           <div className="d-title">
             <h1>{card.title}</h1>
             <span className={`chip ${statusChip[1]}`}>{statusChip[0]}</span>
+            {activeSoftStallWarning ? (
+              <span className="chip chip-warn">
+                停滞告警 · 静默 {activeSoftStallWarning.silentSec}s
+              </span>
+            ) : null}
           </div>
           <div className="d-sub">
             <PrioritySelect
@@ -1820,6 +1840,19 @@ export function DetailView() {
                                     }
                                     if (ev.kind === "usage") {
                                       return `[usage] ${ev.agent}/${ev.model} in=${ev.inputTokens} cached=${ev.cachedInputTokens} out=${ev.outputTokens}`;
+                                    }
+                                    if (ev.kind === "stall_warning") {
+                                      const phaseLabel =
+                                        ev.phase === "soft_warning" ? "软告警" : "停滞中止";
+                                      const actionLabel =
+                                        ev.action === "retry_stage"
+                                          ? " → 自动重入当前阶段"
+                                          : ev.action === "invoke_advisor"
+                                            ? " → 转入 advisor 破局"
+                                            : ev.action === "escalate_failure"
+                                              ? " → 异常升级待人处理"
+                                              : "";
+                                      return `[stall_warning · ${phaseLabel}] silent=${ev.silentSec}s probe=${ev.probeAlive === null || ev.probeAlive === undefined ? "unknown" : ev.probeAlive ? "alive" : "dead"}${actionLabel}${ev.detail ? ` (${ev.detail})` : ""}`;
                                     }
                                     if (ev.kind === "exit") {
                                       return `[exit] ${ev.reason}${ev.detail ? ` (${ev.detail})` : ""}`;

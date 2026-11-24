@@ -2309,4 +2309,174 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
       });
     });
   });
+
+  it("Track 5 [B12.1]: configures LimitsView stall_timeout_sec and renders DetailView stall_warning badge & timeline event", async () => {
+    const savedLimitsPayloads: Array<Record<string, unknown>> = [];
+
+    const boot = makeV3Bootstrap({
+      tasks: [
+        {
+          id: "t-b12-stall",
+          space: "alpha",
+          parent_id: null,
+          title: "Track 5 B12.1 Witness",
+          priority: "P1",
+          effective_priority: "P1",
+          track: "L2",
+          workspace_mode: "git_worktree",
+          status: "running",
+          stage: "implement",
+          round: 1,
+          active_run_id: "r-stall-1",
+          contract_version: 1,
+          depends_on: [],
+          created_at: "2026-11-24T04:00:00Z",
+          updated_at: "2026-11-24T04:10:00Z",
+          cost_usd: 0,
+          tokens: {
+            input_tokens: 0,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+          },
+        },
+      ],
+    });
+
+    fetchMock.mockImplementation(async (url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url === "/api/auth/status") {
+        return jsonResponse({ ok: true, mode: "local", authenticated: true, device: null });
+      }
+      if (url === "/api/bootstrap") {
+        return jsonResponse(boot);
+      }
+      if (url === "/api/settings/limits" && method === "PUT") {
+        const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        savedLimitsPayloads.push(body);
+        return jsonResponse({ ok: true, section: "limits", data: body });
+      }
+      if (url === "/api/tasks/t-b12-stall" && method === "GET") {
+        return jsonResponse({
+          card: {
+            schema_version: 1,
+            id: "t-b12-stall",
+            space: "alpha",
+            title: "Track 5 B12.1 Witness",
+            track: "L2",
+            priority: "P1",
+            workspace_mode: "git_worktree",
+            parent: null,
+            depends_on: [],
+            contract_version: 1,
+            contract: {
+              goal: "Test Witness UI",
+              end: "Done",
+              accept_cmd: "pnpm test",
+              accept_files_hash: `sha256:${"a".repeat(64)}`,
+              scope: ["src/index.ts"],
+              non_goals: [],
+              deliver: { mode: "merge_main", cmd: null },
+              human_accept: false,
+              external_actions: "ask",
+            },
+            limits: {
+              retries_per_stage: 2,
+              review_rounds: 2,
+              advisor_calls: 1,
+              max_tokens: 150_000,
+            },
+            created_at: "2026-11-24T04:00:00Z",
+            updated_at: "2026-11-24T04:10:00Z",
+          },
+          state: {
+            status: "running",
+            stage: "implement",
+            round: 1,
+            activeRunId: "r-stall-1",
+            priority: "P1",
+            effectivePriority: "P1",
+            track: "L2",
+            contractVersion: 1,
+            updatedAt: "2026-11-24T04:10:00Z",
+          },
+          brief: "# Brief",
+          decisions: "",
+          pendingDecision: null,
+          ledgerProposals: [],
+          runs: [
+            {
+              dirName: "001-implement",
+              status: "active",
+              meta: {
+                schema_version: 1,
+                run_id: "r-stall-1",
+                task_id: "t-b12-stall",
+                stage: "implement",
+                round: 1,
+                contract_version: 1,
+                role: "worker",
+                agent: "codex",
+                model: "gpt-5.4",
+                backend_id: "codex-acp",
+                session_ref: { backendId: "codex-acp", sessionId: "s-1" },
+                started_at: "2026-11-24T04:00:00Z",
+              },
+              gate: null,
+              receipt: null,
+              handoff: null,
+              events: [
+                { kind: "thinking", at: "2026-11-24T04:00:05Z" },
+                {
+                  kind: "stall_warning",
+                  at: "2026-11-24T04:10:10Z",
+                  phase: "soft_warning",
+                  silentSec: 605,
+                  probeAlive: true,
+                  probeStatus: "running",
+                  action: "warn",
+                  detail: "No run events for 605s while session status is running",
+                },
+              ],
+              eventsCount: 2,
+              hasReceipt: false,
+            },
+          ],
+          usageTurns: [],
+          usage: boot.usage,
+        });
+      }
+      return jsonResponse({ ok: true });
+    });
+
+    // 1. SettingsView saves stall_timeout_sec = 0 and 300
+    window.location.hash = "#view=settings&tab=limits";
+    render(<App />);
+    const stallInput = (await screen.findByLabelText(
+      "Run 心跳停滞静默阈值（秒）",
+    )) as HTMLInputElement;
+    expect(stallInput.value).toBe("600");
+
+    fireEvent.change(stallInput, { target: { value: "0" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => {
+      expect(savedLimitsPayloads[0]?.stall_timeout_sec).toBe(0);
+    });
+    expect(await screen.findByText("已保存 config/limits.yaml")).toBeTruthy();
+
+    fireEvent.change(stallInput, { target: { value: "300" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => {
+      expect(savedLimitsPayloads[1]?.stall_timeout_sec).toBe(300);
+    });
+
+    // 2. DetailView shows soft stall badge and renders stall_warning in expanded raw events
+    window.location.hash = "#view=detail&task=t-b12-stall";
+    expect(await screen.findByText("停滞告警 · 静默 605s")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /展开原始执行事件/ }));
+    expect(
+      await screen.findByText(/\[stall_warning · 软告警\] silent=605s probe=alive/),
+    ).toBeTruthy();
+  });
 });
