@@ -21,6 +21,7 @@ import {
   RefreshIcon,
   TrashIcon,
 } from "../components/Icons";
+import { KilnSelect } from "../components/KilnSelect";
 import { ProviderAvatar, formatAdapterLabel } from "../components/ProviderAvatar";
 import { RemoteSettingsPanel } from "../components/RemoteSettingsPanel";
 import { ViewFrame } from "../components/ViewFrame";
@@ -1164,12 +1165,26 @@ export function SettingsView() {
                   </td>
 
                   <td>
-                    <select
+                    <KilnSelect
                       className="select"
-                      aria-label={`${info.label} Agent`}
+                      ariaLabel={`${info.label} Agent`}
                       value={currentAgentId}
-                      onChange={(e) => {
-                        const nextAgentId = (e.currentTarget as HTMLSelectElement).value;
+                      options={[
+                        ...(!currentAgentId ? [{ value: "", label: "选择 Agent" }] : []),
+                        ...(currentAgentId && !candidateAgents.some((a) => a.id === currentAgentId)
+                          ? [
+                              {
+                                value: currentAgentId,
+                                label: `${currentAgentId}${currentIneligible ? "（不兼容）" : ""}`,
+                              },
+                            ]
+                          : []),
+                        ...candidateAgents.map((a) => ({
+                          value: a.id,
+                          label: a.label ?? a.id,
+                        })),
+                      ]}
+                      onChange={(nextAgentId) => {
                         const nextAgent = agentById.get(nextAgentId);
                         const nextModels = modelsForAgent(nextAgent, "");
                         const firstModel = nextModels[0]?.id ?? "";
@@ -1179,61 +1194,39 @@ export function SettingsView() {
                           ...(nextAgent?.backendId ? { backend_id: nextAgent.backendId } : {}),
                         });
                       }}
-                    >
-                      {!currentAgentId ? <option value="">选择 Agent</option> : null}
-                      {currentAgentId && !candidateAgents.some((a) => a.id === currentAgentId) ? (
-                        <option value={currentAgentId}>
-                          {currentAgentId}
-                          {currentIneligible ? "（不兼容）" : ""}
-                        </option>
-                      ) : null}
-                      {candidateAgents.map((a) => (
-                        <option key={a.id} value={a.id}>
-                          {a.label ?? a.id}
-                        </option>
-                      ))}
-                    </select>
+                    />
                   </td>
 
                   <td>
-                    <select
+                    <KilnSelect
                       className="select mono"
-                      aria-label={`${info.label} 主模型`}
+                      ariaLabel={`${info.label} 主模型`}
                       style={{ fontSize: "12px" }}
                       value={currentModel}
-                      onChange={(e) =>
+                      options={[
+                        ...(!currentModel ? [{ value: "", label: "选择模型" }] : []),
+                        ...modelOpts.map((m) => ({ value: m.id, label: m.id })),
+                      ]}
+                      onChange={(nextModel) =>
                         updateRole(roleId, {
-                          model: (e.currentTarget as HTMLSelectElement).value,
+                          model: nextModel,
                         })
                       }
-                    >
-                      {!currentModel ? <option value="">选择模型</option> : null}
-                      {modelOpts.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.id}
-                        </option>
-                      ))}
-                    </select>
+                    />
                   </td>
 
                   <td>
-                    <select
+                    <KilnSelect
                       className="select"
-                      aria-label={`${info.label} 推理档位`}
+                      ariaLabel={`${info.label} 推理档位`}
                       value={assignment?.reasoning_effort ?? "medium"}
-                      onChange={(e) =>
+                      options={effortOpts.map((eff) => ({ value: eff, label: eff }))}
+                      onChange={(nextEffort) =>
                         updateRole(roleId, {
-                          reasoning_effort: (e.currentTarget as HTMLSelectElement)
-                            .value as ReasoningEffort,
+                          reasoning_effort: nextEffort as ReasoningEffort,
                         })
                       }
-                    >
-                      {effortOpts.map((eff) => (
-                        <option key={eff} value={eff}>
-                          {eff}
-                        </option>
-                      ))}
-                    </select>
+                    />
                   </td>
 
                   <td>
@@ -1242,13 +1235,19 @@ export function SettingsView() {
                         —
                       </span>
                     ) : (
-                      <select
+                      <KilnSelect
                         className="select mono"
-                        aria-label={`${info.label} 备选`}
+                        ariaLabel={`${info.label} 备选`}
                         style={{ fontSize: "11.5px" }}
                         value={fallbackKey}
-                        onChange={(e) => {
-                          const val = (e.currentTarget as HTMLSelectElement).value;
+                        options={[
+                          { value: "", label: "无备选" },
+                          ...allFallbackCombos.map((c) => {
+                            const k = `${c.agent} / ${c.model}`;
+                            return { value: k, label: k };
+                          }),
+                        ]}
+                        onChange={(val) => {
                           if (!val) {
                             const next = { ...rolesDraft.roles[roleId]! };
                             delete next.fallback;
@@ -1265,17 +1264,7 @@ export function SettingsView() {
                             });
                           }
                         }}
-                      >
-                        <option value="">无备选</option>
-                        {allFallbackCombos.map((c) => {
-                          const k = `${c.agent} / ${c.model}`;
-                          return (
-                            <option key={k} value={k}>
-                              {k}
-                            </option>
-                          );
-                        })}
-                      </select>
+                      />
                     )}
                   </td>
 

@@ -25,6 +25,7 @@ import type { RemoteRuntimeStatus } from "../api/types";
 import { buildQrSvgGeometry } from "../lib/qr";
 import { fmtDateShort, fmtTime } from "../state/format";
 import { useKilnStore } from "../state/store";
+import { KilnSelect } from "./KilnSelect";
 
 const CHANNELS: Record<RemoteNotificationChannel, [string, string]> = {
   bark: ["Bark（iOS 推送）", "https://api.day.app/<device_key>"],
@@ -823,27 +824,24 @@ export function RemoteSettingsPanel() {
             <span>推送通道</span>
             <p>支持 Bark、ntfy 或自定义 Webhook</p>
           </div>
-          <select
+          <KilnSelect
             className="select"
-            aria-label="推送通道"
+            ariaLabel="推送通道"
             value={draft.notifications.channel}
-            onChange={(e) =>
+            options={REMOTE_NOTIFICATION_CHANNELS.map((ch) => ({
+              value: ch,
+              label: CHANNELS[ch][0],
+            }))}
+            onChange={(nextChannel) =>
               setDraft({
                 ...draft,
                 notifications: {
                   ...draft.notifications,
-                  channel: (e.currentTarget as HTMLSelectElement)
-                    .value as RemoteNotificationChannel,
+                  channel: nextChannel as RemoteNotificationChannel,
                 },
               })
             }
-          >
-            {REMOTE_NOTIFICATION_CHANNELS.map((ch) => (
-              <option key={ch} value={ch}>
-                {CHANNELS[ch][0]}
-              </option>
-            ))}
-          </select>
+          />
         </div>
 
         <div className="setting-row setting-row-wide">

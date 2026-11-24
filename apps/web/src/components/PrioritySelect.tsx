@@ -1,4 +1,5 @@
 import { PRIORITIES, type Priority } from "@kiln/protocol/web";
+import { KilnSelect } from "./KilnSelect";
 
 export interface PrioritySelectProps {
   value: Priority;
@@ -6,24 +7,19 @@ export interface PrioritySelectProps {
   onChange: (next: Priority) => void;
 }
 
+const PRIORITY_OPTIONS = PRIORITIES.map((p) => ({ value: p, label: p }));
+
 export function PrioritySelect({ value, disabled, onChange }: PrioritySelectProps) {
   return (
-    <select
-      aria-label="优先级"
+    <KilnSelect
+      ariaLabel="优先级"
       className={`pri-select pri-${value}`}
       value={value}
       disabled={disabled}
-      onClick={(e) => e.stopPropagation()}
-      onChange={(e) => {
-        e.stopPropagation();
-        onChange((e.currentTarget as HTMLSelectElement).value as Priority);
-      }}
-    >
-      {PRIORITIES.map((p) => (
-        <option key={p} value={p}>
-          {p}
-        </option>
-      ))}
-    </select>
+      stopPropagation
+      align="start"
+      options={PRIORITY_OPTIONS}
+      onChange={(next) => onChange(next as Priority)}
+    />
   );
 }

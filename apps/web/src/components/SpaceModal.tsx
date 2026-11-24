@@ -6,6 +6,7 @@ import type {
   AcceptServiceSpec,
   DiscoveredGitRepo,
 } from "../api/types";
+import { KilnSelect } from "./KilnSelect";
 
 interface DraftAcceptServiceRow {
   name: string;
@@ -723,13 +724,18 @@ export function SpaceModal() {
                   <div className="modal-row" style={{ flexWrap: "wrap" }}>
                     <label className="modal-field" style={{ flex: "1 1 200px" }}>
                       <span>入口模式</span>
-                      <select
-                        aria-label="真实验收入口模式"
+                      <KilnSelect
+                        ariaLabel="真实验收入口模式"
                         className="select"
                         value={acceptKind}
-                        onChange={(e) => {
-                          const next = (e.currentTarget as HTMLSelectElement)
-                            .value as AcceptEntryKind;
+                        options={[
+                          { value: "none", label: "不自动拉起（none）" },
+                          { value: "http_server", label: "Web / API 服务组合（http_server）" },
+                          { value: "desktop_app", label: "桌面 GUI 应用（desktop_app）" },
+                          { value: "cli_binary", label: "CLI / 产物检查（cli_binary）" },
+                        ]}
+                        onChange={(nextVal) => {
+                          const next = nextVal as AcceptEntryKind;
                           setAcceptKind(next);
                           if (
                             next === "desktop_app" &&
@@ -739,12 +745,7 @@ export function SpaceModal() {
                             setAcceptServices([defaultServiceRow(0, true)]);
                           }
                         }}
-                      >
-                        <option value="none">不自动拉起（none）</option>
-                        <option value="http_server">Web / API 服务组合（http_server）</option>
-                        <option value="desktop_app">桌面 GUI 应用（desktop_app）</option>
-                        <option value="cli_binary">CLI / 产物检查（cli_binary）</option>
-                      </select>
+                      />
                     </label>
 
                     {suggestedAcceptEntry ? (
@@ -888,14 +889,19 @@ export function SpaceModal() {
                           </div>
 
                           <div className="modal-row" style={{ flexWrap: "wrap" }}>
-                            <select
-                              aria-label={`就绪探针 ${idx + 1}`}
+                            <KilnSelect
+                              ariaLabel={`就绪探针 ${idx + 1}`}
                               className="select"
                               style={{ width: "130px" }}
                               value={row.readyKind}
-                              onChange={(e) => {
-                                const k = (e.currentTarget as HTMLSelectElement)
-                                  .value as DraftAcceptServiceRow["readyKind"];
+                              options={[
+                                { value: "http", label: "HTTP 探针" },
+                                { value: "tcp", label: "TCP 端口" },
+                                { value: "stdout_regex", label: "日志正则" },
+                                { value: "delay", label: "固定延时" },
+                              ]}
+                              onChange={(nextVal) => {
+                                const k = nextVal as DraftAcceptServiceRow["readyKind"];
                                 setAcceptServices((prev) =>
                                   prev.map((it, i) =>
                                     i === idx
@@ -913,12 +919,7 @@ export function SpaceModal() {
                                   ),
                                 );
                               }}
-                            >
-                              <option value="http">HTTP 探针</option>
-                              <option value="tcp">TCP 端口</option>
-                              <option value="stdout_regex">日志正则</option>
-                              <option value="delay">固定延时</option>
-                            </select>
+                            />
                             {row.readyKind !== "tcp" ? (
                               <input
                                 aria-label={`探针参数 ${idx + 1}`}

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { BrowserWindow, app, nativeImage } from "electron";
+import { BrowserWindow, app, nativeImage, nativeTheme } from "electron";
 import {
   buildWorkbenchUrl,
   isAllowedNavigationUrl,
@@ -73,6 +73,7 @@ export function openOrFocusMainWindow(
     minWidth: 390,
     minHeight: 600,
     title: "Kiln",
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#101113" : "#fbfbfc",
     show: false,
     center: true,
     ...(iconPath ? { icon: iconPath } : {}),

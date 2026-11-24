@@ -505,10 +505,36 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
     expect(container.querySelector('[data-provider-tile="gemini"]')).toBeNull();
     expect(container.querySelector('[data-provider-tile="paseo"]')).toBeNull();
 
-    const primarySelect = screen.getByLabelText("主订阅 Provider") as HTMLSelectElement;
-    const fbSelect = screen.getByLabelText("备选 Provider") as HTMLSelectElement;
-    const primaryVals = Array.from(primarySelect.options).map((o) => o.value);
-    const fbVals = Array.from(fbSelect.options).map((o) => o.value);
+    const readComboboxValues = async (label: string, scope?: HTMLElement): Promise<string[]> => {
+      const q = scope ? within(scope) : screen;
+      fireEvent.click(q.getByLabelText(label));
+      const listbox = await q.findByRole("listbox", { name: label });
+      const vals = within(listbox)
+        .getAllByRole("option")
+        .map((opt) => opt.getAttribute("data-value") ?? "");
+      fireEvent.keyDown(listbox, { key: "Escape" });
+      return vals;
+    };
+
+    const selectComboboxValue = async (
+      label: string,
+      value: string,
+      scope?: HTMLElement,
+    ): Promise<void> => {
+      const q = scope ? within(scope) : screen;
+      fireEvent.click(q.getByLabelText(label));
+      const listbox = await q.findByRole("listbox", { name: label });
+      const option = within(listbox)
+        .getAllByRole("option")
+        .find((opt) => opt.getAttribute("data-value") === value);
+      if (!option) {
+        throw new Error(`Option ${value} not found in combobox ${label}`);
+      }
+      fireEvent.click(option);
+    };
+
+    const primaryVals = await readComboboxValues("主订阅 Provider");
+    const fbVals = await readComboboxValues("备选 Provider");
     expect(primaryVals).not.toContain("gemini");
     expect(primaryVals).not.toContain("paseo");
     expect(fbVals).not.toContain("gemini");
@@ -525,7 +551,9 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
     expect(advisorRowBtn.textContent).toContain("只读");
     fireEvent.click(advisorRowBtn);
     await waitFor(() => {
-      expect(screen.getByDisplayValue("claude-opus-4-6")).toBeTruthy();
+      const modelCombo = screen.getByLabelText("主模型");
+      expect(modelCombo.getAttribute("data-value")).toBe("claude-opus-4-6");
+      expect(modelCombo.textContent).toContain("claude-opus-4-6");
     });
 
     // Verify enable checkbox is NOT nested inside row select button (accessibility)
@@ -535,7 +563,7 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
 
     // Select reviewer and add Agy fallback -> resolves collision
     fireEvent.click(reviewerRowBtn);
-    fireEvent.change(screen.getByLabelText("备选 Provider"), { target: { value: "agy" } });
+    await selectComboboxValue("备选 Provider", "agy");
     fireEvent.click(screen.getByRole("button", { name: "添加备选" }));
 
     await waitFor(() => {
@@ -566,9 +594,7 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
     fireEvent.change(within(dialog).getByLabelText("自定义角色名称"), {
       target: { value: "性能侦察" },
     });
-    fireEvent.change(within(dialog).getByLabelText("自定义角色阶段"), {
-      target: { value: "research" },
-    });
+    await selectComboboxValue("自定义角色阶段", "research", dialog);
     fireEvent.change(within(dialog).getByLabelText("自定义角色能力特性"), {
       target: { value: "只读性能分析与火焰图排查" },
     });
@@ -1259,10 +1285,10 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
     // Inspect fast_fix tier_hint & escalation_target
     const fastFixRow = container.querySelector('[data-roster-row="fast_fix"]')!;
     fireEvent.click(fastFixRow);
-    const tierSelect = screen.getByLabelText("模型档位定位") as HTMLSelectElement;
-    const escSelect = screen.getByLabelText("失败自动升档目标") as HTMLSelectElement;
-    expect(tierSelect.value).toBe("economy");
-    expect(escSelect.value).toBe("main_dev");
+    const tierSelect = screen.getByLabelText("模型档位定位");
+    const escSelect = screen.getByLabelText("失败自动升档目标");
+    expect(tierSelect.getAttribute("data-value")).toBe("economy");
+    expect(escSelect.getAttribute("data-value")).toBe("main_dev");
 
     // Switch deliverer to 3-way on_conflict mode and save
     const delivererRow = container.querySelector('[data-roster-row="deliverer"]')!;

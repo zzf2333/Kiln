@@ -910,29 +910,47 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     window.location.hash = "#view=settings&tab=roles";
     render(<App />);
 
+    const readComboboxValues = async (label: string): Promise<string[]> => {
+      const trigger = screen.getByLabelText(label);
+      fireEvent.click(trigger);
+      const listbox = await screen.findByRole("listbox", { name: label });
+      const vals = within(listbox)
+        .getAllByRole("option")
+        .map((opt) => opt.getAttribute("data-value") ?? "");
+      fireEvent.keyDown(listbox, { key: "Escape" });
+      return vals;
+    };
+
+    const selectComboboxValue = async (label: string, value: string): Promise<void> => {
+      const trigger = screen.getByLabelText(label);
+      fireEvent.click(trigger);
+      const listbox = await screen.findByRole("listbox", { name: label });
+      const option = within(listbox)
+        .getAllByRole("option")
+        .find((opt) => opt.getAttribute("data-value") === value);
+      if (!option) {
+        throw new Error(`Option ${value} not found in combobox ${label}`);
+      }
+      fireEvent.click(option);
+    };
+
     // Wait for bootstrap agents to populate the role selectors: intake/resolver allow codex, pi, antigravity
-    await waitFor(() => {
-      const intakeSelect = screen.getByLabelText("立项对话 Agent") as HTMLSelectElement;
-      expect(Array.from(intakeSelect.options).map((o) => o.value)).toEqual([
-        "codex",
-        "pi",
-        "antigravity",
-      ]);
+    await waitFor(async () => {
+      const vals = await readComboboxValues("立项对话 Agent");
+      expect(vals).toEqual(["codex", "pi", "antigravity"]);
     });
 
-    const resolverSelect = screen.getByLabelText("讨论对话 Agent") as HTMLSelectElement;
-    const resolverOpts = Array.from(resolverSelect.options).map((o) => o.value);
+    const resolverOpts = await readComboboxValues("讨论对话 Agent");
     expect(resolverOpts).toEqual(["codex", "pi", "antigravity"]);
 
     // Switching intake to Pi displays non-MCP structured patch notice
-    const intakeSelect = screen.getByLabelText("立项对话 Agent") as HTMLSelectElement;
-    fireEvent.change(intakeSelect, { target: { value: "pi" } });
+    await selectComboboxValue("立项对话 Agent", "pi");
     await waitFor(() => {
       expect(screen.getByText(/无 MCP 模式：自动通过结构化补丁同步草稿\/契约/)).toBeTruthy();
     });
 
     // Switching intake to Antigravity triggers full-access-only warning until fallback opt-in is confirmed
-    fireEvent.change(intakeSelect, { target: { value: "antigravity" } });
+    await selectComboboxValue("立项对话 Agent", "antigravity");
     await waitFor(() => {
       expect(
         screen.getByText(/仅暴露 full-access，默认拦截派发，需先开启右侧「允许全权兜底」/),
@@ -950,20 +968,11 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
 
     // Click 重新读取 -> hits /api/agents?refresh=1, keeps interactiveChat=false batch out of intake while adding it to worker
     fireEvent.click(screen.getByRole("button", { name: "重新读取" }));
-    await waitFor(() => {
-      const workerSelect = screen.getByLabelText("实施 Agent") as HTMLSelectElement;
-      expect(Array.from(workerSelect.options).map((o) => o.value)).toEqual([
-        "codex",
-        "pi",
-        "antigravity",
-        "batch",
-      ]);
+    await waitFor(async () => {
+      const vals = await readComboboxValues("实施 Agent");
+      expect(vals).toEqual(["codex", "pi", "antigravity", "batch"]);
     });
-    expect(Array.from(intakeSelect.options).map((o) => o.value)).toEqual([
-      "codex",
-      "pi",
-      "antigravity",
-    ]);
+    expect(await readComboboxValues("立项对话 Agent")).toEqual(["codex", "pi", "antigravity"]);
 
     // Verify backends snapshot updated on 连接与底座 tab
     fireEvent.click(screen.getByRole("tab", { name: "连接与底座" }));
@@ -3686,6 +3695,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     expect(layoutCss).not.toMatch(/\.worklog-detail\s*\{[^}]*flex:\s*1\s+1\s+200px/);
     expect(layoutCss).toContain(".worklog-row > .worklog-detail");
     expect(layoutCss).toContain("::-webkit-scrollbar-thumb");
+    expect(layoutCss).not.toContain("*:hover::-webkit-scrollbar-thumb");
   });
 
   it("detects / and @ composer triggers strictly without false positives on paths or emails", () => {

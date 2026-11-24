@@ -1,6 +1,7 @@
 import { PRIORITY_RANK, type Priority } from "@kiln/protocol/web";
 import type { BootstrapTask } from "../api/types";
 import { CloseIcon } from "../components/Icons";
+import { KilnSelect } from "../components/KilnSelect";
 import { MiniRail } from "../components/MiniRail";
 import { PrioritySelect } from "../components/PrioritySelect";
 import { ProviderAvatar } from "../components/ProviderAvatar";
@@ -499,23 +500,20 @@ export function BoardView() {
       }
       right={
         <>
-          <select
+          <KilnSelect
             className="select"
-            aria-label="筛选优先级"
+            ariaLabel="筛选优先级"
             style={{ width: "120px", height: "30px" }}
             value={priorityFilter}
-            onChange={(e) =>
-              store.setPriorityFilter(
-                (e.currentTarget as HTMLSelectElement).value as "all" | Priority,
-              )
-            }
-          >
-            <option value="all">全部优先级</option>
-            <option value="P0">P0 紧急</option>
-            <option value="P1">P1 重要</option>
-            <option value="P2">P2 普通</option>
-            <option value="P3">P3 有空再做</option>
-          </select>
+            options={[
+              { value: "all", label: "全部优先级" },
+              { value: "P0", label: "P0 紧急" },
+              { value: "P1", label: "P1 重要" },
+              { value: "P2", label: "P2 普通" },
+              { value: "P3", label: "P3 有空再做" },
+            ]}
+            onChange={(next) => store.setPriorityFilter(next as "all" | Priority)}
+          />
           <div className="seg" role="group" aria-label="时间范围">
             {PERIOD_OPTIONS.map(([key, label]) => (
               <button

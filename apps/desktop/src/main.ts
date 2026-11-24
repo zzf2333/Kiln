@@ -26,6 +26,12 @@ import {
 
 app.setName("Kiln");
 
+// Chromium 132+ / Electron 45+ enables SkiaGraphite (Dawn/Metal) on macOS by default,
+// which can cause hover repaint flickering and misplaced compositor surfaces on recent macOS releases.
+if (process.platform === "darwin" && process.env.KILN_ELECTRON_KEEP_GRAPHITE !== "1") {
+  app.commandLine.appendSwitch("disable-features", "SkiaGraphite");
+}
+
 const OFFLINE_POLL_INTERVAL_MS = 3_000;
 const SSE_DEBOUNCE_MS = 250;
 const SSE_HEARTBEAT_INTERVAL_MS = 10_000;

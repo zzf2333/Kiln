@@ -31,6 +31,7 @@ import {
   BoltIcon,
 } from "../components/Icons";
 import { ProviderAvatar, formatAdapterLabel } from "../components/ProviderAvatar";
+import { KilnSelect } from "../components/KilnSelect";
 import { ViewFrame } from "../components/ViewFrame";
 import { fmtUsd } from "../state/format";
 import { useKilnStore } from "../state/store";
@@ -798,12 +799,18 @@ export function LineupView() {
               <span style={{ fontSize: "11.5px" }} className="muted">
                 模型档位定位
               </span>
-              <select
+              <KilnSelect
                 className="select select-sm"
-                aria-label="模型档位定位"
+                ariaLabel="模型档位定位"
                 value={selectedEntry.tier_hint ?? ""}
-                onChange={(e) => {
-                  const val = (e.currentTarget as HTMLSelectElement).value;
+                options={[
+                  { value: "", label: "未标注" },
+                  ...ROSTER_TIER_HINTS.map((t) => ({
+                    value: t,
+                    label: `${TIER_HINT_LABELS[t]} (${t})`,
+                  })),
+                ]}
+                onChange={(val) => {
                   if (val === "") {
                     mutateRoster((prev) => {
                       const cur = prev.roster[selectedId];
@@ -815,14 +822,7 @@ export function LineupView() {
                     updateRole(selectedId, { tier_hint: val as RosterTierHint });
                   }
                 }}
-              >
-                <option value="">未标注</option>
-                {ROSTER_TIER_HINTS.map((t) => (
-                  <option key={t} value={t}>
-                    {TIER_HINT_LABELS[t]} ({t})
-                  </option>
-                ))}
-              </select>
+              />
             </label>
 
             {selectedEntry.stage === "implement" ? (
@@ -830,12 +830,23 @@ export function LineupView() {
                 <span style={{ fontSize: "11.5px" }} className="muted">
                   失败自动升档目标
                 </span>
-                <select
+                <KilnSelect
                   className="select select-sm"
-                  aria-label="失败自动升档目标"
+                  ariaLabel="失败自动升档目标"
                   value={selectedEntry.escalation_target ?? ""}
-                  onChange={(e) => {
-                    const val = (e.currentTarget as HTMLSelectElement).value;
+                  options={[
+                    { value: "", label: "不自动升档" },
+                    ...roleIds
+                      .filter(
+                        (rid) =>
+                          rid !== selectedId && rosterDraft.roster[rid]?.stage === "implement",
+                      )
+                      .map((rid) => ({
+                        value: rid,
+                        label: `${rosterDraft.roster[rid]!.name} (${rid})`,
+                      })),
+                  ]}
+                  onChange={(val) => {
                     if (!val) {
                       mutateRoster((prev) => {
                         const cur = prev.roster[selectedId];
@@ -847,18 +858,7 @@ export function LineupView() {
                       updateRole(selectedId, { escalation_target: val });
                     }
                   }}
-                >
-                  <option value="">不自动升档</option>
-                  {roleIds
-                    .filter(
-                      (rid) => rid !== selectedId && rosterDraft.roster[rid]?.stage === "implement",
-                    )
-                    .map((rid) => (
-                      <option key={rid} value={rid}>
-                        {rosterDraft.roster[rid]!.name} ({rid})
-                      </option>
-                    ))}
-                </select>
+                />
               </label>
             ) : null}
           </div>
@@ -983,12 +983,17 @@ export function LineupView() {
                 <span>主订阅</span>
               </div>
               <div className="primary-grid">
-                <select
+                <KilnSelect
                   className="select select-sm"
-                  aria-label="主订阅 Provider"
+                  ariaLabel="主订阅 Provider"
                   value={primaryProvider}
-                  onChange={(e) => {
-                    const nextProv = (e.currentTarget as HTMLSelectElement).value;
+                  options={[
+                    ...providerChoices.map((p) => ({ value: p.id, label: p.label })),
+                    ...(!providerChoices.some((p) => p.id === primaryProvider)
+                      ? [{ value: primaryProvider, label: `${primaryProvider}（不可用）` }]
+                      : []),
+                  ]}
+                  onChange={(nextProv) => {
                     const nextModels = modelsForProvider(nextProv, agents, customModelsByProvider);
                     updateRole(selectedId, {
                       primary: {
@@ -998,63 +1003,44 @@ export function LineupView() {
                       },
                     });
                   }}
-                >
-                  {providerChoices.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.label}
-                    </option>
-                  ))}
-                  {!providerChoices.some((p) => p.id === primaryProvider) ? (
-                    <option value={primaryProvider}>{primaryProvider}（不可用）</option>
-                  ) : null}
-                </select>
+                />
 
-                <select
+                <KilnSelect
                   className="select select-sm"
-                  aria-label="推理档位"
+                  ariaLabel="推理档位"
                   value={selectedEntry.primary?.effort ?? "medium"}
-                  onChange={(e) =>
+                  options={REASONING_EFFORTS.map((eff) => ({ value: eff, label: eff }))}
+                  onChange={(nextEffort) =>
                     updateRole(selectedId, {
                       primary: {
                         provider: primaryProvider,
                         model: primaryModel || primaryModels[0] || "default",
-                        effort: (e.currentTarget as HTMLSelectElement).value as ReasoningEffort,
+                        effort: nextEffort as ReasoningEffort,
                       },
                     })
                   }
-                >
-                  {REASONING_EFFORTS.map((eff) => (
-                    <option key={eff} value={eff}>
-                      {eff}
-                    </option>
-                  ))}
-                </select>
+                />
 
-                <select
+                <KilnSelect
                   className="select select-sm mono"
                   style={{ gridColumn: "1 / -1" }}
-                  aria-label="主模型"
+                  ariaLabel="主模型"
                   value={primaryModel}
-                  onChange={(e) =>
+                  options={
+                    primaryModels.length === 0
+                      ? [{ value: primaryModel || "default", label: primaryModel || "default" }]
+                      : primaryModels.map((m) => ({ value: m, label: m }))
+                  }
+                  onChange={(nextModel) =>
                     updateRole(selectedId, {
                       primary: {
                         provider: primaryProvider,
-                        model: (e.currentTarget as HTMLSelectElement).value,
+                        model: nextModel,
                         effort: selectedEntry.primary?.effort ?? "medium",
                       },
                     })
                   }
-                >
-                  {primaryModels.length === 0 ? (
-                    <option value={primaryModel || "default"}>{primaryModel || "default"}</option>
-                  ) : (
-                    primaryModels.map((m) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
-                    ))
-                  )}
-                </select>
+                />
 
                 <div
                   style={{
@@ -1172,35 +1158,24 @@ export function LineupView() {
               </div>
 
               <div className="chain-add">
-                <select
+                <KilnSelect
                   className="select select-sm"
-                  aria-label="备选 Provider"
+                  ariaLabel="备选 Provider"
                   value={activeFbProvider}
-                  onChange={(e) => {
-                    const p = (e.currentTarget as HTMLSelectElement).value;
+                  options={providerChoices.map((p) => ({ value: p.id, label: p.label }))}
+                  onChange={(p) => {
                     setFbAddProvider(p);
                     const ms = modelsForProvider(p, agents, customModelsByProvider);
                     setFbAddModel(ms[0] ?? "");
                   }}
-                >
-                  {providerChoices.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
-                <select
+                />
+                <KilnSelect
                   className="select select-sm mono"
-                  aria-label="备选模型"
+                  ariaLabel="备选模型"
                   value={activeFbModel}
-                  onChange={(e) => setFbAddModel((e.currentTarget as HTMLSelectElement).value)}
-                >
-                  {fbModels.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
+                  options={fbModels.map((m) => ({ value: m, label: m }))}
+                  onChange={(m) => setFbAddModel(m)}
+                />
                 <button
                   type="button"
                   className="btn btn-sm"
@@ -1770,40 +1745,30 @@ export function LineupView() {
                 <div className="modal-grid">
                   <label className="modal-field">
                     <span>负责阶段（权限自动锁定）</span>
-                    <select
+                    <KilnSelect
                       className="select"
-                      aria-label="自定义角色阶段"
+                      ariaLabel="自定义角色阶段"
                       value={newRoleStage}
-                      onChange={(e) =>
-                        setNewRoleStage((e.currentTarget as HTMLSelectElement).value as StageId)
-                      }
-                    >
-                      {CUSTOM_STAGE_OPTIONS.map((o) => (
-                        <option key={o.stage} value={o.stage}>
-                          {o.label}
-                        </option>
-                      ))}
-                    </select>
+                      options={CUSTOM_STAGE_OPTIONS.map((o) => ({
+                        value: o.stage,
+                        label: o.label,
+                      }))}
+                      onChange={(nextStage) => setNewRoleStage(nextStage as StageId)}
+                    />
                   </label>
                   <label className="modal-field">
                     <span>主 Provider</span>
-                    <select
+                    <KilnSelect
                       className="select"
-                      aria-label="自定义角色 Provider"
+                      ariaLabel="自定义角色 Provider"
                       value={newRoleProvider}
-                      onChange={(e) => {
-                        const p = (e.currentTarget as HTMLSelectElement).value;
+                      options={providerChoices.map((p) => ({ value: p.id, label: p.label }))}
+                      onChange={(p) => {
                         setNewRoleProvider(p);
                         const ms = modelsForProvider(p, agents, customModelsByProvider);
                         setNewRoleModel(ms[0] ?? "default");
                       }}
-                    >
-                      {providerChoices.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.label}
-                        </option>
-                      ))}
-                    </select>
+                    />
                   </label>
                 </div>
 

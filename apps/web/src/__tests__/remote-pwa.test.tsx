@@ -976,9 +976,13 @@ describe("@kiln/web Slice 4: QR Generator, PWA, Remote Auth Gate, Offline Banner
     fireEvent.click(screen.getByLabelText("启用远程访问"));
     fireEvent.click(screen.getByLabelText("远程待命防休眠（仅插电时生效）"));
     fireEvent.click(screen.getByLabelText("启用待决推送通知"));
-    fireEvent.change(screen.getByLabelText("推送通道"), {
-      target: { value: "bark" },
-    });
+    fireEvent.click(screen.getByLabelText("推送通道"));
+    const channelList = await screen.findByRole("listbox", { name: "推送通道" });
+    const barkOption = within(channelList)
+      .getAllByRole("option")
+      .find((opt) => opt.getAttribute("data-value") === "bark");
+    expect(barkOption).toBeTruthy();
+    fireEvent.click(barkOption!);
     fireEvent.change(screen.getByLabelText("推送地址"), {
       target: { value: "https://api.day.app/demoKey" },
     });
