@@ -6,9 +6,13 @@ import {
   ADVISOR_ELIGIBLE_DECISION_CATEGORIES,
   ATTACHMENT_MIME_TYPES,
   DECISION_ACTIONS,
+  IMPROVEMENT_PROPOSAL_STATUSES,
+  IMPROVEMENT_TARGET_KINDS,
+  MAX_ACTIVE_LEDGER_INJECT,
   MAX_ATTACHMENT_BYTES,
   PRIORITIES,
   PRIORITY_RANK,
+  RETRO_ATTRIBUTION_CATEGORIES,
   SHA256_HEX_RE,
   STAGE_IDS,
   TASK_STATUSES,
@@ -23,7 +27,10 @@ import {
   type AdvisorEligibleDecisionCategory,
   type AttachmentMimeType,
   type DecisionAction,
+  type ImprovementProposalStatus,
+  type ImprovementTargetKind,
   type Priority,
+  type RetroAttributionCategory,
   type StageId,
   type TaskStatus,
   type Track,
@@ -40,9 +47,13 @@ export {
   ADVISOR_ELIGIBLE_DECISION_CATEGORIES,
   ATTACHMENT_MIME_TYPES,
   DECISION_ACTIONS,
+  IMPROVEMENT_PROPOSAL_STATUSES,
+  IMPROVEMENT_TARGET_KINDS,
+  MAX_ACTIVE_LEDGER_INJECT,
   MAX_ATTACHMENT_BYTES,
   PRIORITIES,
   PRIORITY_RANK,
+  RETRO_ATTRIBUTION_CATEGORIES,
   STAGE_IDS,
   TASK_STATUSES,
   TRACKS,
@@ -56,7 +67,10 @@ export {
   type AdvisorEligibleDecisionCategory,
   type AttachmentMimeType,
   type DecisionAction,
+  type ImprovementProposalStatus,
+  type ImprovementTargetKind,
   type Priority,
+  type RetroAttributionCategory,
   type StageId,
   type TaskStatus,
   type Track,
@@ -539,6 +553,11 @@ export const SpaceConfigSchema = z.object({
   freeze_patterns: z.array(z.string()).default([]),
   pinned: z.boolean().optional(),
   scripts: SpaceScriptsSchema.optional(),
+  intake_checklist: z.array(z.string().trim().min(1)).optional(),
+  accept_scenarios: z.array(z.string().trim().min(1)).optional(),
+  default_workflow_preset: z
+    .enum(["quick", "host_op", "standard_dev", "full_delivery"])
+    .optional(),
 });
 export type SpaceConfig = z.infer<typeof SpaceConfigSchema>;
 
@@ -649,6 +668,15 @@ export const LedgerEntrySchema = z.object({
   source_task_id: z.string().min(1),
   source_decision_id: z.string().min(1).optional(),
   created_at: z.string().min(1),
+  failure_mode: z.string().min(1).optional(),
+  detection_signal: z.string().min(1).optional(),
+  prevention_rule: z.string().min(1).optional(),
+  scope_tags: z.array(z.string().min(1)).optional(),
+  evidence_task_ids: z.array(z.string().min(1)).optional(),
+  merged_from: z.array(z.string().min(1)).optional(),
+  hit_count: z.number().int().nonnegative().optional(),
+  last_triggered_at: z.string().min(1).optional(),
+  status: z.enum(["active", "archived"]).optional(),
 });
 export type LedgerEntry = z.infer<typeof LedgerEntrySchema>;
 
@@ -658,3 +686,95 @@ export const LedgerFileSchema = z.object({
   entries: z.array(LedgerEntrySchema),
 });
 export type LedgerFile = z.infer<typeof LedgerFileSchema>;
+
+export const RetroAttributionSchema = z.object({
+  category: z.enum(RETRO_ATTRIBUTION_CATEGORIES),
+  summary: z.string().min(1),
+  earliest_preventable_stage: StageIdSchema,
+  evidence: z.string().min(1),
+});
+export type RetroAttribution = z.infer<typeof RetroAttributionSchema>;
+
+export const TaskRetroMetricsSchema = z.object({
+  total_runs: z.number().int().nonnegative(),
+  rework_rounds: z.number().int().nonnegative(),
+  retries_count: z.number().int().nonnegative(),
+  review_rejections: z.number().int().nonnegative(),
+  accept_failures: z.number().int().nonnegative(),
+  escalations_count: z.number().int().nonnegative(),
+  track_escalated_to_l2: z.boolean(),
+  steer_count: z.number().int().nonnegative(),
+  contract_updates: z.number().int().nonnegative(),
+  first_pass: z.boolean(),
+  cache_hit_rate: z.number().min(0).max(1),
+  total_cost_usd: z.number().nonnegative(),
+});
+export type TaskRetroMetrics = z.infer<typeof TaskRetroMetricsSchema>;
+
+export const TaskRetroReportSchema = z.object({
+  schema_version: z.literal(1).default(1),
+  task_id: z.string().min(1),
+  space: z.string().min(1),
+  terminal_status: z.enum(["done", "cancelled"]),
+  mode: z.enum(["deterministic", "ai_enriched"]),
+  high_signal: z.boolean(),
+  signals: z.array(z.string().min(1)).default([]),
+  metrics: TaskRetroMetricsSchema,
+  attributions: z.array(RetroAttributionSchema).default([]),
+  summary: z.string().min(1),
+  proposal_ids: z.array(z.string().min(1)).default([]),
+  generated_at: z.string().min(1),
+  retro_run_id: z.string().min(1).optional(),
+});
+export type TaskRetroReport = z.infer<typeof TaskRetroReportSchema>;
+
+export const ImprovementProposalSchema = z.object({
+  id: z.string().min(1),
+  status: z.enum(IMPROVEMENT_PROPOSAL_STATUSES).default("pending"),
+  source: z.enum(["retro", "analytics", "ledger_hygiene"]),
+  target_kind: z.enum(IMPROVEMENT_TARGET_KINDS),
+  space: z.string().min(1).optional(),
+  roster_role: z.string().min(1).optional(),
+  title: z.string().min(1),
+  rationale: z.string().min(1),
+  expected_impact: z.string().min(1),
+  evidence_task_ids: z.array(z.string().min(1)).default([]),
+  payload: z.record(z.string(), z.unknown()),
+  created_at: z.string().min(1),
+  decided_at: z.string().min(1).optional(),
+  policy_change_id: z.string().min(1).optional(),
+});
+export type ImprovementProposal = z.infer<typeof ImprovementProposalSchema>;
+
+export const ImprovementProposalsFileSchema = z.object({
+  schema_version: z.literal(1).default(1),
+  proposals: z.array(ImprovementProposalSchema),
+});
+export type ImprovementProposalsFile = z.infer<typeof ImprovementProposalsFileSchema>;
+
+export const PolicyMetricWindowSchema = z.object({
+  task_count: z.number().int().nonnegative(),
+  first_pass_rate: z.number().min(0).max(1),
+  avg_rework_rounds: z.number().nonnegative(),
+  cache_hit_rate: z.number().min(0).max(1),
+  median_cost_usd: z.number().nonnegative(),
+  p90_cost_usd: z.number().nonnegative(),
+  accept_defect_catch_rate: z.number().min(0).max(1),
+});
+export type PolicyMetricWindow = z.infer<typeof PolicyMetricWindowSchema>;
+
+export const PolicyChangeRecordSchema = z.object({
+  schema_version: z.literal(1).default(1),
+  id: z.string().min(1),
+  proposal_id: z.string().min(1),
+  target_kind: z.enum(IMPROVEMENT_TARGET_KINDS),
+  target_ref: z.string().min(1),
+  space: z.string().min(1).optional(),
+  summary: z.string().min(1),
+  applied_at: z.string().min(1),
+  before_snapshot: z.unknown(),
+  after_snapshot: z.unknown(),
+  before_metrics: PolicyMetricWindowSchema,
+  rolled_back_at: z.string().min(1).optional(),
+});
+export type PolicyChangeRecord = z.infer<typeof PolicyChangeRecordSchema>;

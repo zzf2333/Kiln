@@ -48,6 +48,7 @@ import {
   writeFileAtomic,
 } from "../store/index.js";
 import { resolveRunAttachmentInputs } from "./attachments.js";
+import { selectActiveLedgerEntriesForHandoff } from "./improvements.js";
 import type { CaffeinateController } from "./caffeinate.js";
 import { ServerHttpError } from "./errors.js";
 import { discoverMcpServers, discoverSkills } from "./extensions.js";
@@ -1540,13 +1541,17 @@ export class KilnChatEngine {
     const { draft, spaceConfig, allSpaces, cwd, isProjectRepo, priorHistory, mcpEnabled } = params;
     const tasks = this.store.listTasks().slice(0, 20);
     const ledger = this.store.readLedger(draft.space);
+    const activeLedger =
+      ledger && ledger.entries.length > 0
+        ? selectActiveLedgerEntriesForHandoff(ledger.entries)
+        : [];
     const taskLines =
       tasks.length > 0
         ? tasks.map((t) => `- ${t.id} [${t.status}/${t.priority}] ${t.title}`).join("\n")
         : "(暂无在途任务)";
     const ledgerLines =
-      ledger && ledger.entries.length > 0
-        ? ledger.entries.map((e) => `- ${e.rule}`).join("\n")
+      activeLedger.length > 0
+        ? activeLedger.map((e) => `- ${e.rule}`).join("\n")
         : "(暂无空间账本约束)";
 
     const projectSpaces = allSpaces.filter((s) => s.id !== "local" && Boolean(s.repo_path));
@@ -1666,6 +1671,16 @@ export class KilnChatEngine {
         : "";
 
     const priorSummary = this.formatPriorChatSummary(priorHistory);
+    const spaceChecklistSection =
+      spaceConfig?.intake_checklist && spaceConfig.intake_checklist.length > 0
+        ? [
+            `## 本项目立项核对清单（历史复盘沉淀，提交契约前请主动与用户核对）`,
+            ...spaceConfig.intake_checklist.map((item, idx) => `${idx + 1}. ${item}`),
+          ].join("\n")
+        : "";
+    const defaultPresetHint = spaceConfig?.default_workflow_preset
+      ? `\n- 当前空间推荐默认蓝图（历史调优沉淀）：\`${spaceConfig.default_workflow_preset}\``
+      : "";
     const protocolInstruction = mcpEnabled
       ? `你拥有 kiln-mcp 工具权限（wb_list_tasks, wb_read_ledger, wb_plan），请每轮及时调用 wb_plan(mode: "upsert_draft") 将已确定的 title、workflow（含 steps[].roster_role / rationale / pm_rationale）、contract（goal/end/accept_cmd/scope/non_goals/deliver）、depends_on、open_questions 与完整 brief_markdown 同步写入草稿与 BRIEF.md；拆多卡时可调用 wb_plan(mode: "commit_split_cards")。`
       : [
@@ -1684,7 +1699,8 @@ export class KilnChatEngine {
       draftResearchSection,
       attachmentsSection,
       currentBriefSection,
-      `当前在途任务：\n${taskLines}`,
+      `当前在途任务：\n${taskLines}${defaultPresetHint}`,
+      spaceChecklistSection,
       `空间 ${draft.space} 长期决策账本：\n${ledgerLines}`,
       priorSummary,
     ]
@@ -1700,9 +1716,13 @@ export class KilnChatEngine {
     const brief = readOptionalText(this.store.paths.briefMd(card.id)) ?? "";
     const decisions = readOptionalText(this.store.paths.decisionsMd(card.id)) ?? "";
     const ledger = this.store.readLedger(card.space);
-    const ledgerLines =
+    const activeLedger =
       ledger && ledger.entries.length > 0
-        ? ledger.entries.map((e) => `- ${e.rule}`).join("\n")
+        ? selectActiveLedgerEntriesForHandoff(ledger.entries)
+        : [];
+    const ledgerLines =
+      activeLedger.length > 0
+        ? activeLedger.map((e) => `- ${e.rule}`).join("\n")
         : "";
     const decisionSection = pendingDecision
       ? `当前待决 (${pendingDecision.id}): ${pendingDecision.question}\n选项:\n${pendingDecision.options

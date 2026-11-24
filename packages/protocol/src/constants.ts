@@ -198,6 +198,7 @@ export const DERIVED_ROSTER_INHERITANCE: Readonly<Record<string, readonly string
   architect: ["advisor", "pm"],
   triage: ["advisor", "pm"],
   resolver: ["pm"],
+  retro: ["advisor", "pm"],
 };
 
 export const BUILTIN_ROSTER_ROLE_IDS = [
@@ -217,6 +218,7 @@ export const BUILTIN_ROSTER_ROLE_IDS = [
   "deliverer",
   "triage",
   "resolver",
+  "retro",
 ] as const;
 export type BuiltinRosterRoleId = (typeof BUILTIN_ROSTER_ROLE_IDS)[number];
 
@@ -254,6 +256,36 @@ export const VERIFIER_ENTRY_MODES = [
   "artifact",
 ] as const;
 export type VerifierEntryMode = (typeof VERIFIER_ENTRY_MODES)[number];
+
+export const RETRO_ATTRIBUTION_CATEGORIES = [
+  "intake_contract",
+  "recon_plan",
+  "model_fit",
+  "context_cache",
+  "space_rule",
+] as const;
+export type RetroAttributionCategory = (typeof RETRO_ATTRIBUTION_CATEGORIES)[number];
+
+export const IMPROVEMENT_TARGET_KINDS = [
+  "space_ledger",
+  "space_ledger_merge",
+  "space_ledger_archive",
+  "space_intake_checklist",
+  "space_accept_scenario",
+  "roster_custom_instructions",
+  "roster_policy",
+  "space_default_workflow",
+] as const;
+export type ImprovementTargetKind = (typeof IMPROVEMENT_TARGET_KINDS)[number];
+
+export const IMPROVEMENT_PROPOSAL_STATUSES = [
+  "pending",
+  "approved",
+  "dismissed",
+] as const;
+export type ImprovementProposalStatus = (typeof IMPROVEMENT_PROPOSAL_STATUSES)[number];
+
+export const MAX_ACTIVE_LEDGER_INJECT = 20;
 
 export function isReadOnlyRosterPermission(perm: RosterPermission): boolean {
   return perm === "read_only" || perm === "read_only_draft";

@@ -406,8 +406,11 @@ export class KilndServer {
       onTaskSteered: (taskId, input) => this.orchestrator.steerTask(taskId, input),
       onTaskCancelled: async (taskId) => {
         await this.orchestrator.abortActiveRun(taskId);
+        this.orchestrator.handleTaskTerminatedRetro(taskId);
         void this.orchestrator.wake();
       },
+      triggerTaskRetro: (taskId, useAi) =>
+        this.orchestrator.triggerTaskRetro(taskId, { useAi }),
       onBeforeDecisionApply: async (taskId) => {
         await this.orchestrator.abortActiveRun(taskId);
       },

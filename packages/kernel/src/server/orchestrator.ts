@@ -32,6 +32,7 @@ import {
   type SteerNote,
   type SteerTaskRequest,
   type TaskCard,
+  type TaskRetroReport,
   type VerifierCapability,
 } from "@kiln/protocol";
 import {
@@ -132,6 +133,7 @@ import {
   normalizeDeclaredEvidenceRelPath,
   validateVerifierEvidenceGate,
 } from "./accept-evidence.js";
+import { extractDeterministicTaskRetro, runAiTaskRetro } from "./retro-engine.js";
 import {
   DEFAULT_WARM_CACHE_TTL_MS,
   WARM_CONTEXT_PERCENT_LIMIT,
@@ -5400,7 +5402,39 @@ export class KilnOrchestrator {
       stage: "deliver",
       contractVersion: doneState.contractVersion,
     });
+    this.handleTaskTerminatedRetro(taskId);
     void this.wake();
     return true;
+  }
+
+  handleTaskTerminatedRetro(taskId: string): void {
+    try {
+      const report = extractDeterministicTaskRetro(this.store, taskId);
+      const autoAi = this.store.readConfig("limits")?.auto_retro_high_signal === true;
+      if (report.high_signal && autoAi && !this.stopped) {
+        void runAiTaskRetro({
+          store: this.store,
+          backendRegistry: this.backendRegistry,
+          taskId,
+        }).catch(() => {});
+      }
+    } catch {
+      // Never block task completion/cancellation if optional retro extraction fails
+    }
+  }
+
+  async triggerTaskRetro(
+    taskId: string,
+    opts?: { useAi?: boolean },
+  ): Promise<TaskRetroReport> {
+    const safeTaskId = assertSafeSegment(taskId, "taskId");
+    if (opts?.useAi) {
+      return await runAiTaskRetro({
+        store: this.store,
+        backendRegistry: this.backendRegistry,
+        taskId: safeTaskId,
+      });
+    }
+    return extractDeterministicTaskRetro(this.store, safeTaskId);
   }
 }

@@ -34,6 +34,7 @@ import {
   SteerTaskRequestSchema,
   SyncPricingRequestSchema,
   TaskCardSchema,
+  TaskRetroReportSchema,
   TrackSchema,
   UpsertSpaceRequestSchema,
   WorkflowBlueprintSchema,
@@ -56,6 +57,7 @@ import {
   type SyncPricingRequest,
   type SyncPricingResponse,
   type TailscaleStatusResponse,
+  type TaskRetroReport,
 } from "@kiln/protocol";
 import {
   ProviderHealthTracker,
@@ -128,6 +130,16 @@ import {
 } from "./remote-tailscale.js";
 import type { AcceptEnvLiveSnapshot } from "./accept-env.js";
 import { detectImageMagic, normalizeDeclaredEvidenceRelPath } from "./accept-evidence.js";
+import {
+  approveImprovementProposal,
+  computeOrchestrationAnalytics,
+  dismissImprovementProposal,
+  generateAnalyticsProposals,
+  listPolicyHistoryWithEvaluation,
+  readImprovementProposals,
+  rollbackPolicyChange,
+} from "./improvements.js";
+import { extractDeterministicTaskRetro } from "./retro-engine.js";
 import { realpathCanonical } from "../store/fs-atomic.js";
 import {
   buildPrDraft,
@@ -221,6 +233,7 @@ export interface HttpApiDependencies {
   revealPath?: (targetPath: string) => Promise<{ ok: true; path: string }>;
   openRunTui?: (input: { taskId: string; runDir: string }) => Promise<OpenRunTuiResponse>;
   getActiveAcceptEnv?: (taskId: string) => AcceptEnvLiveSnapshot | null;
+  triggerTaskRetro?: (taskId: string, useAi: boolean) => Promise<TaskRetroReport>;
   syncPricing?: (input: SyncPricingRequest) => Promise<SyncPricingResponse>;
   extensionsHomeDir?: string;
   onTaskQueued?: (taskId: string) => void;
@@ -567,6 +580,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     onBeforeDecisionApply,
     onSettingsUpdated,
     getActiveAcceptEnv,
+    triggerTaskRetro,
   } = deps;
   const listenerMode: HttpApiListenerMode = deps.listenerMode ?? "local";
   const remoteAuth = deps.remoteAuth ?? new RemoteAuthManager({ store, sseHub });
@@ -1174,6 +1188,97 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     });
   });
 
+  const rethrowImprovementError = (err: unknown): never => {
+    if (err instanceof ServerHttpError) {
+      throw err;
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/not found|does not exist/i.test(msg)) {
+      throw new ServerHttpError(404, { error: "not_found", message: msg });
+    }
+    if (/already/i.test(msg)) {
+      throw new ServerHttpError(409, { error: "conflict", message: msg });
+    }
+    if (/Rejected\b|forbidden|requires/i.test(msg)) {
+      throw new ServerHttpError(400, { error: "invalid_improvement_proposal", message: msg });
+    }
+    throw err;
+  };
+
+  app.post("/api/tasks/:id/retro", async (c) => {
+    const taskId = requireExistingTask(c.req.param("id"));
+    const body = z
+      .object({ use_ai: z.boolean().optional() })
+      .default({})
+      .parse(await readJsonBodyOptional(c));
+    const useAi = Boolean(body.use_ai);
+    const retro = triggerTaskRetro
+      ? await triggerTaskRetro(taskId, useAi)
+      : extractDeterministicTaskRetro(store, taskId);
+    const markdown = readOptionalText(store.paths.retroMd(taskId));
+    return c.json({ ok: true, retro, markdown });
+  });
+
+  app.get("/api/improvements/summary", (c) => {
+    return c.json({
+      ok: true,
+      proposals: readImprovementProposals(store),
+      analytics: computeOrchestrationAnalytics(store),
+      policyHistory: listPolicyHistoryWithEvaluation(store),
+    });
+  });
+
+  app.post("/api/improvements/analyze", (c) => {
+    const created = generateAnalyticsProposals(store);
+    return c.json({
+      ok: true,
+      createdCount: created.length,
+      proposals: readImprovementProposals(store),
+      analytics: computeOrchestrationAnalytics(store),
+      policyHistory: listPolicyHistoryWithEvaluation(store),
+    });
+  });
+
+  app.post("/api/improvements/proposals/:id/approve", async (c) => {
+    const proposalId = assertSafeSegment(c.req.param("id"), "proposalId");
+    try {
+      const result = approveImprovementProposal(store, proposalId);
+      if (result.updatedRoster) {
+        await Promise.resolve(onSettingsUpdated?.("roster"));
+      }
+      return c.json({
+        ok: true,
+        proposal: result.proposal,
+        change: result.change,
+      });
+    } catch (err) {
+      return rethrowImprovementError(err);
+    }
+  });
+
+  app.post("/api/improvements/proposals/:id/dismiss", (c) => {
+    const proposalId = assertSafeSegment(c.req.param("id"), "proposalId");
+    try {
+      const proposal = dismissImprovementProposal(store, proposalId);
+      return c.json({ ok: true, proposal });
+    } catch (err) {
+      return rethrowImprovementError(err);
+    }
+  });
+
+  app.post("/api/improvements/policy-history/:id/rollback", async (c) => {
+    const changeId = assertSafeSegment(c.req.param("id"), "changeId");
+    try {
+      const result = rollbackPolicyChange(store, changeId);
+      if (result.updatedRoster) {
+        await Promise.resolve(onSettingsUpdated?.("roster"));
+      }
+      return c.json({ ok: true, change: result.change });
+    } catch (err) {
+      return rethrowImprovementError(err);
+    }
+  });
+
   app.get("/api/spaces", (c) => {
     const extraSpaces = store.listTasks().map((row) => row.space);
     return c.json({
@@ -1332,6 +1437,15 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         : {}),
       ...(body.accept_entry !== undefined
         ? { accept_entry: body.accept_entry }
+        : {}),
+      ...(body.intake_checklist !== undefined
+        ? { intake_checklist: body.intake_checklist }
+        : {}),
+      ...(body.accept_scenarios !== undefined
+        ? { accept_scenarios: body.accept_scenarios }
+        : {}),
+      ...(body.default_workflow_preset !== undefined
+        ? { default_workflow_preset: body.default_workflow_preset }
         : {}),
       freeze_patterns: body.freeze_patterns,
       ...(body.pinned !== undefined ? { pinned: body.pinned } : {}),
@@ -1598,6 +1712,8 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     const hostBackup = readHostBackupManifestOptional(store, taskId);
     const hostStagedDiffs = buildHostStagedDiffs(store, taskId);
     const chatMessages = readTaskChatFallback(taskId);
+    const retroReport = readYamlOptional(store.paths.retroYaml(taskId), TaskRetroReportSchema);
+    const retroMd = readOptionalText(store.paths.retroMd(taskId));
     const usage = computeUsageSnapshot(usageTurns, pricing);
     const checkpoints =
       card.workspace_mode === "git_worktree" && spaceConfig?.repo_path
@@ -1617,6 +1733,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       brief,
       plan,
       research,
+      retro: retroReport ? { report: retroReport, markdown: retroMd } : null,
       attachments: card.attachments ?? [],
       checkpoints,
       decisions,
@@ -2224,6 +2341,11 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     const body = CompleteTaskBodySchema.parse(await readJsonBodyOptional(c));
     const nextState = stateMachine.completeExternalTask(taskId, body.deliver_ref);
     pendingDecisions.remove(taskId);
+    try {
+      extractDeterministicTaskRetro(store, taskId);
+    } catch {
+      // ignore non-critical retro errors during completion
+    }
     caffeinate.syncRunningCount(countRunningLeafTasks(store));
     sseHub.publish({
       type: "task.updated",
@@ -2337,6 +2459,13 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     const result = stateMachine.cancelTask(taskId, body.reason);
     pendingDecisions.remove(taskId);
     await Promise.resolve(onTaskCancelled?.(taskId));
+    if (!onTaskCancelled) {
+      try {
+        extractDeterministicTaskRetro(store, taskId);
+      } catch {
+        // ignore non-critical retro errors during cancel
+      }
+    }
     caffeinate.syncRunningCount(countRunningLeafTasks(store));
 
     sseHub.publish({

@@ -21,6 +21,7 @@ import {
   type VerifierCapability,
 } from "@kiln/protocol";
 import type { KilnStore } from "../store/index.js";
+import { selectActiveLedgerEntriesForHandoff } from "./improvements.js";
 import { readOptionalText } from "./pending-decisions.js";
 
 /**
@@ -414,9 +415,12 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
       : "";
   const decisions = readOptionalText(store.paths.decisionsMd(card.id)) ?? "";
   const ledger = store.readLedger(card.space);
+  const activeLedgerEntries = ledger
+    ? selectActiveLedgerEntriesForHandoff(ledger.entries)
+    : [];
   const ledgerText =
-    ledger && ledger.entries.length > 0
-      ? ledger.entries.map((e) => `- ${e.rule}`).join("\n")
+    activeLedgerEntries.length > 0
+      ? activeLedgerEntries.map((e) => `- ${e.rule}`).join("\n")
       : "(无)";
 
   const steerNotes = extractActiveSteerNotes(
@@ -565,6 +569,16 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
       ? [`## 上轮真实验收失败现场`, previousAcceptSummary.trim()].join("\n")
       : "";
 
+  const spaceAcceptScenarios =
+    stage === "accept" ? store.readSpace(card.space)?.accept_scenarios ?? [] : [];
+  const spaceAcceptScenariosSection =
+    stage === "accept" && spaceAcceptScenarios.length > 0
+      ? [
+          `## 空间常驻验收场景（历史复盘防回归，必须逐一核查）`,
+          ...spaceAcceptScenarios.map((sc, idx) => `- 回归场景 ${idx + 1}: ${sc}`),
+        ].join("\n")
+      : "";
+
   const acceptEnvSection =
     stage === "accept" && acceptEnvContext
       ? [
@@ -638,6 +652,7 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
     ...(escalationDeltaSection ? [escalationDeltaSection, ``] : []),
     ...(deliverConflictSection ? [deliverConflictSection, ``] : []),
     ...(acceptEnvSection ? [acceptEnvSection, ``] : []),
+    ...(spaceAcceptScenariosSection ? [spaceAcceptScenariosSection, ``] : []),
     ...(acceptDeltaSection ? [acceptDeltaSection, ``] : []),
     ...(failureDeltaSection ? [failureDeltaSection, ``] : []),
     ...(reviewDeltaSection ? [reviewDeltaSection, ``] : []),

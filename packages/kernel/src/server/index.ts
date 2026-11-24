@@ -244,6 +244,30 @@ export {
   type ValidateVerifierEvidenceGateInput,
 } from "./accept-evidence.js";
 export {
+  analyzeLedgerHygiene,
+  approveImprovementProposal,
+  assertProposalNotCheating,
+  computeOrchestrationAnalytics,
+  dismissImprovementProposal,
+  generateAnalyticsProposals,
+  listPolicyHistoryWithEvaluation,
+  readImprovementProposals,
+  readPolicyHistory,
+  rollbackPolicyChange,
+  selectActiveLedgerEntriesForHandoff,
+  upsertImprovementProposals,
+  type CandidateProposalInput,
+  type OrchestrationAnalytics,
+  type PolicyChangeEvaluation,
+  type RoleModelEfficiencyStat,
+  type SpaceEfficiencyStat,
+  type WorkflowPresetEfficiencyStat,
+} from "./improvements.js";
+export {
+  extractDeterministicTaskRetro,
+  runAiTaskRetro,
+} from "./retro-engine.js";
+export {
   createStaticFilesHandler,
   resolveDefaultPublicDir,
   type EmbeddedStaticAsset,

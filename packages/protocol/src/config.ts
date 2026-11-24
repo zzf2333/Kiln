@@ -125,6 +125,7 @@ export const LimitsConfigSchema = z.object({
   advisor_calls: z.number().int().min(0).default(1),
   max_card_tokens: z.number().int().min(1).default(250_000),
   warm_cache_ttl_sec: z.number().int().min(30).max(3600).optional(),
+  auto_retro_high_signal: z.boolean().optional(),
 });
 export type LimitsConfig = z.infer<typeof LimitsConfigSchema>;
 
@@ -720,6 +721,18 @@ const DEFAULT_ROSTER_SEED: Record<
     perm: "read_only_draft",
     traits: "载入全卡上下文陪人处理待决问题（内核协同位）",
     mode: "agent",
+    builtin: true,
+  },
+  retro: {
+    group: "core",
+    enabled: false,
+    name: "任务复盘",
+    stage: "advise",
+    secondary_stages: [],
+    perm: "read_only",
+    traits: "高信号任务完结后只读全链路运行数据并归因提议（未单配时自动继承技术顾问 -> PM）",
+    mode: "agent",
+    tier_hint: "flagship",
     builtin: true,
   },
 };

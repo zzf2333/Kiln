@@ -104,6 +104,11 @@ export const UpsertSpaceRequestSchema = z.object({
   freeze_patterns: z.array(z.string().trim().min(1)).default([]),
   pinned: z.boolean().optional(),
   scripts: SpaceScriptsSchema.optional(),
+  intake_checklist: z.array(z.string().trim().min(1)).optional(),
+  accept_scenarios: z.array(z.string().trim().min(1)).optional(),
+  default_workflow_preset: z
+    .enum(["quick", "host_op", "standard_dev", "full_delivery"])
+    .optional(),
 });
 export type UpsertSpaceRequest = z.infer<typeof UpsertSpaceRequestSchema>;
 

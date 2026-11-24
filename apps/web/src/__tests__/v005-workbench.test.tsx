@@ -1530,4 +1530,347 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
     fireEvent.click(screen.getByRole("button", { name: "日志" }));
     expect(await screen.findByText(/server listening on 45122/)).toBeTruthy();
   });
+
+  it("Track 4: DetailView RETRO card, LedgerView 3-tab inbox & analytics rollback, and SettingsView auto_retro_high_signal", async () => {
+    const kilnSpace = {
+      schema_version: 1 as const,
+      id: "kiln",
+      name: "Kiln",
+      repo_path: "/tmp/kiln",
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+      intake_checklist: ["必须先确认移动端断点 >= 390px"],
+      accept_scenarios: ["真实重启后数据不丢失"],
+      default_workflow_preset: "standard_dev" as const,
+    };
+    let ledgersData: Record<
+      string,
+      {
+        schema_version: 1;
+        space: string;
+        entries: Array<{
+          id: string;
+          space: string;
+          rule: string;
+          source_task_id: string;
+          created_at: string;
+          hit_count?: number;
+          status?: "active" | "archived";
+        }>;
+      }
+    > = {
+      kiln: {
+        schema_version: 1,
+        space: "kiln",
+        entries: [
+          {
+            id: "led-t4-1",
+            space: "kiln",
+            rule: "禁止擅自跳过真实验收测试",
+            source_task_id: "t-track4-1",
+            created_at: "2026-11-24T00:00:00Z",
+            hit_count: 2,
+            status: "active",
+          },
+        ],
+      },
+    };
+    let retroTriggered = false;
+    let proposalStatus: "pending" | "approved" | "dismissed" = "pending";
+    let rolledBackAt: string | undefined;
+    const makeTrack4Boot = () =>
+      makeV3Bootstrap({
+        spaces: { kiln: kilnSpace },
+        ledgers: ledgersData,
+        tasks: [
+          {
+            id: "t-track4-1",
+            space: "kiln",
+            parent_id: null,
+            title: "Track 4 复盘与策略自优化演示任务",
+            priority: "P1",
+            effective_priority: "P1",
+            track: "L2",
+            workspace_mode: "git_worktree",
+            status: "done",
+            stage: null,
+            round: null,
+            active_run_id: null,
+            contract_version: 1,
+            depends_on: [],
+            created_at: "2026-11-24T00:00:00Z",
+            updated_at: "2026-11-24T01:00:00Z",
+            cost_usd: 0.18,
+            tokens: {
+              input_tokens: 2000,
+              cached_input_tokens: 1000,
+              output_tokens: 200,
+              total_tokens: 3200,
+            },
+          },
+        ],
+      });
+
+    fetchMock.mockImplementation(async (url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+
+      if (url === "/api/auth/status") {
+        return jsonResponse({ ok: true, mode: "local", authenticated: true, device: null });
+      }
+      if (url === "/api/bootstrap") {
+        return jsonResponse(makeTrack4Boot());
+      }
+      if (url === "/api/tasks/t-track4-1" && method === "GET") {
+        return jsonResponse({
+          card: {
+            schema_version: 1,
+            id: "t-track4-1",
+            space: "kiln",
+            title: "Track 4 复盘与策略自优化演示任务",
+            track: "L2",
+            priority: "P1",
+            workspace_mode: "git_worktree",
+            parent: null,
+            depends_on: [],
+            contract_version: 1,
+            contract: {
+              goal: "完成 Track 4 UI 闭环",
+              end: "复盘、收件箱与效能回滚可用",
+              accept_cmd: "pnpm test",
+              accept_files_hash: `sha256:${"a".repeat(64)}`,
+              scope: ["apps/web/**"],
+              non_goals: [],
+              deliver: { mode: "merge_main", cmd: null },
+              human_accept: false,
+              external_actions: "ask",
+            },
+            limits: {
+              retries_per_stage: 2,
+              review_rounds: 2,
+              advisor_calls: 2,
+              max_tokens: 150000,
+            },
+            created_at: "2026-11-24T00:00:00Z",
+            updated_at: "2026-11-24T01:00:00Z",
+          },
+            state: {
+              status: "done",
+              stage: null,
+              round: null,
+              activeRunId: null,
+              priority: "P1",
+              effectivePriority: "P1",
+              track: "L2",
+              contractVersion: 1,
+              updatedAt: "2026-11-24T01:00:00Z",
+            },
+            brief: "Track 4 演示说明",
+            decisions: "",
+            pendingDecision: null,
+            ledgerProposals: [],
+            runs: [],
+            usageTurns: [],
+            usage: makeTrack4Boot().usage,
+            retro: {
+              report: {
+                schema_version: 1,
+                task_id: "t-track4-1",
+                space: "kiln",
+                terminal_status: "done",
+                mode: retroTriggered ? "ai_enriched" : "deterministic",
+                high_signal: true,
+                signals: ["review_rejections:1"],
+                metrics: {
+                  total_runs: 3,
+                  rework_rounds: 1,
+                  retries_count: 0,
+                  review_rejections: 1,
+                  accept_failures: 0,
+                  escalations_count: 1,
+                  track_escalated_to_l2: false,
+                  steer_count: 0,
+                  contract_updates: 0,
+                  first_pass: false,
+                  cache_hit_rate: 0.65,
+                  total_cost_usd: 0.18,
+                },
+                attributions: [
+                  {
+                    category: "space_rule",
+                    summary: "审查阶段暴露空间长期规则缺失",
+                    earliest_preventable_stage: "review",
+                    evidence: "review-1/RECEIPT.md",
+                  },
+                ],
+                summary: retroTriggered ? "AI 深度复盘结论" : "0-Token 初筛归因结论",
+                proposal_ids: ["prop-t4-1"],
+                generated_at: "2026-11-24T01:00:00Z",
+              },
+              markdown: "# 复盘正文\n- 已归因",
+            },
+          });
+        }
+        if (url === "/api/tasks/t-track4-1/retro" && method === "POST") {
+          retroTriggered = true;
+          return jsonResponse({ ok: true, retro: { mode: "ai_enriched" }, markdown: "# 复盘正文" });
+        }
+        if (url === "/api/improvements/summary" && method === "GET") {
+          return jsonResponse({
+            ok: true,
+            proposals: [
+              {
+                id: "prop-t4-1",
+                status: proposalStatus,
+                source: "retro",
+                target_kind: "space_ledger",
+                space: "kiln",
+                title: "补充 UI 改版必测回滚用例",
+                rationale: "t-track4-1 返工发现缺失回归提示",
+                expected_impact: "降低后续同类返工",
+                evidence_task_ids: ["t-track4-1"],
+                payload: { rule: "UI 改版前核对现有测试选择器" },
+                created_at: "2026-11-24T01:05:00Z",
+              },
+            ],
+            analytics: {
+              generated_at: "2026-11-24T01:05:00Z",
+              overall: {
+                task_count: 4,
+                first_pass_rate: 0.75,
+                avg_rework_rounds: 0.5,
+                cache_hit_rate: 0.78,
+                median_cost_usd: 0.15,
+                p90_cost_usd: 0.32,
+                accept_defect_catch_rate: 0.25,
+              },
+              by_space: [],
+              by_role_model: [
+                {
+                  roster_role: "main_dev",
+                  agent: "codex",
+                  model: "gpt-5.4",
+                  run_count: 4,
+                  pass_rate: 0.75,
+                  escalation_rate: 0.25,
+                  cache_hit_rate: 0.78,
+                  avg_cost_usd: 0.15,
+                },
+              ],
+              by_workflow_preset: [
+                {
+                  preset: "standard_dev",
+                  metrics: {
+                    task_count: 4,
+                    first_pass_rate: 0.75,
+                    avg_rework_rounds: 0.5,
+                    cache_hit_rate: 0.78,
+                    median_cost_usd: 0.15,
+                    p90_cost_usd: 0.32,
+                    accept_defect_catch_rate: 0.25,
+                  },
+                },
+              ],
+            },
+            policyHistory: [
+              {
+                schema_version: 1,
+                id: "chg-t4-1",
+                proposal_id: "prop-old",
+                target_kind: "roster_policy",
+                target_ref: "pm_orchestration",
+                space: "kiln",
+                summary: "降低 L1 升档阈值试点",
+                applied_at: "2026-11-24T00:30:00Z",
+                before_snapshot: {},
+                after_snapshot: {},
+                before_metrics: {
+                  task_count: 3,
+                  first_pass_rate: 0.9,
+                  avg_rework_rounds: 0.1,
+                  cache_hit_rate: 0.8,
+                  median_cost_usd: 0.1,
+                  p90_cost_usd: 0.2,
+                  accept_defect_catch_rate: 0,
+                },
+                after_metrics: {
+                  task_count: 3,
+                  first_pass_rate: 0.5,
+                  avg_rework_rounds: 1.4,
+                  cache_hit_rate: 0.6,
+                  median_cost_usd: 0.2,
+                  p90_cost_usd: 0.3,
+                  accept_defect_catch_rate: 0.2,
+                },
+                regression_alert: !rolledBackAt,
+                regression_reasons: rolledBackAt ? [] : ["一次通过率从 90% 降至 50%"],
+                ...(rolledBackAt ? { rolled_back_at: rolledBackAt } : {}),
+              },
+            ],
+          });
+        }
+        if (url === "/api/improvements/proposals/prop-t4-1/approve" && method === "POST") {
+          proposalStatus = "approved";
+          ledgersData = {
+            kiln: {
+              schema_version: 1,
+              space: "kiln",
+              entries: [
+                ...ledgersData.kiln!.entries,
+                {
+                  id: "led-t4-2",
+                  space: "kiln",
+                  rule: "UI 改版前核对现有测试选择器",
+                  source_task_id: "t-track4-1",
+                  created_at: "2026-11-24T01:10:00Z",
+                  hit_count: 0,
+                  status: "active",
+                },
+              ],
+            },
+          };
+          return jsonResponse({ ok: true, proposal: { id: "prop-t4-1", status: "approved" }, change: { id: "chg-new" } });
+        }
+        if (url === "/api/improvements/policy-history/chg-t4-1/rollback" && method === "POST") {
+          rolledBackAt = "2026-11-24T01:15:00Z";
+          return jsonResponse({ ok: true, change: { id: "chg-t4-1", rolled_back_at: rolledBackAt } });
+        }
+        return jsonResponse({ ok: true });
+      });
+
+    // 1. DetailView RETRO card + trigger AI retro
+    window.location.hash = "#view=detail&task=t-track4-1";
+    render(<App />);
+    expect(await screen.findByText("任务复盘（RETRO）")).toBeTruthy();
+    expect(screen.getByText("0-Token 初筛归因结论")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "运行 AI 深度归因" }));
+    expect(await screen.findByText("AI 深度复盘结论")).toBeTruthy();
+
+    // 2. LedgerView default tab preserves old selectors + intake_checklist/accept_scenarios
+    fireEvent.click(screen.getByRole("button", { name: /决策账本/ }));
+    expect(await screen.findByText("禁止擅自跳过真实验收测试")).toBeTruthy();
+    expect(screen.getByText(/必须先确认移动端断点 >= 390px/)).toBeTruthy();
+    expect(screen.getByText(/真实重启后数据不丢失/)).toBeTruthy();
+
+    // 3. Switch to 改进提案收件箱 and approve proposal
+    fireEvent.click(screen.getByRole("tab", { name: /改进提案收件箱/ }));
+    expect(await screen.findByText("补充 UI 改版必测回滚用例")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "批准生效" }));
+    await waitFor(() => {
+      expect(proposalStatus).toBe("approved");
+    });
+
+    // 4. Switch to 编排效能与回滚, verify regression alert & trigger rollback
+    fireEvent.click(screen.getByRole("tab", { name: /编排效能与回滚/ }));
+    expect(await screen.findByText(/一次通过率从 90% 降至 50%/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "一键回滚" }));
+    await waitFor(() => {
+      expect(rolledBackAt).toBeTruthy();
+    });
+
+    // 5. SettingsView Limits tab shows auto_retro_high_signal switch
+    window.location.hash = "#view=settings&tab=limits";
+    expect(await screen.findByLabelText("高信号终态自动 AI 归因复盘")).toBeTruthy();
+  });
 });

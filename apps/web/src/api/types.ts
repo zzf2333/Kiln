@@ -21,6 +21,7 @@ import type {
   DraftCard,
   GateReport,
   HashMismatchError,
+  ImprovementProposal,
   InspectSpaceResponse,
   LedgerEntry,
   LedgerFile,
@@ -29,6 +30,8 @@ import type {
   PendingDecision,
   PickDirectoryResponse,
   PmOrchestrationPolicy,
+  PolicyChangeRecord,
+  PolicyMetricWindow,
   PricingConfig,
   PricingSyncSource,
   Priority,
@@ -44,6 +47,7 @@ import type {
   RemoteNotificationChannel,
   RemoteNotificationTestRequest,
   RemotePairChallengeResponse,
+  RetroAttribution,
   RoleId,
   RolesConfig,
   RosterConfig,
@@ -73,6 +77,8 @@ import type {
   TailscaleStatusResponse,
   TaskAttachment,
   TaskCard,
+  TaskRetroMetrics,
+  TaskRetroReport,
   TaskStatus,
   Track,
   UpsertSpaceRequest,
@@ -399,6 +405,7 @@ export interface TaskDetailResponse {
   brief: string;
   plan?: string;
   research?: string;
+  retro?: TaskRetroPayload | null;
   attachments?: TaskAttachment[];
   checkpoints?: CheckpointRecord[];
   decisions: string;
@@ -423,6 +430,54 @@ export interface HostRestoreConflictDetail {
   expectedSummary?: string;
   actualSummary?: string;
   diff: string;
+}
+
+export interface TaskRetroPayload {
+  report: TaskRetroReport;
+  markdown: string | null;
+}
+
+export interface RoleModelEfficiencyStat {
+  roster_role: string;
+  agent: string;
+  model: string;
+  run_count: number;
+  pass_rate: number;
+  escalation_rate: number;
+  cache_hit_rate: number;
+  avg_cost_usd: number;
+}
+
+export interface WorkflowPresetEfficiencyStat {
+  preset: string;
+  metrics: PolicyMetricWindow;
+}
+
+export interface SpaceEfficiencyStat {
+  space_id: string;
+  space_name: string;
+  metrics: PolicyMetricWindow;
+}
+
+export interface OrchestrationAnalytics {
+  generated_at: string;
+  overall: PolicyMetricWindow;
+  by_space: SpaceEfficiencyStat[];
+  by_role_model: RoleModelEfficiencyStat[];
+  by_workflow_preset: WorkflowPresetEfficiencyStat[];
+}
+
+export interface PolicyChangeEvaluation extends PolicyChangeRecord {
+  after_metrics: PolicyMetricWindow;
+  regression_alert: boolean;
+  regression_reasons: string[];
+}
+
+export interface ImprovementsSummaryResponse {
+  ok: true;
+  proposals: ImprovementProposal[];
+  analytics: OrchestrationAnalytics;
+  policyHistory: PolicyChangeEvaluation[];
 }
 
 export type RestoreHostBackupResult =
@@ -696,9 +751,12 @@ export type {
   CommitPrActionRequest,
   DiscoveredGitRepo,
   DiscoverSpacesResponse,
+  ImprovementProposal,
   PairCompleteRequest,
   PickDirectoryResponse,
   PmOrchestrationPolicy,
+  PolicyChangeRecord,
+  PolicyMetricWindow,
   PricingSyncSource,
   ProviderAdapterKind,
   ProviderEntry,
@@ -711,6 +769,7 @@ export type {
   RemoteNotificationChannel,
   RemoteNotificationTestRequest,
   RemotePairChallengeResponse,
+  RetroAttribution,
   RollbackCheckpointRequest,
   RosterConfig,
   RosterEntry,
@@ -731,6 +790,8 @@ export type {
   SyncPricingResponse,
   TailscaleStatusResponse,
   TaskAttachment,
+  TaskRetroMetrics,
+  TaskRetroReport,
   WorkflowBlueprint,
   WorkflowPreset,
 };

@@ -1,7 +1,7 @@
 import { Dialog } from "radix-ui";
 import { useEffect, useState } from "react";
 import type { GateReport, StageId } from "@kiln/protocol/web";
-import { acceptEvidenceUrl, fetchAcceptServiceLog } from "../api/client";
+import { acceptEvidenceUrl, fetchAcceptServiceLog, triggerTaskRetro } from "../api/client";
 import type {
   AcceptServiceStatus,
   AcceptVerificationReport,
@@ -109,6 +109,9 @@ export function DetailView() {
   const [steerOpen, setSteerOpen] = useState(false);
   const [steerText, setSteerText] = useState("");
   const [steerSubmitting, setSteerSubmitting] = useState(false);
+  const [retroLoading, setRetroLoading] = useState<null | "deterministic" | "ai">(null);
+  const [retroError, setRetroError] = useState<string | null>(null);
+  const [showRetroMd, setShowRetroMd] = useState(false);
   const [lightboxAttachment, setLightboxAttachment] =
     useState<TaskAttachment | null>(null);
   const [lightboxCustomUrl, setLightboxCustomUrl] = useState<string | null>(null);
@@ -1749,6 +1752,161 @@ export function DetailView() {
                   <MarkdownContent text={brief || card.contract.goal} />
                 </div>
               )}
+
+              {detail.retro ||
+              taskState.status === "done" ||
+              taskState.status === "cancelled" ||
+              taskState.status === "external" ? (
+                <section className="retro-card" aria-label="任务复盘（RETRO）">
+                  <div className="retro-card-head">
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                      <h4>任务复盘（RETRO）</h4>
+                      {detail.retro?.report.high_signal ? (
+                        <span className="chip chip-warn">高信号任务</span>
+                      ) : detail.retro ? (
+                        <span className="chip">常规归档</span>
+                      ) : null}
+                      {detail.retro ? (
+                        <span className="chip">
+                          {detail.retro.report.mode === "ai_enriched"
+                            ? "AI 深度归因"
+                            : "0-Token 确定性"}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        disabled={retroLoading !== null}
+                        onClick={async () => {
+                          setRetroLoading("deterministic");
+                          setRetroError(null);
+                          try {
+                            await triggerTaskRetro(card.id, false);
+                            await store.loadTaskDetail(card.id);
+                          } catch (err) {
+                            setRetroError(err instanceof Error ? err.message : String(err));
+                          } finally {
+                            setRetroLoading(null);
+                          }
+                        }}
+                      >
+                        {retroLoading === "deterministic"
+                          ? "分析中…"
+                          : "刷新确定性复盘（0 Token）"}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-light"
+                        disabled={retroLoading !== null}
+                        onClick={async () => {
+                          setRetroLoading("ai");
+                          setRetroError(null);
+                          try {
+                            await triggerTaskRetro(card.id, true);
+                            await store.loadTaskDetail(card.id);
+                          } catch (err) {
+                            setRetroError(err instanceof Error ? err.message : String(err));
+                          } finally {
+                            setRetroLoading(null);
+                          }
+                        }}
+                      >
+                        {retroLoading === "ai" ? "AI 归因中…" : "运行 AI 深度归因"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {retroError ? (
+                    <p className="retro-err">{retroError}</p>
+                  ) : null}
+
+                  {detail.retro ? (
+                    <>
+                      <p className="retro-summary">{detail.retro.report.summary}</p>
+
+                      {detail.retro.report.signals.length > 0 ? (
+                        <div className="retro-signals">
+                          {detail.retro.report.signals.map((sig) => (
+                            <span key={sig} className="chip">
+                              {sig}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+
+                      <div className="retro-metrics">
+                        <span>
+                          执行轮次 <b className="mono">{detail.retro.report.metrics.total_runs}</b>
+                        </span>
+                        <span>
+                          返工 <b className="mono">{detail.retro.report.metrics.rework_rounds}</b>
+                        </span>
+                        <span>
+                          升级 <b className="mono">{detail.retro.report.metrics.escalations_count}</b>
+                        </span>
+                        <span>
+                          验收打回 <b className="mono">{detail.retro.report.metrics.accept_failures}</b>
+                        </span>
+                        <span>
+                          花费 <b className="mono">{fmtUsd(detail.retro.report.metrics.total_cost_usd)}</b>
+                        </span>
+                      </div>
+
+                      {detail.retro.report.attributions.length > 0 ? (
+                        <ul className="retro-attr-list">
+                          {detail.retro.report.attributions.map((attr, idx) => {
+                            const catLabel =
+                              attr.category === "intake_contract"
+                                ? "立项契约"
+                                : attr.category === "recon_plan"
+                                  ? "调研方案"
+                                  : attr.category === "model_fit"
+                                    ? "模型匹配"
+                                    : attr.category === "context_cache"
+                                      ? "缓存上下文"
+                                      : "空间工程规范";
+                            return (
+                              <li key={`${attr.category}-${idx}`} className="retro-attr-item">
+                                <span className="chip">{catLabel}</span>
+                                <span className="retro-attr-stage muted">
+                                  最早可防：{stageMeta(attr.earliest_preventable_stage).label}
+                                </span>
+                                <span className="retro-attr-text">{attr.summary}</span>
+                                <span className="mono muted retro-attr-ev" title={attr.evidence}>
+                                  {attr.evidence}
+                                </span>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      ) : null}
+
+                      {detail.retro.markdown ? (
+                        <div className="retro-md-wrap">
+                          <button
+                            type="button"
+                            className="btn-link"
+                            onClick={() => setShowRetroMd((v) => !v)}
+                          >
+                            {showRetroMd ? "收起 RETRO.md 全文" : "展开 RETRO.md 全文"}
+                          </button>
+                          {showRetroMd ? (
+                            <div className="block" style={{ marginTop: "8px" }}>
+                              <MarkdownContent text={detail.retro.markdown} />
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </>
+                  ) : (
+                    <p className="muted" style={{ fontSize: "12.5px" }}>
+                      尚未生成复盘报告，点击上方按钮可立即生成 0-Token 确定性归因或冷只读 AI 深度分析。
+                    </p>
+                  )}
+                </section>
+              ) : null}
             </div>
           </article>
 

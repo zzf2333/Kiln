@@ -1,13 +1,16 @@
 import type {
   DraftCard,
   HashMismatchError,
+  ImprovementProposal,
   LedgerEntry,
   LedgerFile,
+  PolicyChangeRecord,
   Priority,
   SpaceConfig,
   SseEvent,
   StageId,
   TaskCard,
+  TaskRetroReport,
 } from "@kiln/protocol/web";
 import type {
   AgentDescriptorInfo,
@@ -25,6 +28,7 @@ import type {
   DraftAttachmentUploadResponse,
   HostBackupManifestInfo,
   HostRestoreConflictDetail,
+  ImprovementsSummaryResponse,
   InspectSpaceResult,
   ListScriptsResponse,
   LogoutResponse,
@@ -1009,4 +1013,70 @@ export function subscribeSseEvents(handlers: SseSubscriptionHandlers): () => voi
     es.close();
     handlers.onStatusChange?.("closed");
   };
+}
+
+export async function triggerTaskRetro(
+  taskId: string,
+  useAi = false,
+): Promise<{ ok: true; retro: TaskRetroReport; markdown: string | null }> {
+  return requestJson<{ ok: true; retro: TaskRetroReport; markdown: string | null }>(
+    `/api/tasks/${encodeURIComponent(taskId)}/retro`,
+    {
+      method: "POST",
+      body: JSON.stringify({ use_ai: useAi }),
+    },
+  );
+}
+
+export async function fetchImprovementsSummary(): Promise<ImprovementsSummaryResponse> {
+  return requestJson<ImprovementsSummaryResponse>("/api/improvements/summary");
+}
+
+export async function runImprovementsAnalyze(): Promise<
+  ImprovementsSummaryResponse & { createdCount: number }
+> {
+  return requestJson<ImprovementsSummaryResponse & { createdCount: number }>(
+    "/api/improvements/analyze",
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+    },
+  );
+}
+
+export async function approveImprovementProposal(
+  proposalId: string,
+): Promise<{ ok: true; proposal: ImprovementProposal; change: PolicyChangeRecord }> {
+  return requestJson<{
+    ok: true;
+    proposal: ImprovementProposal;
+    change: PolicyChangeRecord;
+  }>(`/api/improvements/proposals/${encodeURIComponent(proposalId)}/approve`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function dismissImprovementProposal(
+  proposalId: string,
+): Promise<{ ok: true; proposal: ImprovementProposal }> {
+  return requestJson<{ ok: true; proposal: ImprovementProposal }>(
+    `/api/improvements/proposals/${encodeURIComponent(proposalId)}/dismiss`,
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+    },
+  );
+}
+
+export async function rollbackPolicyChange(
+  changeId: string,
+): Promise<{ ok: true; change: PolicyChangeRecord }> {
+  return requestJson<{ ok: true; change: PolicyChangeRecord }>(
+    `/api/improvements/policy-history/${encodeURIComponent(changeId)}/rollback`,
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+    },
+  );
 }

@@ -1561,7 +1561,10 @@ export function SettingsView() {
 
   const renderLimitsTab = () => {
     const numFields: Array<{
-      key: Exclude<keyof LimitsConfig, "schema_version" | "p0_extra_slot">;
+      key: Exclude<
+        keyof LimitsConfig,
+        "schema_version" | "p0_extra_slot" | "auto_retro_high_signal"
+      >;
       label: string;
       desc: string;
       min: number;
@@ -1645,6 +1648,30 @@ export function SettingsView() {
                 setLimitsDraft({
                   ...limitsDraft,
                   p0_extra_slot: (e.currentTarget as HTMLInputElement).checked,
+                })
+              }
+            />
+            <span />
+          </label>
+        </div>
+
+        <div className="setting-row">
+          <div>
+            <span>高信号终态自动 AI 归因复盘</span>
+            <p>
+              默认关闭；0-Token 确定性复盘始终自动落盘。开启后仅对失败、取消或发生返工/升级/验收打回的高信号任务自动唤起冷只读复盘分析
+            </p>
+          </div>
+          <label className="switch" style={{ justifySelf: "end" }}>
+            <input
+              type="checkbox"
+              aria-label="高信号终态自动 AI 归因复盘"
+              checked={Boolean(limitsDraft.auto_retro_high_signal)}
+              onChange={(e) =>
+                setLimitsDraft({
+                  ...limitsDraft,
+                  auto_retro_high_signal: (e.currentTarget as HTMLInputElement)
+                    .checked,
                 })
               }
             />

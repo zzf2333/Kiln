@@ -213,6 +213,26 @@ export class KilnPaths {
     return path.join(this.taskDir(taskId), "RESEARCH.md");
   }
 
+  retroYaml(taskId: string): string {
+    return path.join(this.taskDir(taskId), "RETRO.yaml");
+  }
+
+  retroMd(taskId: string): string {
+    return path.join(this.taskDir(taskId), "RETRO.md");
+  }
+
+  get improvementsDir(): string {
+    return path.join(this.home, "improvements");
+  }
+
+  get improvementProposalsYaml(): string {
+    return path.join(this.improvementsDir, "proposals.yaml");
+  }
+
+  get policyHistoryNdjson(): string {
+    return path.join(this.improvementsDir, "policy-history.ndjson");
+  }
+
   taskAttachmentsDir(taskId: string): string {
     return path.join(this.taskDir(taskId), "attachments");
   }
