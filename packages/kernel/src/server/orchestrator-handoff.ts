@@ -270,6 +270,7 @@ export interface BuildHandoffParams {
   mcpEnabled: boolean;
   advisorReq?: AdvisorRequest | null;
   rosterRoleId?: string;
+  stepLabel?: string;
   customInstructions?: string;
   escalatedFrom?: string;
   escalatedDiffStat?: string;
@@ -389,6 +390,7 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
     mcpEnabled,
     advisorReq,
     rosterRoleId,
+    stepLabel,
     customInstructions,
     escalatedFrom,
     escalatedDiffStat,
@@ -477,8 +479,10 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
     buildLayer0WorkspaceSafetyNote(card, role, stage),
     genericProtocolNote,
     ...(customInstructions && customInstructions.trim().length > 0
-      ? [``, `## 槽位专属指令 (${rosterRoleId ?? role})`, customInstructions.trim()]
-      : []),
+      ? [``, `## 槽位专属指令 (${stepLabel ?? rosterRoleId ?? role})`, customInstructions.trim()]
+      : stepLabel && stepLabel.trim().length > 0
+        ? [``, `## 当前步骤 (${stepLabel.trim()})`]
+        : []),
     ``,
     ...(receiptTemplateSection ? [receiptTemplateSection, ``] : []),
     `## 空间决策账本 (${card.space})`,

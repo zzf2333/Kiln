@@ -43,8 +43,11 @@ import {
   UpdateTaskLimitsRequestSchema,
   UpsertSpaceRequestSchema,
   WorkflowBlueprintSchema,
+  WorkflowsConfigSchema,
   WorkspaceModeSchema,
+  createDefaultWorkflowsConfig,
   deriveLegacyRolesConfigFromRoster,
+  projectWorkflowsConfigToRoster,
   type DiscoverSpacesResponse,
   type LedgerFile,
   type OpenRunTuiResponse,
@@ -1215,6 +1218,13 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     });
   });
 
+  app.get("/api/settings/workflows", (c) => {
+    return c.json({
+      ok: true,
+      data: store.readEffectiveWorkflowsConfig(),
+    });
+  });
+
   app.get("/api/ledgers", (c) => {
     const extraSpaces = new Set<string>(store.listTasks().map((t) => t.space));
     const ledgers = loadAllLedgers(store, extraSpaces);
@@ -1516,6 +1526,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     const limits = store.readConfig("limits");
     const pricing = store.readConfig("pricing");
     const roster = store.readEffectiveRosterConfig();
+    const workflows = store.readEffectiveWorkflowsConfig();
     const providers = buildSanitizedProviderStatuses();
     const providersConfig =
       listenerMode === "local" ? store.readEffectiveProvidersConfig() : undefined;
@@ -1625,10 +1636,12 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         limits,
         pricing,
         roster,
+        workflows,
         ...(providersConfig !== undefined ? { providers: providersConfig } : {}),
       },
       roles,
       roster,
+      workflows,
       limits,
       pricing,
       usage,
@@ -3079,12 +3092,13 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       section !== "limits" &&
       section !== "pricing" &&
       section !== "providers" &&
-      section !== "roster"
+      section !== "roster" &&
+      section !== "workflows"
     ) {
       throw new ServerHttpError(400, {
         error: "invalid_settings_section",
         section,
-        message: `Unknown settings section "${section}"; expected one of roles, limits, pricing, providers, roster`,
+        message: `Unknown settings section "${section}"; expected one of roles, limits, pricing, providers, roster, workflows`,
       });
     }
 
@@ -3097,9 +3111,83 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     }
 
     const rawBody = await readJsonBodyStrict(c);
+    if (section === "workflows") {
+      const data = WorkflowsConfigSchema.parse(rawBody);
+      store.writeConfig("workflows", data);
+      const existingRoster = store.readEffectiveRosterConfig();
+      const projectedRoster = projectWorkflowsConfigToRoster(data, existingRoster);
+      store.writeConfig("roster", projectedRoster);
+      store.writeConfig("roles", deriveLegacyRolesConfigFromRoster(projectedRoster));
+      await Promise.resolve(onSettingsUpdated?.("roster"));
+      return c.json({ ok: true, section, data, roster: projectedRoster });
+    }
     if (section === "roles") {
       const data = RolesConfigSchema.parse(rawBody);
       store.writeConfig("roles", data);
+      const hasRosterOrWorkflows =
+        store.readConfig("roster") !== null || store.readConfig("workflows") !== null;
+      if (hasRosterOrWorkflows) {
+        const curRoster = store.readEffectiveRosterConfig();
+        const roleToRosterKey = {
+          intake: "pm",
+          worker: "main_dev",
+          advisor: "advisor",
+          reviewer: "reviewer",
+          verifier: "verifier",
+          triage: "triage",
+          resolver: "resolver",
+        } as const;
+        const nextRosterEntries = { ...curRoster.roster };
+        for (const [legacyRole, rosterKey] of Object.entries(roleToRosterKey)) {
+          const assignment = data.roles[legacyRole as keyof typeof data.roles];
+          const baseEntry = nextRosterEntries[rosterKey];
+          if (assignment && baseEntry) {
+            nextRosterEntries[rosterKey] = {
+              ...baseEntry,
+              enabled: true,
+              mode: "agent",
+              primary: {
+                provider: assignment.agent,
+                model: assignment.model,
+                ...(assignment.backend_id ? { backend_id: assignment.backend_id } : {}),
+                ...(assignment.reasoning_effort ? { effort: assignment.reasoning_effort } : {}),
+              },
+              ...(assignment.fallback
+                ? {
+                    fallbacks: [
+                      {
+                        provider: assignment.fallback.agent,
+                        model: assignment.fallback.model,
+                        ...(assignment.fallback.backend_id
+                          ? { backend_id: assignment.fallback.backend_id }
+                          : {}),
+                        ...(assignment.fallback.reasoning_effort
+                          ? { effort: assignment.fallback.reasoning_effort }
+                          : {}),
+                      },
+                    ],
+                  }
+                : {}),
+              allow_full_access_fallback: assignment.allow_full_access_fallback ?? false,
+            };
+          }
+        }
+        const syncedRoster = RosterConfigSchema.parse({
+          ...curRoster,
+          heterogeneous_review: data.heterogeneous_review,
+          roster: nextRosterEntries,
+        });
+        store.writeConfig("roster", syncedRoster);
+        if (store.readConfig("workflows") !== null) {
+          const curWf = store.readEffectiveWorkflowsConfig();
+          const syncedFromRoster = createDefaultWorkflowsConfig(syncedRoster);
+          store.writeConfig("workflows", {
+            ...syncedFromRoster,
+            default_template_id: curWf.default_template_id,
+            templates: curWf.templates,
+          });
+        }
+      }
       await Promise.resolve(onSettingsUpdated?.("roles"));
       return c.json({ ok: true, section, data });
     }
@@ -3107,6 +3195,15 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       const data = RosterConfigSchema.parse(rawBody);
       store.writeConfig("roster", data);
       store.writeConfig("roles", deriveLegacyRolesConfigFromRoster(data));
+      if (store.readConfig("workflows") !== null) {
+        const curWf = store.readEffectiveWorkflowsConfig();
+        const syncedFromRoster = createDefaultWorkflowsConfig(data);
+        store.writeConfig("workflows", {
+          ...syncedFromRoster,
+          default_template_id: curWf.default_template_id,
+          templates: curWf.templates,
+        });
+      }
       await Promise.resolve(onSettingsUpdated?.("roster"));
       return c.json({ ok: true, section, data });
     }

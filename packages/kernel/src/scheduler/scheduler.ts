@@ -830,6 +830,22 @@ export class KilnScheduler {
             ? stageNode.kind === "approval"
             : getStageNodeKind(snap.card, "accept") === "approval");
 
+        const nodeOverride =
+          stageNode?.kind === "agent" &&
+          (stageNode.binding !== undefined ||
+            stageNode.instructions !== undefined ||
+            stageNode.label !== undefined ||
+            stageNode.id !== undefined)
+            ? {
+                ...(stageNode.id !== undefined ? { id: stageNode.id } : {}),
+                ...(stageNode.label !== undefined ? { label: stageNode.label } : {}),
+                ...(stageNode.binding !== undefined ? { binding: stageNode.binding } : {}),
+                ...(stageNode.instructions !== undefined
+                  ? { instructions: stageNode.instructions }
+                  : {}),
+              }
+            : undefined;
+
         if (isAcceptApproval) {
           role = null;
         } else if (stage === "verify" || stage === "deliver") {
@@ -838,6 +854,7 @@ export class KilnScheduler {
               ...(stageNode?.kind === "agent" && stageNode.roster_role
                 ? { rosterRoleId: stageNode.roster_role }
                 : {}),
+              ...(nodeOverride !== undefined ? { nodeOverride } : {}),
               ...(stage === "deliver" ? { allowOnConflictDeliverer: true } : {}),
               ...(this.agentCapabilitiesMap !== undefined
                 ? { agentCapabilitiesMap: this.agentCapabilitiesMap }
@@ -885,17 +902,25 @@ export class KilnScheduler {
               const implNode = [...workflowNodes]
                 .reverse()
                 .find((n) => n.kind === "agent" && n.stage === "implement");
-              const implKey =
-                implNode?.kind === "agent" && implNode.roster_role
-                  ? implNode.roster_role
-                  : "main_dev";
-              const implEntry = rosterConfig.roster[implKey];
-              if (implEntry?.enabled && implEntry.primary) {
+              if (implNode?.kind === "agent" && implNode.binding) {
                 avoidPeers.push({
                   stage: "implement",
-                  agent: implEntry.primary.provider,
-                  model: implEntry.primary.model,
+                  agent: implNode.binding.provider,
+                  model: implNode.binding.model,
                 });
+              } else {
+                const implKey =
+                  implNode?.kind === "agent" && implNode.roster_role
+                    ? implNode.roster_role
+                    : "main_dev";
+                const implEntry = rosterConfig.roster[implKey];
+                if (implEntry?.enabled && implEntry.primary) {
+                  avoidPeers.push({
+                    stage: "implement",
+                    agent: implEntry.primary.provider,
+                    model: implEntry.primary.model,
+                  });
+                }
               }
             }
 
@@ -907,6 +932,7 @@ export class KilnScheduler {
 
           roleAssignment = resolveRosterStageAssignment(rosterConfig, stage, role, {
             ...(resolvedRosterRoleId !== undefined ? { rosterRoleId: resolvedRosterRoleId } : {}),
+            ...(nodeOverride !== undefined ? { nodeOverride } : {}),
             ...(escalateFromRole !== undefined ? { escalateFromRole } : {}),
             ...(avoidPeers.length > 0 ? { avoidPeers } : {}),
             ...(this.agentCapabilitiesMap !== undefined
@@ -920,16 +946,46 @@ export class KilnScheduler {
             role = null;
           }
         } else if (rolesConfig && role !== null && stage !== "verify" && stage !== "deliver") {
-          const shouldResolveRole =
-            (stage !== "accept" && stage !== "plan") || rolesConfig.roles[role] !== undefined;
-          if (shouldResolveRole) {
-            roleAssignment = resolveRoleAssignment(
-              rolesConfig,
+          if (nodeOverride?.binding) {
+            roleAssignment = {
               role,
-              this.agentCapabilitiesMap !== undefined
-                ? { agentCapabilitiesMap: this.agentCapabilitiesMap }
-                : {},
-            );
+              ...(nodeOverride.label !== undefined ? { stepLabel: nodeOverride.label } : {}),
+              ...(nodeOverride.instructions !== undefined
+                ? { customInstructions: nodeOverride.instructions }
+                : {}),
+              ...(nodeOverride.binding.backend_id !== undefined
+                ? { backendId: nodeOverride.binding.backend_id }
+                : {}),
+              agent: nodeOverride.binding.provider,
+              model: nodeOverride.binding.model,
+              ...(nodeOverride.binding.effort !== undefined
+                ? { reasoningEffort: nodeOverride.binding.effort }
+                : {}),
+              freshContext: stage !== "implement",
+              allowFullAccessFallback: false,
+              usedFallback: false,
+            };
+          } else {
+            const shouldResolveRole =
+              (stage !== "accept" && stage !== "plan") || rolesConfig.roles[role] !== undefined;
+            if (shouldResolveRole) {
+              roleAssignment = resolveRoleAssignment(
+                rolesConfig,
+                role,
+                this.agentCapabilitiesMap !== undefined
+                  ? { agentCapabilitiesMap: this.agentCapabilitiesMap }
+                  : {},
+              );
+              if (roleAssignment && (nodeOverride?.label || nodeOverride?.instructions)) {
+                roleAssignment = {
+                  ...roleAssignment,
+                  ...(nodeOverride.label !== undefined ? { stepLabel: nodeOverride.label } : {}),
+                  ...(nodeOverride.instructions !== undefined
+                    ? { customInstructions: nodeOverride.instructions }
+                    : {}),
+                };
+              }
+            }
           }
         }
       } catch (error) {

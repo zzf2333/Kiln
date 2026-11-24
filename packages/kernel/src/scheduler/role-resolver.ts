@@ -10,6 +10,7 @@ import {
   type RosterModelBinding,
   type RosterPermission,
   type StageId,
+  type WorkflowNodeBinding,
 } from "@kiln/protocol";
 import { IneligibleRoleAgentError } from "../backend/types.js";
 import type { RateLimitKey } from "./locks.js";
@@ -81,6 +82,7 @@ export interface ResolveRoleAssignmentOptions {
 export interface ResolvedRoleAssignment {
   role: RoleId;
   rosterRoleId?: string;
+  stepLabel?: string;
   inheritedFrom?: string;
   escalatedFrom?: string;
   heterogeneityLevel?: "dual" | "single" | "none";
@@ -109,14 +111,29 @@ export class RosterRoleUnavailableError extends Error {
   }
 }
 
+export interface WorkflowNodeOverride {
+  id?: string;
+  label?: string;
+  binding?: WorkflowNodeBinding;
+  instructions?: string;
+}
+
 export interface ResolveRosterStageOptions {
   rosterRoleId?: string;
+  nodeOverride?: WorkflowNodeOverride;
   avoidAgentModel?: { agent: string; model: string } | null;
   avoidPeers?: ReadonlyArray<{ stage: StageId; agent: string; model: string }>;
   allowOnConflictDeliverer?: boolean;
   escalateFromRole?: string;
   agentCapabilitiesMap?: ReadonlyMap<string, BackendCapabilities>;
   isCoolingDown?: (key: RateLimitKey) => boolean;
+}
+
+function defaultPermForStage(stage: StageId, role: RoleId): RosterPermission {
+  if (stage === "implement") return "workspace_write";
+  if (stage === "accept") return "accept_entry";
+  if (stage === "intake" || role === "intake" || role === "resolver") return "read_only_draft";
+  return "read_only";
 }
 
 const DEFAULT_ROSTER_KEY_BY_STAGE: Readonly<Record<StageId, string>> = {
@@ -298,7 +315,8 @@ export function resolveRosterStageAssignment(
         }
       }
     }
-    if (!entry || (!entry.enabled && inheritedFrom === undefined)) {
+    const overrideBinding = options?.nodeOverride?.binding;
+    if ((!entry || (!entry.enabled && inheritedFrom === undefined)) && !overrideBinding) {
       if (OPTIONAL_STAGES.has(stage)) {
         return null;
       }
@@ -306,19 +324,29 @@ export function resolveRosterStageAssignment(
     }
   }
 
-  if (entry.mode === "kernel") {
+  const overrideBinding = options?.nodeOverride?.binding;
+  const effectivePerm: RosterPermission = entry?.perm ?? defaultPermForStage(stage, role);
+  const effectiveMode: RosterExecutionMode = overrideBinding ? "agent" : (entry?.mode ?? "agent");
+
+  if (effectiveMode === "kernel") {
     return null;
   }
-  if (entry.mode === "on_conflict" && !options?.allowOnConflictDeliverer) {
+  if (effectiveMode === "on_conflict" && !options?.allowOnConflictDeliverer) {
     return null;
   }
 
   const allCandidates: RosterModelBinding[] = [];
-  if (entry.primary) {
-    allCandidates.push(entry.primary);
-  }
-  for (const fb of entry.fallbacks) {
-    allCandidates.push(fb);
+  if (overrideBinding) {
+    allCandidates.push(overrideBinding);
+  } else {
+    if (entry?.primary) {
+      allCandidates.push(entry.primary);
+    }
+    if (entry?.fallbacks) {
+      for (const fb of entry.fallbacks) {
+        allCandidates.push(fb);
+      }
+    }
   }
   if (allCandidates.length === 0) {
     throw new RoleNotConfiguredError(role);
@@ -327,8 +355,12 @@ export function resolveRosterStageAssignment(
   const heterogeneousEnabled = rosterConfig.heterogeneous_review ?? true;
   let filteredCandidates = allCandidates;
   let heterogeneityLevel: "dual" | "single" | "none" | undefined;
-  if (heterogeneousEnabled && (role === "reviewer" || entry.avoid_same_as !== undefined)) {
-    const rawAvoid = entry.avoid_same_as;
+  if (
+    !overrideBinding &&
+    heterogeneousEnabled &&
+    (role === "reviewer" || entry?.avoid_same_as !== undefined)
+  ) {
+    const rawAvoid = entry?.avoid_same_as;
     const avoidStages: StageId[] =
       rawAvoid !== undefined ? (Array.isArray(rawAvoid) ? rawAvoid : [rawAvoid]) : ["implement"];
     const peers: Array<{ stage: StageId; agent: string; model: string }> = [];
@@ -429,30 +461,38 @@ export function resolveRosterStageAssignment(
     throw new CapabilityMismatchError(role, selected.provider, ["interactiveChat"]);
   }
 
+  const primaryBaseline = overrideBinding ?? entry?.primary;
   const usedFallback =
-    entry.primary === undefined ||
-    selected.provider !== entry.primary.provider ||
-    selected.model !== entry.primary.model ||
-    selected.backend_id !== entry.primary.backend_id ||
-    selected.effort !== entry.primary.effort;
+    primaryBaseline === undefined ||
+    selected.provider !== primaryBaseline.provider ||
+    selected.model !== primaryBaseline.model ||
+    selected.backend_id !== primaryBaseline.backend_id ||
+    selected.effort !== primaryBaseline.effort;
+
+  const instructionParts = [entry?.custom_instructions, options?.nodeOverride?.instructions]
+    .map((s) => s?.trim())
+    .filter((s): s is string => Boolean(s && s.length > 0));
+  const mergedInstructions =
+    instructionParts.length > 0 ? instructionParts.join("\n\n") : undefined;
 
   return {
     role,
     rosterRoleId,
+    ...(options?.nodeOverride?.label !== undefined
+      ? { stepLabel: options.nodeOverride.label }
+      : {}),
     ...(inheritedFrom !== undefined ? { inheritedFrom } : {}),
     ...(options?.escalateFromRole !== undefined ? { escalatedFrom: options.escalateFromRole } : {}),
     ...(heterogeneityLevel !== undefined ? { heterogeneityLevel } : {}),
-    ...(entry.custom_instructions !== undefined
-      ? { customInstructions: entry.custom_instructions }
-      : {}),
-    rosterMode: entry.mode,
-    perm: entry.perm,
+    ...(mergedInstructions !== undefined ? { customInstructions: mergedInstructions } : {}),
+    rosterMode: effectiveMode,
+    perm: effectivePerm,
     ...(selected.backend_id !== undefined ? { backendId: selected.backend_id } : {}),
     agent: selected.provider,
     model: selected.model,
     ...(selected.effort !== undefined ? { reasoningEffort: selected.effort } : {}),
     freshContext: FRESH_CONTEXT_ROLES.has(role) || options?.escalateFromRole !== undefined,
-    allowFullAccessFallback: entry.allow_full_access_fallback ?? false,
+    allowFullAccessFallback: entry?.allow_full_access_fallback ?? false,
     usedFallback,
   };
 }

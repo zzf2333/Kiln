@@ -18,6 +18,7 @@ import {
   isReadOnlyRosterPermission,
   nextWorkflowStepAfter,
   parseAndValidateReceipt,
+  resolveWorkflowStepAt,
   serializeFrontmatterMarkdown,
   type AcceptEntryConfig,
   type AcceptVerificationReport,
@@ -1741,6 +1742,7 @@ export class KilnOrchestrator {
     inputRef?: string;
     mcpEnabled: boolean;
     rosterRoleId?: string;
+    stepLabel?: string;
     customInstructions?: string;
     escalatedFrom?: string;
     escalatedDiffStat?: string;
@@ -2300,6 +2302,7 @@ export class KilnOrchestrator {
       inputRef: workspace.inputRef,
       mcpEnabled: caps.mcpInjection,
       ...(assignment.rosterRoleId !== undefined ? { rosterRoleId: assignment.rosterRoleId } : {}),
+      ...(assignment.stepLabel !== undefined ? { stepLabel: assignment.stepLabel } : {}),
       ...(assignment.customInstructions !== undefined
         ? { customInstructions: assignment.customInstructions }
         : {}),
@@ -2338,6 +2341,8 @@ export class KilnOrchestrator {
       plan.stage === "implement" &&
       plan.role === "worker" &&
       !assignment.freshContext &&
+      assignment.stepLabel === undefined &&
+      assignment.customInstructions === undefined &&
       caps.warmSessionReuse === true &&
       !this.hasConsecutiveSameGateFailure(plan.taskId, plan.card, 2);
 
@@ -3462,21 +3467,33 @@ export class KilnOrchestrator {
 
     let advisorCalls = 0;
     let reviewRounds = 0;
+    let inReviewCycle = false;
     for (const r of runs) {
       if (r.meta.stage === "advise") {
         advisorCalls += 1;
       }
-      if (r.meta.stage === "review" && r.meta.run_id !== currentRunId && r.hasReceipt) {
-        reviewRounds += 1;
+      if (r.meta.stage === "implement") {
+        inReviewCycle = false;
+      } else if (r.meta.stage === "review" && r.meta.run_id !== currentRunId && r.hasReceipt) {
+        if (!inReviewCycle) {
+          reviewRounds += 1;
+          inReviewCycle = true;
+        }
       }
     }
 
     const currentIdx = runs.findIndex((r) => r.meta.run_id === currentRunId);
     const slice = currentIdx >= 0 ? runs.slice(0, currentIdx + 1) : runs;
+    const currentStepIndex = currentIdx >= 0 ? runs[currentIdx]!.meta.step_index : undefined;
 
     let sameStageStreak = 0;
     for (let i = slice.length - 1; i >= 0; i--) {
-      if (slice[i]!.meta.stage === currentStage) {
+      const item = slice[i]!;
+      const sameStep =
+        currentStepIndex === undefined ||
+        item.meta.step_index === undefined ||
+        item.meta.step_index === currentStepIndex;
+      if (item.meta.stage === currentStage && sameStep) {
         sameStageStreak += 1;
       } else {
         break;
@@ -4250,7 +4267,22 @@ export class KilnOrchestrator {
       advisorAvailable,
     });
 
-    if (reviewDecision.action === "advance_stage") {
+    const activeNode = resolveWorkflowStepAt(
+      card,
+      runMeta.step_index ?? null,
+      "review",
+      card.track,
+    )?.node;
+    const continueOnFail =
+      parsedReceipt.ok &&
+      parsedReceipt.frontmatter.run_id === runMeta.run_id &&
+      parsedReceipt.frontmatter.contract_version === card.contract_version &&
+      activeNode?.kind === "agent" &&
+      activeNode.on_fail === "continue" &&
+      (reviewDecision.action === "advance_stage" ||
+        reviewDecision.reason !== "max_tokens_exceeded");
+
+    if (reviewDecision.action === "advance_stage" || continueOnFail) {
       const nextStep = nextWorkflowStepAfter(
         card,
         runMeta.step_index ?? null,
@@ -4259,7 +4291,9 @@ export class KilnOrchestrator {
       );
       await this.advanceToNextStage(
         taskId,
-        nextStep?.stage ?? reviewDecision.nextStage ?? "deliver",
+        nextStep?.stage ??
+          (reviewDecision.action === "advance_stage" ? reviewDecision.nextStage : undefined) ??
+          "deliver",
         guard,
         nextStep?.stepIndex ?? null,
       );

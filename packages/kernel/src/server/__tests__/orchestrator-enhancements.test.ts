@@ -7,6 +7,7 @@ import {
   GateReportSchema,
   RosterConfigSchema,
   RunMetaSchema,
+  createDefaultWorkflowsConfig,
   serializeFrontmatterMarkdown,
   type LimitsConfig,
   type RosterConfig,
@@ -950,5 +951,287 @@ describe("Orchestrator enhancements: step_index, tester/deliverer agent modes, a
       "立即改用常量 api = 42",
     ]);
     expect(detailJson.steers.map((s) => s.interrupt)).toEqual([false, true]);
+  });
+
+  it("executes custom inserted workflow nodes with inline bindings, injected instructions, loop_back rework, and on_fail=continue", async () => {
+    const kilnHome = makeTempDir("kiln-custom-wf-home-");
+    const { repoPath, baseCommit } = initGitRepo("customwf");
+    const acceptCmd = 'node -e "process.exit(0)"';
+    const snap = computeFrozenSnapshot(repoPath, [], acceptCmd);
+    const fakeBackend = makeEnhancementBackend();
+
+    let implCount = 0;
+    let reviewCount = 0;
+
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: true,
+      tokenSecret: "custom-wf-test-secret-0123456789",
+      approvalHandler: async (req, ctx) => {
+        const wtPath = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
+        const token =
+          fakeBackend.getRecordedSpecs().find((s) => s.runId === ctx.runId)?.mcpServers?.[0]?.env
+            ?.KILN_RUN_TOKEN ?? "";
+
+        if (req.action === "step_impl") {
+          implCount += 1;
+          fs.writeFileSync(
+            path.join(wtPath, "src", "api.ts"),
+            `export const api = ${implCount + 1};\n`,
+          );
+          const mcpRes = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeWorkerReceiptMarkdown({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                input_ref: baseCommit,
+                output_ref: "HEAD",
+                changed_paths: ["src/api.ts"],
+              }),
+            }),
+          });
+          expect(mcpRes.status).toBe(200);
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "step_rev") {
+          reviewCount += 1;
+          const revRef = git(["rev-parse", "HEAD"], wtPath).trim();
+          const verdict = reviewCount === 2 || reviewCount === 5 ? "changes_requested" : "pass";
+          const mcpRes = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeReviewerReceiptMarkdown({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                reviewed_ref: revRef,
+                verdict,
+              }),
+            }),
+          });
+          expect(mcpRes.status).toBe(200);
+          await ctx.backend.answer(req.id, true);
+        }
+      },
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "kiln",
+      name: "Kiln",
+      repo_path: repoPath,
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    });
+    server.store.writeConfig("limits", defaultLimits());
+    await server.start();
+
+    // Configure workflows via PUT /api/settings/workflows reusing same model across steps
+    const wfConfig = createDefaultWorkflowsConfig(null);
+    wfConfig.heterogeneous_review = false;
+    wfConfig.stage_bindings.intake = { provider: "codex", model: "gpt-5.4", backend_id: "fake" };
+    wfConfig.stage_bindings.implement = { provider: "codex", model: "gpt-5.4", backend_id: "fake" };
+    wfConfig.stage_bindings.review = { provider: "codex", model: "gpt-5.4", backend_id: "fake" };
+    const customTemplate = {
+      id: "sec_loop",
+      name: "标准开发+双步自定义审查",
+      blueprint: {
+        schema_version: 1 as const,
+        preset: "custom" as const,
+        steps: [
+          {
+            kind: "loop" as const,
+            max_rounds: 3,
+            stuck_threshold: 2,
+            steps: [
+              {
+                kind: "agent" as const,
+                stage: "implement" as const,
+                role: "worker" as const,
+                fresh_context: false,
+              },
+              { kind: "gate" as const, stage: "verify" as const, check: "full" as const },
+              {
+                kind: "agent" as const,
+                stage: "review" as const,
+                role: "reviewer" as const,
+                fresh_context: true,
+              },
+              {
+                kind: "agent" as const,
+                id: "sec-gate",
+                label: "安全审查",
+                stage: "review" as const,
+                role: "reviewer" as const,
+                fresh_context: true,
+                binding: {
+                  provider: "claude",
+                  model: "claude-sonnet-4-6",
+                  backend_id: "fake",
+                  effort: "high" as const,
+                },
+                instructions: "核查越权与凭据泄露风险",
+                on_fail: "loop_back" as const,
+              },
+              {
+                kind: "agent" as const,
+                id: "style-note",
+                label: "风格建议",
+                stage: "review" as const,
+                role: "reviewer" as const,
+                fresh_context: true,
+                binding: {
+                  provider: "codex",
+                  model: "gpt-5.4",
+                  backend_id: "fake",
+                  effort: "low" as const,
+                },
+                instructions: "仅记录风格优化建议，不阻塞合入",
+                on_fail: "continue" as const,
+              },
+            ],
+          },
+          {
+            kind: "command" as const,
+            stage: "deliver" as const,
+            apply_staged: false,
+            run_deliver_cmd: false,
+            verify_sha256: false,
+            final_accept_gate: false,
+          },
+        ],
+      },
+    };
+    wfConfig.templates.push(customTemplate);
+
+    const putWfRes = await server.app.request(
+      new Request("http://127.0.0.1/api/settings/workflows", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(wfConfig),
+      }),
+    );
+    expect(putWfRes.status).toBe(200);
+    expect(server.store.readEffectiveRosterConfig().roster.reviewer?.primary?.model).toBe(
+      "gpt-5.4",
+    );
+    expect(server.store.readConfig("roles")?.heterogeneous_review).toBe(false);
+
+    const bootRes = await server.app.request(new Request("http://127.0.0.1/api/bootstrap"));
+    const bootJson = (await bootRes.json()) as {
+      workflows: { templates: Array<{ id: string }> };
+    };
+    expect(bootJson.workflows.templates.some((t) => t.id === "sec_loop")).toBe(true);
+
+    for (let i = 0; i < 2; i += 1) {
+      fakeBackend.enqueueScript(
+        [
+          { kind: "approval", action: "step_impl", detail: "impl" },
+          { kind: "exit", reason: "completed" },
+        ],
+        { role: "worker" },
+      );
+    }
+    for (let i = 0; i < 5; i += 1) {
+      fakeBackend.enqueueScript(
+        [
+          { kind: "approval", action: "step_rev", detail: "rev" },
+          { kind: "exit", reason: "completed" },
+        ],
+        { role: "reviewer" },
+      );
+    }
+
+    const draftRes = await server.app.request(
+      new Request("http://127.0.0.1/api/drafts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: "d-custom-wf",
+          title: "自定义安全审查节点端到端",
+          space: "kiln",
+          priority: "P1",
+          track: "L2",
+          workspace_mode: "git_worktree",
+          workflow: customTemplate.blueprint,
+          contract: {
+            goal: "验证循环内自定义步骤模型与指令及 on_fail 分流",
+            end: "安全审查打回修复并通过后交付",
+            accept_cmd: acceptCmd,
+            accept_files_hash: snap.hash,
+            scope: ["src/**"],
+            non_goals: [],
+            deliver: { mode: "merge_main", cmd: null },
+            human_accept: false,
+            external_actions: "ask",
+          },
+        }),
+      }),
+    );
+    expect(draftRes.status).toBe(201);
+
+    const commitRes = await server.app.request(
+      new Request("http://127.0.0.1/api/drafts/d-custom-wf/commit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: "t-custom-wf",
+          brief_markdown: "# Custom workflow E2E brief",
+        }),
+      }),
+    );
+    expect(commitRes.status).toBe(201);
+
+    await waitUntil(() => {
+      const st = server.store.getTaskIndex("t-custom-wf")?.status;
+      return st === "done" || st === "waiting" || st === "cancelled";
+    }, "t-custom-wf terminal or waiting");
+    const curIdx = server.store.getTaskIndex("t-custom-wf");
+    const pendings = server.pendingDecisions.listAll();
+    if (curIdx?.status !== "done") {
+      throw new Error(
+        `Unexpected task state: ${JSON.stringify({ curIdx, pendings, implCount, reviewCount })}`,
+      );
+    }
+
+    expect(implCount).toBe(2);
+    expect(reviewCount).toBe(5);
+    const runDirs = fs.readdirSync(server.store.paths.runsDir("t-custom-wf")).sort();
+    expect(runDirs).toHaveLength(7);
+
+    const secMeta = readYamlOptional(
+      server.store.paths.runYaml("t-custom-wf", runDirs[2]!),
+      RunMetaSchema,
+    );
+    expect(secMeta).toMatchObject({ agent: "claude", model: "claude-sonnet-4-6" });
+    const secHandoff = fs.readFileSync(
+      server.store.paths.handoffMd("t-custom-wf", runDirs[2]!),
+      "utf8",
+    );
+    expect(secHandoff).toContain("槽位专属指令 (安全审查)");
+    expect(secHandoff).toContain("核查越权与凭据泄露风险");
+
+    const styleMeta = readYamlOptional(
+      server.store.paths.runYaml("t-custom-wf", runDirs[6]!),
+      RunMetaSchema,
+    );
+    expect(styleMeta).toMatchObject({ agent: "codex", model: "gpt-5.4" });
+    const styleHandoff = fs.readFileSync(
+      server.store.paths.handoffMd("t-custom-wf", runDirs[6]!),
+      "utf8",
+    );
+    expect(styleHandoff).toContain("槽位专属指令 (风格建议)");
+    expect(styleHandoff).toContain("仅记录风格优化建议，不阻塞合入");
   });
 });
