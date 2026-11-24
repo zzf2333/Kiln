@@ -3576,7 +3576,7 @@ button.sb-item:hover { background: var(--hover); color: var(--t1); }
   .topbar { height: auto; min-height: 50px; padding: 8px 12px; gap: 8px; justify-content: flex-start; flex-wrap: wrap; }
   .tb-l { flex: 1 1 auto; min-width: 120px; }
   .tb-sub { display: none; }
-  .tb-r { max-width: 66vw; overflow-x: auto; scrollbar-width: none; }
+  .tb-r { flex: 1 1 100%; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
   .topbar.is-board .tb-r { flex: 1 1 100%; max-width: 100%; justify-content: space-between; }
   .tb-r .select { width: 108px !important; padding: 0 8px; font-size: 12.5px; }
   .seg button { padding: 0 9px; }
@@ -4143,7 +4143,7 @@ button.sb-item:hover { background: var(--hover); color: var(--t1); }
 .merge-queue-title {
   font-size: 12.5px;
   font-weight: 600;
-  color: var(--ink-2);
+  color: var(--t2);
 }
 
 .script-preview-bar {
@@ -4158,14 +4158,14 @@ button.sb-item:hover { background: var(--hover); color: var(--t1); }
 }
 .wait-badge {
   font-size: 11.5px;
-  color: var(--ink-2);
+  color: var(--t2);
 }
 .wait-badge.is-overdue {
-  color: var(--ember);
+  color: var(--acc);
   font-weight: 600;
 }
 .block-reason {
-  color: var(--ink-2);
+  color: var(--t2);
   font-size: 12px;
 }
 
@@ -4191,7 +4191,7 @@ button.sb-item:hover { background: var(--hover); color: var(--t1); }
 .checklist-group-title {
   font-size: 12px;
   font-weight: 600;
-  color: var(--ink-2);
+  color: var(--t2);
 }
 .checklist-row {
   display: flex;
@@ -4236,19 +4236,19 @@ button.sb-item:hover { background: var(--hover); color: var(--t1); }
   background: transparent;
   padding: 3px 9px;
   font-size: 11.5px;
-  color: var(--ink-2);
+  color: var(--t2);
   cursor: pointer;
 }
 .checklist-seg-btn + .checklist-seg-btn {
   border-left: 1px solid var(--line);
 }
 .checklist-seg-btn.is-active {
-  background: var(--ink);
+  background: var(--t1);
   color: var(--bg);
   font-weight: 600;
 }
 .checklist-seg-btn.is-active.is-rework {
-  background: var(--ember);
+  background: var(--bad);
   color: #fff;
 }
 .checklist-seg-btn.is-active.is-waive {

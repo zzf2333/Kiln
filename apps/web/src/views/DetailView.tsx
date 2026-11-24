@@ -1444,58 +1444,84 @@ export function DetailView() {
                 </div>
               ) : null}
 
-              {taskState.status === "waiting" && pendingDecision ? (
-                <DecisionBox
-                  decision={pendingDecision}
-                  onSubmit={(payload) => store.submitDecision(card.id, payload)}
-                  onOpenResolve={() => store.openResolve(card.id)}
-                />
-              ) : null}
-
-              {taskState.status === "external" ? (
-                <section className="external-box" role="status">
-                  <div className="external-head">
-                    <span>外部等待中（当前不会自动继续推进）</span>
-                    {latestExternalEvent ? (
-                      <span className="muted mono">{fmtTime(latestExternalEvent.at)}</span>
+              {(() => {
+                const showChecklistAboveDecision =
+                  (detail.reviewChecklist?.length ?? 0) > 0 &&
+                  taskState.status === "waiting" &&
+                  pendingDecision !== null &&
+                  pendingDecision.reason !== "budget_exceeded" &&
+                  pendingDecision.reason !== "upstream_cancelled" &&
+                  pendingDecision.reason !== "host_apply_approval" &&
+                  pendingDecision.reason !== "read_only_workspace_mutation";
+                return (
+                  <>
+                    {showChecklistAboveDecision ? (
+                      <ReviewChecklistPanel
+                        taskId={card.id}
+                        taskStatus={taskState.status}
+                        taskStage={taskState.stage}
+                        items={detail.reviewChecklist ?? []}
+                        onResolved={() => store.loadTaskDetail(card.id)}
+                      />
                     ) : null}
-                  </div>
-                  <p className="external-meta">
-                    {latestExternalEvent?.type === "external" && latestExternalEvent.detail
-                      ? `说明：${latestExternalEvent.detail}。`
-                      : latestExternalEvent?.type === "decided"
-                        ? `于 ${fmtTime(latestExternalEvent.at)} 经人工选择转入外部等待（decision ${latestExternalEvent.decision_id}）。`
-                        : "当前任务处于外部等待挂起状态。"}
-                    请确认外部前置条件已就绪后点「继续推进」，或直接点「标记已完成」结束任务。
-                  </p>
-                  <div className="external-actions">
-                    <button
-                      type="button"
-                      className="btn btn-light"
-                      onClick={() => void store.resumeTask(card.id)}
-                    >
-                      继续推进
-                    </button>
-                    <button
-                      type="button"
-                      className="btn"
-                      onClick={() => void store.completeTask(card.id)}
-                    >
-                      标记已完成
-                    </button>
-                  </div>
-                </section>
-              ) : null}
 
-              <HostStagedDiffSection detail={detail} />
+                    {taskState.status === "waiting" && pendingDecision ? (
+                      <DecisionBox
+                        decision={pendingDecision}
+                        onSubmit={(payload) => store.submitDecision(card.id, payload)}
+                        onOpenResolve={() => store.openResolve(card.id)}
+                      />
+                    ) : null}
 
-              <ReviewChecklistPanel
-                taskId={card.id}
-                taskStatus={taskState.status}
-                taskStage={taskState.stage}
-                items={detail.reviewChecklist ?? []}
-                onResolved={() => store.loadTaskDetail(card.id)}
-              />
+                    {taskState.status === "external" ? (
+                      <section className="external-box" role="status">
+                        <div className="external-head">
+                          <span>外部等待中（当前不会自动继续推进）</span>
+                          {latestExternalEvent ? (
+                            <span className="muted mono">{fmtTime(latestExternalEvent.at)}</span>
+                          ) : null}
+                        </div>
+                        <p className="external-meta">
+                          {latestExternalEvent?.type === "external" && latestExternalEvent.detail
+                            ? `说明：${latestExternalEvent.detail}。`
+                            : latestExternalEvent?.type === "decided"
+                              ? `于 ${fmtTime(latestExternalEvent.at)} 经人工选择转入外部等待（decision ${latestExternalEvent.decision_id}）。`
+                              : "当前任务处于外部等待挂起状态。"}
+                          请确认外部前置条件已就绪后点「继续推进」，或直接点「标记已完成」结束任务。
+                        </p>
+                        <div className="external-actions">
+                          <button
+                            type="button"
+                            className="btn btn-light"
+                            onClick={() => void store.resumeTask(card.id)}
+                          >
+                            继续推进
+                          </button>
+                          <button
+                            type="button"
+                            className="btn"
+                            onClick={() => void store.completeTask(card.id)}
+                          >
+                            标记已完成
+                          </button>
+                        </div>
+                      </section>
+                    ) : null}
+
+                    <HostStagedDiffSection detail={detail} />
+
+                    {!showChecklistAboveDecision ? (
+                      <ReviewChecklistPanel
+                        taskId={card.id}
+                        taskStatus={taskState.status}
+                        taskStage={taskState.stage}
+                        items={detail.reviewChecklist ?? []}
+                        onResolved={() => store.loadTaskDetail(card.id)}
+                      />
+                    ) : null}
+                  </>
+                );
+              })()}
 
               {normalizedRuns.length > 0 ? (
                 <section className="session-overview" aria-label="Agent Session 总览">

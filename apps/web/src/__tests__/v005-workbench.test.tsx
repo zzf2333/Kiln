@@ -3056,4 +3056,172 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
       advance_after_waive: false,
     });
   });
+
+  it("Regression: ScriptDrawer preserves detectedUrls when script.output SSE arrives before /scripts/run resolves", async () => {
+    const boot = makeV3Bootstrap({
+      spaces: {
+        alpha: {
+          schema_version: 1,
+          id: "alpha",
+          name: "Alpha",
+          repo_path: "/tmp/alpha",
+          default_branch: "main",
+          copy_untracked: [],
+          clone_deps: [],
+          freeze_patterns: [],
+          scripts: {
+            dev: "node server.js",
+          },
+        },
+      },
+      tasks: [
+        {
+          id: "t-sse-race",
+          space: "alpha",
+          parent_id: null,
+          title: "Fast Script Race",
+          priority: "P1",
+          effective_priority: "P1",
+          track: "L1",
+          workspace_mode: "git_worktree",
+          status: "running",
+          stage: "implement",
+          round: 1,
+          active_run_id: "r-sr-1",
+          contract_version: 1,
+          depends_on: [],
+          created_at: "2026-11-24T04:00:00Z",
+          updated_at: "2026-11-24T04:01:00Z",
+          tokens: {
+            input_tokens: 0,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+          },
+          cost_usd: 0,
+          tokens_by_model: {},
+          summary: "Verify SSE before HTTP 202 race",
+        },
+      ],
+    });
+
+    let resolveRunPost!: (res: Response) => void;
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url === "/api/auth/status") {
+        return jsonResponse({ ok: true, mode: "local", authenticated: true, device: null });
+      }
+      if (url === "/api/bootstrap") {
+        return jsonResponse(boot);
+      }
+      if (url === "/api/tasks/t-sse-race") {
+        return jsonResponse({
+          card: {
+            schema_version: 1,
+            id: "t-sse-race",
+            space: "alpha",
+            title: "Fast Script Race",
+            track: "L1",
+            priority: "P1",
+            workspace_mode: "git_worktree",
+            parent: null,
+            depends_on: [],
+            contract_version: 1,
+            contract: {
+              goal: "Verify SSE race",
+              end: "Done",
+              accept_cmd: "echo ok",
+              accept_files_hash: `sha256:${"a".repeat(64)}`,
+              scope: ["src/**"],
+              non_goals: [],
+              deliver: { mode: "manual", cmd: null },
+              human_accept: false,
+              external_actions: "ask",
+            },
+            limits: {
+              retries_per_stage: 2,
+              review_rounds: 2,
+              advisor_calls: 1,
+              max_tokens: 150_000,
+            },
+            created_at: "2026-11-24T04:00:00Z",
+            updated_at: "2026-11-24T04:01:00Z",
+          },
+          state: {
+            status: "running",
+            stage: "implement",
+            round: 1,
+            activeRunId: "r-sr-1",
+            priority: "P1",
+            effectivePriority: "P1",
+            track: "L1",
+            contractVersion: 1,
+            updatedAt: "2026-11-24T04:01:00Z",
+          },
+          brief: "# Brief",
+          decisions: "",
+          pendingDecision: null,
+          ledgerProposals: [],
+          runs: [],
+          usageTurns: [],
+          usage: boot.usage,
+        });
+      }
+      if (url.startsWith("/api/scripts")) {
+        return jsonResponse({ ok: true, runs: [] });
+      }
+      if (url === "/api/spaces/alpha/scripts/run" && method === "POST") {
+        return await new Promise<Response>((resolve) => {
+          resolveRunPost = resolve;
+        });
+      }
+      return jsonResponse({ ok: true });
+    });
+
+    window.location.hash = "#view=detail&task=t-sse-race";
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /脚本/ }));
+    const drawer = await screen.findByLabelText("项目脚本输出");
+    fireEvent.click(within(drawer).getByRole("button", { name: "运行" }));
+
+    await waitFor(() => {
+      expect(typeof resolveRunPost).toBe("function");
+    });
+
+    // Simulate fast child script emitting SSE BEFORE POST /scripts/run resolves
+    const es = MockEventSource.instances[MockEventSource.instances.length - 1]!;
+    es.emit("script.output", {
+      type: "script.output",
+      spaceId: "alpha",
+      taskId: "t-sse-race",
+      scriptRunId: "scr-fast-1",
+      scriptKey: "dev",
+      stream: "stdout",
+      chunk: "Local: http://0.0.0.0:5179/app\n",
+      detectedUrls: ["http://127.0.0.1:5179/app"],
+      done: true,
+      exitCode: 0,
+      at: "2026-11-24T04:02:00Z",
+    });
+
+    resolveRunPost(
+      jsonResponse({
+        ok: true,
+        scriptRunId: "scr-fast-1",
+        spaceId: "alpha",
+        script: "dev",
+        command: "node server.js",
+        cwd: "/tmp/alpha",
+      }, 202),
+    );
+
+    const previewBar = await screen.findByLabelText("探测到的本机预览地址");
+    const link = within(previewBar).getByRole("link", {
+      name: /http:\/\/127\.0\.0\.1:5179\/app/,
+    }) as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe("http://127.0.0.1:5179/app");
+  });
 });

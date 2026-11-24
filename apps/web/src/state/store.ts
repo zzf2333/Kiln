@@ -2036,6 +2036,7 @@ export class KilnWebStore {
               existing && existing.lines.length > 0
                 ? existing.lines
                 : [`$ ${res.command}`],
+            detectedUrls: existing?.detectedUrls ?? [],
             done: existing?.done ?? false,
             exitCode: existing?.exitCode ?? null,
             startedAt: existing?.startedAt ?? nowIso,
