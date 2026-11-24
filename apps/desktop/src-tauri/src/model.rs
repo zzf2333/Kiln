@@ -169,6 +169,59 @@ pub fn close_policy_for_window(label: &str) -> WindowClosePolicy {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupWindowAction {
+    OpenImmediately,
+    AutoStartThenOpen,
+}
+
+/// Decides whether startup/open-workbench can show the window right away or must first start `kilnd`.
+pub fn decide_startup_window_action(kilnd_online: bool) -> StartupWindowAction {
+    if kilnd_online {
+        StartupWindowAction::OpenImmediately
+    } else {
+        StartupWindowAction::AutoStartThenOpen
+    }
+}
+
+/// Keeps the desktop shell alive when the last WebView window is destroyed (`code == None`),
+/// while allowing programmatic `app.exit(...)` shutdowns (`code == Some(_)`) or explicit quit.
+pub fn should_prevent_exit(exit_code: Option<i32>, allow_exit: bool) -> bool {
+    exit_code.is_none() && !allow_exit
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkbenchRoute {
+    Board,
+    Intake,
+    Inbox,
+    Lineup,
+    Ledger,
+    Usage,
+    Settings,
+}
+
+impl WorkbenchRoute {
+    pub const fn hash_fragment(self) -> &'static str {
+        match self {
+            Self::Board => "view=board",
+            Self::Intake => "view=intake",
+            Self::Inbox => "view=inbox",
+            Self::Lineup => "view=lineup",
+            Self::Ledger => "view=ledger",
+            Self::Usage => "view=usage",
+            Self::Settings => "view=settings",
+        }
+    }
+}
+
+pub fn build_workbench_url(origin: &NormalizedKilndUrl, route: Option<WorkbenchRoute>) -> String {
+    match route {
+        None => origin.base_url.clone(),
+        Some(r) => format!("{}/#{}", origin.base_url, r.hash_fragment()),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalizedKilndUrl {
     pub host: String,
@@ -392,18 +445,18 @@ pub fn format_tray_title(state: &TrayDisplayState) -> String {
         TrayDisplayState::Offline { .. } => "离线".to_string(),
         TrayDisplayState::Starting => "启动中…".to_string(),
         TrayDisplayState::StartFailed { .. } => "启动失败".to_string(),
-        TrayDisplayState::Idle { cost_usd, .. } => {
-            format!("待机 ${:.2}", sanitize_non_negative(*cost_usd))
-        }
+        TrayDisplayState::Idle { .. } => String::new(),
         TrayDisplayState::Running {
             running_count,
             tok_per_sec,
             ..
         } => {
-            format!(
-                "{running_count} 运行 · {:.0} tok/s",
-                sanitize_non_negative(*tok_per_sec)
-            )
+            let rate = sanitize_non_negative(*tok_per_sec);
+            if rate >= 1.0 {
+                format!("{running_count} 运行 · {rate:.0} tok/s")
+            } else {
+                format!("{running_count} 运行")
+            }
         }
         TrayDisplayState::WaitingDecision {
             pending_decisions,
@@ -461,33 +514,69 @@ pub fn format_tray_tooltip(state: &TrayDisplayState, kilnd_url: &str) -> String 
     }
 }
 
+pub fn format_tray_header(app_version: &str, daemon_version: Option<&str>) -> String {
+    format!(
+        "Kiln 工作台 · {}",
+        format_tray_version_tag(app_version, daemon_version)
+    )
+}
+
 pub fn format_tray_menu_status(state: &TrayDisplayState) -> String {
     match state {
-        TrayDisplayState::Offline { .. } => "状态：kilnd 未运行".to_string(),
-        TrayDisplayState::Starting => "状态：正在启动 kilnd…".to_string(),
+        TrayDisplayState::Offline { .. } => "后台引擎未运行".to_string(),
+        TrayDisplayState::Starting => "正在启动后台引擎…".to_string(),
         TrayDisplayState::StartFailed { error } => {
-            format!("状态：启动失败（{}）", summarize_start_error(error))
+            format!("后台引擎启动失败：{}", summarize_start_error(error))
         }
         TrayDisplayState::Idle {
             cost_usd,
             task_count,
         } => format!(
-            "状态：待机（{task_count} 个任务 · 累计 ${:.2}）",
+            "待机 · {task_count} 个任务 · 累计 ${:.2}",
             sanitize_non_negative(*cost_usd)
         ),
         TrayDisplayState::Running {
             running_count,
             tok_per_sec,
-            ..
+            cost_usd,
         } => format!(
-            "状态：运行中（{running_count} 个任务 · {:.0} tok/s）",
-            sanitize_non_negative(*tok_per_sec)
+            "运行中 · {running_count} 个任务 · {:.0} tok/s · ${:.2}",
+            sanitize_non_negative(*tok_per_sec),
+            sanitize_non_negative(*cost_usd)
         ),
         TrayDisplayState::WaitingDecision {
             pending_decisions,
             running_count,
+            cost_usd,
             ..
-        } => format!("状态：{pending_decisions} 项待决 · {running_count} 个运行中"),
+        } => {
+            let cost = sanitize_non_negative(*cost_usd);
+            if *running_count > 0 {
+                format!("{pending_decisions} 项待决 · {running_count} 个运行中 · ${cost:.2}")
+            } else {
+                format!("{pending_decisions} 项待决 · ${cost:.2}")
+            }
+        }
+    }
+}
+
+pub fn format_inbox_menu_label(state: &TrayDisplayState) -> String {
+    match state {
+        TrayDisplayState::WaitingDecision {
+            pending_decisions, ..
+        } if *pending_decisions > 0 => format!("等你决定（{pending_decisions}）"),
+        _ => "等你决定".to_string(),
+    }
+}
+
+pub fn format_engine_submenu_label(state: &TrayDisplayState) -> &'static str {
+    match state {
+        TrayDisplayState::Offline { .. } => "后台引擎（未运行）",
+        TrayDisplayState::Starting => "后台引擎（启动中…）",
+        TrayDisplayState::StartFailed { .. } => "后台引擎（启动失败）",
+        TrayDisplayState::Idle { .. }
+        | TrayDisplayState::Running { .. }
+        | TrayDisplayState::WaitingDecision { .. } => "后台引擎（运行中）",
     }
 }
 
@@ -507,6 +596,7 @@ pub fn format_tray_version_tag(app_version: &str, daemon_version: Option<&str>) 
     }
 }
 
+#[allow(dead_code)]
 pub fn format_tray_menu_status_with_version(
     state: &TrayDisplayState,
     app_version: &str,
@@ -1608,7 +1698,9 @@ mod tests {
         assert!(!offline.is_online());
         assert_eq!(format_tray_title(&offline), "离线");
         assert!(format_tray_tooltip(&offline, DEFAULT_KILND_URL).contains("connection refused"));
-        assert_eq!(format_tray_menu_status(&offline), "状态：kilnd 未运行");
+        assert_eq!(format_tray_menu_status(&offline), "后台引擎未运行");
+        assert_eq!(format_inbox_menu_label(&offline), "等你决定");
+        assert_eq!(format_engine_submenu_label(&offline), "后台引擎（未运行）");
 
         let unhealthy = TrayDisplayState::from_probe(
             Ok(&KilnHealth {
@@ -1629,7 +1721,11 @@ mod tests {
             None,
         );
         assert!(healthy_no_bootstrap.is_online());
-        assert_eq!(format_tray_title(&healthy_no_bootstrap), "待机 $0.00");
+        assert_eq!(format_tray_title(&healthy_no_bootstrap), "");
+        assert_eq!(
+            format_engine_submenu_label(&healthy_no_bootstrap),
+            "后台引擎（运行中）"
+        );
 
         let idle = TrayDisplayState::from_bootstrap(&KilnBootstrapSummary {
             running_count: 0,
@@ -1641,9 +1737,9 @@ mod tests {
             },
         });
         assert!(idle.is_online());
-        assert_eq!(format_tray_title(&idle), "待机 $0.42");
+        assert_eq!(format_tray_title(&idle), "");
         assert!(format_tray_tooltip(&idle, DEFAULT_KILND_URL).contains("任务 3 个"));
-        assert!(format_tray_menu_status(&idle).contains("3 个任务"));
+        assert_eq!(format_tray_menu_status(&idle), "待机 · 3 个任务 · 累计 $0.42");
 
         let running = TrayDisplayState::from_bootstrap(&KilnBootstrapSummary {
             running_count: 2,
@@ -1656,7 +1752,17 @@ mod tests {
         });
         assert_eq!(format_tray_title(&running), "2 运行 · 48 tok/s");
         assert!(format_tray_tooltip(&running, DEFAULT_KILND_URL).contains("48.4 tok/s"));
-        assert!(format_tray_menu_status(&running).contains("2 个任务"));
+        assert_eq!(
+            format_tray_menu_status(&running),
+            "运行中 · 2 个任务 · 48 tok/s · $1.50"
+        );
+
+        let running_quiet = TrayDisplayState::Running {
+            running_count: 1,
+            tok_per_sec: 0.2,
+            cost_usd: 0.1,
+        };
+        assert_eq!(format_tray_title(&running_quiet), "1 运行");
 
         let waiting = TrayDisplayState::from_bootstrap(&KilnBootstrapSummary {
             running_count: 1,
@@ -1669,7 +1775,11 @@ mod tests {
         });
         assert_eq!(format_tray_title(&waiting), "2 待决 · 1 运行");
         assert!(format_tray_tooltip(&waiting, DEFAULT_KILND_URL).contains("待决拍板：2 项"));
-        assert!(format_tray_menu_status(&waiting).contains("2 项待决"));
+        assert_eq!(
+            format_tray_menu_status(&waiting),
+            "2 项待决 · 1 个运行中 · $2.10"
+        );
+        assert_eq!(format_inbox_menu_label(&waiting), "等你决定（2）");
 
         let waiting_only = TrayDisplayState::WaitingDecision {
             pending_decisions: 1,
@@ -1678,6 +1788,8 @@ mod tests {
             cost_usd: 0.0,
         };
         assert_eq!(format_tray_title(&waiting_only), "1 待决");
+        assert_eq!(format_tray_menu_status(&waiting_only), "1 项待决 · $0.00");
+        assert_eq!(format_inbox_menu_label(&waiting_only), "等你决定（1）");
     }
 
     #[test]
@@ -1698,7 +1810,8 @@ mod tests {
         assert!(!starting.is_online());
         assert!(!is_start_menu_enabled(&starting));
         assert_eq!(format_tray_title(&starting), "启动中…");
-        assert_eq!(format_tray_menu_status(&starting), "状态：正在启动 kilnd…");
+        assert_eq!(format_tray_menu_status(&starting), "正在启动后台引擎…");
+        assert_eq!(format_engine_submenu_label(&starting), "后台引擎（启动中…）");
         assert_eq!(format_start_menu_label(&starting), "正在启动 kilnd…");
         assert!(format_tray_tooltip(&starting, DEFAULT_KILND_URL).contains("正在启动 kilnd"));
 
@@ -1709,8 +1822,12 @@ mod tests {
         assert_eq!(format_tray_title(&failed), "启动失败");
         assert_eq!(format_start_menu_label(&failed), "重试启动 kilnd");
         assert_eq!(
+            format_engine_submenu_label(&failed),
+            "后台引擎（启动失败）"
+        );
+        assert_eq!(
             format_tray_menu_status(&failed),
-            "状态：启动失败（未找到 kiln CLI，请先安装 @zzf2333/kiln）"
+            "后台引擎启动失败：未找到 kiln CLI，请先安装 @zzf2333/kiln"
         );
         assert!(
             format_tray_tooltip(&failed, DEFAULT_KILND_URL)
@@ -1973,12 +2090,58 @@ mod tests {
             "App v0.0.3 / kilnd v0.0.2"
         );
         assert_eq!(
+            format_tray_header("0.0.4", Some("0.0.4")),
+            "Kiln 工作台 · v0.0.4"
+        );
+        assert_eq!(
+            format_tray_header("0.0.4", Some("0.0.3")),
+            "Kiln 工作台 · App v0.0.4 / kilnd v0.0.3"
+        );
+        assert_eq!(
             format_tray_menu_status_with_version(&idle, "0.0.3", Some("0.0.3")),
-            "状态：待机（3 个任务 · 累计 $0.42） · v0.0.3"
+            "待机 · 3 个任务 · 累计 $0.42 · v0.0.3"
         );
         assert_eq!(
             format_tray_tooltip_with_version(&idle, DEFAULT_KILND_URL, "0.0.3", Some("0.0.2")),
             "Kiln App v0.0.3 / kilnd v0.0.2 · 待机（任务 3 个 · 累计 $0.42）— http://127.0.0.1:4310"
         );
+    }
+
+    #[test]
+    fn builds_safe_loopback_workbench_urls_for_all_routes() {
+        let origin = validate_kilnd_url(DEFAULT_KILND_URL).expect("valid default origin");
+        assert_eq!(build_workbench_url(&origin, None), "http://127.0.0.1:4310");
+
+        let routes = [
+            (WorkbenchRoute::Board, "http://127.0.0.1:4310/#view=board"),
+            (WorkbenchRoute::Intake, "http://127.0.0.1:4310/#view=intake"),
+            (WorkbenchRoute::Inbox, "http://127.0.0.1:4310/#view=inbox"),
+            (WorkbenchRoute::Lineup, "http://127.0.0.1:4310/#view=lineup"),
+            (WorkbenchRoute::Ledger, "http://127.0.0.1:4310/#view=ledger"),
+            (WorkbenchRoute::Usage, "http://127.0.0.1:4310/#view=usage"),
+            (WorkbenchRoute::Settings, "http://127.0.0.1:4310/#view=settings"),
+        ];
+        for (route, expected) in routes {
+            let url = build_workbench_url(&origin, Some(route));
+            assert_eq!(url, expected);
+            assert!(is_allowed_navigation_url(&url, &origin));
+        }
+    }
+
+    #[test]
+    fn decides_startup_window_and_exit_prevention_policies() {
+        assert_eq!(
+            decide_startup_window_action(true),
+            StartupWindowAction::OpenImmediately
+        );
+        assert_eq!(
+            decide_startup_window_action(false),
+            StartupWindowAction::AutoStartThenOpen
+        );
+
+        assert!(should_prevent_exit(None, false));
+        assert!(!should_prevent_exit(None, true));
+        assert!(!should_prevent_exit(Some(0), false));
+        assert!(!should_prevent_exit(Some(1), true));
     }
 }

@@ -1,26 +1,33 @@
 use tauri::{AppHandle, Manager, Runtime, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 use crate::model::{
-    close_policy_for_window, is_allowed_navigation_url, validate_kilnd_url, WindowClosePolicy,
-    MAIN_WINDOW_LABEL,
+    build_workbench_url, close_policy_for_window, is_allowed_navigation_url, validate_kilnd_url,
+    WindowClosePolicy, WorkbenchRoute, MAIN_WINDOW_LABEL,
 };
 
 pub fn open_or_focus_main_window<R: Runtime>(
     app: &AppHandle<R>,
     raw_url: &str,
+    route: Option<WorkbenchRoute>,
 ) -> Result<(), String> {
     let validated = validate_kilnd_url(raw_url)
         .map_err(|err| format!("blocked non-loopback kilnd URL ({raw_url}): {err}"))?;
+    let target_href = build_workbench_url(&validated, route);
+    let target_url = Url::parse(&target_href)
+        .map_err(|err| format!("failed to parse validated kilnd URL: {err}"))?;
 
     if let Some(existing) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        if route.is_some() {
+            if let Err(err) = existing.navigate(target_url) {
+                eprintln!("kiln-desktop: failed to navigate main window: {err}");
+            }
+        }
         let _ = existing.unminimize();
         let _ = existing.show();
         let _ = existing.set_focus();
         return Ok(());
     }
 
-    let target_url = Url::parse(&validated.base_url)
-        .map_err(|err| format!("failed to parse validated kilnd URL: {err}"))?;
     let allowed_origin = validated;
 
     let window = WebviewWindowBuilder::new(
@@ -29,7 +36,7 @@ pub fn open_or_focus_main_window<R: Runtime>(
         WebviewUrl::External(target_url),
     )
     .title("Kiln")
-    .inner_size(1200.0, 800.0)
+    .inner_size(1440.0, 900.0)
     .min_inner_size(390.0, 600.0)
     .resizable(true)
     .center()
@@ -55,6 +62,7 @@ pub fn open_or_focus_main_window<R: Runtime>(
         }
     });
 
+    let _ = window.show();
     let _ = window.set_focus();
     Ok(())
 }
