@@ -447,13 +447,11 @@ describe("@kiln/web Slice 4: QR Generator, PWA, Remote Auth Gate, Offline Banner
   });
 
   it("ships valid local PWA manifest.webmanifest and apple-mobile-web-app index.html metadata", () => {
-    // @ts-expect-error Vite compile-time glob macro
     const manifestGlob = import.meta.glob("../../public/manifest.webmanifest", {
       query: "?raw",
       import: "default",
       eager: true,
     }) as Record<string, string>;
-    // @ts-expect-error Vite compile-time glob macro
     const indexGlob = import.meta.glob("../../index.html", {
       query: "?raw",
       import: "default",

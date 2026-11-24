@@ -1250,13 +1250,11 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
   });
 
   it("passes static dependency and security scan (no kernel, paseo, node builtins, UI libs, or dangerouslySetInnerHTML)", () => {
-    // @ts-expect-error Vite compile-time glob macro (no vite/client ambient types in tsconfig)
     const sources = import.meta.glob("../**/*.{ts,tsx}", {
       query: "?raw",
       import: "default",
       eager: true,
     }) as Record<string, string>;
-    // @ts-expect-error Vite compile-time glob macro
     const pkgRaw = import.meta.glob("../../package.json", {
       query: "?raw",
       import: "default",

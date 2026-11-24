@@ -11,14 +11,14 @@
     "build": "pnpm -r --if-present build",
     "build:binary": "node scripts/build-binary.mjs",
     "typecheck": "pnpm -r --if-present typecheck",
-    "test": "vitest run",
-    "test:socket": "vitest run --config vitest.socket.config.ts",
-    "test:watch": "vitest"
+    "test": "vp test run",
+    "test:socket": "vp test run --config vitest.socket.config.ts",
+    "test:watch": "vp test"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
-    "tsup": "^8.4.0",
-    "typescript": "^5.8.0",
-    "vitest": "^3.1.0"
+    "typescript": "^7.0.2",
+    "vite-plus": "^1.8.0",
+    "vitest": "5.1.1"
   }
 }

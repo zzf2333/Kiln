@@ -34,9 +34,9 @@
     }
   },
   "scripts": {
-    "build": "tsup && node scripts/stage-assets.mjs",
+    "build": "vp pack && node scripts/stage-assets.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --root ../.. packages/cli/src"
+    "test": "vp test run --root ../.. packages/cli/src"
   },
   "dependencies": {
     "@getpaseo/client": "^0.16.1",

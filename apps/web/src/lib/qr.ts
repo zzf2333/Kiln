@@ -314,7 +314,7 @@ export function encodeQrMatrix(text: string): QrMatrix {
   for (let right = size - 1; right >= 1; right -= 2) {
     if (right === 6) right = 5;
     for (let step = 0; step < size; step++) {
-      const y = up ? size - 1 - step : step;
+      const y: number = up ? size - 1 - step : step;
       for (let colOff = 0; colOff < 2; colOff++) {
         const idx = y * size + (right - colOff);
         if (isFn[idx] === 1) continue;

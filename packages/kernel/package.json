@@ -10,9 +10,9 @@
     }
   },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --clean --external bun:sqlite --external node:sqlite --external bun:ffi",
+    "build": "vp pack",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --root ../.. packages/kernel/src"
+    "test": "vp test run --root ../.. packages/kernel/src"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^2.9.1",
