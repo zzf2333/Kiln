@@ -41,8 +41,11 @@ jobs:
       - name: Build workspace packages
         run: pnpm build
 
-      - name: Run TypeScript typecheck
-        run: pnpm typecheck
+      - name: Run lint, format check, and TypeScript typecheck
+        run: |
+          pnpm lint
+          pnpm fmt:check
+          pnpm typecheck
 
       - name: Run unit and integration tests
         run: pnpm test

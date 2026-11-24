@@ -44,9 +44,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build, typecheck, test, and validate installer & templates
+      - name: Build, lint, format check, typecheck, test, and validate installer & templates
         run: |
           pnpm build
+          pnpm lint
+          pnpm fmt:check
           pnpm typecheck
           pnpm test
           pnpm test:socket
