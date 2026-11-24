@@ -538,6 +538,7 @@ export async function snapshotBackends(
 export interface McpCommandSpec {
   command: string;
   args: string[];
+  env?: Record<string, string>;
 }
 
 export interface CompiledBinaryDetectInput {
@@ -589,29 +590,56 @@ export function isCompiledKilnBinary(input?: CompiledBinaryDetectInput): boolean
  */
 export function resolveMcpServerCommand(
   override?: McpCommandSpec,
-  options?: { compiledBinary?: boolean; execPath?: string },
+  options?: {
+    compiledBinary?: boolean;
+    execPath?: string;
+    electronRuntime?: boolean;
+    searchStartDir?: string;
+  },
 ): McpCommandSpec {
   if (override) {
-    return { command: override.command, args: [...override.args] };
+    return {
+      command: override.command,
+      args: [...override.args],
+      ...(override.env ? { env: { ...override.env } } : {}),
+    };
   }
+
+  const electronRuntime =
+    options?.electronRuntime ?? Boolean((process.versions as { electron?: string }).electron);
+  const attachElectronEnv = (spec: McpCommandSpec): McpCommandSpec =>
+    electronRuntime
+      ? {
+          ...spec,
+          env: {
+            ...spec.env,
+            ELECTRON_RUN_AS_NODE: "1",
+          },
+        }
+      : spec;
+  const execPath = options?.execPath ?? process.execPath;
 
   const compiled = options?.compiledBinary ?? isCompiledKilnBinary();
   if (compiled) {
     return {
-      command: options?.execPath ?? process.execPath,
+      command: execPath,
       args: ["__mcp"],
     };
   }
 
-  let current = import.meta.dirname;
+  let current = options?.searchStartDir ?? import.meta.dirname;
   for (let i = 0; i < 6; i++) {
+    const flatElectronMcp = path.join(current, "kiln-mcp.mjs");
+    if (fs.existsSync(flatElectronMcp)) {
+      return attachElectronEnv({ command: execPath, args: [flatElectronMcp] });
+    }
     const candidate = path.join(current, "packages", "mcp", "dist", "bin.js");
     if (fs.existsSync(candidate)) {
-      return { command: process.execPath, args: [candidate] };
+      return attachElectronEnv({ command: execPath, args: [candidate] });
     }
     const siblingCandidate = path.join(current, "mcp", "dist", "bin.js");
     if (fs.existsSync(siblingCandidate)) {
-      return { command: process.execPath, args: [siblingCandidate] };
+      return attachElectronEnv({ command: execPath, args: [siblingCandidate] });
     }
     const parent = path.dirname(current);
     if (parent === current) {
@@ -1148,6 +1176,7 @@ export class KilnChatEngine {
       command: this.mcpServerCommand.command,
       args: [...this.mcpServerCommand.args],
       env: {
+        ...(this.mcpServerCommand.env ?? {}),
         KILN_RUN_TOKEN: token,
         KILN_SOCK_PATH: this.socketPath,
         KILN_HOME: this.store.paths.home,

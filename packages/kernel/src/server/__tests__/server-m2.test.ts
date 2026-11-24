@@ -1636,6 +1636,22 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
       command: "/Applications/Kiln.app/Contents/MacOS/kiln",
       args: ["__mcp"],
     });
+
+    const electronRuntimeDir = makeTempDir("kiln-electron-runtime-");
+    const electronMcpFile = path.join(electronRuntimeDir, "kiln-mcp.mjs");
+    fs.writeFileSync(electronMcpFile, "// probe\n", "utf8");
+    expect(
+      resolveMcpServerCommand(undefined, {
+        compiledBinary: false,
+        execPath: "/Applications/Kiln.app/Contents/MacOS/Kiln",
+        electronRuntime: true,
+        searchStartDir: electronRuntimeDir,
+      }),
+    ).toEqual({
+      command: "/Applications/Kiln.app/Contents/MacOS/Kiln",
+      args: [electronMcpFile],
+      env: { ELECTRON_RUN_AS_NODE: "1" },
+    });
   });
 
   it("upgrades PM (intake) agent with L1/L2 four-step prompt, non-MCP BRIEF.md/open_questions patches, SSE intake.progress, and lossless handoff to downstream worker", async () => {

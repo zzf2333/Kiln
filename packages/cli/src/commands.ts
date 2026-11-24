@@ -1028,11 +1028,16 @@ async function handleUp(
       ...(explicitCliOrOptionPaseoUrl !== undefined && paseoUrl !== undefined ? { paseoUrl } : {}),
       disablePaseo: Boolean(parsed.values["no-paseo"]) || Boolean(options.disablePaseo),
     });
+    const isElectronNode = Boolean((process.versions as { electron?: string }).electron);
     const child = spawn(process.execPath, spawnArgs, {
       detached: true,
       windowsHide: true,
       stdio: ["ignore", outFd, outFd],
-      env: { ...process.env, KILN_HOME: kilnHome },
+      env: {
+        ...process.env,
+        ...(isElectronNode ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
+        KILN_HOME: kilnHome,
+      },
     });
     childPid = child.pid;
     child.once("error", (err) => {

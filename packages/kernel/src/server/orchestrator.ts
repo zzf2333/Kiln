@@ -2509,6 +2509,7 @@ export class KilnOrchestrator {
             command: this.mcpServerCommand.command,
             args: [...this.mcpServerCommand.args],
             env: {
+              ...(this.mcpServerCommand.env ?? {}),
               KILN_RUN_TOKEN: this.issueRunToken({
                 taskId: plan.taskId,
                 runId,

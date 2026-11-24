@@ -1993,6 +1993,26 @@ describe("@kiln/cli", () => {
     });
     expect(unit).toContain('ExecStart="/home/tester/.local/bin/kiln" "up" "--foreground"');
 
+    const electronPlist = renderLaunchAgentPlist({
+      nodeExecutable: "/Applications/Kiln.app/Contents/MacOS/Kiln",
+      kilndEntrypoint: "/Applications/Kiln.app/Contents/Resources/kiln-runtime/kiln-cli.mjs",
+      kilnHome: "/Users/tester/.kiln",
+      logDir: "/Users/tester/.kiln/logs",
+      args: ["up", "--foreground"],
+      electronAsNode: true,
+    });
+    expect(electronPlist).toContain("<key>ELECTRON_RUN_AS_NODE</key>");
+    expect(electronPlist).toContain("<string>1</string>");
+
+    const electronUnit = renderSystemdUnit({
+      nodeExecutable: "/opt/Kiln/kiln",
+      kilndEntrypoint: "/opt/Kiln/resources/kiln-runtime/kiln-cli.mjs",
+      kilnHome: "/home/tester/.kiln",
+      args: ["up", "--foreground"],
+      electronAsNode: true,
+    });
+    expect(electronUnit).toContain("Environment=ELECTRON_RUN_AS_NODE=1");
+
     // 5. `kiln doctor --json` in compiledBinary mode passes runtime check without requiring Node.js
     const docRoot = makeTempDir("kiln-cli-doc-compiled-");
     const docRes = await runCli(["doctor", "--json"], {

@@ -37,6 +37,9 @@ export function resolveDefaultPublicDir(): string {
   for (let i = 0; i < 4; i++) {
     const pkgPath = path.join(current, "package.json");
     const candidatePublic = path.join(current, "public");
+    if (fs.existsSync(path.join(candidatePublic, "index.html"))) {
+      return candidatePublic;
+    }
     if (fs.existsSync(pkgPath)) {
       if (fs.existsSync(candidatePublic)) {
         return candidatePublic;

@@ -60,6 +60,7 @@ export interface RenderLaunchAgentPlistInput {
   logDir: string;
   label?: string;
   args?: readonly string[];
+  electronAsNode?: boolean;
 }
 
 export interface RenderSystemdUnitInput {
@@ -69,6 +70,7 @@ export interface RenderSystemdUnitInput {
   logDir?: string;
   description?: string;
   args?: readonly string[];
+  electronAsNode?: boolean;
 }
 
 export interface RenderWindowsRunCommandInput {
@@ -76,6 +78,7 @@ export interface RenderWindowsRunCommandInput {
   kilndEntrypoint?: string;
   kilnHome: string;
   args?: readonly string[];
+  electronAsNode?: boolean;
 }
 
 export interface ServiceOptions {
@@ -324,9 +327,11 @@ export function resolveKilnPidPath(kilnHome: string): string {
  */
 export function resolveDefaultCliEntrypoint(): string {
   const currentDir = path.dirname(fileURLToPath(import.meta.url));
-  const siblingBin = path.resolve(currentDir, "bin.js");
-  if (fs.existsSync(siblingBin)) {
-    return siblingBin;
+  for (const name of ["bin.js", "kiln-cli.mjs"]) {
+    const siblingBin = path.resolve(currentDir, name);
+    if (fs.existsSync(siblingBin)) {
+      return siblingBin;
+    }
   }
   return path.resolve(currentDir, "../dist/bin.js");
 }
@@ -448,6 +453,9 @@ export function renderLaunchAgentPlist(input: RenderLaunchAgentPlistInput): stri
     "  <dict>",
     "    <key>KILN_HOME</key>",
     `    <string>${escapeXml(input.kilnHome, "kilnHome")}</string>`,
+    ...(input.electronAsNode
+      ? ["    <key>ELECTRON_RUN_AS_NODE</key>", "    <string>1</string>"]
+      : []),
     "  </dict>",
     "  <key>RunAtLoad</key>",
     "  <true/>",
@@ -493,6 +501,7 @@ export function renderSystemdUnit(input: RenderSystemdUnitInput): string {
     "[Service]",
     "Type=simple",
     `Environment=${quoteSystemdEnvAssignment("KILN_HOME", input.kilnHome)}`,
+    ...(input.electronAsNode ? ["Environment=ELECTRON_RUN_AS_NODE=1"] : []),
     `ExecStart=${execStart}`,
     "Restart=on-failure",
     "RestartSec=3",
@@ -539,7 +548,11 @@ export function renderWindowsRunCommand(input: RenderWindowsRunCommandInput): st
     tokens.push("--kiln-home", quoteWindowsCommandArg(cleanKilnHome, "kilnHome"));
   }
 
-  return tokens.join(" ");
+  const commandLine = tokens.join(" ");
+  if (input.electronAsNode) {
+    return `cmd.exe /d /s /c "set ELECTRON_RUN_AS_NODE=1&& ${commandLine}"`;
+  }
+  return commandLine;
 }
 
 /**
@@ -553,6 +566,9 @@ export async function installService(options: ServiceOptions = {}): Promise<Inst
   const logDir =
     options.logDir !== undefined ? path.resolve(options.logDir) : path.join(kilnHome, "logs");
   const nodeExecutable = options.nodeExecutable ?? process.execPath;
+  const electronAsNode =
+    options.nodeExecutable === undefined &&
+    Boolean((process.versions as { electron?: string }).electron);
   const usingDefaultEntrypoint = options.kilndEntrypoint === undefined;
   const kilndEntrypoint =
     options.kilndEntrypoint !== undefined
@@ -568,6 +584,7 @@ export async function installService(options: ServiceOptions = {}): Promise<Inst
       kilndEntrypoint,
       kilnHome,
       args: winArgs,
+      electronAsNode,
     });
     ensureDir(logDir);
 
@@ -631,6 +648,7 @@ export async function installService(options: ServiceOptions = {}): Promise<Inst
           logDir,
           label: descriptor.label,
           args,
+          electronAsNode,
         })
       : renderSystemdUnit({
           nodeExecutable,
@@ -638,6 +656,7 @@ export async function installService(options: ServiceOptions = {}): Promise<Inst
           kilnHome,
           logDir,
           args,
+          electronAsNode,
         });
 
   ensureDir(logDir);
