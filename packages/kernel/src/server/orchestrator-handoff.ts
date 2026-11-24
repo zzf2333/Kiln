@@ -8,6 +8,8 @@ import {
   getVerifyGateCheckMode,
   parseFrontmatterMarkdown,
   serializeFrontmatterMarkdown,
+  type AcceptEntryKind,
+  type AcceptServiceStatus,
   type AdvisorRequest,
   type DecisionOption,
   type PendingDecision,
@@ -16,6 +18,7 @@ import {
   type StateEvent,
   type SteerNote,
   type TaskCard,
+  type VerifierCapability,
 } from "@kiln/protocol";
 import type { KilnStore } from "../store/index.js";
 import { readOptionalText } from "./pending-decisions.js";
@@ -145,19 +148,32 @@ export function buildReceiptTemplateSection(params: {
           contract_version: 1,
           verified_ref: staticInputRefPlaceholder,
           verdict: "pass",
+          entry_mode: "browser",
           passed_scenarios: 1,
           failed_scenarios: 0,
+          console_errors_count: 0,
+          evidence_files: ["evidence/scenario-1.png"],
+          scenarios: [
+            {
+              name: "主流程真实操作验收",
+              status: "pass",
+              note: "<简述实际触发的动作与页面/终端反馈>",
+              evidence_files: ["evidence/scenario-1.png"],
+            },
+          ],
         },
         [
           "## 验收场景明细",
-          "- 场景 1：<逐项记录真实输入、动作与观察结果>",
+          "- 场景 1：<逐项记录真实输入、动作、观测到的状态变更与视觉/终端结果>",
           "",
         ].join("\n"),
       );
       fieldNotes = [
         "- `run_id` / `contract_version`: 提交时务必替换为末尾「本轮执行指令」给出的真实值",
-        "- `verdict`: 仅允许 `pass` | `fail`",
+        "- `verdict`: 仅允许 `pass` | `fail`（与 `failed_scenarios > 0` 或任意失败场景互斥）",
+        "- `entry_mode`: 推荐明确声明 `browser` | `desktop_gui` | `cli` | `artifact`",
         "- `passed_scenarios`、`failed_scenarios`: 必须为非负整数",
+        "- `evidence_files` / `scenarios`: 列出真实生成的截图与日志相对路径（必须落盘于本轮 `evidence/` 目录且真实非空；严禁伪造扩展名或跨目录路径）",
         "- `verified_ref`: 被验收对象引用（非空字符串）",
       ];
       break;
@@ -233,6 +249,16 @@ export interface HandoffPayload {
   fullMarkdown: string;
 }
 
+export interface AcceptEnvHandoffContext {
+  entryKind: AcceptEntryKind;
+  requiredCapability?: VerifierCapability;
+  primaryUrl?: string;
+  services?: AcceptServiceStatus[];
+  observeHttp?: boolean;
+  entryHint?: string;
+  evidenceDir: string;
+}
+
 export interface BuildHandoffParams {
   store: KilnStore;
   card: TaskCard;
@@ -252,6 +278,8 @@ export interface BuildHandoffParams {
   deliverConflictNote?: string;
   previousFailureSummary?: string | null;
   previousReviewSummary?: string | null;
+  previousAcceptSummary?: string | null;
+  acceptEnvContext?: AcceptEnvHandoffContext | null;
 }
 
 function buildLayer0WorkspaceSafetyNote(
@@ -373,6 +401,8 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
     deliverConflictNote,
     previousFailureSummary,
     previousReviewSummary,
+    previousAcceptSummary,
+    acceptEnvContext,
   } = params;
 
   const brief = readOptionalText(store.paths.briefMd(card.id)) ?? "";
@@ -530,6 +560,43 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
       ? [`## 上轮审查退回摘要`, previousReviewSummary.trim()].join("\n")
       : "";
 
+  const acceptDeltaSection =
+    previousAcceptSummary && previousAcceptSummary.trim().length > 0
+      ? [`## 上轮真实验收失败现场`, previousAcceptSummary.trim()].join("\n")
+      : "";
+
+  const acceptEnvSection =
+    stage === "accept" && acceptEnvContext
+      ? [
+          `## 被测环境与防假验收要求 (${acceptEnvContext.entryKind})`,
+          `- 证据落盘目录 (evidenceDir): \`${acceptEnvContext.evidenceDir}\`（请将截图等真实产物保存在此目录，并在回执中使用 \`evidence/<文件名>\` 相对路径声明）`,
+          ...(acceptEnvContext.requiredCapability
+            ? [`- 要求验收能力: \`${acceptEnvContext.requiredCapability}\``]
+            : []),
+          ...(acceptEnvContext.primaryUrl
+            ? [`- 主被测访问地址 (accept_url): ${acceptEnvContext.primaryUrl}`]
+            : []),
+          ...(acceptEnvContext.entryHint
+            ? [`- 入口提示: ${acceptEnvContext.entryHint}`]
+            : []),
+          ...(acceptEnvContext.services && acceptEnvContext.services.length > 0
+            ? [
+                `- 已拉起被测服务：`,
+                ...acceptEnvContext.services.map(
+                  (svc) =>
+                    `  - \`${svc.name}\` [${svc.status}]${svc.url ? ` → ${svc.url}` : svc.port ? ` (port ${svc.port})` : ""}${svc.log_file ? ` · log: ${svc.log_file}` : ""}`,
+                ),
+              ]
+            : []),
+          ...(acceptEnvContext.observeHttp
+            ? [
+                `- **透明流量观测已开启**：内核通过上方代理地址观测真实 HTTP/WS 请求；若报告 \`pass\` 但未产生任何真实请求或缺少真实视觉截图，门禁将直接拦截。`,
+              ]
+            : []),
+          `- **严格只读红线**：严禁修改被测仓库源码；若发现功能/界面缺陷，请如实提交 \`verdict: fail\` 并附失败场景与证据路径交回下游修复。`,
+        ].join("\n")
+      : "";
+
   const escalationDeltaSection = escalatedFrom
     ? [
         `## 模型升档接盘摘要 (由 ${escalatedFrom} 升档至 ${rosterRoleId ?? role})`,
@@ -570,6 +637,8 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
     ...(advisorContextSection ? [advisorContextSection, ``] : []),
     ...(escalationDeltaSection ? [escalationDeltaSection, ``] : []),
     ...(deliverConflictSection ? [deliverConflictSection, ``] : []),
+    ...(acceptEnvSection ? [acceptEnvSection, ``] : []),
+    ...(acceptDeltaSection ? [acceptDeltaSection, ``] : []),
     ...(failureDeltaSection ? [failureDeltaSection, ``] : []),
     ...(reviewDeltaSection ? [reviewDeltaSection, ``] : []),
     ...(steerSection ? [steerSection, ``] : []),

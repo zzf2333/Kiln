@@ -257,6 +257,18 @@ export class KilnPaths {
     return path.join(this.runDir(taskId, runDirName), "GATE.yaml");
   }
 
+  runEvidenceDir(taskId: string, runDirName: string): string {
+    return path.join(this.runDir(taskId, runDirName), "evidence");
+  }
+
+  runAcceptEnvDir(taskId: string, runDirName: string): string {
+    return path.join(this.runDir(taskId, runDirName), "accept-env");
+  }
+
+  runAcceptReportYaml(taskId: string, runDirName: string): string {
+    return path.join(this.runDir(taskId, runDirName), "ACCEPT_REPORT.yaml");
+  }
+
   runEventsNdjson(taskId: string, runDirName: string): string {
     return path.join(this.runDir(taskId, runDirName), "events.ndjson");
   }

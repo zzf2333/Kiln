@@ -233,6 +233,28 @@ export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 export const SPACE_SCRIPT_KEYS = ["setup", "dev", "test", "lint", "deliver"] as const;
 export type SpaceScriptKey = (typeof SPACE_SCRIPT_KEYS)[number];
 
+export const ACCEPT_ENTRY_KINDS = [
+  "http_server",
+  "desktop_app",
+  "cli_binary",
+  "none",
+] as const;
+export type AcceptEntryKind = (typeof ACCEPT_ENTRY_KINDS)[number];
+
+export const ACCEPT_PROBE_KINDS = ["http", "tcp", "stdout_regex", "delay"] as const;
+export type AcceptProbeKind = (typeof ACCEPT_PROBE_KINDS)[number];
+
+export const VERIFIER_CAPABILITIES = ["cli", "browser", "desktop_gui"] as const;
+export type VerifierCapability = (typeof VERIFIER_CAPABILITIES)[number];
+
+export const VERIFIER_ENTRY_MODES = [
+  "browser",
+  "desktop_gui",
+  "cli",
+  "artifact",
+] as const;
+export type VerifierEntryMode = (typeof VERIFIER_ENTRY_MODES)[number];
+
 export function isReadOnlyRosterPermission(perm: RosterPermission): boolean {
   return perm === "read_only" || perm === "read_only_draft";
 }

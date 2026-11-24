@@ -1,4 +1,10 @@
 import type {
+  AcceptEntryConfig,
+  AcceptEntryKind,
+  AcceptServiceSpec,
+  AcceptServiceStatus,
+  AcceptTrafficSummary,
+  AcceptVerificationReport,
   BackendCapabilities,
   CardContract,
   CardLimits,
@@ -70,6 +76,7 @@ import type {
   TaskStatus,
   Track,
   UpsertSpaceRequest,
+  VerifierCapability,
   WorkflowBlueprint,
   WorkflowPreset,
   WorkspaceMode,
@@ -345,6 +352,14 @@ export interface TaskRunDetail {
   session?: RunSessionInfo;
   ioSummary?: RunIoSummary;
   antiDriftSummary?: RunAntiDriftSummary;
+  acceptReport?: AcceptVerificationReport;
+}
+
+export interface ActiveAcceptEnvSnapshot {
+  entryKind: AcceptEntryKind;
+  primaryUrl?: string;
+  services: AcceptServiceStatus[];
+  traffic: AcceptTrafficSummary;
 }
 
 export interface OpenRunTuiResponse {
@@ -393,6 +408,7 @@ export interface TaskDetailResponse {
   usageTurns: UsageTurnRow[];
   usage: UsageSnapshot;
   liveViewUrl?: string | null;
+  activeAcceptEnv?: ActiveAcceptEnvSnapshot | null;
   hostBackup?: HostBackupManifestInfo | null;
   hostStagedDiffs?: HostStagedDiffEntry[];
   stateEvents?: StateEvent[];
@@ -663,7 +679,14 @@ export interface RemoteNotificationTestResponse {
 }
 
 export type {
+  AcceptEntryConfig,
+  AcceptEntryKind,
+  AcceptServiceSpec,
+  AcceptServiceStatus,
+  AcceptTrafficSummary,
+  AcceptVerificationReport,
   ChatCommandAction,
+  VerifierCapability,
   ChatCommandItem,
   ChatCommandKind,
   ChatCommandsResponse,

@@ -667,6 +667,30 @@ export async function sendIntakeChat(
   );
 }
 
+export function acceptEvidenceUrl(
+  taskId: string,
+  runDir: string,
+  relPath: string,
+): string {
+  return `/api/tasks/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runDir)}/evidence?path=${encodeURIComponent(relPath)}`;
+}
+
+export async function fetchAcceptServiceLog(
+  taskId: string,
+  runDir: string,
+  service: string,
+): Promise<string> {
+  const url = `/api/tasks/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runDir)}/accept-logs/${encodeURIComponent(service)}`;
+  const res = await apiFetch(url);
+  if (!res.ok) {
+    const data = await parseJsonSafe(res);
+    const err = makeApiError(res, data, "读取被测服务日志失败");
+    notifyIfUnauthorized(url, err);
+    throw err;
+  }
+  return await res.text();
+}
+
 export async function reconDraft(
   draftId: string,
   hint?: string,

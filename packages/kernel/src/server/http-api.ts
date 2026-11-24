@@ -4,6 +4,7 @@ import path from "node:path";
 import { Hono, type Context } from "hono";
 import { z, ZodError } from "zod";
 import {
+  AcceptVerificationReportSchema,
   CardContractSchema,
   CardLimitsSchema,
   CommitPrActionRequestSchema,
@@ -122,7 +123,12 @@ import {
   verifyRemoteCsrf,
 } from "./remote-auth.js";
 import { RemoteNotifier } from "./remote-notify.js";
-import { inspectTailscaleStatus } from "./remote-tailscale.js";
+import {
+  inspectTailscaleStatus,
+} from "./remote-tailscale.js";
+import type { AcceptEnvLiveSnapshot } from "./accept-env.js";
+import { detectImageMagic, normalizeDeclaredEvidenceRelPath } from "./accept-evidence.js";
+import { realpathCanonical } from "../store/fs-atomic.js";
 import {
   buildPrDraft,
   executeCommitPrAction,
@@ -214,6 +220,7 @@ export interface HttpApiDependencies {
   pickDirectory?: () => Promise<PickDirectoryResponse>;
   revealPath?: (targetPath: string) => Promise<{ ok: true; path: string }>;
   openRunTui?: (input: { taskId: string; runDir: string }) => Promise<OpenRunTuiResponse>;
+  getActiveAcceptEnv?: (taskId: string) => AcceptEnvLiveSnapshot | null;
   syncPricing?: (input: SyncPricingRequest) => Promise<SyncPricingResponse>;
   extensionsHomeDir?: string;
   onTaskQueued?: (taskId: string) => void;
@@ -559,6 +566,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     onTaskCancelled,
     onBeforeDecisionApply,
     onSettingsUpdated,
+    getActiveAcceptEnv,
   } = deps;
   const listenerMode: HttpApiListenerMode = deps.listenerMode ?? "local";
   const remoteAuth = deps.remoteAuth ?? new RemoteAuthManager({ store, sseHub });
@@ -1322,6 +1330,9 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       ...(body.default_accept_cmd !== undefined
         ? { default_accept_cmd: body.default_accept_cmd }
         : {}),
+      ...(body.accept_entry !== undefined
+        ? { accept_entry: body.accept_entry }
+        : {}),
       freeze_patterns: body.freeze_patterns,
       ...(body.pinned !== undefined ? { pinned: body.pinned } : {}),
       ...(body.scripts !== undefined ? { scripts: body.scripts } : {}),
@@ -1530,6 +1541,10 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         const handoff = readOptionalText(store.paths.handoffMd(taskId, runDirName));
         const receipt = readOptionalText(store.paths.receiptMd(taskId, runDirName));
         const gate = readYamlOptional(store.paths.gateYaml(taskId, runDirName), GateReportSchema);
+        const acceptReport = readYamlOptional(
+          store.paths.runAcceptReportYaml(taskId, runDirName),
+          AcceptVerificationReportSchema,
+        );
         const events = readNdjsonValidated(
           store.paths.runEventsNdjson(taskId, runDirName),
           RunEventSchema,
@@ -1555,6 +1570,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
           handoff,
           receipt,
           gate,
+          ...(acceptReport ? { acceptReport } : {}),
           events,
           eventsCount: events.length,
           ...(meta?.started_at ? { startedAt: meta.started_at } : {}),
@@ -1610,6 +1626,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       usageTurns,
       usage,
       liveViewUrl,
+      activeAcceptEnv: getActiveAcceptEnv ? getActiveAcceptEnv(taskId) : null,
       hostBackup,
       hostStagedDiffs,
       stateEvents,
@@ -1961,6 +1978,92 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         "Content-Length": String(bytes.length),
         "X-Content-Type-Options": "nosniff",
         "Cache-Control": "private, max-age=3600",
+      },
+    });
+  });
+
+  app.get("/api/tasks/:id/runs/:runDir/evidence", (c) => {
+    const taskId = requireExistingTask(c.req.param("id"));
+    const runDir = assertSafeSegment(c.req.param("runDir"), "runDir");
+    const rawRelPath = c.req.query("path") ?? "";
+    const normRel = normalizeDeclaredEvidenceRelPath(rawRelPath);
+    if (!normRel) {
+      throw new ServerHttpError(400, {
+        error: "invalid_evidence_path",
+        path: rawRelPath,
+        message: "Evidence path must be a relative path inside the run evidence directory",
+      });
+    }
+    const evidenceDir = store.paths.runEvidenceDir(taskId, runDir);
+    if (!fs.existsSync(evidenceDir)) {
+      throw new ServerHttpError(404, {
+        error: "evidence_not_found",
+        taskId,
+        runDir,
+        path: normRel,
+      });
+    }
+    const canonicalDir = realpathCanonical(evidenceDir);
+    const prefix = canonicalDir.endsWith(path.sep) ? canonicalDir : canonicalDir + path.sep;
+    const candidate = path.resolve(canonicalDir, normRel);
+    if (!fs.existsSync(candidate)) {
+      throw new ServerHttpError(404, {
+        error: "evidence_not_found",
+        taskId,
+        runDir,
+        path: normRel,
+      });
+    }
+    const realFile = realpathCanonical(candidate);
+    if (!realFile.startsWith(prefix)) {
+      throw new ServerHttpError(403, {
+        error: "evidence_path_escape",
+        path: normRel,
+      });
+    }
+    const bytes = fs.readFileSync(realFile);
+    const ext = path.extname(realFile).toLowerCase();
+    const detectedImg = detectImageMagic(bytes);
+    const contentType =
+      detectedImg ??
+      (ext === ".txt" || ext === ".log"
+        ? "text/plain; charset=utf-8"
+        : ext === ".json"
+          ? "application/json; charset=utf-8"
+          : "application/octet-stream");
+
+    return new Response(bytes, {
+      status: 200,
+      headers: {
+        "Content-Type": contentType,
+        "Content-Length": String(bytes.length),
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "private, max-age=300",
+      },
+    });
+  });
+
+  app.get("/api/tasks/:id/runs/:runDir/accept-logs/:service", (c) => {
+    const taskId = requireExistingTask(c.req.param("id"));
+    const runDir = assertSafeSegment(c.req.param("runDir"), "runDir");
+    const service = assertSafeSegment(c.req.param("service"), "service");
+    const logPath = path.join(store.paths.runAcceptEnvDir(taskId, runDir), `${service}.log`);
+    if (!fs.existsSync(logPath) || !fs.statSync(logPath).isFile()) {
+      throw new ServerHttpError(404, {
+        error: "accept_log_not_found",
+        taskId,
+        runDir,
+        service,
+      });
+    }
+    const raw = fs.readFileSync(logPath, "utf8");
+    const maxBytes = 64 * 1024;
+    const content = raw.length > maxBytes ? raw.slice(raw.length - maxBytes) : raw;
+    return new Response(content, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "X-Content-Type-Options": "nosniff",
       },
     });
   });

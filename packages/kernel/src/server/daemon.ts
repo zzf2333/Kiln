@@ -67,6 +67,7 @@ import { syncModelPricing as syncModelPricingImpl } from "./pricing-sync.js";
 import type { PrDeliverExecFn } from "./pr-deliver.js";
 import { KilnScriptRunner } from "./script-runner.js";
 import { SseHub } from "./sse.js";
+import type { AcceptEnvStarterFn } from "./accept-env.js";
 import type { EmbeddedStaticAssets } from "./static-files.js";
 import { signRunToken, verifyRunToken } from "./token.js";
 
@@ -93,6 +94,7 @@ export interface KilndServerOptions {
   ipcTransportMode?: IpcTransportMode;
   tokenSecret?: string | Buffer;
   version?: string;
+  acceptEnvStarter?: AcceptEnvStarterFn;
   maxRpcBodyBytes?: number;
   enableOrchestrator?: boolean;
   publicDir?: string | null;
@@ -336,6 +338,9 @@ export class KilndServer {
         : {}),
       providerHealth: this.providerHealth,
       scriptRunner: this.scriptRunner,
+      ...(options.acceptEnvStarter !== undefined
+        ? { acceptEnvStarter: options.acceptEnvStarter }
+        : {}),
     });
 
     const inspectTailscale = (remotePort: number): Promise<TailscaleStatusResponse> =>
@@ -406,6 +411,8 @@ export class KilndServer {
       onBeforeDecisionApply: async (taskId) => {
         await this.orchestrator.abortActiveRun(taskId);
       },
+      getActiveAcceptEnv: (taskId) =>
+        this.orchestrator.getActiveAcceptEnvSnapshot(taskId),
       onSettingsUpdated: async (section) => {
         if (section === "roles" || section === "roster") {
           void this.orchestrator.wake();

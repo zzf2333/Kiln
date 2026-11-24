@@ -3786,6 +3786,116 @@ button.sb-item:hover { background: var(--hover); color: var(--t1); }
   word-break: break-word;
 }
 
+.verifier-cap-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.verifier-cap-btn {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+  background: var(--surface);
+  color: var(--t2);
+  font-size: 12px;
+  cursor: pointer;
+}
+.verifier-cap-btn.on {
+  border-color: var(--accent);
+  background: var(--accent-soft, rgba(217, 119, 6, 0.14));
+  color: var(--t1);
+  font-weight: 500;
+}
+
+.accept-svc-bar {
+  margin: 10px 28px 0;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--rail);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.accept-svc-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.accept-svc-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--line-2);
+  background: var(--surface);
+  font-size: 12px;
+}
+.accept-evidence-panel {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--rail);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.accept-evidence-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.accept-scenario-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.accept-thumb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+}
+.accept-thumb-btn {
+  padding: 0;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+}
+.accept-thumb-btn img {
+  width: 100%;
+  height: 82px;
+  object-fit: cover;
+  display: block;
+}
+.accept-thumb-btn span {
+  padding: 4px 6px;
+  font-size: 11px;
+  color: var(--t2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.accept-svc-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--rail);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }

@@ -5,6 +5,7 @@ import {
   DERIVED_ROSTER_INHERITANCE,
   REASONING_EFFORTS,
   ROSTER_TIER_HINTS,
+  VERIFIER_CAPABILITIES,
   type ReasoningEffort,
   type RosterConfig,
   type RosterEntry,
@@ -13,6 +14,7 @@ import {
   type RosterPermission,
   type RosterTierHint,
   type StageId,
+  type VerifierCapability,
 } from "@kiln/protocol/web";
 import type { AgentDescriptorInfo, ProviderRuntimeStatus } from "../api/types";
 import {
@@ -76,6 +78,12 @@ const TIER_HINT_LABELS: Record<RosterTierHint, string> = {
   flagship: "最高智商",
 };
 
+const VERIFIER_CAPABILITY_LABELS: Record<VerifierCapability, string> = {
+  cli: "CLI / 产物检查",
+  browser: "真实浏览器操作",
+  desktop_gui: "桌面 GUI 操控",
+};
+
 const BUILTIN_ID_ORDER: readonly string[] = [
   ...CORE_COGNITIVE_ROSTER_IDS,
   "architect",
@@ -96,6 +104,9 @@ function cloneRosterConfig(src: RosterConfig): RosterConfig {
       ...entry,
       secondary_stages: [...(entry.secondary_stages ?? [])],
       ...(entry.primary ? { primary: { ...entry.primary } } : {}),
+      ...(entry.verifier_capabilities
+        ? { verifier_capabilities: [...entry.verifier_capabilities] }
+        : {}),
       fallbacks: (entry.fallbacks ?? []).map((fb) => ({ ...fb })),
     };
   }
@@ -941,6 +952,41 @@ export function LineupView() {
                 平时仍由内核 0 Token 自动合并主分支；仅当 merge_main 遇到合并冲突时唤起绑定模型在隔离工作树解冲突，并强制重过确定性 verify 门禁。
               </div>
             ) : null}
+          </div>
+        ) : null}
+
+        {selectedEntry.stage === "accept" ? (
+          <div className="insp-sec">
+            <div className="insp-h">
+              <ShieldIcon />
+              <span>验收能力声明</span>
+            </div>
+            <div className="verifier-cap-row" role="group" aria-label="验收能力声明">
+              {VERIFIER_CAPABILITIES.map((cap) => {
+                const declared = selectedEntry.verifier_capabilities ?? ["cli"];
+                const active = declared.includes(cap);
+                return (
+                  <button
+                    key={cap}
+                    type="button"
+                    aria-pressed={active}
+                    className={`verifier-cap-btn ${active ? "on" : ""}`}
+                    onClick={() => {
+                      const next = active
+                        ? declared.filter((c) => c !== cap)
+                        : [...declared, cap];
+                      if (next.length === 0) return;
+                      updateRole(selectedId, { verifier_capabilities: next });
+                    }}
+                  >
+                    {VERIFIER_CAPABILITY_LABELS[cap]}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="muted" style={{ fontSize: "11.5px", marginTop: "6px" }}>
+              仅声明你为此槽位绑定的 Agent 自身具备的能力，用于调度前防配错（Kiln 不内置浏览器驱动）。
+            </p>
           </div>
         ) : null}
 

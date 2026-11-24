@@ -1,5 +1,11 @@
 import { z } from "zod";
-import { DecisionActionSchema, PrioritySchema, SpaceScriptsSchema, StageIdSchema } from "./card.js";
+import {
+  AcceptEntryConfigSchema,
+  DecisionActionSchema,
+  PrioritySchema,
+  SpaceScriptsSchema,
+  StageIdSchema,
+} from "./card.js";
 import {
   PricingConfigSchema,
   PricingSyncSourceSchema,
@@ -54,6 +60,7 @@ export const InspectSpaceResponseSchema = z.object({
   suggested_name: z.string().min(1),
   default_branch: z.string().min(1),
   default_accept_cmd: z.string().min(1).optional(),
+  suggested_accept_entry: AcceptEntryConfigSchema.optional(),
   copy_untracked: z.array(z.string()).default([]),
   clone_deps: z.array(z.string()).default([]),
 });
@@ -93,6 +100,7 @@ export const UpsertSpaceRequestSchema = z.object({
   copy_untracked: z.array(z.string().trim().min(1)).default([]),
   clone_deps: z.array(z.string().trim().min(1)).default([]),
   default_accept_cmd: z.string().trim().min(1).optional(),
+  accept_entry: AcceptEntryConfigSchema.optional(),
   freeze_patterns: z.array(z.string().trim().min(1)).default([]),
   pinned: z.boolean().optional(),
   scripts: SpaceScriptsSchema.optional(),

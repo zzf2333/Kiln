@@ -1274,4 +1274,260 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
     expect(savedRoster!.roster.fast_fix?.tier_hint).toBe("economy");
     expect(savedRoster!.roster.fast_fix?.escalation_target).toBe("main_dev");
   });
+
+  it("supports Track 3 verifier_capabilities, SpaceModal accept_entry builder, and DetailView real acceptance evidence & service logs", async () => {
+    const boot = makeV3Bootstrap();
+    const verifierRoster = {
+      ...boot.roster!.roster,
+      verifier: {
+        group: "core" as const,
+        enabled: true,
+        name: "真实验收",
+        stage: "accept" as const,
+        secondary_stages: [],
+        perm: "accept_entry" as const,
+        traits: "真机/浏览器端到端验收",
+        mode: "agent" as const,
+        verifier_capabilities: ["cli" as const],
+        primary: { provider: "claude", model: "claude-sonnet-4-6", effort: "medium" as const },
+        fallbacks: [],
+        allow_full_access_fallback: false,
+        builtin: true,
+      },
+    };
+    boot.roster = { ...boot.roster!, roster: verifierRoster };
+    if (boot.settings) {
+      boot.settings.roster = boot.roster;
+    }
+    let savedRoster: RosterConfig | null = null;
+    let savedSpaceBody: Record<string, unknown> | null = null;
+
+    boot.tasks.push({
+      id: "t-track3-ui",
+      space: "alpha",
+      parent_id: null,
+      title: "Track3 真实验收 UI 展示",
+      priority: "P1",
+      effective_priority: "P1",
+      track: "L2",
+      workspace_mode: "git_worktree",
+      status: "running",
+      stage: "accept",
+      round: 1,
+      active_run_id: "run-t3-accept",
+      contract_version: 1,
+      depends_on: [],
+      created_at: "2026-01-01T00:00:00.000Z",
+      updated_at: "2026-01-01T00:05:00.000Z",
+      tokens: { input_tokens: 100, cached_input_tokens: 0, output_tokens: 50, total_tokens: 150 },
+      cost_usd: 0.01,
+    });
+
+    fetchMock.mockImplementation(async (url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url === "/api/auth/status") {
+        return jsonResponse({ ok: true, mode: "local", authenticated: true, device: null });
+      }
+      if (url === "/api/bootstrap") {
+        return jsonResponse(boot);
+      }
+      if (url === "/api/settings/roster" && method === "PUT") {
+        savedRoster = JSON.parse(String(init?.body ?? "{}")) as RosterConfig;
+        return jsonResponse({ ok: true, section: "roster", data: savedRoster });
+      }
+      if (url === "/api/spaces/inspect" && method === "POST") {
+        return jsonResponse({
+          ok: true,
+          repo_path: "/tmp/demo-web",
+          suggested_id: "demo-web",
+          suggested_name: "Demo Web",
+          default_branch: "main",
+          default_accept_cmd: "pnpm test",
+          suggested_accept_entry: {
+            kind: "http_server",
+            services: [
+              {
+                name: "web",
+                cmd: "pnpm run dev -- --port {{port}}",
+                needs_port: true,
+                primary: true,
+                depends_on: [],
+                ready: { kind: "http", path: "/" },
+                ready_timeout_ms: 30_000,
+              },
+            ],
+            observe_http: true,
+            required_capability: "browser",
+          },
+          copy_untracked: [],
+          clone_deps: [],
+        });
+      }
+      if (url === "/api/spaces/demo-web" && method === "PUT") {
+        savedSpaceBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        return jsonResponse({ ok: true, space: { schema_version: 1, id: "demo-web", ...savedSpaceBody } }, 201);
+      }
+      if (url === "/api/tasks/t-track3-ui") {
+        return jsonResponse({
+          card: {
+            schema_version: 1,
+            id: "t-track3-ui",
+            title: "Track3 真实验收 UI 展示",
+            space: "alpha",
+            priority: "P1",
+            track: "L2",
+            workspace_mode: "git_worktree",
+            parent: null,
+            depends_on: [],
+            contract_version: 1,
+            contract: {
+              goal: "Real UI accept",
+              end: "Verified",
+              accept_cmd: "pnpm test",
+              accept_files_hash: "h",
+              scope: ["src/**"],
+              deliver: { mode: "merge_main" },
+              human_accept: false,
+              external_actions: "ask",
+            },
+            limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 2, max_tokens: 100000 },
+            created_at: "2026-01-01T00:00:00.000Z",
+            updated_at: "2026-01-01T00:05:00.000Z",
+          },
+          state: {
+            status: "running",
+            stage: "accept",
+            round: 1,
+            activeRunId: "run-t3-accept",
+            priority: "P1",
+            effectivePriority: "P1",
+            track: "L2",
+            contractVersion: 1,
+            updatedAt: "2026-01-01T00:05:00.000Z",
+          },
+          brief: "# Brief",
+          decisions: "",
+          pendingDecision: null,
+          ledgerProposals: [],
+          activeAcceptEnv: {
+            entryKind: "http_server",
+            primaryUrl: "http://127.0.0.1:45123",
+            services: [
+              {
+                name: "web",
+                status: "ready",
+                port: 45122,
+                proxy_port: 45123,
+                url: "http://127.0.0.1:45123",
+              },
+            ],
+            traffic: { observed: true, total_requests: 2, unique_paths: ["/"], error_responses: [] },
+          },
+          runs: [
+            {
+              dirName: "002-accept",
+              meta: {
+                schema_version: 1,
+                run_id: "run-t3-accept",
+                task_id: "t-track3-ui",
+                stage: "accept",
+                round: 1,
+                role: "verifier",
+                contract_version: 1,
+                backend_id: "composite",
+                agent: "claude",
+                model: "claude-sonnet-4-6",
+                session_ref: { backendId: "composite", sessionId: "s-1" },
+                started_at: "2026-01-01T00:02:00.000Z",
+              },
+              handoff: "# Handoff",
+              receipt: null,
+              gate: null,
+              acceptReport: {
+                schema_version: 1,
+                run_id: "run-t3-accept",
+                contract_version: 1,
+                checked_at: "2026-01-01T00:04:00.000Z",
+                entry_kind: "http_server",
+                entry_mode: "browser",
+                verdict: "blocked",
+                gate_ok: false,
+                rejection_reasons: ["no_real_traffic_observed"],
+                services: [
+                  {
+                    name: "web",
+                    status: "ready",
+                    port: 45122,
+                    proxy_port: 45123,
+                    url: "http://127.0.0.1:45123",
+                  },
+                ],
+                traffic: { observed: true, total_requests: 0, unique_paths: [], error_responses: [] },
+                evidence_files: [
+                  {
+                    rel_path: "evidence/shot.png",
+                    kind: "image",
+                    size_bytes: 2048,
+                    mime_type: "image/png",
+                    valid: true,
+                  },
+                ],
+                scenarios: [{ name: "首页打开", status: "pass" }],
+              },
+              events: [],
+              eventsCount: 0,
+            },
+          ],
+          usageTurns: [],
+          usage: boot.usage,
+        });
+      }
+      if (url === "/api/tasks/t-track3-ui/runs/002-accept/accept-logs/web") {
+        return new Response("server listening on 45122\n", {
+          status: 200,
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        });
+      }
+      return jsonResponse({ ok: true });
+    });
+
+    // 1. LineupView verifier_capabilities toggle
+    window.location.hash = "#view=lineup";
+    const { container } = render(<App />);
+    expect(await screen.findByRole("heading", { name: "编排与阵容" })).toBeTruthy();
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-roster-row="verifier"]')).not.toBeNull();
+    });
+    fireEvent.click(container.querySelector('[data-roster-row="verifier"]')!);
+    fireEvent.click(screen.getByRole("button", { name: "真实浏览器操作" }));
+    fireEvent.click(screen.getByRole("button", { name: /保存阵容/ }));
+    await waitFor(() => {
+      expect(savedRoster?.roster.verifier?.verifier_capabilities).toContain("browser");
+    });
+
+    // 2. SpaceModal suggested_accept_entry apply & save
+    fireEvent.click(screen.getByRole("button", { name: "添加项目空间" }));
+    const spaceModal = await screen.findByRole("dialog", { name: "添加项目空间" });
+    fireEvent.change(within(spaceModal).getByLabelText("仓库路径"), {
+      target: { value: "/tmp/demo-web" },
+    });
+    fireEvent.click(within(spaceModal).getByRole("button", { name: "识别仓库" }));
+    const applyBtn = await within(spaceModal).findByRole("button", { name: "应用推荐配置" });
+    fireEvent.click(applyBtn);
+    fireEvent.click(within(spaceModal).getByRole("button", { name: "保存空间" }));
+    await waitFor(() => {
+      expect(savedSpaceBody?.accept_entry).toBeTruthy();
+      expect((savedSpaceBody!.accept_entry as { kind: string }).kind).toBe("http_server");
+    });
+
+    // 3. DetailView live service pill, log fetch, anti-fake gate badge & screenshot thumbnail
+    window.location.hash = "#view=detail&task=t-track3-ui";
+    expect(await screen.findByText("防假验收拦截")).toBeTruthy();
+    expect(screen.getByText("no_real_traffic_observed")).toBeTruthy();
+    expect(screen.getByText("被测环境运行中")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "日志" }));
+    expect(await screen.findByText(/server listening on 45122/)).toBeTruthy();
+  });
 });

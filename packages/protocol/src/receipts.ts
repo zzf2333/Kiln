@@ -1,5 +1,6 @@
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { z } from "zod";
+import { VERIFIER_ENTRY_MODES } from "./constants.js";
 
 export const RECEIPT_KINDS = [
   "worker",
@@ -35,14 +36,47 @@ export const ReviewerReceiptFrontmatterSchema = z.object({
 });
 export type ReviewerReceiptFrontmatter = z.infer<typeof ReviewerReceiptFrontmatterSchema>;
 
-export const VerifierReceiptFrontmatterSchema = z.object({
-  run_id: z.string().min(1),
-  contract_version: z.number().int().positive(),
-  verified_ref: z.string().min(1),
-  verdict: z.enum(["pass", "fail"]),
-  passed_scenarios: z.number().int().nonnegative(),
-  failed_scenarios: z.number().int().nonnegative(),
+export const VerifierScenarioResultSchema = z.object({
+  name: z.string().min(1),
+  status: z.enum(["pass", "fail", "skipped"]),
+  note: z.string().optional(),
+  evidence_files: z.array(z.string().min(1)).optional(),
 });
+export type VerifierScenarioResult = z.infer<typeof VerifierScenarioResultSchema>;
+
+export const VerifierReceiptFrontmatterSchema = z
+  .object({
+    run_id: z.string().min(1),
+    contract_version: z.number().int().positive(),
+    verified_ref: z.string().min(1),
+    verdict: z.enum(["pass", "fail"]),
+    passed_scenarios: z.number().int().nonnegative(),
+    failed_scenarios: z.number().int().nonnegative(),
+    entry_mode: z.enum(VERIFIER_ENTRY_MODES).optional(),
+    evidence_files: z.array(z.string().min(1)).optional(),
+    scenarios: z.array(VerifierScenarioResultSchema).optional(),
+    console_errors_count: z.number().int().nonnegative().optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (v.verdict === "pass" && v.failed_scenarios > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "verdict=pass is mutually exclusive with failed_scenarios > 0",
+        path: ["failed_scenarios"],
+      });
+    }
+    if (
+      v.verdict === "pass" &&
+      v.scenarios !== undefined &&
+      v.scenarios.some((s) => s.status === "fail")
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "verdict=pass is mutually exclusive with failed scenario items",
+        path: ["scenarios"],
+      });
+    }
+  });
 export type VerifierReceiptFrontmatter = z.infer<typeof VerifierReceiptFrontmatterSchema>;
 
 export const TriageReceiptFrontmatterSchema = z.object({

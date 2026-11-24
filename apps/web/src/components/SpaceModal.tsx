@@ -1,6 +1,55 @@
 import { Dialog } from "radix-ui";
 import { useEffect, useState } from "react";
-import type { DiscoveredGitRepo } from "../api/types";
+import type {
+  AcceptEntryConfig,
+  AcceptEntryKind,
+  AcceptServiceSpec,
+  DiscoveredGitRepo,
+} from "../api/types";
+
+interface DraftAcceptServiceRow {
+  name: string;
+  cmd: string;
+  cwd: string;
+  dependsOnText: string;
+  needsPort: boolean;
+  primary: boolean;
+  readyKind: "http" | "tcp" | "stdout_regex" | "delay";
+  readyValue: string;
+}
+
+function defaultServiceRow(index: number, isDesktop = false): DraftAcceptServiceRow {
+  return {
+    name: index === 0 ? (isDesktop ? "app" : "web") : `svc${index + 1}`,
+    cmd: "",
+    cwd: "",
+    dependsOnText: "",
+    needsPort: !isDesktop,
+    primary: index === 0,
+    readyKind: isDesktop ? "delay" : "http",
+    readyValue: isDesktop ? "500" : "/",
+  };
+}
+
+function toServiceRows(services: readonly AcceptServiceSpec[]): DraftAcceptServiceRow[] {
+  return services.map((s) => ({
+    name: s.name,
+    cmd: s.cmd,
+    cwd: s.cwd ?? "",
+    dependsOnText: (s.depends_on ?? []).join(", "),
+    needsPort: s.needs_port ?? true,
+    primary: Boolean(s.primary),
+    readyKind: s.ready?.kind ?? "http",
+    readyValue:
+      s.ready?.kind === "http"
+        ? s.ready.path
+        : s.ready?.kind === "stdout_regex"
+          ? s.ready.pattern
+          : s.ready?.kind === "delay"
+            ? String(s.ready.ms)
+            : "",
+  }));
+}
 import { useKilnStore } from "../state/store";
 
 export function SpaceModal() {
@@ -41,6 +90,47 @@ export function SpaceModal() {
   const [quickBusyPath, setQuickBusyPath] = useState<string | null>(null);
   const [inspectInfo, setInspectInfo] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [suggestedAcceptEntry, setSuggestedAcceptEntry] =
+    useState<AcceptEntryConfig | null>(null);
+  const [acceptKind, setAcceptKind] = useState<AcceptEntryKind>("none");
+  const [acceptPrepareCmd, setAcceptPrepareCmd] = useState("");
+  const [acceptObserveHttp, setAcceptObserveHttp] = useState(true);
+  const [acceptEntryHint, setAcceptEntryHint] = useState("");
+  const [acceptServices, setAcceptServices] = useState<DraftAcceptServiceRow[]>([
+    defaultServiceRow(0),
+  ]);
+
+  const applyAcceptConfigToForm = (cfg?: AcceptEntryConfig | null): void => {
+    if (!cfg || cfg.kind === "none") {
+      setAcceptKind("none");
+      setAcceptPrepareCmd("");
+      setAcceptObserveHttp(true);
+      setAcceptEntryHint("");
+      setAcceptServices([defaultServiceRow(0)]);
+      return;
+    }
+    setAcceptKind(cfg.kind);
+    setAcceptPrepareCmd(cfg.prepare_cmd ?? "");
+    if (cfg.kind === "http_server") {
+      setAcceptObserveHttp(cfg.observe_http ?? true);
+      setAcceptEntryHint("");
+      setAcceptServices(
+        cfg.services.length > 0 ? toServiceRows(cfg.services) : [defaultServiceRow(0)],
+      );
+    } else if (cfg.kind === "desktop_app") {
+      setAcceptObserveHttp(false);
+      setAcceptEntryHint("");
+      setAcceptServices(
+        cfg.services.length > 0
+          ? toServiceRows(cfg.services)
+          : [defaultServiceRow(0, true)],
+      );
+    } else {
+      setAcceptObserveHttp(false);
+      setAcceptEntryHint(cfg.entry_hint ?? "");
+      setAcceptServices([defaultServiceRow(0)]);
+    }
+  };
 
   const runInspect = async (
     targetPath: string,
@@ -69,6 +159,7 @@ export function SpaceModal() {
       if (resetTouched || !cloneDeps.trim()) {
         setCloneDeps(info.clone_deps.join(", "));
       }
+      setSuggestedAcceptEntry(info.suggested_accept_entry ?? null);
       setInspectInfo(
         `已识别 Git 仓库（分支：${info.default_branch}${
           info.default_accept_cmd
@@ -107,6 +198,8 @@ export function SpaceModal() {
       setScriptDeliver(editingSpace.scripts?.deliver ?? "");
       setIdTouched(true);
       setNameTouched(true);
+      setSuggestedAcceptEntry(null);
+      applyAcceptConfigToForm(editingSpace.accept_entry ?? null);
       return;
     }
 
@@ -124,6 +217,8 @@ export function SpaceModal() {
     setScriptDeliver("");
     setIdTouched(false);
     setNameTouched(false);
+    setSuggestedAcceptEntry(null);
+    applyAcceptConfigToForm(null);
 
     void store.discoverLocalSpaces(true);
     if (spaceModalPrefillPath) {
@@ -192,6 +287,75 @@ export function SpaceModal() {
     };
     const hasScripts = Object.keys(cleanScripts).length > 0;
 
+    let builtAcceptEntry: AcceptEntryConfig | undefined;
+    if (acceptKind === "none") {
+      if (editingSpace?.accept_entry && editingSpace.accept_entry.kind !== "none") {
+        builtAcceptEntry = { kind: "none" };
+      }
+    } else if (acceptKind === "cli_binary") {
+      builtAcceptEntry = {
+        kind: "cli_binary",
+        ...(acceptPrepareCmd.trim() ? { prepare_cmd: acceptPrepareCmd.trim() } : {}),
+        ...(acceptEntryHint.trim() ? { entry_hint: acceptEntryHint.trim() } : {}),
+        required_capability: "cli",
+      };
+    } else {
+      const validServices: AcceptServiceSpec[] = acceptServices
+        .map((row) => {
+          const cmd = row.cmd.trim();
+          const svcName = row.name.trim();
+          if (!cmd || !svcName) return null;
+          const deps = row.dependsOnText
+            .split(/[\n,]+/)
+            .map((d) => d.trim())
+            .filter(Boolean);
+          const ready =
+            row.readyKind === "http"
+              ? { kind: "http" as const, path: row.readyValue.trim() || "/" }
+              : row.readyKind === "tcp"
+                ? { kind: "tcp" as const }
+                : row.readyKind === "stdout_regex"
+                  ? { kind: "stdout_regex" as const, pattern: row.readyValue.trim() || "ready" }
+                  : {
+                      kind: "delay" as const,
+                      ms: Math.max(100, Number.parseInt(row.readyValue, 10) || 500),
+                    };
+          return {
+            name: svcName,
+            cmd,
+            ...(row.cwd.trim() ? { cwd: row.cwd.trim() } : {}),
+            needs_port: row.needsPort,
+            primary: row.primary,
+            depends_on: deps,
+            ready,
+            ready_timeout_ms: 30_000,
+          } satisfies AcceptServiceSpec;
+        })
+        .filter((s): s is NonNullable<typeof s> => s !== null);
+
+      if (validServices.length === 0) {
+        setErrorMsg("请至少填写 1 个有效的真实验收服务名称与启动命令");
+        return;
+      }
+
+      if (acceptKind === "http_server") {
+        builtAcceptEntry = {
+          kind: "http_server",
+          ...(acceptPrepareCmd.trim() ? { prepare_cmd: acceptPrepareCmd.trim() } : {}),
+          services: validServices,
+          observe_http: acceptObserveHttp,
+          required_capability: "browser",
+        };
+      } else {
+        builtAcceptEntry = {
+          kind: "desktop_app",
+          ...(acceptPrepareCmd.trim() ? { prepare_cmd: acceptPrepareCmd.trim() } : {}),
+          services: validServices,
+          required_capability: "desktop_gui",
+        };
+      }
+    }
+
     setSaveBusy(true);
     setErrorMsg(null);
     try {
@@ -204,6 +368,7 @@ export function SpaceModal() {
         ...(defaultAcceptCmd.trim()
           ? { default_accept_cmd: defaultAcceptCmd.trim() }
           : {}),
+        ...(builtAcceptEntry !== undefined ? { accept_entry: builtAcceptEntry } : {}),
         freeze_patterns: editingSpace?.freeze_patterns ?? [],
         ...(editingSpace?.pinned !== undefined ? { pinned: editingSpace.pinned } : {}),
         ...(hasScripts ? { scripts: cleanScripts } : {}),
@@ -571,6 +736,271 @@ export function SpaceModal() {
                   }
                 />
               </label>
+            </div>
+          </details>
+
+          <details
+            className="modal-advanced"
+            open={acceptKind !== "none" || suggestedAcceptEntry !== null}
+          >
+            <summary>真实验收入口（accept_entry · 多进程隔离拉起）</summary>
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: "10px" }}>
+              <div className="modal-row" style={{ flexWrap: "wrap" }}>
+                <label className="modal-field" style={{ flex: "1 1 200px" }}>
+                  <span>入口模式</span>
+                  <select
+                    aria-label="真实验收入口模式"
+                    className="select"
+                    value={acceptKind}
+                    onChange={(e) => {
+                      const next = (e.currentTarget as HTMLSelectElement).value as AcceptEntryKind;
+                      setAcceptKind(next);
+                      if (next === "desktop_app" && acceptServices.length === 1 && !acceptServices[0]?.cmd) {
+                        setAcceptServices([defaultServiceRow(0, true)]);
+                      }
+                    }}
+                  >
+                    <option value="none">不自动拉起（none）</option>
+                    <option value="http_server">Web / API 服务组合（http_server）</option>
+                    <option value="desktop_app">桌面 GUI 应用（desktop_app）</option>
+                    <option value="cli_binary">CLI / 产物检查（cli_binary）</option>
+                  </select>
+                </label>
+
+                {suggestedAcceptEntry ? (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    style={{ alignSelf: "flex-end" }}
+                    onClick={() => applyAcceptConfigToForm(suggestedAcceptEntry)}
+                  >
+                    应用推荐配置
+                  </button>
+                ) : null}
+              </div>
+
+              {acceptKind !== "none" ? (
+                <label className="modal-field">
+                  <span>前置准备命令（prepare_cmd，可选）</span>
+                  <input
+                    aria-label="前置准备命令"
+                    className="input mono"
+                    placeholder="如 pnpm build（启动服务前同步执行）"
+                    value={acceptPrepareCmd}
+                    onChange={(e) =>
+                      setAcceptPrepareCmd((e.currentTarget as HTMLInputElement).value)
+                    }
+                  />
+                </label>
+              ) : null}
+
+              {acceptKind === "cli_binary" ? (
+                <label className="modal-field">
+                  <span>验收入口提示（entry_hint，可选）</span>
+                  <input
+                    aria-label="验收入口提示"
+                    className="input mono"
+                    placeholder="如 node dist/cli.js --help"
+                    value={acceptEntryHint}
+                    onChange={(e) =>
+                      setAcceptEntryHint((e.currentTarget as HTMLInputElement).value)
+                    }
+                  />
+                </label>
+              ) : null}
+
+              {acceptKind === "http_server" || acceptKind === "desktop_app" ? (
+                <>
+                  {acceptKind === "http_server" ? (
+                    <label
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "8px",
+                        fontSize: "12px",
+                        color: "var(--t2)",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        aria-label="启用 HTTP 透明流量观测代理"
+                        checked={acceptObserveHttp}
+                        onChange={(e) =>
+                          setAcceptObserveHttp((e.currentTarget as HTMLInputElement).checked)
+                        }
+                      />
+                      <span>启用本地透明流量观测代理（零请求直接拦截防假验收，捕获 4xx/5xx）</span>
+                    </label>
+                  ) : null}
+
+                  {acceptServices.map((row, idx) => (
+                    <div key={idx} className="accept-svc-card">
+                      <div className="modal-grid">
+                        <label className="modal-field">
+                          <span>服务名 #{idx + 1}</span>
+                          <input
+                            aria-label={`服务名 ${idx + 1}`}
+                            className="input mono"
+                            placeholder="如 api 或 web"
+                            value={row.name}
+                            onChange={(e) => {
+                              const v = (e.currentTarget as HTMLInputElement).value;
+                              setAcceptServices((prev) =>
+                                prev.map((it, i) => (i === idx ? { ...it, name: v } : it)),
+                              );
+                            }}
+                          />
+                        </label>
+                        <label className="modal-field">
+                          <span>启动命令（支持 {"{{port}}"} {"{{ports.api}}"} {"{{tmpdir}}"}）</span>
+                          <input
+                            aria-label={`启动命令 ${idx + 1}`}
+                            className="input mono"
+                            placeholder="如 pnpm dev -- --port {{port}}"
+                            value={row.cmd}
+                            onChange={(e) => {
+                              const v = (e.currentTarget as HTMLInputElement).value;
+                              setAcceptServices((prev) =>
+                                prev.map((it, i) => (i === idx ? { ...it, cmd: v } : it)),
+                              );
+                            }}
+                          />
+                        </label>
+                      </div>
+
+                      <div className="modal-grid">
+                        <label className="modal-field">
+                          <span>子目录 cwd（可选相对路径）</span>
+                          <input
+                            aria-label={`子目录 ${idx + 1}`}
+                            className="input mono"
+                            placeholder="如 apps/web"
+                            value={row.cwd}
+                            onChange={(e) => {
+                              const v = (e.currentTarget as HTMLInputElement).value;
+                              setAcceptServices((prev) =>
+                                prev.map((it, i) => (i === idx ? { ...it, cwd: v } : it)),
+                              );
+                            }}
+                          />
+                        </label>
+                        <label className="modal-field">
+                          <span>依赖服务 depends_on（逗号分隔）</span>
+                          <input
+                            aria-label={`依赖服务 ${idx + 1}`}
+                            className="input mono"
+                            placeholder="如 api"
+                            value={row.dependsOnText}
+                            onChange={(e) => {
+                              const v = (e.currentTarget as HTMLInputElement).value;
+                              setAcceptServices((prev) =>
+                                prev.map((it, i) => (i === idx ? { ...it, dependsOnText: v } : it)),
+                              );
+                            }}
+                          />
+                        </label>
+                      </div>
+
+                      <div className="modal-row" style={{ flexWrap: "wrap" }}>
+                        <select
+                          aria-label={`就绪探针 ${idx + 1}`}
+                          className="select"
+                          style={{ width: "130px" }}
+                          value={row.readyKind}
+                          onChange={(e) => {
+                            const k = (e.currentTarget as HTMLSelectElement).value as DraftAcceptServiceRow["readyKind"];
+                            setAcceptServices((prev) =>
+                              prev.map((it, i) =>
+                                i === idx
+                                  ? {
+                                      ...it,
+                                      readyKind: k,
+                                      readyValue:
+                                        k === "http" ? "/" : k === "delay" ? "500" : it.readyValue,
+                                    }
+                                  : it,
+                              ),
+                            );
+                          }}
+                        >
+                          <option value="http">HTTP 探针</option>
+                          <option value="tcp">TCP 端口</option>
+                          <option value="stdout_regex">日志正则</option>
+                          <option value="delay">固定延时</option>
+                        </select>
+                        {row.readyKind !== "tcp" ? (
+                          <input
+                            aria-label={`探针参数 ${idx + 1}`}
+                            className="input mono"
+                            style={{ maxWidth: "160px" }}
+                            value={row.readyValue}
+                            placeholder={row.readyKind === "http" ? "/" : "ready"}
+                            onChange={(e) => {
+                              const v = (e.currentTarget as HTMLInputElement).value;
+                              setAcceptServices((prev) =>
+                                prev.map((it, i) => (i === idx ? { ...it, readyValue: v } : it)),
+                              );
+                            }}
+                          />
+                        ) : null}
+                        <label style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "12px" }}>
+                          <input
+                            type="checkbox"
+                            checked={row.needsPort}
+                            onChange={(e) => {
+                              const c = (e.currentTarget as HTMLInputElement).checked;
+                              setAcceptServices((prev) =>
+                                prev.map((it, i) => (i === idx ? { ...it, needsPort: c } : it)),
+                              );
+                            }}
+                          />
+                          <span>分配端口</span>
+                        </label>
+                        <label style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "12px" }}>
+                          <input
+                            type="checkbox"
+                            checked={row.primary}
+                            onChange={(e) => {
+                              const c = (e.currentTarget as HTMLInputElement).checked;
+                              setAcceptServices((prev) =>
+                                prev.map((it, i) => (i === idx ? { ...it, primary: c } : c ? { ...it, primary: false } : it)),
+                              );
+                            }}
+                          />
+                          <span>主入口</span>
+                        </label>
+                        {acceptServices.length > 1 ? (
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-danger"
+                            onClick={() =>
+                              setAcceptServices((prev) => prev.filter((_, i) => i !== idx))
+                            }
+                          >
+                            移除
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))}
+
+                  {acceptServices.length < 4 ? (
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      style={{ alignSelf: "flex-start" }}
+                      onClick={() =>
+                        setAcceptServices((prev) => [
+                          ...prev,
+                          defaultServiceRow(prev.length, acceptKind === "desktop_app"),
+                        ])
+                      }
+                    >
+                      + 添加进程（前后端拆分）
+                    </button>
+                  ) : null}
+                </>
+              ) : null}
             </div>
           </details>
         </div>

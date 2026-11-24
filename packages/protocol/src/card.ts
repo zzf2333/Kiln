@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { RoleIdSchema } from "./config.js";
 import {
+  ACCEPT_ENTRY_KINDS,
+  ACCEPT_PROBE_KINDS,
   ADVISOR_ELIGIBLE_DECISION_CATEGORIES,
   ATTACHMENT_MIME_TYPES,
   DECISION_ACTIONS,
@@ -11,9 +13,13 @@ import {
   STAGE_IDS,
   TASK_STATUSES,
   TRACKS,
+  VERIFIER_CAPABILITIES,
+  VERIFIER_ENTRY_MODES,
   WORKFLOW_PRESETS,
   WORKSPACE_MODES,
   isAdvisorEligibleDecisionCategory,
+  type AcceptEntryKind,
+  type AcceptProbeKind,
   type AdvisorEligibleDecisionCategory,
   type AttachmentMimeType,
   type DecisionAction,
@@ -21,12 +27,16 @@ import {
   type StageId,
   type TaskStatus,
   type Track,
+  type VerifierCapability,
+  type VerifierEntryMode,
   type WorkflowPreset,
   type WorkspaceMode,
 } from "./constants.js";
 import { WorkflowBlueprintSchema } from "./workflow.js";
 
 export {
+  ACCEPT_ENTRY_KINDS,
+  ACCEPT_PROBE_KINDS,
   ADVISOR_ELIGIBLE_DECISION_CATEGORIES,
   ATTACHMENT_MIME_TYPES,
   DECISION_ACTIONS,
@@ -36,9 +46,13 @@ export {
   STAGE_IDS,
   TASK_STATUSES,
   TRACKS,
+  VERIFIER_CAPABILITIES,
+  VERIFIER_ENTRY_MODES,
   WORKFLOW_PRESETS,
   WORKSPACE_MODES,
   isAdvisorEligibleDecisionCategory,
+  type AcceptEntryKind,
+  type AcceptProbeKind,
   type AdvisorEligibleDecisionCategory,
   type AttachmentMimeType,
   type DecisionAction,
@@ -46,6 +60,8 @@ export {
   type StageId,
   type TaskStatus,
   type Track,
+  type VerifierCapability,
+  type VerifierEntryMode,
   type WorkflowPreset,
   type WorkspaceMode,
 };
@@ -79,6 +95,158 @@ export const TaskAttachmentSchema = z.object({
 });
 export type TaskAttachment = z.infer<typeof TaskAttachmentSchema>;
 
+export const AcceptReadyProbeSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("http"),
+    path: z.string().trim().min(1).default("/"),
+    expected_status: z.number().int().min(100).max(599).optional(),
+  }),
+  z.object({
+    kind: z.literal("tcp"),
+  }),
+  z.object({
+    kind: z.literal("stdout_regex"),
+    pattern: z.string().min(1),
+  }),
+  z.object({
+    kind: z.literal("delay"),
+    ms: z.number().int().min(100).max(30_000).default(500),
+  }),
+]);
+export type AcceptReadyProbe = z.infer<typeof AcceptReadyProbeSchema>;
+
+const ACCEPT_SERVICE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+
+function isSafeRelativeServiceCwd(cwd: string): boolean {
+  const trimmed = cwd.trim();
+  if (trimmed.length === 0) return false;
+  if (trimmed.startsWith("/") || trimmed.startsWith("\\") || /^[A-Za-z]:/.test(trimmed)) {
+    return false;
+  }
+  const parts = trimmed.split(/[\\/]+/);
+  return !parts.some((p) => p === "..");
+}
+
+export const AcceptServiceSpecSchema = z.object({
+  name: z
+    .string()
+    .regex(ACCEPT_SERVICE_NAME_RE, "service name must match ^[a-z0-9][a-z0-9_-]{0,31}$"),
+  cmd: z.string().trim().min(1),
+  cwd: z
+    .string()
+    .trim()
+    .min(1)
+    .refine(isSafeRelativeServiceCwd, {
+      message: "service cwd must be a relative path inside the workspace without .. segments",
+    })
+    .optional(),
+  needs_port: z.boolean().default(true),
+  primary: z.boolean().optional(),
+  depends_on: z.array(z.string().min(1)).default([]),
+  ready: AcceptReadyProbeSchema.optional(),
+  ready_timeout_ms: z.number().int().min(1000).max(180_000).default(30_000),
+  env: z.record(z.string().min(1), z.string()).optional(),
+});
+export type AcceptServiceSpec = z.infer<typeof AcceptServiceSpecSchema>;
+
+function validateAcceptServiceGraph(
+  services: readonly AcceptServiceSpec[],
+  ctx: z.RefinementCtx,
+): void {
+  const nameMap = new Map<string, number>();
+  services.forEach((svc, idx) => {
+    if (nameMap.has(svc.name)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Duplicate accept service name "${svc.name}"`,
+        path: ["services", idx, "name"],
+      });
+    } else {
+      nameMap.set(svc.name, idx);
+    }
+  });
+
+  services.forEach((svc, idx) => {
+    for (const dep of svc.depends_on) {
+      if (dep === svc.name) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Service "${svc.name}" cannot depend on itself`,
+          path: ["services", idx, "depends_on"],
+        });
+      } else if (!nameMap.has(dep)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Service "${svc.name}" depends on unknown service "${dep}"`,
+          path: ["services", idx, "depends_on"],
+        });
+      }
+    }
+  });
+
+  // Cycle detection via 3-color DFS
+  const color = new Map<string, 0 | 1 | 2>();
+  const byName = new Map(services.map((s) => [s.name, s]));
+  const hasCycle = (name: string): boolean => {
+    const c = color.get(name) ?? 0;
+    if (c === 1) return true;
+    if (c === 2) return false;
+    color.set(name, 1);
+    const svc = byName.get(name);
+    if (svc) {
+      for (const dep of svc.depends_on) {
+        if (byName.has(dep) && hasCycle(dep)) {
+          return true;
+        }
+      }
+    }
+    color.set(name, 2);
+    return false;
+  };
+  for (const svc of services) {
+    if (hasCycle(svc.name)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Cyclic service dependency detected involving "${svc.name}"`,
+        path: ["services"],
+      });
+      break;
+    }
+  }
+}
+
+export const AcceptEntryConfigSchema = z
+  .discriminatedUnion("kind", [
+    z.object({
+      kind: z.literal("http_server"),
+      prepare_cmd: z.string().trim().min(1).optional(),
+      services: z.array(AcceptServiceSpecSchema).min(1).max(4),
+      observe_http: z.boolean().default(true),
+      required_capability: z.enum(["browser", "cli"]).default("browser"),
+    }),
+    z.object({
+      kind: z.literal("desktop_app"),
+      prepare_cmd: z.string().trim().min(1).optional(),
+      services: z.array(AcceptServiceSpecSchema).min(1).max(4),
+      required_capability: z.literal("desktop_gui").default("desktop_gui"),
+    }),
+    z.object({
+      kind: z.literal("cli_binary"),
+      prepare_cmd: z.string().trim().min(1).optional(),
+      entry_hint: z.string().trim().min(1).optional(),
+      required_capability: z.literal("cli").default("cli"),
+    }),
+    z.object({
+      kind: z.literal("none"),
+    }),
+  ])
+  .superRefine((entry, ctx) => {
+    if (entry.kind === "http_server" || entry.kind === "desktop_app") {
+      validateAcceptServiceGraph(entry.services, ctx);
+    }
+  });
+export type AcceptEntryConfig = z.infer<typeof AcceptEntryConfigSchema>;
+
 export const CardContractSchema = z.object({
   goal: z.string().min(1),
   end: z.string().min(1),
@@ -86,6 +254,7 @@ export const CardContractSchema = z.object({
   accept_files_hash: z.string().min(1),
   scope: z.array(z.string().min(1)),
   non_goals: z.array(z.string().min(1)).optional(),
+  accept_entry: AcceptEntryConfigSchema.optional(),
   deliver: DeliverConfigSchema,
   human_accept: z.boolean().default(false),
   external_actions: z.literal("ask").default("ask"),
@@ -366,11 +535,82 @@ export const SpaceConfigSchema = z.object({
   copy_untracked: z.array(z.string()).default([]),
   clone_deps: z.array(z.string()).default([]),
   default_accept_cmd: z.string().min(1).optional(),
+  accept_entry: AcceptEntryConfigSchema.optional(),
   freeze_patterns: z.array(z.string()).default([]),
   pinned: z.boolean().optional(),
   scripts: SpaceScriptsSchema.optional(),
 });
 export type SpaceConfig = z.infer<typeof SpaceConfigSchema>;
+
+export const AcceptServiceStatusSchema = z.object({
+  name: z.string().min(1),
+  status: z.enum(["ready", "failed", "crashed", "stopped"]),
+  port: z.number().int().positive().optional(),
+  proxy_port: z.number().int().positive().optional(),
+  url: z.string().min(1).optional(),
+  exit_code: z.number().int().nullable().optional(),
+  log_file: z.string().min(1).optional(),
+  tail_log: z.string().optional(),
+});
+export type AcceptServiceStatus = z.infer<typeof AcceptServiceStatusSchema>;
+
+export const AcceptTrafficErrorResponseSchema = z.object({
+  method: z.string().min(1),
+  path: z.string().min(1),
+  status: z.number().int(),
+  service: z.string().min(1),
+});
+export type AcceptTrafficErrorResponse = z.infer<typeof AcceptTrafficErrorResponseSchema>;
+
+export const AcceptTrafficSummarySchema = z.object({
+  observed: z.boolean(),
+  total_requests: z.number().int().nonnegative(),
+  unique_paths: z.array(z.string()),
+  error_responses: z.array(AcceptTrafficErrorResponseSchema),
+});
+export type AcceptTrafficSummary = z.infer<typeof AcceptTrafficSummarySchema>;
+
+export const AcceptEvidenceFileCheckSchema = z.object({
+  rel_path: z.string().min(1),
+  kind: z.enum(["image", "file"]),
+  size_bytes: z.number().int().nonnegative(),
+  mime_type: z.string().min(1).optional(),
+  valid: z.boolean(),
+  error: z.string().min(1).optional(),
+});
+export type AcceptEvidenceFileCheck = z.infer<typeof AcceptEvidenceFileCheckSchema>;
+
+export const AcceptScenarioOutcomeSchema = z.object({
+  name: z.string().min(1),
+  status: z.enum(["pass", "fail", "skipped"]),
+  note: z.string().optional(),
+  evidence_files: z.array(z.string().min(1)).optional(),
+});
+export type AcceptScenarioOutcome = z.infer<typeof AcceptScenarioOutcomeSchema>;
+
+export const AcceptVerificationReportSchema = z.object({
+  schema_version: z.literal(1).default(1),
+  run_id: z.string().min(1),
+  contract_version: z.number().int().positive(),
+  checked_at: z.string().min(1),
+  entry_kind: z.enum(ACCEPT_ENTRY_KINDS),
+  entry_mode: z.enum(VERIFIER_ENTRY_MODES).optional(),
+  verdict: z.enum(["pass", "fail", "blocked"]),
+  gate_ok: z.boolean(),
+  rejection_reasons: z.array(z.string()).default([]),
+  services: z.array(AcceptServiceStatusSchema).default([]),
+  traffic: AcceptTrafficSummarySchema.default({
+    observed: false,
+    total_requests: 0,
+    unique_paths: [],
+    error_responses: [],
+  }),
+  evidence_files: z.array(AcceptEvidenceFileCheckSchema).default([]),
+  scenarios: z.array(AcceptScenarioOutcomeSchema).default([]),
+  console_errors_count: z.number().int().nonnegative().optional(),
+  prepare_error: z.string().optional(),
+});
+export type AcceptVerificationReport = z.infer<typeof AcceptVerificationReportSchema>;
 
 export const CheckpointRecordSchema = z.object({
   schema_version: z.literal(1).default(1),

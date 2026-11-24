@@ -1,7 +1,13 @@
 import { Dialog } from "radix-ui";
 import { useEffect, useState } from "react";
 import type { GateReport, StageId } from "@kiln/protocol/web";
-import type { TaskAttachment, TaskRunDetail } from "../api/types";
+import { acceptEvidenceUrl, fetchAcceptServiceLog } from "../api/client";
+import type {
+  AcceptServiceStatus,
+  AcceptVerificationReport,
+  TaskAttachment,
+  TaskRunDetail,
+} from "../api/types";
 import { AttachmentLightbox } from "../components/AttachmentLightbox";
 import { CheckpointPopover } from "../components/CheckpointPopover";
 import { DecisionBox } from "../components/DecisionBox";
@@ -105,6 +111,14 @@ export function DetailView() {
   const [steerSubmitting, setSteerSubmitting] = useState(false);
   const [lightboxAttachment, setLightboxAttachment] =
     useState<TaskAttachment | null>(null);
+  const [lightboxCustomUrl, setLightboxCustomUrl] = useState<string | null>(null);
+  const [acceptLogPreview, setAcceptLogPreview] = useState<{
+    runDir: string;
+    service: string;
+    text: string;
+    loading: boolean;
+    error?: string;
+  } | null>(null);
 
   const taskId = state.taskId;
   const detail = taskId ? state.taskDetails[taskId] : undefined;
@@ -121,6 +135,8 @@ export function DetailView() {
     setSteerText("");
     setSteerSubmitting(false);
     setLightboxAttachment(null);
+    setLightboxCustomUrl(null);
+    setAcceptLogPreview(null);
   }, [taskId]);
 
   const detailSpaceId = detail?.card.space;
@@ -777,6 +793,234 @@ export function DetailView() {
             ))}
           </div>
         </section>
+
+        {(() => {
+          let latestAcceptRun: TaskRunDetail | null = null;
+          for (let i = detail.runs.length - 1; i >= 0; i -= 1) {
+            const candidate = detail.runs[i]!;
+            if (candidate.acceptReport || candidate.meta?.stage === "accept") {
+              latestAcceptRun = candidate;
+              if (candidate.acceptReport) break;
+            }
+          }
+          const latestReport: AcceptVerificationReport | undefined =
+            latestAcceptRun?.acceptReport;
+          const liveEnv = detail.activeAcceptEnv;
+          const displayedServices: AcceptServiceStatus[] =
+            liveEnv?.services && liveEnv.services.length > 0
+              ? liveEnv.services
+              : latestReport?.services ?? [];
+          const logRunDir =
+            latestAcceptRun?.dirName ??
+            normalizedRuns.find((r) => r.stage === "accept" && r.visualState === "active")
+              ?.raw.dirName ??
+            null;
+          const validImages =
+            latestReport?.evidence_files.filter((ev) => ev.valid && ev.kind === "image") ?? [];
+
+          const openEvidenceLightbox = (
+            runDir: string,
+            relPath: string,
+            sizeBytes: number,
+            mimeType?: string,
+          ) => {
+            setLightboxCustomUrl(acceptEvidenceUrl(card.id, runDir, relPath));
+            setLightboxAttachment({
+              id: `ev-${relPath}`,
+              filename: relPath,
+              mime_type:
+                mimeType === "image/jpeg" || mimeType === "image/webp"
+                  ? mimeType
+                  : "image/png",
+              size_bytes: Math.max(1, sizeBytes),
+              sha256: "verified-evidence",
+              rel_path: relPath,
+              added_at: latestReport?.checked_at ?? new Date().toISOString(),
+            });
+          };
+
+          const openServiceLog = async (svcName: string) => {
+            if (!logRunDir) return;
+            if (acceptLogPreview?.service === svcName && acceptLogPreview.runDir === logRunDir) {
+              setAcceptLogPreview(null);
+              return;
+            }
+            setAcceptLogPreview({
+              runDir: logRunDir,
+              service: svcName,
+              text: "",
+              loading: true,
+            });
+            try {
+              const text = await fetchAcceptServiceLog(card.id, logRunDir, svcName);
+              setAcceptLogPreview({
+                runDir: logRunDir,
+                service: svcName,
+                text,
+                loading: false,
+              });
+            } catch (err) {
+              setAcceptLogPreview({
+                runDir: logRunDir,
+                service: svcName,
+                text: "",
+                loading: false,
+                error: err instanceof Error ? err.message : "读取服务日志失败",
+              });
+            }
+          };
+
+          return (
+            <>
+              {displayedServices.length > 0 ? (
+                <section className="accept-svc-bar" aria-label="被测服务状态">
+                  <div className="accept-svc-pills">
+                    <b style={{ fontSize: "12px" }}>
+                      {liveEnv ? "被测环境运行中" : "最近验收被测服务"}
+                    </b>
+                    {displayedServices.map((svc) => (
+                      <span key={svc.name} className="accept-svc-pill">
+                        <span
+                          className={`dot ${
+                            svc.status === "ready" || svc.status === "stopped"
+                              ? "dot-ok"
+                              : "dot-bad"
+                          }`}
+                        />
+                        <span className="mono">{svc.name}</span>
+                        {svc.proxy_port || svc.port ? (
+                          <span className="mono muted">:{svc.proxy_port ?? svc.port}</span>
+                        ) : null}
+                        <span>{svc.status === "ready" ? "就绪" : svc.status === "stopped" ? "已清理" : svc.status}</span>
+                        {liveEnv &&
+                        state.authMode === "local" &&
+                        isSafeHttpOrPaseoUrl(svc.url) ? (
+                          <a
+                            href={svc.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="link mono"
+                          >
+                            打开
+                          </a>
+                        ) : null}
+                        {logRunDir ? (
+                          <button
+                            type="button"
+                            className="link"
+                            onClick={() => void openServiceLog(svc.name)}
+                          >
+                            日志
+                          </button>
+                        ) : null}
+                      </span>
+                    ))}
+                  </div>
+                  {acceptLogPreview ? (
+                    <div className="code" style={{ maxHeight: "180px", overflowY: "auto" }}>
+                      {acceptLogPreview.loading
+                        ? `正在加载 ${acceptLogPreview.service} 日志…`
+                        : acceptLogPreview.error
+                          ? acceptLogPreview.error
+                          : acceptLogPreview.text || "(日志为空)"}
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
+
+              {latestReport && latestAcceptRun ? (
+                <section
+                  className="accept-evidence-panel"
+                  style={{ margin: "10px 28px 0" }}
+                  aria-label="真实验收证据"
+                >
+                  <div className="accept-evidence-head">
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                      <b style={{ fontSize: "12.5px" }}>真实验收证据（{latestAcceptRun.dirName}）</b>
+                      <span
+                        className={`chip ${
+                          latestReport.verdict === "pass" && latestReport.gate_ok
+                            ? "is-ok"
+                            : "is-bad"
+                        }`}
+                      >
+                        {latestReport.verdict === "pass" && latestReport.gate_ok
+                          ? "真实验收通过"
+                          : latestReport.verdict === "blocked"
+                            ? "防假验收拦截"
+                            : "验收未通过"}
+                      </span>
+                      {latestReport.entry_mode ? (
+                        <span className="chip">{latestReport.entry_mode}</span>
+                      ) : null}
+                      {latestReport.traffic.observed ? (
+                        <span className="chip">
+                          代理观测 {latestReport.traffic.total_requests} 次请求 · 4xx/5xx:{" "}
+                          {latestReport.traffic.error_responses.length}
+                        </span>
+                      ) : null}
+                    </div>
+                    {latestReport.rejection_reasons.length > 0 ? (
+                      <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                        {latestReport.rejection_reasons.map((reason) => (
+                          <span key={reason} className="chip is-bad mono">
+                            {reason}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {latestReport.scenarios.length > 0 ? (
+                    <div className="accept-scenario-list">
+                      {latestReport.scenarios.map((sc, sIdx) => (
+                        <span
+                          key={`${sc.name}-${sIdx}`}
+                          className={`chip ${
+                            sc.status === "pass"
+                              ? "is-ok"
+                              : sc.status === "fail"
+                                ? "is-bad"
+                                : ""
+                          }`}
+                          title={sc.note}
+                        >
+                          {sc.status === "pass" ? "✓" : sc.status === "fail" ? "✕" : "-"} {sc.name}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {validImages.length > 0 ? (
+                    <div className="accept-thumb-grid">
+                      {validImages.map((ev) => (
+                        <button
+                          key={ev.rel_path}
+                          type="button"
+                          className="accept-thumb-btn"
+                          onClick={() =>
+                            openEvidenceLightbox(
+                              latestAcceptRun!.dirName,
+                              ev.rel_path,
+                              ev.size_bytes,
+                              ev.mime_type,
+                            )
+                          }
+                        >
+                          <img
+                            src={acceptEvidenceUrl(card.id, latestAcceptRun!.dirName, ev.rel_path)}
+                            alt={ev.rel_path}
+                          />
+                          <span className="mono">{ev.rel_path}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
+            </>
+          );
+        })()}
 
         {steerOpen || (detail.steers && detail.steers.length > 0) ? (
           <section className="steer-panel" aria-label="运行中补充纠偏">
@@ -1719,9 +1963,14 @@ export function DetailView() {
       <AttachmentLightbox
         attachment={lightboxAttachment}
         imageUrl={
-          lightboxAttachment ? taskAttachmentUrl(lightboxAttachment) : null
+          lightboxAttachment
+            ? lightboxCustomUrl ?? taskAttachmentUrl(lightboxAttachment)
+            : null
         }
-        onClose={() => setLightboxAttachment(null)}
+        onClose={() => {
+          setLightboxAttachment(null);
+          setLightboxCustomUrl(null);
+        }}
       />
 
       {briefModalOpen ? (

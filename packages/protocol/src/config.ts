@@ -18,6 +18,7 @@ import {
   ROSTER_TIER_HINTS,
   SHA256_HEX_RE,
   STAGE_IDS,
+  VERIFIER_CAPABILITIES,
   isReadOnlyRosterPermission,
   isWriteCapableRosterPermission,
   type BuiltinRosterRoleId,
@@ -33,6 +34,7 @@ import {
   type RosterPermission,
   type RosterTierHint,
   type StageId,
+  type VerifierCapability,
 } from "./constants.js";
 
 export {
@@ -52,6 +54,7 @@ export {
   ROSTER_PERMISSIONS,
   ROSTER_TIER_HINTS,
   SHA256_HEX_RE,
+  VERIFIER_CAPABILITIES,
   isReadOnlyRosterPermission,
   isWriteCapableRosterPermission,
   type BuiltinRosterRoleId,
@@ -65,7 +68,10 @@ export {
   type RosterGroup,
   type RosterPermission,
   type RosterTierHint,
+  type VerifierCapability,
 };
+
+export const VerifierCapabilitySchema = z.enum(VERIFIER_CAPABILITIES);
 
 export const RoleIdSchema = z.enum(ROLE_IDS);
 
@@ -483,6 +489,10 @@ export const RosterEntrySchema = z
       .union([RosterStageIdSchema, z.array(RosterStageIdSchema).min(1)])
       .optional(),
     allow_full_access_fallback: z.boolean().default(false),
+    verifier_capabilities: z
+      .array(z.enum(VERIFIER_CAPABILITIES))
+      .min(1)
+      .optional(),
     builtin: z.boolean().default(false),
   })
   .strict()
@@ -621,6 +631,7 @@ const DEFAULT_ROSTER_SEED: Record<
     perm: "accept_entry",
     traits: "从真实浏览器/CLI/产物走端到端验收场景，核查交互体验与输出质量",
     mode: "agent",
+    verifier_capabilities: ["cli"],
     builtin: true,
   },
   frontend_ui: {

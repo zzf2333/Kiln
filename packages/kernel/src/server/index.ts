@@ -227,6 +227,23 @@ export {
   type SseStreamOptions,
 } from "./sse.js";
 export {
+  allocateLoopbackPort,
+  createLoopbackHttpObserverProxy,
+  startAcceptEnvSession,
+  toposortAcceptServices,
+  type AcceptEnvLiveSnapshot,
+  type AcceptEnvSession,
+  type AcceptEnvStartResult,
+  type AcceptEnvStarterFn,
+  type StartAcceptEnvOptions,
+} from "./accept-env.js";
+export {
+  detectImageMagic,
+  normalizeDeclaredEvidenceRelPath,
+  validateVerifierEvidenceGate,
+  type ValidateVerifierEvidenceGateInput,
+} from "./accept-evidence.js";
+export {
   createStaticFilesHandler,
   resolveDefaultPublicDir,
   type EmbeddedStaticAsset,

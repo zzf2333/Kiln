@@ -8,6 +8,7 @@ import {
   extractWorkflowToggles,
   flattenWorkflowSteps,
   validateBlueprintAgainstRoster,
+  type AcceptEntryConfig,
   type DiscoveredGitRepo,
   type DiscoverSpacesResponse,
   type PickDirectoryResponse,
@@ -40,6 +41,7 @@ export interface InspectedSpaceInfo {
   suggested_name: string;
   default_branch: string;
   default_accept_cmd?: string;
+  suggested_accept_entry?: AcceptEntryConfig;
   copy_untracked: string[];
   clone_deps: string[];
 }
@@ -176,6 +178,46 @@ function detectDefaultAcceptCmd(repoPath: string): string | undefined {
   return undefined;
 }
 
+function detectSuggestedAcceptEntry(repoPath: string): AcceptEntryConfig | undefined {
+  const pkgPath = path.join(repoPath, "package.json");
+  if (!fs.existsSync(pkgPath)) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(pkgPath, "utf8")) as {
+      scripts?: Record<string, unknown>;
+    };
+    const devScript = parsed.scripts?.dev;
+    if (typeof devScript !== "string" || devScript.trim().length === 0) {
+      return undefined;
+    }
+    const pm = fs.existsSync(path.join(repoPath, "pnpm-lock.yaml"))
+      ? "pnpm"
+      : fs.existsSync(path.join(repoPath, "bun.lock")) ||
+          fs.existsSync(path.join(repoPath, "bun.lockb"))
+        ? "bun"
+        : "npm";
+    return {
+      kind: "http_server",
+      services: [
+        {
+          name: "web",
+          cmd: `${pm} run dev -- --port {{port}}`,
+          needs_port: true,
+          primary: true,
+          depends_on: [],
+          ready: { kind: "http", path: "/" },
+          ready_timeout_ms: 30_000,
+        },
+      ],
+      observe_http: true,
+      required_capability: "browser",
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Inspects a local directory path, verifies it belongs to a Git repository,
  * normalizes `repo_path` to the canonical Git root, and detects default space metadata.
@@ -227,6 +269,7 @@ export async function inspectGitSpacePath(rawPath: string): Promise<InspectedSpa
   const suggestedId = deriveSuggestedSpaceId(suggestedName);
   const defaultBranch = await detectDefaultBranch(repoPath);
   const defaultAcceptCmd = detectDefaultAcceptCmd(repoPath);
+  const suggestedAcceptEntry = detectSuggestedAcceptEntry(repoPath);
 
   const nodeModulesPath = path.join(repoPath, "node_modules");
   const hasNodeModules =
@@ -238,6 +281,9 @@ export async function inspectGitSpacePath(rawPath: string): Promise<InspectedSpa
     suggested_name: suggestedName,
     default_branch: defaultBranch,
     ...(defaultAcceptCmd !== undefined ? { default_accept_cmd: defaultAcceptCmd } : {}),
+    ...(suggestedAcceptEntry !== undefined
+      ? { suggested_accept_entry: suggestedAcceptEntry }
+      : {}),
     copy_untracked: [],
     clone_deps: hasNodeModules ? ["node_modules"] : [],
   };

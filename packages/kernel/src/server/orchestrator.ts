@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import {
+  AcceptVerificationReportSchema,
   AdvisorRequestSchema,
   DecisionRecordSchema,
   GateReportSchema,
@@ -17,6 +18,8 @@ import {
   nextWorkflowStepAfter,
   parseAndValidateReceipt,
   serializeFrontmatterMarkdown,
+  type AcceptEntryConfig,
+  type AcceptVerificationReport,
   type AdvisorRequest,
   type BackendCapabilities,
   type GateReport,
@@ -29,6 +32,7 @@ import {
   type SteerNote,
   type SteerTaskRequest,
   type TaskCard,
+  type VerifierCapability,
 } from "@kiln/protocol";
 import {
   FullAccessOnlyProviderError,
@@ -114,8 +118,20 @@ import {
   extractActiveSteerNotes,
   extractDecisionFromNeedDecisionReceipt,
   extractSection,
+  type AcceptEnvHandoffContext,
   type HandoffPayload,
 } from "./orchestrator-handoff.js";
+import {
+  startAcceptEnvSession,
+  type AcceptEnvLiveSnapshot,
+  type AcceptEnvSession,
+  type AcceptEnvStarterFn,
+} from "./accept-env.js";
+import {
+  detectImageMagic,
+  normalizeDeclaredEvidenceRelPath,
+  validateVerifierEvidenceGate,
+} from "./accept-evidence.js";
 import {
   DEFAULT_WARM_CACHE_TTL_MS,
   WARM_CONTEXT_PERCENT_LIMIT,
@@ -174,6 +190,7 @@ export interface KilnOrchestratorOptions {
   rateLimitCooldownMs?: number;
   providerHealth?: ProviderHealthTracker;
   scriptRunner?: KilnScriptRunner;
+  acceptEnvStarter?: AcceptEnvStarterFn;
 }
 
 interface ActiveRunHandle {
@@ -365,12 +382,15 @@ export class KilnOrchestrator {
   private readonly rateLimitCooldownMs: number;
   private readonly providerHealth: ProviderHealthTracker | undefined;
   private readonly scriptRunner: KilnScriptRunner | undefined;
+  private readonly acceptEnvStarter: AcceptEnvStarterFn;
 
   private readonly agentCapabilitiesMap = new Map<string, BackendCapabilities>();
   private readonly activeRuns = new Map<string, ActiveRunHandle>();
   private readonly inFlightOperations = new Map<string, InFlightStageOperation>();
   private readonly abortingBeforeDispatch = new Set<string>();
   private readonly advisorPreRunDirtySignatures = new Map<string, string>();
+  private readonly activeAcceptEnvs = new Map<string, AcceptEnvSession>();
+  private readonly activeAcceptEnvConfigs = new Map<string, AcceptEntryConfig>();
   private readonly approvalUnsubscribers: Array<() => void> = [];
   private readonly deferredApprovals: Array<{
     backend: ExecutionBackend;
@@ -404,6 +424,7 @@ export class KilnOrchestrator {
       options.rateLimitCooldownMs ?? DEFAULT_RATE_LIMIT_COOLDOWN_MS;
     this.providerHealth = options.providerHealth;
     this.scriptRunner = options.scriptRunner;
+    this.acceptEnvStarter = options.acceptEnvStarter ?? startAcceptEnvSession;
 
     this.scheduler = new KilnScheduler({
       store: this.store,
@@ -612,6 +633,32 @@ export class KilnOrchestrator {
     this.latestContextPercentByRunId.clear();
     this.sessionKeyByRunId.clear();
     this.reuseCountByRunId.clear();
+    const activeEnvs = Array.from(this.activeAcceptEnvs.values());
+    this.activeAcceptEnvs.clear();
+    this.activeAcceptEnvConfigs.clear();
+    await Promise.allSettled(activeEnvs.map((env) => env.stop()));
+  }
+
+  getActiveAcceptEnvSnapshot(taskId: string): AcceptEnvLiveSnapshot | null {
+    const safeTaskId = assertSafeSegment(taskId, "taskId");
+    const env = this.activeAcceptEnvs.get(safeTaskId);
+    return env ? env.getLiveSnapshot() : null;
+  }
+
+  private async stopAcceptEnv(taskId: string): Promise<AcceptEnvLiveSnapshot | null> {
+    const env = this.activeAcceptEnvs.get(taskId);
+    if (!env) {
+      return null;
+    }
+    this.activeAcceptEnvs.delete(taskId);
+    let snapshot: AcceptEnvLiveSnapshot | null = null;
+    try {
+      snapshot = env.getLiveSnapshot();
+    } catch {
+      snapshot = null;
+    }
+    await env.stop().catch(() => {});
+    return snapshot;
   }
 
   async wake(): Promise<void> {
@@ -628,6 +675,8 @@ export class KilnOrchestrator {
     const op = this.inFlightOperations.get(safeTaskId);
     this.rateTracker.clearTask(safeTaskId);
     this.warmPool.evictTask(safeTaskId);
+    await this.stopAcceptEnv(safeTaskId);
+    this.activeAcceptEnvConfigs.delete(safeTaskId);
     if (handle) {
       handle.cancelledByControl = true;
       handle.abortController.abort();
@@ -1162,17 +1211,49 @@ export class KilnOrchestrator {
     return null;
   }
 
+  private resolveEffectiveAcceptEntry(card: TaskCard): AcceptEntryConfig {
+    return (
+      card.contract.accept_entry ??
+      this.store.readSpace(card.space)?.accept_entry ?? { kind: "none" }
+    );
+  }
+
+  private resolveVerifierCapabilities(
+    rosterRoleId?: string,
+  ): readonly VerifierCapability[] {
+    const roster = this.store.readEffectiveRosterConfig();
+    const entry =
+      (rosterRoleId ? roster.roster[rosterRoleId] : undefined) ??
+      roster.roster.verifier;
+    if (entry?.verifier_capabilities && entry.verifier_capabilities.length > 0) {
+      return entry.verifier_capabilities;
+    }
+    return ["cli"];
+  }
+
   private buildPreviousDeltaSummaries(
     taskId: string,
     card: TaskCard,
     stage: StageId,
-  ): { previousFailureSummary: string | null; previousReviewSummary: string | null } {
+  ): {
+    previousFailureSummary: string | null;
+    previousReviewSummary: string | null;
+    previousAcceptSummary: string | null;
+    previousAcceptImagePaths: RunAttachmentInput[];
+  } {
     if (stage !== "implement") {
-      return { previousFailureSummary: null, previousReviewSummary: null };
+      return {
+        previousFailureSummary: null,
+        previousReviewSummary: null,
+        previousAcceptSummary: null,
+        previousAcceptImagePaths: [],
+      };
     }
     const runs = this.listCurrentWindowRuns(taskId, card);
     let previousFailureSummary: string | null = null;
     let previousReviewSummary: string | null = null;
+    let previousAcceptSummary: string | null = null;
+    const previousAcceptImagePaths: RunAttachmentInput[] = [];
 
     for (let i = runs.length - 1; i >= 0; i--) {
       const r = runs[i]!;
@@ -1222,12 +1303,101 @@ export class KilnOrchestrator {
           }
         }
       }
-      if (previousFailureSummary !== null && previousReviewSummary !== null) {
+      if (previousAcceptSummary === null && r.meta.stage === "accept") {
+        const acceptReport = readYamlOptional(
+          this.store.paths.runAcceptReportYaml(taskId, r.dirName),
+          AcceptVerificationReportSchema,
+        );
+        if (acceptReport && (!acceptReport.gate_ok || acceptReport.verdict !== "pass")) {
+          const lines: string[] = [
+            `- 验收 Run: ${r.meta.run_id} (verdict=${acceptReport.verdict}, gate_ok=${acceptReport.gate_ok})`,
+          ];
+          if (acceptReport.rejection_reasons.length > 0) {
+            lines.push(`- 拦截/失败原因: ${acceptReport.rejection_reasons.join(", ")}`);
+          }
+          if (acceptReport.prepare_error) {
+            lines.push(`- 环境准备失败: ${acceptReport.prepare_error.slice(0, 800)}`);
+          }
+          const failedScenarios = acceptReport.scenarios.filter((s) => s.status === "fail");
+          if (failedScenarios.length > 0) {
+            lines.push(
+              `- 失败场景:\n${failedScenarios
+                .map((s) => `  - ${s.name}${s.note ? `: ${s.note}` : ""}`)
+                .join("\n")}`,
+            );
+          }
+          for (const svc of acceptReport.services) {
+            if (svc.status === "crashed" || svc.status === "failed") {
+              lines.push(
+                `- 被测服务异常 [${svc.name}] (${svc.status}, exit=${String(svc.exit_code)}):`,
+              );
+              if (svc.tail_log) {
+                lines.push("```\n" + svc.tail_log.slice(-1000) + "\n```");
+              }
+            }
+          }
+          if (acceptReport.traffic.error_responses.length > 0) {
+            lines.push(
+              `- 代理观测到的异常响应: ${acceptReport.traffic.error_responses
+                .slice(0, 8)
+                .map((e) => `${e.service} ${e.method} ${e.path} -> ${e.status}`)
+                .join("; ")}`,
+            );
+          }
+          const rawReceipt = r.hasReceipt
+            ? readOptionalText(this.store.paths.receiptMd(taskId, r.dirName))
+            : null;
+          if (rawReceipt) {
+            const parsedVerifier = parseAndValidateReceipt("verifier", rawReceipt);
+            if (parsedVerifier.ok) {
+              const detail = extractSection(parsedVerifier.body, "验收场景明细");
+              if (detail) {
+                lines.push(`- 验收说明:\n${detail.trim().slice(0, 1200)}`);
+              }
+            }
+          }
+          const evidenceDir = this.store.paths.runEvidenceDir(taskId, r.dirName);
+          for (const ev of acceptReport.evidence_files) {
+            if (!ev.valid || ev.kind !== "image" || previousAcceptImagePaths.length >= 4) {
+              continue;
+            }
+            const normRel = normalizeDeclaredEvidenceRelPath(ev.rel_path);
+            if (!normRel) continue;
+            const absImg = path.resolve(evidenceDir, normRel);
+            if (fs.existsSync(absImg)) {
+              const magic = ev.mime_type ?? detectImageMagic(fs.readFileSync(absImg));
+              if (magic === "image/png" || magic === "image/jpeg" || magic === "image/webp") {
+                previousAcceptImagePaths.push({
+                  path: absImg,
+                  mimeType: magic,
+                  filename: path.basename(absImg),
+                });
+              }
+            }
+          }
+          if (previousAcceptImagePaths.length > 0) {
+            lines.push(
+              `- 失败视觉证据文件: ${previousAcceptImagePaths.map((a) => a.path).join(", ")}`,
+            );
+          }
+          previousAcceptSummary = lines.join("\n");
+        }
+      }
+      if (
+        previousFailureSummary !== null &&
+        previousReviewSummary !== null &&
+        previousAcceptSummary !== null
+      ) {
         break;
       }
     }
 
-    return { previousFailureSummary, previousReviewSummary };
+    return {
+      previousFailureSummary,
+      previousReviewSummary,
+      previousAcceptSummary,
+      previousAcceptImagePaths,
+    };
   }
 
   private hasConsecutiveSameGateFailure(
@@ -1285,19 +1455,28 @@ export class KilnOrchestrator {
     inputRef?: string;
     mcpEnabled: boolean;
     rosterRoleId?: string;
+    customInstructions?: string;
+    escalatedFrom?: string;
+    escalatedDiffStat?: string;
+    deliverConflictNote?: string;
+    acceptEnvContext?: AcceptEnvHandoffContext | null;
   }): HandoffPayload {
     const advisorReq =
       params.stage === "advise"
         ? this.readAdvisorRequest(params.card.id, params.card.contract_version)
         : null;
-    const { previousFailureSummary, previousReviewSummary } =
-      this.buildPreviousDeltaSummaries(params.card.id, params.card, params.stage);
+    const {
+      previousFailureSummary,
+      previousReviewSummary,
+      previousAcceptSummary,
+    } = this.buildPreviousDeltaSummaries(params.card.id, params.card, params.stage);
     return buildHandoffPayload({
       store: this.store,
       ...params,
       advisorReq,
       previousFailureSummary,
       previousReviewSummary,
+      previousAcceptSummary,
     });
   }
 
@@ -1503,10 +1682,220 @@ export class KilnOrchestrator {
     const caps = await backend.capabilities(assignment.agent);
     assertRoleAgentEligible(plan.role, assignment.agent, caps);
 
+    const effectiveAcceptEntry =
+      plan.stage === "accept" ? this.resolveEffectiveAcceptEntry(plan.card) : null;
+    if (
+      plan.stage === "accept" &&
+      effectiveAcceptEntry &&
+      effectiveAcceptEntry.kind !== "none" &&
+      (effectiveAcceptEntry.required_capability === "browser" ||
+        effectiveAcceptEntry.required_capability === "desktop_gui")
+    ) {
+      const declaredCaps = this.resolveVerifierCapabilities(assignment.rosterRoleId);
+      if (!declaredCaps.includes(effectiveAcceptEntry.required_capability)) {
+        const capLabel =
+          effectiveAcceptEntry.required_capability === "browser"
+            ? "真实浏览器（browser）"
+            : "桌面 GUI（desktop_gui）";
+        const decision = PendingDecisionSchema.parse({
+          id: `dec-${randomUUID().slice(0, 8)}`,
+          task_id: plan.taskId,
+          contract_version: plan.contractVersion,
+          reason: "verifier_capability_missing",
+          category: "verifier_capability_missing",
+          question: `任务 "${plan.card.title}" 的真实验收入口要求 ${capLabel} 能力，但当前验收槽位（${assignment.rosterRoleId ?? "verifier"}）仅声明了 [${declaredCaps.join(", ")}]。请在「编排阵容」确认并启用该槽位的对应能力，或选择转交人工验收/退回实施：`,
+          options: [
+            {
+              id: "opt-retry-accept",
+              label: "已调整验收阵容能力，重试真实验收",
+              action: "resume",
+              target_stage: "accept",
+              recommended: true,
+            },
+            {
+              id: "opt-manual-deliver",
+              label: "转为人工已验收，直接进入交付",
+              action: "resume",
+              target_stage: "deliver",
+              recommended: false,
+            },
+            {
+              id: "opt-back-implement",
+              label: "退回实施修改",
+              action: "resume",
+              target_stage: "implement",
+              recommended: false,
+            },
+          ],
+          created_at: new Date().toISOString(),
+        });
+        this.transitionTaskToWaiting(plan.taskId, decision);
+        return;
+      }
+    }
+
     const workspace = await this.prepareWorkspaceForPlan(plan.card, plan.stage);
     const runDirName = this.allocateRunDirName(plan.taskId, plan.stage);
     const runId = `run-${plan.taskId}-${plan.stage}-r${plan.round}-v${plan.contractVersion}-${randomUUID().slice(0, 6)}`;
     const now = new Date().toISOString();
+
+    let acceptEnvContext: AcceptEnvHandoffContext | null = null;
+    if (plan.stage === "accept") {
+      const evidenceDir = this.store.paths.runEvidenceDir(plan.taskId, runDirName);
+      ensureDir(evidenceDir);
+      const entry = effectiveAcceptEntry ?? { kind: "none" as const };
+      if (entry.kind !== "none") {
+        await this.stopAcceptEnv(plan.taskId);
+        const startRes = await this.acceptEnvStarter({
+          cwd: workspace.cwd,
+          acceptEnvDir: this.store.paths.runAcceptEnvDir(plan.taskId, runDirName),
+          entry,
+        });
+        if (!startRes.ok) {
+          if (startRes.session) {
+            await startRes.session.stop().catch(() => {});
+          }
+          const failedRunMeta: RunMeta = {
+            schema_version: 1,
+            run_id: runId,
+            task_id: plan.taskId,
+            stage: "accept",
+            ...(plan.stepIndex !== null ? { step_index: plan.stepIndex } : {}),
+            round: plan.round,
+            role: plan.role,
+            ...(assignment.rosterRoleId !== undefined ? { roster_role: assignment.rosterRoleId } : {}),
+            contract_version: plan.contractVersion,
+            backend_id: backend.backendId,
+            agent: assignment.agent,
+            model: assignment.model,
+            session_ref: {
+              backendId: backend.backendId,
+              sessionId: `env-failed-${runId}`,
+            },
+            cwd: workspace.cwd,
+            ...(workspace.inputRef !== undefined ? { input_ref: workspace.inputRef } : {}),
+            started_at: now,
+          };
+          const leaseRes = this.store.persistRunBeforeDispatch(
+            failedRunMeta,
+            runDirName,
+            `# 被测环境拉起失败 (${entry.kind})\n\n${startRes.prepareError ?? startRes.errorMessage ?? "unknown error"}\n`,
+          );
+          if (!leaseRes.acquired) {
+            return;
+          }
+          this.store.sqlite.completeStageLease(
+            plan.taskId,
+            runId,
+            plan.contractVersion,
+            new Date().toISOString(),
+          );
+          const failedReport: AcceptVerificationReport = AcceptVerificationReportSchema.parse({
+            schema_version: 1,
+            run_id: runId,
+            contract_version: plan.contractVersion,
+            checked_at: new Date().toISOString(),
+            entry_kind: entry.kind,
+            verdict: "fail",
+            gate_ok: false,
+            rejection_reasons: ["accept_env_startup_failed"],
+            services: startRes.services,
+            traffic: startRes.traffic,
+            evidence_files: [],
+            scenarios: [],
+            ...(startRes.prepareError ?? startRes.errorMessage
+              ? { prepare_error: startRes.prepareError ?? startRes.errorMessage }
+              : {}),
+          });
+          writeYamlAtomic(
+            this.store.paths.runAcceptReportYaml(plan.taskId, runDirName),
+            failedReport,
+            AcceptVerificationReportSchema,
+          );
+          const windowRuns = this.listCurrentWindowRuns(plan.taskId, plan.card);
+          let startupFailCount = 0;
+          for (const wr of windowRuns) {
+            if (wr.meta.stage !== "accept") continue;
+            const rep = readYamlOptional(
+              this.store.paths.runAcceptReportYaml(plan.taskId, wr.dirName),
+              AcceptVerificationReportSchema,
+            );
+            if (rep?.rejection_reasons.includes("accept_env_startup_failed")) {
+              startupFailCount += 1;
+            }
+          }
+          const guard: ExpectedRunGuard = {
+            runId,
+            contractVersion: plan.contractVersion,
+          };
+          if (startupFailCount >= Math.max(1, plan.card.limits.retries_per_stage)) {
+            const decision = PendingDecisionSchema.parse({
+              id: `dec-${randomUUID().slice(0, 8)}`,
+              task_id: plan.taskId,
+              run_id: runId,
+              contract_version: plan.contractVersion,
+              reason: "accept_env_startup_failed",
+              category: "accept_env_startup_failed",
+              question: `被测环境连续 ${startupFailCount} 次拉起失败（${startRes.prepareError ?? startRes.errorMessage ?? "请检查启动命令或端口配置"}），请选择退回实施修复或调整空间配置后重试：`,
+              options: [
+                {
+                  id: "opt-back-implement",
+                  label: "退回实施根据启动日志修复",
+                  action: "resume",
+                  target_stage: "implement",
+                  recommended: true,
+                },
+                {
+                  id: "opt-retry-accept",
+                  label: "已调整配置，重新拉起验收",
+                  action: "resume",
+                  target_stage: "accept",
+                  recommended: false,
+                },
+                {
+                  id: "opt-cancel",
+                  label: "取消任务",
+                  action: "cancel",
+                  recommended: false,
+                },
+              ],
+              created_at: new Date().toISOString(),
+            });
+            this.transitionTaskToWaiting(plan.taskId, decision, guard);
+            return;
+          }
+          const restartIdx = findLoopRestartStepIndex(
+            plan.card,
+            "implement",
+            plan.card.track,
+          );
+          await this.advanceToNextStage(plan.taskId, "implement", guard, restartIdx);
+          return;
+        }
+
+        if (startRes.session) {
+          this.activeAcceptEnvs.set(plan.taskId, startRes.session);
+        }
+        this.activeAcceptEnvConfigs.set(plan.taskId, entry);
+        acceptEnvContext = {
+          entryKind: entry.kind,
+          requiredCapability: entry.required_capability,
+          ...(startRes.primaryUrl !== undefined ? { primaryUrl: startRes.primaryUrl } : {}),
+          services: startRes.services,
+          observeHttp: entry.kind === "http_server" && entry.observe_http !== false,
+          ...(entry.kind === "cli_binary" && entry.entry_hint !== undefined
+            ? { entryHint: entry.entry_hint }
+            : {}),
+          evidenceDir,
+        };
+      } else {
+        this.activeAcceptEnvConfigs.set(plan.taskId, entry);
+        acceptEnvContext = {
+          entryKind: "none",
+          evidenceDir,
+        };
+      }
+    }
 
     let escalatedDiffStat: string | undefined;
     if (
@@ -1544,6 +1933,7 @@ export class KilnOrchestrator {
       ...(opts?.deliverConflictNote !== undefined
         ? { deliverConflictNote: opts.deliverConflictNote }
         : {}),
+      ...(acceptEnvContext !== null ? { acceptEnvContext } : {}),
     });
 
     const isReadOnly =
@@ -1781,6 +2171,20 @@ export class KilnOrchestrator {
       kind: "task",
       taskId: plan.taskId,
     });
+    if (plan.stage === "implement" && caps.imageInput === true) {
+      const { previousAcceptImagePaths } = this.buildPreviousDeltaSummaries(
+        plan.taskId,
+        plan.card,
+        plan.stage,
+      );
+      const seenPaths = new Set(attachments.map((a) => a.path));
+      for (const img of previousAcceptImagePaths) {
+        if (!seenPaths.has(img.path)) {
+          seenPaths.add(img.path);
+          attachments.push(img);
+        }
+      }
+    }
 
     const runSpec: BackendRunSpec = {
       runId,
@@ -1804,6 +2208,7 @@ export class KilnOrchestrator {
       (plan.stage === "plan" ||
         plan.stage === "advise" ||
         plan.stage === "research" ||
+        plan.stage === "accept" ||
         ((plan.stage === "review" || plan.stage === "triage") &&
           (!this.approvalHandler || caps.readOnlySandbox === false))) &&
       plan.card.workspace_mode === "git_worktree"
@@ -1817,6 +2222,10 @@ export class KilnOrchestrator {
     try {
       sessionRef = await backend.start(runSpec);
     } catch (err) {
+      if (plan.stage === "accept") {
+        await this.stopAcceptEnv(plan.taskId);
+        this.activeAcceptEnvConfigs.delete(plan.taskId);
+      }
       await this.handleBackendStartError(plan, runDirName, runMeta, err);
       return;
     } finally {
@@ -1862,6 +2271,10 @@ export class KilnOrchestrator {
 
     if (!runStillValid) {
       this.advisorPreRunDirtySignatures.delete(runId);
+      if (plan.stage === "accept") {
+        await this.stopAcceptEnv(plan.taskId);
+        this.activeAcceptEnvConfigs.delete(plan.taskId);
+      }
       if (existingLease?.state === "active" && existingLease.run_id === runId) {
         this.store.sqlite.expireActiveLeaseByTask(
           plan.taskId,
@@ -3699,12 +4112,79 @@ export class KilnOrchestrator {
       runId: runMeta.run_id,
       contractVersion: runMeta.contract_version,
     };
+    const envSnapshot = await this.stopAcceptEnv(taskId);
+    const capturedAcceptEntry = this.activeAcceptEnvConfigs.get(taskId);
+    this.activeAcceptEnvConfigs.delete(taskId);
+
     if (!this.isRunStillCurrent(taskId, runMeta.run_id, runMeta.contract_version)) {
+      this.advisorPreRunDirtySignatures.delete(runMeta.run_id);
       this.syncCaffeinate();
       return;
     }
 
     const receiptLoad = this.readReceiptAndCommitLease(taskId, runDirName, runMeta);
+    const card = this.store.readTaskCard(taskId);
+    const acceptEntry = capturedAcceptEntry ?? this.resolveEffectiveAcceptEntry(card);
+    const workspaceMutated = await this.detectAdvisorWorkspaceMutation(
+      card,
+      runMeta.run_id,
+    );
+    const leaseExpired = !receiptLoad.ok && receiptLoad.reason === "lease_expired";
+
+    if (workspaceMutated && !leaseExpired) {
+      const mutatedReport = AcceptVerificationReportSchema.parse({
+        schema_version: 1,
+        run_id: runMeta.run_id,
+        contract_version: card.contract_version,
+        checked_at: new Date().toISOString(),
+        entry_kind: acceptEntry.kind,
+        verdict: "blocked",
+        gate_ok: false,
+        rejection_reasons: ["verifier_workspace_mutation"],
+        services: envSnapshot?.services ?? [],
+        traffic: envSnapshot?.traffic ?? {
+          observed: false,
+          total_requests: 0,
+          unique_paths: [],
+          error_responses: [],
+        },
+        evidence_files: [],
+        scenarios: [],
+      });
+      writeYamlAtomic(
+        this.store.paths.runAcceptReportYaml(taskId, runDirName),
+        mutatedReport,
+        AcceptVerificationReportSchema,
+      );
+      const pending = PendingDecisionSchema.parse({
+        id: `dec-${randomUUID().slice(0, 8)}`,
+        task_id: taskId,
+        run_id: runMeta.run_id,
+        contract_version: card.contract_version,
+        reason: "read_only_workspace_mutation",
+        category: "read_only_guardrail_escalation",
+        question: `真实验收在只读阶段修改了任务工作区文件（已拦截 verifier_workspace_mutation），请核查工作区改动后决定退回实施或取消任务。`,
+        options: [
+          {
+            id: "opt-rework",
+            label: "退回实施重新修复与验证",
+            action: "resume",
+            target_stage: "implement",
+            recommended: true,
+          },
+          {
+            id: "opt-cancel",
+            label: "取消任务",
+            action: "cancel",
+            recommended: false,
+          },
+        ],
+        created_at: new Date().toISOString(),
+      });
+      this.transitionTaskToWaiting(taskId, pending, guard);
+      return;
+    }
+
     if (!receiptLoad.ok) {
       if (receiptLoad.reason === "lease_expired") {
         this.syncCaffeinate();
@@ -3738,7 +4218,6 @@ export class KilnOrchestrator {
       return;
     }
 
-    const card = this.store.readTaskCard(taskId);
     if (
       parsed.frontmatter.run_id !== runMeta.run_id ||
       parsed.frontmatter.contract_version !== card.contract_version
@@ -3758,7 +4237,42 @@ export class KilnOrchestrator {
       return;
     }
 
+    const acceptReport = validateVerifierEvidenceGate({
+      runId: runMeta.run_id,
+      contractVersion: card.contract_version,
+      runStartedAtIso: runMeta.started_at,
+      evidenceDir: this.store.paths.runEvidenceDir(taskId, runDirName),
+      acceptEntry,
+      receipt: parsed.frontmatter,
+      workspaceMutated,
+      services: envSnapshot?.services ?? [],
+      traffic: envSnapshot?.traffic ?? {
+        observed: false,
+        total_requests: 0,
+        unique_paths: [],
+        error_responses: [],
+      },
+    });
+    writeYamlAtomic(
+      this.store.paths.runAcceptReportYaml(taskId, runDirName),
+      acceptReport,
+      AcceptVerificationReportSchema,
+    );
+
     if (parsed.frontmatter.verdict === "pass") {
+      if (!acceptReport.gate_ok) {
+        await this.applyStageFailure(
+          taskId,
+          "accept",
+          runMeta,
+          {
+            kind: "schema_invalid",
+            errors: acceptReport.rejection_reasons,
+          },
+          guard,
+        );
+        return;
+      }
       const nextStep = nextWorkflowStepAfter(
         card,
         runMeta.step_index ?? null,
