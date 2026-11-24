@@ -2479,4 +2479,159 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
       await screen.findByText(/\[stall_warning · 软告警\] silent=605s probe=alive/),
     ).toBeTruthy();
   });
+
+  it("Track 5 [B12.2]: renders BoardView serial merge queue bar and DetailView merge queue position badge", async () => {
+    const boot = makeV3Bootstrap({
+      tasks: [
+        {
+          id: "t-mq-1",
+          space: "alpha",
+          parent_id: null,
+          title: "Slice A Merge",
+          priority: "P1",
+          effective_priority: "P1",
+          track: "L1",
+          workspace_mode: "git_worktree",
+          status: "running",
+          stage: "deliver",
+          round: 1,
+          active_run_id: "run-t-mq-1-deliver",
+          contract_version: 1,
+          depends_on: [],
+          created_at: "2026-11-24T04:00:00Z",
+          updated_at: "2026-11-24T04:01:00Z",
+          cost_usd: 0,
+          tokens: {
+            input_tokens: 0,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+          },
+        },
+        {
+          id: "t-mq-2",
+          space: "alpha",
+          parent_id: null,
+          title: "Slice B Queue",
+          priority: "P2",
+          effective_priority: "P2",
+          track: "L1",
+          workspace_mode: "git_worktree",
+          status: "queued",
+          stage: "deliver",
+          round: 1,
+          active_run_id: null,
+          contract_version: 1,
+          depends_on: [],
+          created_at: "2026-11-24T04:00:00Z",
+          updated_at: "2026-11-24T04:02:00Z",
+          cost_usd: 0,
+          tokens: {
+            input_tokens: 0,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+          },
+        },
+      ],
+      mergeQueue: [
+        {
+          task_id: "t-mq-1",
+          space: "alpha",
+          title: "Slice A Merge",
+          state: "merging",
+          position: 1,
+          priority: "P1",
+        },
+        {
+          task_id: "t-mq-2",
+          space: "alpha",
+          title: "Slice B Queue",
+          state: "queued",
+          position: 2,
+          priority: "P2",
+        },
+      ],
+    });
+
+    fetchMock.mockImplementation(async (url) => {
+      if (url === "/api/auth/status") {
+        return jsonResponse({ ok: true, mode: "local", authenticated: true, device: null });
+      }
+      if (url === "/api/bootstrap") {
+        return jsonResponse(boot);
+      }
+      if (url === "/api/tasks/t-mq-2") {
+        return jsonResponse({
+          card: {
+            schema_version: 1,
+            id: "t-mq-2",
+            space: "alpha",
+            title: "Slice B Queue",
+            track: "L1",
+            priority: "P2",
+            workspace_mode: "git_worktree",
+            parent: null,
+            depends_on: [],
+            contract_version: 1,
+            contract: {
+              goal: "Test merge queue detail",
+              end: "Done",
+              accept_cmd: "echo ok",
+              accept_files_hash: `sha256:${"a".repeat(64)}`,
+              scope: ["src/b.ts"],
+              non_goals: [],
+              deliver: { mode: "merge_main", cmd: null },
+              human_accept: false,
+              external_actions: "ask",
+            },
+            limits: {
+              retries_per_stage: 2,
+              review_rounds: 2,
+              advisor_calls: 1,
+              max_tokens: 150_000,
+            },
+            created_at: "2026-11-24T04:00:00Z",
+            updated_at: "2026-11-24T04:02:00Z",
+          },
+          state: {
+            status: "queued",
+            stage: "deliver",
+            round: 1,
+            activeRunId: null,
+            priority: "P2",
+            effectivePriority: "P2",
+            track: "L1",
+            contractVersion: 1,
+            updatedAt: "2026-11-24T04:02:00Z",
+          },
+          brief: "# Brief",
+          decisions: "",
+          pendingDecision: null,
+          ledgerProposals: [],
+          runs: [],
+          usageTurns: [],
+          usage: boot.usage,
+          mergeQueueEntry: {
+            task_id: "t-mq-2",
+            space: "alpha",
+            title: "Slice B Queue",
+            state: "queued",
+            position: 2,
+            priority: "P2",
+          },
+        });
+      }
+      return jsonResponse({ ok: true });
+    });
+
+    window.location.hash = "#view=board";
+    render(<App />);
+    const mqBar = await screen.findByLabelText("串行合并队列");
+    expect(within(mqBar).getByText("正在合入")).toBeTruthy();
+    expect(within(mqBar).getByText("排队 #2")).toBeTruthy();
+
+    fireEvent.click(within(mqBar).getByText("Slice B Queue"));
+    expect(await screen.findByText("合并队列 #2")).toBeTruthy();
+  });
 });

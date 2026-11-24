@@ -18,6 +18,7 @@ import {
 } from "../gate/index.js";
 import type { DispatchPlan } from "../scheduler/index.js";
 import type { KilnStore } from "../store/index.js";
+import { MAX_REFINERY_AUTO_REWORKS, countRefineryAutoReworks } from "./merge-queue.js";
 import { runGitCommand } from "./orchestrator-git.js";
 
 export interface DeliverRunGuard {
@@ -80,6 +81,12 @@ export interface DeliverExecutionContext {
   dispatchOnConflictDeliverer: (
     plan: DispatchPlan,
     conflict: { baseRef: string; mergeError: string },
+  ) => Promise<void>;
+  withSpaceMergeLock: <T>(repoPath: string, fn: () => Promise<T>) => Promise<T>;
+  reworkDeliverFailure: (
+    plan: DispatchPlan,
+    input: { steerId: string; message: string },
+    expected: DeliverRunGuard,
   ) => Promise<void>;
   dispatchAgentStageRun: (plan: DispatchPlan) => Promise<void>;
   wake: () => Promise<void>;
@@ -549,43 +556,51 @@ export async function executeDeliverStage(
         }
 
         const baseRef = space.default_branch;
-        const aheadCount = Number(
-          (
-            await runGitCommand([
-              "-C",
-              space.repo_path,
-              "rev-list",
-              "--count",
-              `${baseRef}..kiln/${plan.taskId}`,
-            ]).catch(() => "0")
-          ).trim(),
-        );
-        if (
-          signal.aborted ||
-          !ctx.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
-        ) {
-          ctx.syncCaffeinate();
-          return;
-        }
-        if (aheadCount > 0) {
+        const mergeOutcome = await ctx.withSpaceMergeLock(space.repo_path, async (): Promise<{
+          handled: boolean;
+          deliverRef?: string;
+        }> => {
+          if (
+            signal.aborted ||
+            !ctx.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
+          ) {
+            ctx.syncCaffeinate();
+            return { handled: true };
+          }
+
+          const aheadInLock = Number(
+            (
+              await runGitCommand([
+                "-C",
+                space.repo_path!,
+                "rev-list",
+                "--count",
+                `${baseRef}..kiln/${plan.taskId}`,
+              ]).catch(() => "0")
+            ).trim(),
+          );
+          if (aheadInLock <= 0) {
+            return { handled: false };
+          }
+
           const currentMainBranch = (
             await runGitCommand([
               "-C",
-              space.repo_path,
+              space.repo_path!,
               "rev-parse",
               "--abbrev-ref",
               "HEAD",
             ]).catch(() => "")
           ).trim();
           const mainStatus = (
-            await runGitCommand(["-C", space.repo_path, "status", "--porcelain"])
+            await runGitCommand(["-C", space.repo_path!, "status", "--porcelain"])
           ).trim();
           if (
             signal.aborted ||
             !ctx.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
           ) {
             ctx.syncCaffeinate();
-            return;
+            return { handled: true };
           }
           if (mainStatus.length > 0 || currentMainBranch !== baseRef) {
             const reasons: string[] = [];
@@ -603,7 +618,7 @@ export async function executeDeliverStage(
               contract_version: card.contract_version,
               reason: "main_repo_not_ready_for_merge",
               category: "deliver_merge_blocked",
-              question: `分支 kiln/${plan.taskId} 尚有 ${aheadCount} 个提交未合并至 ${baseRef}，但${reasons.join("且")}，已保留 worktree 等待处理。`,
+              question: `分支 kiln/${plan.taskId} 尚有 ${aheadInLock} 个提交未合并至 ${baseRef}，但${reasons.join("且")}，已保留 worktree 等待处理。`,
               options: [
                 {
                   id: "opt-retry-deliver",
@@ -622,32 +637,31 @@ export async function executeDeliverStage(
               created_at: new Date().toISOString(),
             });
             ctx.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
-            return;
+            return { handled: true };
           }
 
-          try {
-            await runGitCommand([
-              "-C",
-              space.repo_path,
-              "merge",
-              "--no-edit",
-              `kiln/${plan.taskId}`,
-            ]);
-            deliverRef = (
-              await runGitCommand(["-C", space.repo_path, "rev-parse", "HEAD"])
-            ).trim();
-          } catch (mergeErr) {
-            await runGitCommand(["-C", space.repo_path, "merge", "--abort"]).catch(
-              () => {},
-            );
-            const msg =
-              mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
+          const handleMergeConflict = async (msg: string): Promise<{ handled: true }> => {
             if (ctx.canRunOnConflictDeliverer(plan)) {
               await ctx.dispatchOnConflictDeliverer(plan, {
                 baseRef,
                 mergeError: msg,
               });
-              return;
+              return { handled: true };
+            }
+            const priorAutoReworks = countRefineryAutoReworks(
+              ctx.store.readStateEvents(plan.taskId),
+              card.contract_version,
+            );
+            if (priorAutoReworks < MAX_REFINERY_AUTO_REWORKS) {
+              await ctx.reworkDeliverFailure(
+                plan,
+                {
+                  steerId: `refinery-conflict-${randomUUID().slice(0, 8)}`,
+                  message: `[Refinery 串行合并冲突] 分支 kiln/${plan.taskId} 在基于最新 ${baseRef} 变基或合入时发生冲突：${msg}。请在工作树合并最新 ${baseRef} 解决冲突并重跑验收后重新交付。`,
+                },
+                deliverGuard,
+              );
+              return { handled: true };
             }
             const decision = PendingDecisionSchema.parse({
               id: `dec-${randomUUID().slice(0, 8)}`,
@@ -655,7 +669,7 @@ export async function executeDeliverStage(
               contract_version: card.contract_version,
               reason: "merge_conflict",
               category: "deliver_merge_conflict",
-              question: `本地合并分支 kiln/${plan.taskId} 到 ${baseRef} 时冲突（${msg}），请人工处理或选择继续方式。`,
+              question: `本地合并分支 kiln/${plan.taskId} 到 ${baseRef} 时冲突（${msg}），已达自动返工上限，请人工处理或选择继续方式。`,
               options: [
                 {
                   id: "opt-reimplement",
@@ -674,8 +688,124 @@ export async function executeDeliverStage(
               created_at: new Date().toISOString(),
             });
             ctx.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
-            return;
+            return { handled: true };
+          };
+
+          const behindCount = Number(
+            (
+              await runGitCommand([
+                "-C",
+                space.repo_path!,
+                "rev-list",
+                "--count",
+                `kiln/${plan.taskId}..${baseRef}`,
+              ]).catch(() => "0")
+            ).trim(),
+          );
+
+          if (behindCount > 0) {
+            try {
+              await runGitCommand(["-C", worktreePath, "rebase", baseRef]);
+            } catch (rebaseErr) {
+              await runGitCommand(["-C", worktreePath, "rebase", "--abort"]).catch(() => {});
+              const msg =
+                rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
+              return await handleMergeConflict(msg);
+            }
+
+            const postAccept = await runIsolatedCommand(card.contract.accept_cmd, {
+              cwd: worktreePath,
+              signal,
+            });
+            if (
+              signal.aborted ||
+              !ctx.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
+            ) {
+              ctx.syncCaffeinate();
+              return { handled: true };
+            }
+            if (postAccept.exitCode !== 0 || postAccept.timedOut) {
+              const priorAutoReworks = countRefineryAutoReworks(
+                ctx.store.readStateEvents(plan.taskId),
+                card.contract_version,
+              );
+              if (priorAutoReworks < MAX_REFINERY_AUTO_REWORKS) {
+                await ctx.reworkDeliverFailure(
+                  plan,
+                  {
+                    steerId: `refinery-accept-${randomUUID().slice(0, 8)}`,
+                    message: `[Refinery 合并前联合验收失败] 分支 kiln/${plan.taskId} 已成功 rebase 到最新 ${baseRef}，但重跑验收命令 \`${card.contract.accept_cmd}\` 失败 (exit=${postAccept.exitCode}, timedOut=${postAccept.timedOut})。请结合主干最新代码修复回归问题并重新通过验收。`,
+                  },
+                  deliverGuard,
+                );
+                return { handled: true };
+              }
+              const decision = PendingDecisionSchema.parse({
+                id: `dec-${randomUUID().slice(0, 8)}`,
+                task_id: plan.taskId,
+                contract_version: card.contract_version,
+                reason: "refinery_accept_failed",
+                category: "deliver_merge_blocked",
+                question: `分支 kiln/${plan.taskId} 在 rebase 至最新 ${baseRef} 后重跑验收命令 \`${card.contract.accept_cmd}\` 仍然失败 (exit=${postAccept.exitCode}, timedOut=${postAccept.timedOut})，主干未被写入，请选择后续操作。`,
+                options: [
+                  {
+                    id: "opt-reimplement",
+                    label: "退回实施阶段修复",
+                    action: "resume",
+                    target_stage: "implement",
+                    recommended: true,
+                  },
+                  {
+                    id: "opt-cancel",
+                    label: "取消任务",
+                    action: "cancel",
+                    recommended: false,
+                  },
+                ],
+                created_at: new Date().toISOString(),
+              });
+              ctx.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
+              return { handled: true };
+            }
           }
+
+          try {
+            try {
+              await runGitCommand([
+                "-C",
+                space.repo_path!,
+                "merge",
+                "--ff-only",
+                `kiln/${plan.taskId}`,
+              ]);
+            } catch {
+              await runGitCommand([
+                "-C",
+                space.repo_path!,
+                "merge",
+                "--no-edit",
+                `kiln/${plan.taskId}`,
+              ]);
+            }
+            const nextRef = (
+              await runGitCommand(["-C", space.repo_path!, "rev-parse", "HEAD"])
+            ).trim();
+            return { handled: false, deliverRef: nextRef };
+          } catch (mergeErr) {
+            await runGitCommand(["-C", space.repo_path!, "merge", "--abort"]).catch(
+              () => {},
+            );
+            const msg =
+              mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
+            return await handleMergeConflict(msg);
+          }
+        });
+
+        if (mergeOutcome.handled) {
+          return;
+        }
+        if (mergeOutcome.deliverRef !== undefined) {
+          deliverRef = mergeOutcome.deliverRef;
         }
       } else if (card.contract.deliver.mode === "open_pr") {
         const events = ctx.store.readStateEvents(plan.taskId);

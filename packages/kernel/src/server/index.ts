@@ -293,6 +293,12 @@ export {
   type EvaluateRunStallResult,
 } from "./stall-watchdog.js";
 export {
+  MAX_REFINERY_AUTO_REWORKS,
+  SpaceMergeLock,
+  computeMergeQueueSnapshot,
+  countRefineryAutoReworks,
+} from "./merge-queue.js";
+export {
   extractDeterministicTaskRetro,
   runAiTaskRetro,
 } from "./retro-engine.js";

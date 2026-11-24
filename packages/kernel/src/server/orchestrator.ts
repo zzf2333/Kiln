@@ -154,6 +154,7 @@ import {
 import type { LiveRateTracker } from "./rate-tracker.js";
 import type { KilnScriptRunner } from "./script-runner.js";
 import type { SseHub } from "./sse.js";
+import { SpaceMergeLock } from "./merge-queue.js";
 import {
   DEFAULT_STALL_CHECK_INTERVAL_MS,
   DEFAULT_STALL_TIMEOUT_SEC,
@@ -422,6 +423,7 @@ export class KilnOrchestrator {
   }> = [];
   private readonly scheduler: KilnScheduler;
   private readonly warmPool = new WarmSessionPool();
+  private readonly spaceMergeLock = new SpaceMergeLock();
   private readonly latestContextPercentByRunId = new Map<string, number>();
   private readonly recentSpaceCompletedAtMs = new Map<string, number>();
   private readonly sessionKeyByRunId = new Map<string, string>();
@@ -5811,6 +5813,30 @@ export class KilnOrchestrator {
               `- 提交 \`worker\` 角色回执后，内核将强制重跑确定性 \`verify\` 门禁，通过后自动完成合并。`,
             ].join("\n"),
           }),
+        withSpaceMergeLock: (repoPath, fn) => this.spaceMergeLock.withLock(repoPath, fn),
+        reworkDeliverFailure: async (p, input, expected) => {
+          if (!this.isRunStillCurrent(p.taskId, expected.runId, expected.contractVersion)) {
+            this.syncCaffeinate();
+            return;
+          }
+          const nowIso = new Date().toISOString();
+          this.store.appendStateEvent(p.taskId, {
+            type: "steered",
+            at: nowIso,
+            steer_id: input.steerId,
+            message: input.message,
+            interrupt: false,
+            contract_version: p.contractVersion,
+            stage: "implement",
+          });
+          const latestCard = this.store.readTaskCard(p.taskId);
+          const restartStepIndex = findLoopRestartStepIndex(
+            latestCard,
+            "implement",
+            latestCard.track,
+          );
+          await this.advanceToNextStage(p.taskId, "implement", expected, restartStepIndex);
+        },
         dispatchAgentStageRun: (p) => this.dispatchAgentStageRun(p),
         wake: () => this.wake(),
       },

@@ -162,6 +162,7 @@ import {
   importGithubIssueToDraft,
   parseGithubRepoFromUrl,
 } from "./github-bridge.js";
+import { computeMergeQueueSnapshot } from "./merge-queue.js";
 import { syncModelPricing } from "./pricing-sync.js";
 import { KilnScriptRunner } from "./script-runner.js";
 import {
@@ -1633,6 +1634,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       usage,
       budget: computeGlobalBudgetStatus(store),
       runningCount: countRunningLeafTasks(store),
+      mergeQueue: computeMergeQueueSnapshot(store),
     });
   });
 
@@ -1768,6 +1770,8 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       stateEvents,
       steers: extractActiveSteerNotes(stateEvents),
       chatMessages,
+      mergeQueueEntry:
+        computeMergeQueueSnapshot(store).find((e) => e.task_id === taskId) ?? null,
     });
   });
 

@@ -841,6 +841,15 @@ export function DetailView() {
                 停滞告警 · 静默 {activeSoftStallWarning.silentSec}s
               </span>
             ) : null}
+            {detail.mergeQueueEntry ? (
+              <span
+                className={`chip ${detail.mergeQueueEntry.state === "merging" ? "chip-ok" : ""}`}
+              >
+                {detail.mergeQueueEntry.state === "merging"
+                  ? "合并队列 · 正在合入"
+                  : `合并队列 #${detail.mergeQueueEntry.position}`}
+              </span>
+            ) : null}
           </div>
           <div className="d-sub">
             <PrioritySelect

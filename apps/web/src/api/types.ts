@@ -32,6 +32,7 @@ import type {
   LedgerEntry,
   LedgerFile,
   LimitsConfig,
+  MergeQueueEntry,
   PairCompleteRequest,
   PendingDecision,
   PickDirectoryResponse,
@@ -266,6 +267,7 @@ export interface BootstrapResponse {
   usage: UsageSnapshot;
   budget?: GlobalBudgetStatus;
   runningCount: number;
+  mergeQueue?: MergeQueueEntry[];
   ledgers?: Record<string, LedgerFile> | LedgerFile[] | Array<{ space: string; entries: LedgerEntry[] }>;
   agents?: AgentDescriptorInfo[];
   backends?: BackendConnectionInfo[];
@@ -432,6 +434,7 @@ export interface TaskDetailResponse {
   stateEvents?: StateEvent[];
   steers?: SteerNote[];
   chatMessages?: ChatMessage[];
+  mergeQueueEntry?: MergeQueueEntry | null;
 }
 
 export interface HostRestoreConflictDetail {
@@ -775,6 +778,7 @@ export type {
   PolicyChangeRecord,
   PolicyMetricWindow,
   PrFeedbackReworkRequest,
+  MergeQueueEntry,
   PricingSyncSource,
   ProviderAdapterKind,
   ProviderEntry,

@@ -403,3 +403,13 @@ export const PrFeedbackReworkRequestSchema = z
     },
   );
 export type PrFeedbackReworkRequest = z.infer<typeof PrFeedbackReworkRequestSchema>;
+
+export const MergeQueueEntrySchema = z.object({
+  task_id: z.string().min(1),
+  space: z.string().min(1),
+  title: z.string().min(1),
+  state: z.enum(["merging", "queued"]),
+  position: z.number().int().positive(),
+  priority: PrioritySchema,
+});
+export type MergeQueueEntry = z.infer<typeof MergeQueueEntrySchema>;

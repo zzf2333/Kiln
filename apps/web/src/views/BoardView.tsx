@@ -527,26 +527,49 @@ export function BoardView() {
           </div>
         </div>
       ) : (
-        <div className="board">
-          {cols.map((col) => (
-            <section key={col.name} className="col">
-              <div className="col-head">
-                <div className="col-name">
-                  <span className="dot" style={{ background: col.color }} />
-                  <span>{col.name}</span>
-                  <span className="nav-count">{col.items.length}</span>
+        <div className="board-wrap">
+          {state.mergeQueue.length > 0 ? (
+            <div className="merge-queue-bar" aria-label="串行合并队列">
+              <span className="merge-queue-title">串行合并队列</span>
+              {state.mergeQueue.map((mq) => (
+                <button
+                  key={mq.task_id}
+                  type="button"
+                  className={`chip ${mq.state === "merging" ? "chip-ok" : ""}`}
+                  onClick={() => store.openTask(mq.task_id)}
+                >
+                  <span className="mono">{mq.space}</span>
+                  <span>·</span>
+                  <span>
+                    {mq.state === "merging" ? "正在合入" : `排队 #${mq.position}`}
+                  </span>
+                  <span>·</span>
+                  <span>{mq.title}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="board">
+            {cols.map((col) => (
+              <section key={col.name} className="col">
+                <div className="col-head">
+                  <div className="col-name">
+                    <span className="dot" style={{ background: col.color }} />
+                    <span>{col.name}</span>
+                    <span className="nav-count">{col.items.length}</span>
+                  </div>
+                  <div className="col-hint">{col.hint}</div>
                 </div>
-                <div className="col-hint">{col.hint}</div>
-              </div>
-              <div className="col-body">
-                {col.items.length > 0 ? (
-                  col.items.map(renderCard)
-                ) : (
-                  <div className="col-empty">这一列现在是空的</div>
-                )}
-              </div>
-            </section>
-          ))}
+                <div className="col-body">
+                  {col.items.length > 0 ? (
+                    col.items.map(renderCard)
+                  ) : (
+                    <div className="col-empty">这一列现在是空的</div>
+                  )}
+                </div>
+              </section>
+            ))}
+          </div>
         </div>
       )}
     </ViewFrame>

@@ -17,6 +17,7 @@ import {
   type LedgerEntry,
   type LedgerFile,
   type LimitsConfig,
+  type MergeQueueEntry,
   type PendingDecision,
   type PricingConfig,
   type Priority,
@@ -367,6 +368,7 @@ export interface KilnStoreState {
   usage: UsageSnapshot;
   budget: GlobalBudgetStatus | null;
   runningCount: number;
+  mergeQueue: MergeQueueEntry[];
   ledgers: Record<string, LedgerEntry[]>;
   agents: AgentDescriptorInfo[];
   backends: BackendConnectionInfo[];
@@ -969,6 +971,7 @@ export class KilnWebStore {
       usage: { ...EMPTY_USAGE },
       budget: null,
       runningCount: 0,
+      mergeQueue: [],
       ledgers: {},
       agents: [],
       backends: [],
@@ -1524,6 +1527,7 @@ export class KilnWebStore {
           usage: data.usage ?? { ...EMPTY_USAGE },
           budget: data.budget ?? null,
           runningCount: data.runningCount ?? 0,
+          mergeQueue: data.mergeQueue ?? [],
           ...(data.ledgers !== undefined
             ? { ledgers: normalizeLedgers(data.ledgers) }
             : {}),

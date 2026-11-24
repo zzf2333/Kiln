@@ -648,6 +648,7 @@ export class KilnScheduler {
     // Count waiting tasks ONLY for status === "waiting" (paused MUST NEVER enter waitingCount).
     let waitingCount = 0;
     const activeSlotTaskIds = new Set<string>();
+    const activeMergeSpaces = new Set<string>();
     const activeGitWorktrees: Array<{ space: string; scope: readonly string[] }> = [];
     const activeHostParticipants: HostScopeParticipant[] = [];
 
@@ -677,6 +678,12 @@ export class KilnScheduler {
               space: snap.card.space,
               scope: snap.card.contract.scope,
             });
+            if (
+              snap.card.contract.deliver.mode === "merge_main" &&
+              snap.derived.stage === "deliver"
+            ) {
+              activeMergeSpaces.add(snap.card.space);
+            }
           } else if (snap.card.workspace_mode === "host_scoped") {
             activeHostParticipants.push({
               taskId,
@@ -1005,6 +1012,13 @@ export class KilnScheduler {
 
       // Write-lock checks: only mutating stages hold git_worktree scope / host_scoped path locks.
       const isReadOnlyCandidate = isReadOnlyStage(stage, roleAssignment?.perm);
+      const isMergeMainDeliverCandidate =
+        stage === "deliver" &&
+        snap.card.workspace_mode === "git_worktree" &&
+        snap.card.contract.deliver.mode === "merge_main";
+      if (isMergeMainDeliverCandidate && activeMergeSpaces.has(snap.card.space)) {
+        continue;
+      }
       let candidateHostTargets: string[] = [];
       if (!isReadOnlyCandidate) {
         if (snap.card.workspace_mode === "git_worktree") {
@@ -1047,6 +1061,9 @@ export class KilnScheduler {
             space: snap.card.space,
             scope: snap.card.contract.scope,
           });
+          if (isMergeMainDeliverCandidate) {
+            activeMergeSpaces.add(snap.card.space);
+          }
         } else if (snap.card.workspace_mode === "host_scoped") {
           activeHostParticipants.push({
             taskId,
