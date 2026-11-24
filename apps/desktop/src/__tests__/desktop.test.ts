@@ -377,4 +377,37 @@ describe("@kiln/desktop Electron core model & daemon client", () => {
     expect(childDirs[0]).toBe(localBin);
     expect(childDirs).toContain("/opt/homebrew/opt/node@22/bin");
   });
+
+  it("includes valid macOS Retina tray template icons and desktop app icons", () => {
+    const assetsDir = path.resolve(import.meta.dirname, "../../assets");
+    const readPngDimensions = (filePath: string): { width: number; height: number } => {
+      const buf = fs.readFileSync(filePath);
+      expect(buf.subarray(0, 8)).toEqual(
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      );
+      return {
+        width: buf.readUInt32BE(16),
+        height: buf.readUInt32BE(20),
+      };
+    };
+
+    expect(readPngDimensions(path.join(assetsDir, "trayTemplate.png"))).toEqual({
+      width: 22,
+      height: 22,
+    });
+    expect(readPngDimensions(path.join(assetsDir, "trayTemplate@2x.png"))).toEqual({
+      width: 44,
+      height: 44,
+    });
+    expect(readPngDimensions(path.join(assetsDir, "tray.png"))).toEqual({
+      width: 32,
+      height: 32,
+    });
+    expect(readPngDimensions(path.join(assetsDir, "icon.png"))).toEqual({
+      width: 512,
+      height: 512,
+    });
+    expect(fs.existsSync(path.join(assetsDir, "icon.icns"))).toBe(true);
+    expect(fs.existsSync(path.join(assetsDir, "icon.ico"))).toBe(true);
+  });
 });

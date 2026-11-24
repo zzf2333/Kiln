@@ -36,17 +36,48 @@ export interface TrayCoordinator {
   quitApp(stopDaemon: boolean): Promise<void>;
 }
 
-function resolveTrayIcon(): Electron.NativeImage {
-  for (const rel of ["../assets/tray.png", "../../assets/tray.png"]) {
+function resolveAssetCandidate(fileName: string): string | undefined {
+  for (const rel of [`../assets/${fileName}`, `../../assets/${fileName}`]) {
     const candidate = path.resolve(import.meta.dirname, rel);
     if (fs.existsSync(candidate)) {
-      const img = nativeImage.createFromPath(candidate);
-      if (process.platform === "darwin") {
-        img.setTemplateImage(true);
-      }
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function resolveTrayIcon(): Electron.NativeImage {
+  if (process.platform === "darwin") {
+    const tpl1x = resolveAssetCandidate("trayTemplate.png");
+    const tpl2x = resolveAssetCandidate("trayTemplate@2x.png");
+    if (tpl1x && tpl2x) {
+      const img = nativeImage.createEmpty();
+      img.addRepresentation({
+        scaleFactor: 1,
+        width: 22,
+        height: 22,
+        buffer: fs.readFileSync(tpl1x),
+      });
+      img.addRepresentation({
+        scaleFactor: 2,
+        width: 44,
+        height: 44,
+        buffer: fs.readFileSync(tpl2x),
+      });
+      img.setTemplateImage(true);
       return img;
     }
   }
+
+  const fallbackPath = resolveAssetCandidate("tray.png");
+  if (fallbackPath) {
+    const img = nativeImage.createFromPath(fallbackPath);
+    if (process.platform === "darwin") {
+      img.setTemplateImage(true);
+    }
+    return img;
+  }
+
   return nativeImage.createEmpty();
 }
 

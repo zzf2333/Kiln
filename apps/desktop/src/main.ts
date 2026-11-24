@@ -1,5 +1,11 @@
 import { app, globalShortcut } from "electron";
-import { KilndClient, resolveKilndUrl, runKilnDown, spawnKilnUp } from "./daemon-client.js";
+import {
+  KilndClient,
+  resolveDesktopVersion,
+  resolveKilndUrl,
+  runKilnDown,
+  spawnKilnUp,
+} from "./daemon-client.js";
 import {
   applyStartAction,
   decideStartupWindowAction,
@@ -10,7 +16,15 @@ import {
   type WorkbenchRoute,
 } from "./model.js";
 import { DesktopTrayController, setupMacApplicationMenu, type TrayCoordinator } from "./tray.js";
-import { destroyMainWindow, hasMainWindow, openOrFocusMainWindow } from "./window-manager.js";
+import {
+  applyMacDockIcon,
+  destroyMainWindow,
+  hasMainWindow,
+  openOrFocusMainWindow,
+  resolveAppIconPath,
+} from "./window-manager.js";
+
+app.setName("Kiln");
 
 const OFFLINE_POLL_INTERVAL_MS = 3_000;
 const SSE_DEBOUNCE_MS = 250;
@@ -44,6 +58,13 @@ class KilnDesktopApp implements TrayCoordinator {
 
   async start(): Promise<void> {
     if (process.platform === "darwin") {
+      applyMacDockIcon();
+      const aboutIcon = resolveAppIconPath("icon.png");
+      app.setAboutPanelOptions({
+        applicationName: "Kiln",
+        applicationVersion: resolveDesktopVersion(),
+        ...(aboutIcon ? { iconPath: aboutIcon } : {}),
+      });
       app.dock?.hide();
     }
 

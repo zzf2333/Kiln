@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { BrowserWindow, app } from "electron";
+import { BrowserWindow, app, nativeImage } from "electron";
 import {
   buildWorkbenchUrl,
   isAllowedNavigationUrl,
@@ -10,9 +10,11 @@ import {
 } from "./model.js";
 
 let mainWindow: BrowserWindow | null = null;
+let dockIconApplied = false;
 
-function resolveAppIconPath(): string | undefined {
-  const iconFile = process.platform === "win32" ? "icon.ico" : "icon.png";
+export function resolveAppIconPath(
+  iconFile = process.platform === "win32" ? "icon.ico" : "icon.png",
+): string | undefined {
   for (const rel of [`../assets/${iconFile}`, `../../assets/${iconFile}`]) {
     const candidate = path.resolve(import.meta.dirname, rel);
     if (fs.existsSync(candidate)) {
@@ -20,6 +22,17 @@ function resolveAppIconPath(): string | undefined {
     }
   }
   return undefined;
+}
+
+export function applyMacDockIcon(): void {
+  if (process.platform !== "darwin" || dockIconApplied) return;
+  const iconPath = resolveAppIconPath("icon.png");
+  if (!iconPath) return;
+  const img = nativeImage.createFromPath(iconPath);
+  if (!img.isEmpty()) {
+    app.dock?.setIcon(img);
+    dockIconApplied = true;
+  }
 }
 
 export function hasMainWindow(): boolean {
@@ -45,6 +58,7 @@ export function openOrFocusMainWindow(
       mainWindow.restore();
     }
     if (process.platform === "darwin") {
+      applyMacDockIcon();
       void app.dock?.show();
     }
     mainWindow.show();
@@ -73,6 +87,7 @@ export function openOrFocusMainWindow(
   mainWindow = win;
 
   if (process.platform === "darwin") {
+    applyMacDockIcon();
     void app.dock?.show();
   }
 
