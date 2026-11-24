@@ -889,4 +889,48 @@ export class TaskStateMachine {
       effectivePriority: effectivePriorities.get(taskId) ?? derived.priority,
     };
   }
+
+  /**
+   * Resolves a `waiting` task directly back to `queued` at `targetStage`
+   * (used by structured review/accept checklist disposition flows),
+   * while preserving `upstream_cancelled` guards and priority recalculation.
+   */
+  resolveWaitingToStage(input: {
+    taskId: string;
+    decisionId: string;
+    targetStage: StageId;
+    now?: string;
+  }): DerivedTaskState {
+    const { card, derived } = this.requireTaskState(input.taskId);
+    if (derived.status !== "waiting") {
+      throw new InvalidStateTransitionError(derived.status, "queued");
+    }
+    assertValidTransition(derived.status, "queued");
+
+    const parsedStage = StageIdSchema.parse(input.targetStage);
+    const timestamp = input.now ?? new Date().toISOString();
+
+    let nextState = this.store.appendStateEvent(input.taskId, {
+      type: "decided",
+      at: timestamp,
+      decision_id: input.decisionId,
+      action: "resume",
+      target_stage: parsedStage,
+    });
+
+    if (
+      nextState.status === "queued" &&
+      this.getCancelledDependencies(card.depends_on).length > 0
+    ) {
+      assertValidTransition("queued", "waiting");
+      nextState = this.store.appendStateEvent(input.taskId, {
+        type: "waiting",
+        at: timestamp,
+        reason: "upstream_cancelled",
+      });
+    }
+
+    this.syncAllEffectivePriorities();
+    return nextState;
+  }
 }

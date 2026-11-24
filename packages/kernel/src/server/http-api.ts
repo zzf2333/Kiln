@@ -24,6 +24,7 @@ import {
   ProvidersConfigSchema,
   RemoteConfigSchema,
   RemoteNotificationTestRequestSchema,
+  ResolveTaskChecklistRequestSchema,
   RollbackCheckpointRequestSchema,
   RolesConfigSchema,
   RosterConfigSchema,
@@ -83,8 +84,15 @@ import {
 import {
   InvalidStateTransitionError,
   TaskStateMachine,
+  nextTaskStageAfter,
   type ContractUpdateInput,
 } from "../state/index.js";
+import {
+  buildChecklistReworkMessage,
+  buildTaskReviewChecklist,
+  isBlockingChecklistItem,
+  persistChecklistDispositions,
+} from "./review-checklist.js";
 import {
   KilnStore,
   assertSafeSegment,
@@ -1797,8 +1805,258 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       stateEvents,
       steers: extractActiveSteerNotes(stateEvents),
       chatMessages,
+      reviewChecklist: buildTaskReviewChecklist(store, taskId),
       mergeQueueEntry:
         computeMergeQueueSnapshot(store).find((e) => e.task_id === taskId) ?? null,
+    });
+  });
+
+  app.post("/api/tasks/:id/checklist/resolve", async (c) => {
+    const taskId = requireExistingTask(c.req.param("id"));
+    const rawBody = await readJsonBodyStrict(c);
+    const body = ResolveTaskChecklistRequestSchema.parse(rawBody);
+
+    const card = store.readTaskCard(taskId);
+    const derived = deriveTaskStatus(card, store.readStateEvents(taskId));
+    if (derived.status === "done" || derived.status === "cancelled") {
+      throw new ServerHttpError(409, {
+        error: "invalid_task_state",
+        taskId,
+        status: derived.status,
+        message: `Task "${taskId}" cannot resolve checklist items in terminal status "${derived.status}"`,
+      });
+    }
+
+    const currentChecklist = buildTaskReviewChecklist(store, taskId);
+    const byId = new Map(currentChecklist.map((item) => [item.id, item]));
+    const dedupMap = new Map<string, (typeof body.items)[number]>();
+    for (const item of body.items) {
+      if (!byId.has(item.item_id)) {
+        throw new ServerHttpError(400, {
+          error: "unknown_checklist_item",
+          taskId,
+          itemId: item.item_id,
+          message: `Checklist item "${item.item_id}" does not exist on task "${taskId}"`,
+        });
+      }
+      dedupMap.set(item.item_id, item);
+    }
+    const requestedItems = Array.from(dedupMap.values());
+    const hasRework = requestedItems.some((item) => item.disposition === "rework");
+
+    const pending = derived.status === "waiting" ? pendingDecisions.get(taskId) : null;
+    if (derived.status === "waiting" && (hasRework || body.advance_after_waive)) {
+      const guardedReasons = new Set([
+        "budget_exceeded",
+        "upstream_cancelled",
+        "host_apply_approval",
+        "read_only_workspace_mutation",
+      ]);
+      if (pending && guardedReasons.has(pending.reason)) {
+        throw new ServerHttpError(409, {
+          error: "waiting_requires_decision",
+          taskId,
+          reason: pending.reason,
+          message:
+            "当前任务正等待高风险或预算审批，请先在决策卡片中处理后再操作清单",
+        });
+      }
+      if (!hasRework && body.advance_after_waive) {
+        if (derived.stage !== "review" && derived.stage !== "accept") {
+          throw new ServerHttpError(409, {
+            error: "invalid_waiting_stage",
+            taskId,
+            stage: derived.stage,
+            message: `Task "${taskId}" can only advance after waive from "review" or "accept", not "${derived.stage ?? "null"}"`,
+          });
+        }
+        const postDisposition = new Map(
+          currentChecklist.map((item) => [
+            item.id,
+            dedupMap.get(item.id)?.disposition ?? item.disposition,
+          ]),
+        );
+        const blockingIds = currentChecklist
+          .filter((item) => isBlockingChecklistItem(item) && !postDisposition.get(item.id))
+          .map((item) => item.id);
+        if (blockingIds.length > 0) {
+          throw new ServerHttpError(409, {
+            error: "unresolved_blocking_items",
+            taskId,
+            blocking_item_ids: blockingIds,
+            message: "仍有未处理的阻断性缺陷或失败验收场景，无法直接推进",
+          });
+        }
+      }
+    }
+
+    const persisted = persistChecklistDispositions(store, {
+      taskId,
+      contractVersion: derived.contractVersion,
+      checklist: currentChecklist,
+      requestedItems,
+      ...(body.extra_note !== undefined ? { extraNote: body.extra_note } : {}),
+    });
+
+    const decisionId = pending?.id ?? `checklist-${randomUUID().slice(0, 8)}`;
+
+    if (hasRework) {
+      const message = buildChecklistReworkMessage({
+        reworkEntries: persisted.reworkEntries,
+        waiveEntries: persisted.waiveEntries,
+        ...(body.extra_note !== undefined ? { extraNote: body.extra_note } : {}),
+      });
+
+      if (derived.status === "running" || derived.status === "queued") {
+        if (onTaskSteered) {
+          await onTaskSteered(taskId, { message, interrupt: body.interrupt });
+        } else {
+          store.appendStateEvent(taskId, {
+            type: "steered",
+            at: new Date().toISOString(),
+            steer_id: `steer-${randomUUID().slice(0, 8)}`,
+            message,
+            interrupt: Boolean(body.interrupt && derived.status === "running"),
+            contract_version: derived.contractVersion,
+            ...(derived.stage !== null ? { stage: derived.stage } : {}),
+          });
+        }
+        const next = deriveTaskStatus(
+          store.readTaskCard(taskId),
+          store.readStateEvents(taskId),
+        );
+        return c.json({
+          ok: true,
+          mode: "steered",
+          taskId,
+          status: next.status,
+          stage: next.stage,
+          reviewChecklist: buildTaskReviewChecklist(store, taskId),
+          message,
+        });
+      }
+
+      if (derived.status === "paused" || derived.status === "external") {
+        store.appendStateEvent(taskId, {
+          type: "steered",
+          at: new Date().toISOString(),
+          steer_id: `steer-${randomUUID().slice(0, 8)}`,
+          message,
+          interrupt: false,
+          contract_version: derived.contractVersion,
+          stage: "implement",
+        });
+        const nextState = stateMachine.resumeTask(taskId, undefined, "implement");
+        caffeinate.syncRunningCount(countRunningLeafTasks(store));
+        sseHub.publish({
+          type: "task.updated",
+          taskId,
+          patch: {
+            status: nextState.status,
+            ...(nextState.stage !== null ? { stage: nextState.stage } : {}),
+            ...(nextState.round !== null ? { round: nextState.round } : {}),
+            contractVersion: nextState.contractVersion,
+          },
+        });
+        onTaskQueued?.(taskId);
+        return c.json({
+          ok: true,
+          mode: "rework_queued",
+          taskId,
+          status: nextState.status,
+          stage: nextState.stage,
+          reviewChecklist: buildTaskReviewChecklist(store, taskId),
+          message,
+        });
+      }
+
+      await Promise.resolve(onBeforeDecisionApply?.(taskId));
+      store.appendStateEvent(taskId, {
+        type: "steered",
+        at: new Date().toISOString(),
+        steer_id: `steer-${randomUUID().slice(0, 8)}`,
+        message,
+        interrupt: false,
+        contract_version: derived.contractVersion,
+        stage: "implement",
+      });
+      const nextState = stateMachine.resolveWaitingToStage({
+        taskId,
+        decisionId,
+        targetStage: "implement",
+      });
+      pendingDecisions.remove(taskId);
+      caffeinate.syncRunningCount(countRunningLeafTasks(store));
+      sseHub.publish({
+        type: "task.updated",
+        taskId,
+        patch: {
+          status: nextState.status,
+          ...(nextState.stage !== null ? { stage: nextState.stage } : {}),
+          ...(nextState.round !== null ? { round: nextState.round } : {}),
+          contractVersion: nextState.contractVersion,
+        },
+      });
+      onTaskQueued?.(taskId);
+      return c.json({
+        ok: true,
+        mode: "rework_queued",
+        taskId,
+        status: nextState.status,
+        stage: nextState.stage,
+        reviewChecklist: buildTaskReviewChecklist(store, taskId),
+        message,
+      });
+    }
+
+    if (body.advance_after_waive && derived.status === "waiting") {
+      const nextStage =
+        nextTaskStageAfter(card, derived.stage!, derived.track) ?? "deliver";
+      await Promise.resolve(onBeforeDecisionApply?.(taskId));
+      const nextState = stateMachine.resolveWaitingToStage({
+        taskId,
+        decisionId,
+        targetStage: nextStage,
+      });
+      pendingDecisions.remove(taskId);
+      caffeinate.syncRunningCount(countRunningLeafTasks(store));
+      sseHub.publish({
+        type: "task.updated",
+        taskId,
+        patch: {
+          status: nextState.status,
+          ...(nextState.stage !== null ? { stage: nextState.stage } : {}),
+          ...(nextState.round !== null ? { round: nextState.round } : {}),
+          contractVersion: nextState.contractVersion,
+        },
+      });
+      onTaskQueued?.(taskId);
+      return c.json({
+        ok: true,
+        mode: "waived_and_advanced",
+        taskId,
+        status: nextState.status,
+        stage: nextState.stage,
+        reviewChecklist: buildTaskReviewChecklist(store, taskId),
+      });
+    }
+
+    sseHub.publish({
+      type: "task.updated",
+      taskId,
+      patch: {
+        status: derived.status,
+        ...(derived.stage !== null ? { stage: derived.stage } : {}),
+        contractVersion: derived.contractVersion,
+      },
+    });
+    return c.json({
+      ok: true,
+      mode: "recorded",
+      taskId,
+      status: derived.status,
+      stage: derived.stage,
+      reviewChecklist: buildTaskReviewChecklist(store, taskId),
     });
   });
 

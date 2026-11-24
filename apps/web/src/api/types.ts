@@ -15,6 +15,8 @@ import type {
   ChatCommandsResponse,
   ChatCommandSource,
   ChatMcpServerItem,
+  ChecklistDisposition,
+  ChecklistItem,
   CheckpointRecord,
   DecisionAction,
   DiscoveredGitRepo,
@@ -55,6 +57,7 @@ import type {
   RemoteNotificationChannel,
   RemoteNotificationTestRequest,
   RemotePairChallengeResponse,
+  ResolveTaskChecklistRequest,
   RetroAttribution,
   RoleId,
   RolesConfig,
@@ -435,7 +438,18 @@ export interface TaskDetailResponse {
   stateEvents?: StateEvent[];
   steers?: SteerNote[];
   chatMessages?: ChatMessage[];
+  reviewChecklist?: ChecklistItem[];
   mergeQueueEntry?: MergeQueueEntry | null;
+}
+
+export interface ResolveTaskChecklistResponse {
+  ok: true;
+  mode: "steered" | "rework_queued" | "waived_and_advanced" | "recorded";
+  taskId: string;
+  status: TaskStatus;
+  stage: StageId | null;
+  reviewChecklist: ChecklistItem[];
+  message?: string;
 }
 
 export interface HostRestoreConflictDetail {
@@ -764,6 +778,8 @@ export type {
   ChatCommandsResponse,
   ChatCommandSource,
   ChatMcpServerItem,
+  ChecklistDisposition,
+  ChecklistItem,
   CheckpointRecord,
   CommitPrActionRequest,
   DiscoveredGitRepo,
@@ -793,6 +809,7 @@ export type {
   RemoteNotificationChannel,
   RemoteNotificationTestRequest,
   RemotePairChallengeResponse,
+  ResolveTaskChecklistRequest,
   RetroAttribution,
   RollbackCheckpointRequest,
   RosterConfig,

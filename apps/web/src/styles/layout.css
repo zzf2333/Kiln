@@ -4169,6 +4169,103 @@ button.sb-item:hover { background: var(--hover); color: var(--t1); }
   font-size: 12px;
 }
 
+.checklist-panel {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.checklist-head h4 {
+  margin: 0;
+  font-size: 13px;
+}
+.checklist-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.checklist-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.checklist-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--rail);
+}
+.checklist-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.checklist-row-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.checklist-row-title {
+  font-size: 12.5px;
+}
+.checklist-row-detail {
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.checklist-seg {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--surface);
+}
+.checklist-seg-btn {
+  border: 0;
+  background: transparent;
+  padding: 3px 9px;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.checklist-seg-btn + .checklist-seg-btn {
+  border-left: 1px solid var(--line);
+}
+.checklist-seg-btn.is-active {
+  background: var(--ink);
+  color: var(--bg);
+  font-weight: 600;
+}
+.checklist-seg-btn.is-active.is-rework {
+  background: var(--ember);
+  color: #fff;
+}
+.checklist-seg-btn.is-active.is-waive {
+  background: var(--ok, #16a34a);
+  color: #fff;
+}
+.checklist-input {
+  width: 100%;
+}
+.checklist-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }

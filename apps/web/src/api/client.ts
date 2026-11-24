@@ -52,6 +52,8 @@ import type {
   RemoteNotificationTestResponse,
   RemotePairChallengeResponse,
   RemoteSettingsResponse,
+  ResolveTaskChecklistRequest,
+  ResolveTaskChecklistResponse,
   RestoreHostBackupResult,
   RevokeAllDevicesResponse,
   RevokeDeviceResponse,
@@ -1142,4 +1144,17 @@ export async function triggerPrFeedbackRework(
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+export async function resolveTaskChecklist(
+  taskId: string,
+  body: ResolveTaskChecklistRequest,
+): Promise<ResolveTaskChecklistResponse> {
+  return requestJson<ResolveTaskChecklistResponse>(
+    `/api/tasks/${encodeURIComponent(taskId)}/checklist/resolve`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
 }

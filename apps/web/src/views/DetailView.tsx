@@ -32,6 +32,7 @@ import {
 import { MarkdownContent } from "../components/MarkdownContent";
 import { PrioritySelect } from "../components/PrioritySelect";
 import { ProviderAvatar } from "../components/ProviderAvatar";
+import { ReviewChecklistPanel } from "../components/ReviewChecklistPanel";
 import { ScriptDrawer } from "../components/ScriptDrawer";
 import { ViewFrame } from "../components/ViewFrame";
 import { HostStagedDiffSection } from "./ResolveView";
@@ -1487,6 +1488,14 @@ export function DetailView() {
               ) : null}
 
               <HostStagedDiffSection detail={detail} />
+
+              <ReviewChecklistPanel
+                taskId={card.id}
+                taskStatus={taskState.status}
+                taskStage={taskState.stage}
+                items={detail.reviewChecklist ?? []}
+                onResolved={() => store.loadTaskDetail(card.id)}
+              />
 
               {normalizedRuns.length > 0 ? (
                 <section className="session-overview" aria-label="Agent Session 总览">

@@ -453,3 +453,91 @@ export function extractLocalPreviewUrls(text: string, maxCount = 6): string[] {
   }
   return result;
 }
+
+export const CHECKLIST_ITEM_SOURCES = ["review", "accept"] as const;
+export type ChecklistItemSource = (typeof CHECKLIST_ITEM_SOURCES)[number];
+
+export const CHECKLIST_DISPOSITIONS = ["rework", "waive"] as const;
+export type ChecklistDisposition = (typeof CHECKLIST_DISPOSITIONS)[number];
+
+export const ChecklistItemSeveritySchema = z.enum([
+  "P0",
+  "P1",
+  "P2",
+  "fail",
+  "skipped",
+  "pass",
+]);
+export type ChecklistItemSeverity = z.infer<typeof ChecklistItemSeveritySchema>;
+
+export const ChecklistItemSchema = z.object({
+  id: z.string().min(1),
+  run_dir: z.string().min(1),
+  run_id: z.string().min(1).optional(),
+  source: z.enum(CHECKLIST_ITEM_SOURCES),
+  severity: ChecklistItemSeveritySchema,
+  title: z.string().min(1),
+  location: z.string().min(1).optional(),
+  detail: z.string().min(1).optional(),
+  evidence_files: z.array(z.string().min(1)).optional(),
+  disposition: z.enum(CHECKLIST_DISPOSITIONS).optional(),
+  rationale: z.string().min(1).optional(),
+  decided_at: z.string().min(1).optional(),
+  contract_version: z.number().int().positive().optional(),
+});
+export type ChecklistItem = z.infer<typeof ChecklistItemSchema>;
+
+export const ChecklistDispositionRecordSchema = z.object({
+  item_id: z.string().min(1),
+  run_dir: z.string().min(1),
+  source: z.enum(CHECKLIST_ITEM_SOURCES),
+  disposition: z.enum(CHECKLIST_DISPOSITIONS),
+  rationale: z.string().optional(),
+  decided_at: z.string().min(1),
+  contract_version: z.number().int().positive(),
+});
+export type ChecklistDispositionRecord = z.infer<
+  typeof ChecklistDispositionRecordSchema
+>;
+
+export const TaskChecklistDispositionsFileSchema = z.object({
+  schema_version: z.literal(1).default(1),
+  task_id: z.string().min(1),
+  updated_at: z.string().min(1),
+  records: z.array(ChecklistDispositionRecordSchema),
+});
+export type TaskChecklistDispositionsFile = z.infer<
+  typeof TaskChecklistDispositionsFileSchema
+>;
+
+export const ChecklistResolveActionItemSchema = z
+  .object({
+    item_id: z.string().trim().min(1),
+    disposition: z.enum(CHECKLIST_DISPOSITIONS),
+    rationale: z.string().trim().max(1500).optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (
+      v.disposition === "waive" &&
+      (v.rationale === undefined || v.rationale.trim().length === 0)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Waiving a checklist item requires a non-empty rationale",
+        path: ["rationale"],
+      });
+    }
+  });
+export type ChecklistResolveActionItem = z.infer<
+  typeof ChecklistResolveActionItemSchema
+>;
+
+export const ResolveTaskChecklistRequestSchema = z.object({
+  items: z.array(ChecklistResolveActionItemSchema).min(1).max(100),
+  extra_note: z.string().trim().max(1500).optional(),
+  interrupt: z.boolean().default(false),
+  advance_after_waive: z.boolean().default(false),
+});
+export type ResolveTaskChecklistRequest = z.infer<
+  typeof ResolveTaskChecklistRequestSchema
+>;

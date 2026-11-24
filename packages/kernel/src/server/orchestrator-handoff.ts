@@ -138,6 +138,7 @@ export function buildReceiptTemplateSection(params: {
         "- `run_id` / `contract_version`: 提交时务必替换为末尾「本轮执行指令」给出的真实值",
         "- `verdict`: 仅允许 `pass` | `changes_requested`",
         "- **重要**：`p0`、`p1`、`p2` 必须为非负整数（如 `0`、`1`），**绝不能写成数组 `[]`**；具体问题明细请写在 `## 缺陷清单` 正文中",
+        "- 可选结构化字段 `findings`: 数组项 `{ severity: \"P0\"|\"P1\"|\"P2\", title, location?, detail? }`（仍须保留整型 `p0/p1/p2` 与正文 `## 缺陷清单`）",
         "- `reviewed_ref`: 被审查的提交 Hash 或工作区产物引用（非空字符串）",
       ];
       break;

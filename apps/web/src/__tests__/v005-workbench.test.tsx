@@ -2874,4 +2874,186 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
     expect(link.getAttribute("href")).toBe("http://localhost:5173/app");
     expect(link.getAttribute("target")).toBe("_blank");
   });
+
+  it("Track 5 [B12.4]: DetailView renders ReviewChecklistPanel, requires rationale for waive, and submits rework+waive resolution", async () => {
+    const boot = makeV3Bootstrap();
+    boot.tasks = [
+      {
+        id: "t-b12-4",
+        space: "alpha",
+        parent_id: null,
+        title: "Checklist Task",
+        priority: "P1",
+        effective_priority: "P1",
+        track: "L2",
+        workspace_mode: "git_worktree",
+        status: "waiting",
+        stage: "review",
+        round: 1,
+        active_run_id: null,
+        contract_version: 1,
+        depends_on: [],
+        created_at: "2026-11-24T04:00:00Z",
+        updated_at: "2026-11-24T04:05:00Z",
+        tokens: {
+          input_tokens: 0,
+          cached_input_tokens: 0,
+          output_tokens: 0,
+          total_tokens: 0,
+        },
+        cost_usd: 0,
+        tokens_by_model: {},
+        summary: "Test B12.4",
+      },
+    ];
+
+    let postedResolveBody: unknown = null;
+    let resolveCalled = false;
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url === "/api/auth/status") {
+        return jsonResponse({ ok: true, mode: "local", authenticated: true, device: null });
+      }
+      if (url === "/api/bootstrap") {
+        return jsonResponse(boot);
+      }
+      if (url === "/api/tasks/t-b12-4" && method === "GET") {
+        return jsonResponse({
+          card: {
+            schema_version: 1,
+            id: "t-b12-4",
+            space: "alpha",
+            title: "Checklist Task",
+            track: "L2",
+            priority: "P1",
+            workspace_mode: "git_worktree",
+            parent: null,
+            depends_on: [],
+            contract_version: 1,
+            contract: {
+              goal: "Test B12.4",
+              end: "Done",
+              accept_cmd: "echo ok",
+              accept_files_hash: `sha256:${"a".repeat(64)}`,
+              scope: ["src/**"],
+              non_goals: [],
+              deliver: { mode: "merge_main", cmd: null },
+              human_accept: true,
+              external_actions: "ask",
+            },
+            limits: {
+              retries_per_stage: 2,
+              review_rounds: 2,
+              advisor_calls: 1,
+              max_tokens: 150_000,
+            },
+            created_at: "2026-11-24T04:00:00Z",
+            updated_at: "2026-11-24T04:05:00Z",
+          },
+          state: {
+            status: "waiting",
+            stage: "review",
+            round: 1,
+            activeRunId: null,
+            priority: "P1",
+            effectivePriority: "P1",
+            track: "L2",
+            contractVersion: 1,
+            updatedAt: "2026-11-24T04:05:00Z",
+          },
+          brief: "# Brief",
+          decisions: "",
+          pendingDecision: {
+            id: "dec-chk-1",
+            task_id: "t-b12-4",
+            contract_version: 1,
+            reason: "review_rounds_exhausted",
+            category: "review_escalation",
+            question: "Review needs action",
+            options: [
+              { id: "opt-1", label: "Rework", action: "resume", target_stage: "implement", recommended: true },
+            ],
+            created_at: "2026-11-24T04:05:00Z",
+          },
+          ledgerProposals: [],
+          reviewChecklist: [
+            {
+              id: "002-review:rf-1",
+              run_dir: "002-review",
+              source: "review",
+              severity: "P0",
+              title: "Missing CSRF guard",
+              location: "src/server.ts",
+              detail: "State-changing POST allows missing Origin",
+            },
+            {
+              id: "003-accept:sc-1",
+              run_dir: "003-accept",
+              source: "accept",
+              severity: "fail",
+              title: "Submit button click",
+              detail: "Timed out waiting for modal",
+            },
+          ],
+          runs: [],
+          usageTurns: [],
+          usage: boot.usage,
+        });
+      }
+      if (url === "/api/tasks/t-b12-4/checklist/resolve" && method === "POST") {
+        resolveCalled = true;
+        postedResolveBody = JSON.parse(String(init?.body ?? "{}"));
+        return jsonResponse({
+          ok: true,
+          mode: "rework_queued",
+          taskId: "t-b12-4",
+          status: "queued",
+          stage: "implement",
+          reviewChecklist: [],
+          message: "ok",
+        });
+      }
+      return jsonResponse({ ok: true });
+    });
+
+    window.location.hash = "#view=detail&task=t-b12-4";
+    render(<App />);
+
+    const panel = await screen.findByLabelText("审查与验收缺陷交互清单");
+    expect(within(panel).getByText("Missing CSRF guard")).toBeTruthy();
+    expect(within(panel).getByText("src/server.ts")).toBeTruthy();
+    expect(within(panel).getByText("Submit button click")).toBeTruthy();
+
+    // Mark second item as waive WITHOUT rationale -> client validation blocks submit
+    const scGroup = within(panel).getByRole("group", { name: "处理条目 Submit button click" });
+    fireEvent.click(within(scGroup).getByRole("button", { name: "确认豁免" }));
+    fireEvent.click(within(panel).getByRole("button", { name: /保存豁免记录/ }));
+    expect(await within(panel).findByRole("alert")).toBeTruthy();
+    expect(resolveCalled).toBe(false);
+
+    // Fill waive rationale + mark first item as rework -> submits cleanly
+    const waiveInput = within(panel).getByLabelText("豁免理由：Submit button click");
+    fireEvent.change(waiveInput, { target: { value: "Flaky fixture timing" } });
+    const revGroup = within(panel).getByRole("group", { name: "处理条目 Missing CSRF guard" });
+    fireEvent.click(within(revGroup).getByRole("button", { name: "打回修复" }));
+
+    fireEvent.click(within(panel).getByRole("button", { name: /提交并打回修复/ }));
+    await waitFor(() => {
+      expect(resolveCalled).toBe(true);
+    });
+    expect(postedResolveBody).toEqual({
+      items: [
+        { item_id: "002-review:rf-1", disposition: "rework" },
+        {
+          item_id: "003-accept:sc-1",
+          disposition: "waive",
+          rationale: "Flaky fixture timing",
+        },
+      ],
+      interrupt: false,
+      advance_after_waive: false,
+    });
+  });
 });

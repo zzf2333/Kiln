@@ -25,6 +25,18 @@ export const WorkerReceiptFrontmatterSchema = z.object({
 });
 export type WorkerReceiptFrontmatter = z.infer<typeof WorkerReceiptFrontmatterSchema>;
 
+export const REVIEW_FINDING_SEVERITIES = ["P0", "P1", "P2"] as const;
+export type ReviewFindingSeverity = (typeof REVIEW_FINDING_SEVERITIES)[number];
+
+export const ReviewFindingItemSchema = z.object({
+  id: z.string().trim().min(1).optional(),
+  severity: z.enum(REVIEW_FINDING_SEVERITIES).default("P1"),
+  title: z.string().trim().min(1),
+  location: z.string().trim().min(1).optional(),
+  detail: z.string().trim().min(1).optional(),
+});
+export type ReviewFindingItem = z.infer<typeof ReviewFindingItemSchema>;
+
 export const ReviewerReceiptFrontmatterSchema = z.object({
   run_id: z.string().min(1),
   contract_version: z.number().int().positive(),
@@ -33,6 +45,7 @@ export const ReviewerReceiptFrontmatterSchema = z.object({
   p0: z.number().int().nonnegative(),
   p1: z.number().int().nonnegative(),
   p2: z.number().int().nonnegative(),
+  findings: z.array(ReviewFindingItemSchema).optional(),
 });
 export type ReviewerReceiptFrontmatter = z.infer<typeof ReviewerReceiptFrontmatterSchema>;
 
@@ -228,4 +241,168 @@ export function parseAndValidateReceipt<K extends ReceiptKind>(
     frontmatter: result.data as ReceiptFrontmatterMap[K],
     body: parsed.body,
   };
+}
+
+export interface NormalizedReviewFinding {
+  id: string;
+  severity: ReviewFindingSeverity;
+  title: string;
+  location?: string;
+  detail?: string;
+}
+
+const MAX_REVIEW_FINDINGS = 50;
+const EMPTY_FINDING_PLACEHOLDER_RE =
+  /^(?:[-*+]\s*)?(?:无|暂无|none|n\/a|无缺陷|未发现缺陷|no\s+findings)[。.\s]*$/i;
+const FINDING_BULLET_START_RE = /^(?:[-*+]|\d+[.)]|#{3})\s+(.+)$/;
+const LEADING_SEVERITY_TAG_RE =
+  /^(?:[\[(【*]*(P[012])[\])】*]*[\s:：\-–—]*)+/i;
+const INLINE_SEVERITY_TAG_RE = /[\[(【\b](P[012])[\])】\b]/i;
+const INLINE_BACKTICK_PATH_RE = /`([^`\s]*[/.][^`\s]*)`/;
+
+function toSeverityUpper(raw: string): ReviewFindingSeverity {
+  const up = raw.toUpperCase();
+  if (up === "P0" || up === "P1" || up === "P2") {
+    return up;
+  }
+  return "P1";
+}
+
+function normalizeFindingBulletText(
+  firstLine: string,
+  extraLines: readonly string[],
+  fallbackSeverity: ReviewFindingSeverity,
+): Omit<NormalizedReviewFinding, "id"> | null {
+  const combinedRaw = firstLine.trim();
+  if (!combinedRaw || EMPTY_FINDING_PLACEHOLDER_RE.test(combinedRaw)) {
+    return null;
+  }
+
+  let severity = fallbackSeverity;
+  let title = combinedRaw;
+
+  const leadingMatch = LEADING_SEVERITY_TAG_RE.exec(title);
+  if (leadingMatch && leadingMatch[1]) {
+    severity = toSeverityUpper(leadingMatch[1]);
+    title = title.slice(leadingMatch[0].length).trim();
+  } else {
+    const inlineMatch = INLINE_SEVERITY_TAG_RE.exec(title);
+    if (inlineMatch && inlineMatch[1]) {
+      severity = toSeverityUpper(inlineMatch[1]);
+    }
+  }
+
+  if (!title || EMPTY_FINDING_PLACEHOLDER_RE.test(title)) {
+    return null;
+  }
+
+  const allText = [combinedRaw, ...extraLines].join("\n");
+  const pathMatch = INLINE_BACKTICK_PATH_RE.exec(allText);
+  const location = pathMatch?.[1]?.trim();
+
+  const cleanedDetailLines = extraLines
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const detail =
+    cleanedDetailLines.length > 0 ? cleanedDetailLines.join("\n") : undefined;
+
+  return {
+    severity,
+    title,
+    ...(location ? { location } : {}),
+    ...(detail ? { detail } : {}),
+  };
+}
+
+/**
+ * Extracts normalized reviewer findings from a reviewer `RECEIPT.md`:
+ * prefers structured `frontmatter.findings` when present and non-empty,
+ * otherwise parses bullets/headings under `## 缺陷清单` cleanly.
+ */
+export function extractReviewFindingsFromReceipt(
+  rawReceipt: string,
+): NormalizedReviewFinding[] {
+  if (!rawReceipt || rawReceipt.trim().length === 0) {
+    return [];
+  }
+
+  let parsed: ParsedFrontmatterMarkdown;
+  try {
+    parsed = parseFrontmatterMarkdown(rawReceipt);
+  } catch {
+    return [];
+  }
+
+  if (Array.isArray(parsed.frontmatter.findings)) {
+    const parsedFindings = z
+      .array(ReviewFindingItemSchema)
+      .safeParse(parsed.frontmatter.findings);
+    if (parsedFindings.success && parsedFindings.data.length > 0) {
+      return parsedFindings.data.slice(0, MAX_REVIEW_FINDINGS).map((item, idx) => ({
+        id: item.id?.trim() || `rf-${idx + 1}`,
+        severity: item.severity,
+        title: item.title.trim(),
+        ...(item.location ? { location: item.location.trim() } : {}),
+        ...(item.detail ? { detail: item.detail.trim() } : {}),
+      }));
+    }
+  }
+
+  const sectionBody = extractSectionBody(parsed.body, "缺陷清单");
+  if (!sectionBody || EMPTY_FINDING_PLACEHOLDER_RE.test(sectionBody)) {
+    return [];
+  }
+
+  const fm = parsed.frontmatter;
+  const p0 = typeof fm.p0 === "number" ? fm.p0 : 0;
+  const p1 = typeof fm.p1 === "number" ? fm.p1 : 0;
+  const p2 = typeof fm.p2 === "number" ? fm.p2 : 0;
+  const fallbackSeverity: ReviewFindingSeverity =
+    p0 > 0 && p1 === 0 && p2 === 0
+      ? "P0"
+      : p2 > 0 && p0 === 0 && p1 === 0
+        ? "P2"
+        : "P1";
+
+  const lines = sectionBody.split(/\r?\n/);
+  const blocks: Array<{ head: string; continuation: string[] }> = [];
+
+  for (const rawLine of lines) {
+    const trimmedRight = rawLine.replace(/\s+$/, "");
+    if (!trimmedRight.trim()) {
+      continue;
+    }
+    const isIndented = /^\s{2,}/.test(rawLine) || /^\t/.test(rawLine);
+    const bulletMatch = !isIndented ? FINDING_BULLET_START_RE.exec(trimmedRight) : null;
+    if (bulletMatch && bulletMatch[1]) {
+      blocks.push({ head: bulletMatch[1], continuation: [] });
+      continue;
+    }
+    if (blocks.length > 0) {
+      blocks[blocks.length - 1]!.continuation.push(trimmedRight);
+    } else {
+      blocks.push({ head: trimmedRight.trim(), continuation: [] });
+    }
+  }
+
+  const findings: NormalizedReviewFinding[] = [];
+  for (const blk of blocks) {
+    if (findings.length >= MAX_REVIEW_FINDINGS) {
+      break;
+    }
+    const normalized = normalizeFindingBulletText(
+      blk.head,
+      blk.continuation,
+      fallbackSeverity,
+    );
+    if (!normalized) {
+      continue;
+    }
+    findings.push({
+      id: `rf-${findings.length + 1}`,
+      ...normalized,
+    });
+  }
+
+  return findings;
 }

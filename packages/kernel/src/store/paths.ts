@@ -249,6 +249,10 @@ export class KilnPaths {
     return path.join(this.taskDir(taskId), "decisions.md");
   }
 
+  checklistDispositionsYaml(taskId: string): string {
+    return path.join(this.taskDir(taskId), "checklist-dispositions.yaml");
+  }
+
   stateEventsNdjson(taskId: string): string {
     return path.join(this.taskDir(taskId), "state_events.ndjson");
   }
