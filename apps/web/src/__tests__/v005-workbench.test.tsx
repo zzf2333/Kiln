@@ -1873,4 +1873,198 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
     window.location.hash = "#view=settings&tab=limits";
     expect(await screen.findByLabelText("高信号终态自动 AI 归因复盘")).toBeTruthy();
   });
+
+  it("Track 5 [B10]: renders UsageView USD budget meters, SettingsView budget & billing_mode controls, and DetailView max_cost_usd editor", async () => {
+    let savedLimits: Record<string, unknown> | null = null;
+    let savedProviders: ProvidersConfig | null = null;
+    let patchLimitBody: Record<string, unknown> | null = null;
+    let cardMaxCostUsd: number | undefined = 1.5;
+
+    const boot = makeV3Bootstrap({
+      budget: {
+        daily: {
+          scope: "daily",
+          spent_usd: 8.4,
+          limit_usd: 10,
+          ratio: 0.84,
+          level: "warning",
+        },
+        monthly: {
+          scope: "monthly",
+          spent_usd: 42,
+          limit_usd: 100,
+          ratio: 0.42,
+          level: "ok",
+        },
+        soft_warning_ratio: 0.8,
+        exclude_subscription_providers: true,
+        computed_at: "2026-11-24T03:00:00Z",
+      },
+      tasks: [
+        {
+          id: "t-b10-ui",
+          space: "alpha",
+          parent_id: null,
+          title: "Track 5 B10 预算测试卡",
+          priority: "P1",
+          effective_priority: "P1",
+          track: "L1",
+          workspace_mode: "git_worktree",
+          status: "done",
+          stage: null,
+          round: null,
+          active_run_id: null,
+          contract_version: 1,
+          depends_on: [],
+          created_at: "2026-11-24T00:00:00Z",
+          updated_at: "2026-11-24T02:00:00Z",
+          cost_usd: 0.9,
+          tokens: {
+            input_tokens: 1000,
+            cached_input_tokens: 0,
+            output_tokens: 500,
+            total_tokens: 1500,
+          },
+        },
+      ],
+    });
+
+    fetchMock.mockImplementation(async (url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url === "/api/auth/status") {
+        return jsonResponse({ ok: true, mode: "local", authenticated: true, device: null });
+      }
+      if (url === "/api/bootstrap") {
+        return jsonResponse(boot);
+      }
+      if (url === "/api/settings/limits" && method === "PUT") {
+        savedLimits = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        return jsonResponse({ ok: true, section: "limits", data: savedLimits });
+      }
+      if (url === "/api/settings/providers" && method === "GET") {
+        return jsonResponse({ ok: true, data: makeSampleProviders() });
+      }
+      if (url === "/api/settings/providers" && method === "PUT") {
+        savedProviders = JSON.parse(String(init?.body ?? "{}")) as ProvidersConfig;
+        return jsonResponse({ ok: true, section: "providers", data: savedProviders });
+      }
+      if (url === "/api/tasks/t-b10-ui" && method === "GET") {
+        return jsonResponse({
+          card: {
+            schema_version: 1,
+            id: "t-b10-ui",
+            space: "alpha",
+            title: "Track 5 B10 预算测试卡",
+            track: "L1",
+            priority: "P1",
+            workspace_mode: "git_worktree",
+            parent: null,
+            depends_on: [],
+            contract_version: 1,
+            contract: {
+              goal: "Test B10 UI",
+              end: "Verified",
+              accept_cmd: "pnpm test",
+              accept_files_hash: `sha256:${"a".repeat(64)}`,
+              scope: ["src/**"],
+              non_goals: [],
+              deliver: { mode: "merge_main", cmd: null },
+              human_accept: false,
+              external_actions: "ask",
+            },
+            limits: {
+              retries_per_stage: 2,
+              review_rounds: 2,
+              advisor_calls: 1,
+              max_tokens: 150_000,
+              ...(cardMaxCostUsd !== undefined ? { max_cost_usd: cardMaxCostUsd } : {}),
+            },
+            created_at: "2026-11-24T00:00:00Z",
+            updated_at: "2026-11-24T02:00:00Z",
+          },
+          state: {
+            status: "done",
+            stage: null,
+            round: null,
+            activeRunId: null,
+            priority: "P1",
+            effectivePriority: "P1",
+            track: "L1",
+            contractVersion: 1,
+            updatedAt: "2026-11-24T02:00:00Z",
+          },
+          brief: "# B10 Brief",
+          decisions: "",
+          pendingDecision: null,
+          ledgerProposals: [],
+          runs: [],
+          usageTurns: [],
+          usage: boot.usage,
+          budget: {
+            scope: "card",
+            spent_usd: 0.9,
+            limit_usd: cardMaxCostUsd ?? null,
+            ratio: cardMaxCostUsd ? 0.9 / cardMaxCostUsd : null,
+            level: "ok",
+          },
+        });
+      }
+      if (url === "/api/tasks/t-b10-ui/limits" && method === "PATCH") {
+        patchLimitBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        cardMaxCostUsd =
+          typeof patchLimitBody.max_cost_usd === "number"
+            ? patchLimitBody.max_cost_usd
+            : undefined;
+        return jsonResponse({
+          ok: true,
+          card: { id: "t-b10-ui" },
+          budget: {
+            scope: "card",
+            spent_usd: 0.9,
+            limit_usd: cardMaxCostUsd ?? null,
+            ratio: cardMaxCostUsd ? 0.9 / cardMaxCostUsd : null,
+            level: "ok",
+          },
+        });
+      }
+      return jsonResponse({ ok: true });
+    });
+
+    // 1. UsageView renders daily warning + monthly ok meters
+    window.location.hash = "#view=usage";
+    render(<App />);
+    expect(await screen.findByLabelText("USD 预算水位")).toBeTruthy();
+    expect(screen.getByText("预警")).toBeTruthy();
+    expect(screen.getByText(/已排除包月订阅 Provider/)).toBeTruthy();
+
+    // 2. DetailView edits card max_cost_usd via PATCH /api/tasks/:id/limits
+    window.location.hash = "#view=detail&task=t-b10-ui";
+    const cardLimitInput = (await screen.findByLabelText("单卡 USD 预算上限")) as HTMLInputElement;
+    fireEvent.change(cardLimitInput, { target: { value: "3.25" } });
+    fireEvent.click(screen.getByRole("button", { name: "更新上限" }));
+    await waitFor(() => {
+      expect(patchLimitBody).toEqual({ max_cost_usd: 3.25 });
+    });
+
+    // 3. SettingsView Limits tab saves USD budget settings & Providers tab toggles billing_mode
+    window.location.hash = "#view=settings&tab=limits";
+    const dailyInput = (await screen.findByLabelText("全局每日 USD 预算上限")) as HTMLInputElement;
+    fireEvent.change(dailyInput, { target: { value: "25" } });
+    fireEvent.click(screen.getByLabelText("包月订阅 Provider 不计入 USD 硬熔断"));
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => {
+      expect(savedLimits?.daily_budget_usd).toBe(25);
+      expect(savedLimits?.budget_exclude_subscription_providers).toBe(true);
+    });
+
+    window.location.hash = "#view=settings&tab=providers";
+    const billingGroup = await screen.findByRole("group", { name: "Codex CLI 计费口径" });
+    fireEvent.click(within(billingGroup).getByRole("button", { name: "包月订阅" }));
+    fireEvent.click(screen.getByRole("button", { name: /保存 Providers/ }));
+    await waitFor(() => {
+      expect(
+        savedProviders?.providers.find((p) => p.id === "codex")?.billing_mode,
+      ).toBe("subscription");
+    });
+  });
 });

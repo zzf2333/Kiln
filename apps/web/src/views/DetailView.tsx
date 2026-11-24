@@ -1,7 +1,7 @@
 import { Dialog } from "radix-ui";
 import { useEffect, useState } from "react";
 import type { GateReport, StageId } from "@kiln/protocol/web";
-import { acceptEvidenceUrl, fetchAcceptServiceLog, triggerTaskRetro } from "../api/client";
+import { acceptEvidenceUrl, fetchAcceptServiceLog, triggerTaskRetro, updateTaskLimits } from "../api/client";
 import type {
   AcceptServiceStatus,
   AcceptVerificationReport,
@@ -112,6 +112,8 @@ export function DetailView() {
   const [retroLoading, setRetroLoading] = useState<null | "deterministic" | "ai">(null);
   const [retroError, setRetroError] = useState<string | null>(null);
   const [showRetroMd, setShowRetroMd] = useState(false);
+  const [budgetInput, setBudgetInput] = useState("");
+  const [budgetSaving, setBudgetSaving] = useState(false);
   const [lightboxAttachment, setLightboxAttachment] =
     useState<TaskAttachment | null>(null);
   const [lightboxCustomUrl, setLightboxCustomUrl] = useState<string | null>(null);
@@ -150,6 +152,15 @@ export function DetailView() {
       void store.loadScriptRunsForTask(detailSpaceId, detailTaskId);
     }
   }, [detailTaskId, detailSpaceId, state.scriptDrawerOpen]);
+
+  useEffect(() => {
+    if (!detail) return;
+    setBudgetInput(
+      detail.card.limits.max_cost_usd !== undefined
+        ? String(detail.card.limits.max_cost_usd)
+        : "",
+    );
+  }, [detail?.card.id, detail?.card.limits.max_cost_usd]);
 
   if (!taskId) {
     return null;
@@ -2098,6 +2109,81 @@ export function DetailView() {
                   <span className="mono ctx-ok-val">
                     净省 {fmtUsd(taskSavedUsd)}
                   </span>
+                </div>
+              </div>
+              <div className="ctx-meter" aria-label="单卡 USD 预算" style={{ marginTop: "10px" }}>
+                <div className="ctx-row">
+                  <span>单卡 USD 预算</span>
+                  <span className="mono">
+                    {fmtUsd(detail.budget?.spent_usd ?? taskCostUsd)} /{" "}
+                    {detail.budget?.limit_usd != null
+                      ? fmtUsd(detail.budget.limit_usd)
+                      : card.limits.max_cost_usd !== undefined
+                        ? fmtUsd(card.limits.max_cost_usd)
+                        : "不限"}
+                  </span>
+                </div>
+                {detail.budget?.limit_usd != null || card.limits.max_cost_usd !== undefined ? (
+                  <div className="meter">
+                    <i
+                      className={
+                        detail.budget?.level === "exceeded"
+                          ? "bad"
+                          : detail.budget?.level === "warning"
+                            ? "warn"
+                            : "ok"
+                      }
+                      style={{
+                        width: `${Math.min(
+                          100,
+                          Math.round(
+                            (detail.budget?.ratio ??
+                              taskCostUsd / (card.limits.max_cost_usd || 1)) * 100,
+                          ),
+                        )}%`,
+                      }}
+                    />
+                  </div>
+                ) : null}
+                <div style={{ display: "flex", gap: "6px", marginTop: "6px", alignItems: "center" }}>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min={0.01}
+                    placeholder="不限 (USD)"
+                    aria-label="单卡 USD 预算上限"
+                    className="input mono input-sm"
+                    style={{ width: "110px" }}
+                    value={budgetInput}
+                    onChange={(e) => setBudgetInput((e.currentTarget as HTMLInputElement).value)}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    disabled={budgetSaving}
+                    onClick={async () => {
+                      const trimmed = budgetInput.trim();
+                      const val = trimmed ? Number(trimmed) : null;
+                      if (val !== null && (!Number.isFinite(val) || val <= 0)) {
+                        store.showToast("请输入大于 0 的 USD 金额或留空不限");
+                        return;
+                      }
+                      setBudgetSaving(true);
+                      try {
+                        await updateTaskLimits(card.id, { max_cost_usd: val });
+                        await store.loadTaskDetail(card.id);
+                        store.showToast(
+                          val === null ? "已清除单卡 USD 上限" : `已更新单卡上限为 $${val.toFixed(2)}`,
+                        );
+                      } catch (err) {
+                        store.showToast(err instanceof Error ? err.message : String(err));
+                      } finally {
+                        setBudgetSaving(false);
+                      }
+                    }}
+                  >
+                    {budgetSaving ? "保存中…" : "更新上限"}
+                  </button>
                 </div>
               </div>
             </section>

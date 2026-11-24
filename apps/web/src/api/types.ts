@@ -6,6 +6,7 @@ import type {
   AcceptTrafficSummary,
   AcceptVerificationReport,
   BackendCapabilities,
+  BudgetScopeStatus,
   CardContract,
   CardLimits,
   ChatCommandAction,
@@ -20,6 +21,7 @@ import type {
   DiscoverSpacesResponse,
   DraftCard,
   GateReport,
+  GlobalBudgetStatus,
   HashMismatchError,
   ImprovementProposal,
   InspectSpaceResponse,
@@ -81,6 +83,7 @@ import type {
   TaskRetroReport,
   TaskStatus,
   Track,
+  UpdateTaskLimitsRequest,
   UpsertSpaceRequest,
   VerifierCapability,
   WorkflowBlueprint,
@@ -255,6 +258,7 @@ export interface BootstrapResponse {
   pricing: PricingConfig | null;
   providers?: ProviderRuntimeStatus[];
   usage: UsageSnapshot;
+  budget?: GlobalBudgetStatus;
   runningCount: number;
   ledgers?: Record<string, LedgerFile> | LedgerFile[] | Array<{ space: string; entries: LedgerEntry[] }>;
   agents?: AgentDescriptorInfo[];
@@ -414,6 +418,7 @@ export interface TaskDetailResponse {
   runs: TaskRunDetail[];
   usageTurns: UsageTurnRow[];
   usage: UsageSnapshot;
+  budget?: BudgetScopeStatus;
   liveViewUrl?: string | null;
   activeAcceptEnv?: ActiveAcceptEnvSnapshot | null;
   hostBackup?: HostBackupManifestInfo | null;
@@ -740,6 +745,7 @@ export type {
   AcceptServiceStatus,
   AcceptTrafficSummary,
   AcceptVerificationReport,
+  BudgetScopeStatus,
   ChatCommandAction,
   VerifierCapability,
   ChatCommandItem,
@@ -751,6 +757,7 @@ export type {
   CommitPrActionRequest,
   DiscoveredGitRepo,
   DiscoverSpacesResponse,
+  GlobalBudgetStatus,
   ImprovementProposal,
   PairCompleteRequest,
   PickDirectoryResponse,
@@ -792,6 +799,7 @@ export type {
   TaskAttachment,
   TaskRetroMetrics,
   TaskRetroReport,
+  UpdateTaskLimitsRequest,
   WorkflowBlueprint,
   WorkflowPreset,
 };

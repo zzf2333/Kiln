@@ -121,6 +121,9 @@ export function resolveCardLimits(store: KilnStore, override?: CardLimits): Card
     review_rounds: configured?.review_rounds ?? 2,
     advisor_calls: configured?.advisor_calls ?? 1,
     max_tokens: configured?.max_card_tokens ?? 250_000,
+    ...(configured?.max_card_cost_usd !== undefined
+      ? { max_cost_usd: configured.max_card_cost_usd }
+      : {}),
   };
 }
 

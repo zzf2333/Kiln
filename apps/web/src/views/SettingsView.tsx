@@ -494,6 +494,7 @@ export function SettingsView() {
           args: parsedArgs,
           env: parsedEnv,
           custom_models: p.custom_models.map((m) => m.trim()).filter(Boolean),
+          ...(p.billing_mode ? { billing_mode: p.billing_mode } : {}),
           ...(p.command && p.command.trim().length > 0
             ? { command: p.command.trim() }
             : {}),
@@ -717,6 +718,37 @@ export function SettingsView() {
 
                     {p.adapter !== "paseo" ? (
                       <>
+                        <div className="g-row2">
+                          <div className="lbl">
+                            <b>计费口径</b>
+                            <p>用于 USD 预算熔断判断（包月订阅 CLI 可在限额页设置不计入硬熔断）</p>
+                          </div>
+                          <div className="seg" role="group" aria-label={`${p.label} 计费口径`}>
+                            {(
+                              [
+                                ["api", "按量 API"],
+                                ["subscription", "包月订阅"],
+                              ] as const
+                            ).map(([modeKey, modeLabel]) => {
+                              const active = (p.billing_mode ?? "api") === modeKey;
+                              return (
+                                <button
+                                  key={modeKey}
+                                  type="button"
+                                  className={active ? "on" : ""}
+                                  onClick={() =>
+                                    updateProviderDraft(p.id, {
+                                      billing_mode: modeKey,
+                                    })
+                                  }
+                                >
+                                  {modeLabel}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
                         <div className="g-row2">
                           <div className="lbl">
                             <b>可执行命令</b>
@@ -1563,7 +1595,14 @@ export function SettingsView() {
     const numFields: Array<{
       key: Exclude<
         keyof LimitsConfig,
-        "schema_version" | "p0_extra_slot" | "auto_retro_high_signal"
+        | "schema_version"
+        | "p0_extra_slot"
+        | "auto_retro_high_signal"
+        | "max_card_cost_usd"
+        | "daily_budget_usd"
+        | "monthly_budget_usd"
+        | "budget_soft_warning_ratio"
+        | "budget_exclude_subscription_providers"
       >;
       label: string;
       desc: string;
@@ -1672,6 +1711,108 @@ export function SettingsView() {
                   ...limitsDraft,
                   auto_retro_high_signal: (e.currentTarget as HTMLInputElement)
                     .checked,
+                })
+              }
+            />
+            <span />
+          </label>
+        </div>
+
+        <h3 style={{ fontSize: "13.5px", margin: "22px 0 8px" }}>
+          USD 金额级预算熔断
+        </h3>
+
+        {(
+          [
+            {
+              key: "max_card_cost_usd",
+              label: "单卡默认 USD 消费上限",
+              desc: "单张新任务默认继承的美元软/硬熔断阈值；留空不限",
+            },
+            {
+              key: "daily_budget_usd",
+              label: "全局每日 USD 预算上限",
+              desc: "按本地自然日 00:00 起算；触顶后拦截新派发并等待审批追加",
+            },
+            {
+              key: "monthly_budget_usd",
+              label: "全局每月 USD 预算上限",
+              desc: "按本地自然月 1 日起算；触顶后拦截新派发并等待审批追加",
+            },
+          ] as const
+        ).map((bf) => (
+          <div key={bf.key} className="setting-row">
+            <div>
+              <span>{bf.label}</span>
+              <p>{bf.desc}</p>
+            </div>
+            <input
+              type="number"
+              step="0.01"
+              min={0.01}
+              placeholder="不限制"
+              className="input mono"
+              aria-label={bf.label}
+              value={limitsDraft[bf.key] ?? ""}
+              onChange={(e) => {
+                const rawStr = (e.currentTarget as HTMLInputElement).value.trim();
+                const next = { ...limitsDraft };
+                if (!rawStr) {
+                  delete next[bf.key];
+                } else {
+                  const val = Number(rawStr);
+                  if (Number.isFinite(val) && val > 0) {
+                    next[bf.key] = val;
+                  }
+                }
+                setLimitsDraft(next);
+              }}
+            />
+          </div>
+        ))}
+
+        <div className="setting-row">
+          <div>
+            <span>预算软预警触发比例（%）</span>
+            <p>达到阈值（默认 80%）时按日/月/卡去重推送提醒，不中断当前运行</p>
+          </div>
+          <input
+            type="number"
+            min={10}
+            max={99}
+            step={1}
+            className="input mono"
+            aria-label="预算软预警触发比例"
+            value={Math.round((limitsDraft.budget_soft_warning_ratio ?? 0.8) * 100)}
+            onChange={(e) => {
+              const raw = Number((e.currentTarget as HTMLInputElement).value);
+              if (Number.isFinite(raw)) {
+                const clamped = Math.min(99, Math.max(10, Math.round(raw)));
+                setLimitsDraft({
+                  ...limitsDraft,
+                  budget_soft_warning_ratio: Number((clamped / 100).toFixed(2)),
+                });
+              }
+            }}
+          />
+        </div>
+
+        <div className="setting-row">
+          <div>
+            <span>包月订阅 Provider 不计入 USD 硬熔断</span>
+            <p>开启后仅按量 API Provider 计入金额预算，避免包月 CLI 估算费用误触发硬停</p>
+          </div>
+          <label className="switch" style={{ justifySelf: "end" }}>
+            <input
+              type="checkbox"
+              aria-label="包月订阅 Provider 不计入 USD 硬熔断"
+              checked={Boolean(limitsDraft.budget_exclude_subscription_providers)}
+              onChange={(e) =>
+                setLimitsDraft({
+                  ...limitsDraft,
+                  budget_exclude_subscription_providers: (
+                    e.currentTarget as HTMLInputElement
+                  ).checked,
                 })
               }
             />

@@ -264,6 +264,16 @@ export {
   type WorkflowPresetEfficiencyStat,
 } from "./improvements.js";
 export {
+  computeGlobalBudgetStatus,
+  computeTaskBudgetStatus,
+  computeTaskSpentUsd,
+  evaluateDispatchBudget,
+  filterBudgetUsageTurns,
+  type BudgetScope,
+  type DispatchBudgetEvaluation,
+  type DispatchBudgetWarning,
+} from "./budget.js";
+export {
   extractDeterministicTaskRetro,
   runAiTaskRetro,
 } from "./retro-engine.js";

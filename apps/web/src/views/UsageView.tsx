@@ -41,6 +41,7 @@ export function UsageView() {
 
   const {
     usage,
+    budget,
     pricing,
     pricingSyncBusy,
     providerUsage,
@@ -181,6 +182,74 @@ export function UsageView() {
             <p>{runningLeaves.length} 个任务在跑</p>
           </div>
         </dl>
+
+        <section className="budget-card" aria-label="USD 预算水位">
+          <div className="budget-card-head">
+            <div>
+              <h3>USD 预算水位与熔断</h3>
+              <p className="muted" style={{ fontSize: "12px" }}>
+                基于已落盘 usage_turns 账本折算（软预警{" "}
+                {Math.round((budget?.soft_warning_ratio ?? 0.8) * 100)}%，
+                {budget?.exclude_subscription_providers
+                  ? "已排除包月订阅 Provider"
+                  : "含全部已计价 Provider"}
+                ）
+              </p>
+            </div>
+          </div>
+          {budget && (budget.daily.limit_usd !== null || budget.monthly.limit_usd !== null) ? (
+            <div className="budget-grid">
+              {[
+                { key: "daily", label: "当日预算", item: budget.daily },
+                { key: "monthly", label: "当月预算", item: budget.monthly },
+              ].map(({ key, label, item }) => {
+                const pct =
+                  item.ratio !== null
+                    ? Math.min(100, Math.round(item.ratio * 100))
+                    : 0;
+                const badgeText =
+                  item.level === "exceeded"
+                    ? "已熔断"
+                    : item.level === "warning"
+                      ? "预警"
+                      : "正常";
+                const meterClass =
+                  item.level === "exceeded"
+                    ? "bad"
+                    : item.level === "warning"
+                      ? "warn"
+                      : "ok";
+                return (
+                  <div key={key} className="budget-item">
+                    <div className="budget-item-row">
+                      <strong>{label}</strong>
+                      <span className={`chip budget-badge budget-${item.level}`}>
+                        {item.limit_usd !== null ? badgeText : "未设上限"}
+                      </span>
+                    </div>
+                    <div className="budget-item-row mono" style={{ fontSize: "12.5px" }}>
+                      <span>{fmtUsd(item.spent_usd)}</span>
+                      <span className="muted">
+                        {item.limit_usd !== null
+                          ? `/ ${fmtUsd(item.limit_usd)} (${pct}%)`
+                          : "/ 不限制"}
+                      </span>
+                    </div>
+                    {item.limit_usd !== null ? (
+                      <div className="meter">
+                        <i className={meterClass} style={{ width: `${pct}%` }} />
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="muted" style={{ fontSize: "12.5px" }}>
+              尚未配置全局每日或每月 USD 上限；可在「系统设置 → 限额与熔断」开启金额级软预警与硬熔断。
+            </p>
+          )}
+        </section>
 
         <section className="u-section">
           <h3>按 Agent 与模型</h3>

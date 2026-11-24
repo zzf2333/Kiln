@@ -91,7 +91,9 @@ import {
   type DerivedTaskState,
 } from "../store/index.js";
 import { resolveRunAttachmentInputs } from "./attachments.js";
+import { computeTaskSpentUsd, evaluateDispatchBudget } from "./budget.js";
 import type { CaffeinateController } from "./caffeinate.js";
+import type { RemoteNotifier } from "./remote-notify.js";
 import {
   resolveMcpServerCommand,
   type McpCommandSpec,
@@ -192,6 +194,7 @@ export interface KilnOrchestratorOptions {
   rateLimitCooldownMs?: number;
   providerHealth?: ProviderHealthTracker;
   scriptRunner?: KilnScriptRunner;
+  remoteNotifier?: RemoteNotifier;
   acceptEnvStarter?: AcceptEnvStarterFn;
 }
 
@@ -384,7 +387,9 @@ export class KilnOrchestrator {
   private readonly rateLimitCooldownMs: number;
   private readonly providerHealth: ProviderHealthTracker | undefined;
   private readonly scriptRunner: KilnScriptRunner | undefined;
+  private readonly remoteNotifier: RemoteNotifier | undefined;
   private readonly acceptEnvStarter: AcceptEnvStarterFn;
+  private readonly budgetWarnedKeys = new Set<string>();
 
   private readonly agentCapabilitiesMap = new Map<string, BackendCapabilities>();
   private readonly activeRuns = new Map<string, ActiveRunHandle>();
@@ -426,6 +431,7 @@ export class KilnOrchestrator {
       options.rateLimitCooldownMs ?? DEFAULT_RATE_LIMIT_COOLDOWN_MS;
     this.providerHealth = options.providerHealth;
     this.scriptRunner = options.scriptRunner;
+    this.remoteNotifier = options.remoteNotifier;
     this.acceptEnvStarter = options.acceptEnvStarter ?? startAcceptEnvSession;
 
     this.scheduler = new KilnScheduler({
@@ -1736,6 +1742,95 @@ export class KilnOrchestrator {
       }
     }
 
+    const budgetEval = evaluateDispatchBudget(this.store, plan.card);
+    for (const warn of budgetEval.warnings) {
+      if (!this.budgetWarnedKeys.has(warn.key)) {
+        this.budgetWarnedKeys.add(warn.key);
+        if (warn.status.limit_usd !== null) {
+          void this.remoteNotifier?.notifyBudgetAlert({
+            scope: warn.scope,
+            level: "warning",
+            spentUsd: warn.status.spent_usd,
+            limitUsd: warn.status.limit_usd,
+            ...(warn.scope === "card" ? { taskId: plan.taskId } : {}),
+            priority: plan.card.priority,
+          });
+        }
+      }
+    }
+    if (budgetEval.blocked && budgetEval.blockingStatus && budgetEval.blockingStatus.limit_usd !== null) {
+      const bScope = budgetEval.blockingScope ?? budgetEval.blockingStatus.scope;
+      const bStatus = budgetEval.blockingStatus;
+      const scopeLabel =
+        bScope === "card" ? "单卡 USD 预算" : bScope === "daily" ? "全局每日 USD 预算" : "全局每月 USD 预算";
+      const raiseTarget = Math.max(
+        Number((bStatus.spent_usd * 1.5).toFixed(2)),
+        Number(((bStatus.limit_usd ?? 0) * 1.5).toFixed(2)),
+        bScope === "card" ? 0.5 : 1,
+      );
+      void this.remoteNotifier?.notifyBudgetAlert({
+        scope: bScope,
+        level: "exceeded",
+        spentUsd: bStatus.spent_usd,
+        limitUsd: bStatus.limit_usd!,
+        ...(bScope === "card" ? { taskId: plan.taskId } : {}),
+        priority: "P1",
+      });
+      const budgetDecision = PendingDecisionSchema.parse({
+        id: `dec-${randomUUID().slice(0, 8)}`,
+        task_id: plan.taskId,
+        contract_version: plan.contractVersion,
+        reason: "budget_exceeded",
+        category: "budget_exceeded",
+        question: `任务 "${plan.card.title}" 触发${scopeLabel}硬熔断：已消耗 $${bStatus.spent_usd.toFixed(4)} >= 上限 $${bStatus.limit_usd!.toFixed(4)}。请选择是否追加预算并继续推进：`,
+        options:
+          bScope === "card"
+            ? [
+                {
+                  id: "opt-raise-card-budget",
+                  label: `上调本卡预算至 $${raiseTarget.toFixed(2)} 并继续`,
+                  action: "resume",
+                  recommended: true,
+                },
+                {
+                  id: "opt-unlimited-card-budget",
+                  label: "移除本卡金额上限并继续",
+                  action: "resume",
+                  recommended: false,
+                },
+                {
+                  id: "opt-cancel",
+                  label: "取消任务",
+                  action: "cancel",
+                  recommended: false,
+                },
+              ]
+            : [
+                {
+                  id: "opt-raise-global-budget",
+                  label: `上调${bScope === "daily" ? "每日" : "每月"}预算至 $${raiseTarget.toFixed(2)} 并继续`,
+                  action: "resume",
+                  recommended: true,
+                },
+                {
+                  id: "opt-pause",
+                  label: "暂停任务等待次日/人工恢复",
+                  action: "pause",
+                  recommended: false,
+                },
+                {
+                  id: "opt-cancel",
+                  label: "取消任务",
+                  action: "cancel",
+                  recommended: false,
+                },
+              ],
+        created_at: new Date().toISOString(),
+      });
+      this.transitionTaskToWaiting(plan.taskId, budgetDecision);
+      return;
+    }
+
     const workspace = await this.prepareWorkspaceForPlan(plan.card, plan.stage);
     const runDirName = this.allocateRunDirName(plan.taskId, plan.stage);
     const runId = `run-${plan.taskId}-${plan.stage}-r${plan.round}-v${plan.contractVersion}-${randomUUID().slice(0, 6)}`;
@@ -2993,7 +3088,9 @@ export class KilnOrchestrator {
     );
     return (
       counters.advisorCalls < card.limits.advisor_calls &&
-      counters.totalTokens < card.limits.max_tokens
+      counters.totalTokens < card.limits.max_tokens &&
+      (card.limits.max_cost_usd === undefined ||
+        (counters.totalCostUsd ?? 0) < card.limits.max_cost_usd)
     );
   }
 
@@ -3214,12 +3311,14 @@ export class KilnOrchestrator {
     }
 
     const totalTokens = this.store.getTaskTotalTokens(taskId).total_tokens;
+    const totalCostUsd = computeTaskSpentUsd(this.store, taskId);
     return {
       counters: {
         stageRetries,
         reviewRounds,
         advisorCalls,
         totalTokens,
+        totalCostUsd,
       },
       triageAttempted,
     };

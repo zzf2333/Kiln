@@ -280,8 +280,27 @@ export const CardLimitsSchema = z.object({
   review_rounds: z.number().int().min(0),
   advisor_calls: z.number().int().min(0),
   max_tokens: z.number().int().min(1),
+  max_cost_usd: z.number().finite().positive().optional(),
 });
 export type CardLimits = z.infer<typeof CardLimitsSchema>;
+
+export const BudgetScopeStatusSchema = z.object({
+  scope: z.enum(["card", "daily", "monthly"]),
+  spent_usd: z.number().finite().nonnegative(),
+  limit_usd: z.number().finite().positive().nullable(),
+  ratio: z.number().finite().nonnegative().nullable(),
+  level: z.enum(["ok", "warning", "exceeded"]),
+});
+export type BudgetScopeStatus = z.infer<typeof BudgetScopeStatusSchema>;
+
+export const GlobalBudgetStatusSchema = z.object({
+  daily: BudgetScopeStatusSchema,
+  monthly: BudgetScopeStatusSchema,
+  soft_warning_ratio: z.number().finite().min(0.1).max(0.99),
+  exclude_subscription_providers: z.boolean(),
+  computed_at: z.string().min(1),
+});
+export type GlobalBudgetStatus = z.infer<typeof GlobalBudgetStatusSchema>;
 
 export const TaskCardSchema = z.object({
   schema_version: z.literal(1),

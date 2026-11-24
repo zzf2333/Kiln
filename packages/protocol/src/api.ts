@@ -339,3 +339,8 @@ export const SteerNoteSchema = z.object({
   stage: StageIdSchema.optional(),
 });
 export type SteerNote = z.infer<typeof SteerNoteSchema>;
+
+export const UpdateTaskLimitsRequestSchema = z.object({
+  max_cost_usd: z.number().finite().positive().nullable().optional(),
+});
+export type UpdateTaskLimitsRequest = z.infer<typeof UpdateTaskLimitsRequestSchema>;

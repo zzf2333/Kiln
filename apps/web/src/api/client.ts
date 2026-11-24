@@ -1,4 +1,5 @@
 import type {
+  BudgetScopeStatus,
   DraftCard,
   HashMismatchError,
   ImprovementProposal,
@@ -11,6 +12,7 @@ import type {
   StageId,
   TaskCard,
   TaskRetroReport,
+  UpdateTaskLimitsRequest,
 } from "@kiln/protocol/web";
 import type {
   AgentDescriptorInfo,
@@ -1077,6 +1079,19 @@ export async function rollbackPolicyChange(
     {
       method: "POST",
       body: JSON.stringify({}),
+    },
+  );
+}
+
+export async function updateTaskLimits(
+  taskId: string,
+  body: UpdateTaskLimitsRequest,
+): Promise<{ ok: true; card: TaskCard; budget: BudgetScopeStatus }> {
+  return requestJson<{ ok: true; card: TaskCard; budget: BudgetScopeStatus }>(
+    `/api/tasks/${encodeURIComponent(taskId)}/limits`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(body),
     },
   );
 }

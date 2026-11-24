@@ -126,6 +126,11 @@ export const LimitsConfigSchema = z.object({
   max_card_tokens: z.number().int().min(1).default(250_000),
   warm_cache_ttl_sec: z.number().int().min(30).max(3600).optional(),
   auto_retro_high_signal: z.boolean().optional(),
+  max_card_cost_usd: z.number().finite().positive().optional(),
+  daily_budget_usd: z.number().finite().positive().optional(),
+  monthly_budget_usd: z.number().finite().positive().optional(),
+  budget_soft_warning_ratio: z.number().finite().min(0.1).max(0.99).optional(),
+  budget_exclude_subscription_providers: z.boolean().optional(),
 });
 export type LimitsConfig = z.infer<typeof LimitsConfigSchema>;
 
@@ -346,6 +351,7 @@ export const ProviderEntrySchema = z
     args: z.array(z.string()).default([]),
     env: z.record(z.string().min(1), z.string()).default({}),
     custom_models: z.array(z.string().min(1)).default([]),
+    billing_mode: z.enum(["api", "subscription"]).optional(),
     usage_rule: ProviderUsageRuleSchema.optional(),
     quota: ProviderQuotaPolicySchema.optional(),
     paseo_url: z.string().min(1).optional(),

@@ -10,8 +10,10 @@ import {
   validateSplitCardsDag,
   validateWorkflowBlueprint,
   type AttachmentMimeType,
+  type BudgetScopeStatus,
   type ComposableWorkflowOptions,
   type DraftCard,
+  type GlobalBudgetStatus,
   type LedgerEntry,
   type LedgerFile,
   type LimitsConfig,
@@ -363,6 +365,7 @@ export interface KilnStoreState {
   limits: LimitsConfig;
   pricing: PricingConfig;
   usage: UsageSnapshot;
+  budget: GlobalBudgetStatus | null;
   runningCount: number;
   ledgers: Record<string, LedgerEntry[]>;
   agents: AgentDescriptorInfo[];
@@ -964,6 +967,7 @@ export class KilnWebStore {
       limits: { ...DEFAULT_LIMITS },
       pricing: { ...DEFAULT_PRICING, models: {} },
       usage: { ...EMPTY_USAGE },
+      budget: null,
       runningCount: 0,
       ledgers: {},
       agents: [],
@@ -1518,6 +1522,7 @@ export class KilnWebStore {
           limits,
           pricing,
           usage: data.usage ?? { ...EMPTY_USAGE },
+          budget: data.budget ?? null,
           runningCount: data.runningCount ?? 0,
           ...(data.ledgers !== undefined
             ? { ledgers: normalizeLedgers(data.ledgers) }

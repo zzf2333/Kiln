@@ -338,6 +338,7 @@ export class KilndServer {
         : {}),
       providerHealth: this.providerHealth,
       scriptRunner: this.scriptRunner,
+      remoteNotifier: this.remoteNotifier,
       ...(options.acceptEnvStarter !== undefined
         ? { acceptEnvStarter: options.acceptEnvStarter }
         : {}),

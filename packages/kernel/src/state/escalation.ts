@@ -158,13 +158,15 @@ export interface StageCounters {
   reviewRounds: number;
   advisorCalls: number;
   totalTokens: number;
+  totalCostUsd?: number;
 }
 
 export type CircuitBreakerReason =
   | "retries_per_stage_exceeded"
   | "review_rounds_exceeded"
   | "advisor_calls_exceeded"
-  | "max_tokens_exceeded";
+  | "max_tokens_exceeded"
+  | "max_cost_usd_exceeded";
 
 export interface CircuitBreakerResult {
   tripped: boolean;
@@ -206,6 +208,9 @@ export function checkCircuitBreaker(
   assertNonNegativeFinite(counters.reviewRounds, "counters.reviewRounds");
   assertNonNegativeFinite(counters.advisorCalls, "counters.advisorCalls");
   assertNonNegativeFinite(counters.totalTokens, "counters.totalTokens");
+  if (counters.totalCostUsd !== undefined) {
+    assertNonNegativeFinite(counters.totalCostUsd, "counters.totalCostUsd");
+  }
 
   const reasons: CircuitBreakerReason[] = [];
   const details: string[] = [];
@@ -232,6 +237,16 @@ export function checkCircuitBreaker(
     reasons.push("max_tokens_exceeded");
     details.push(
       `totalTokens (${counters.totalTokens}) >= max_tokens (${limits.max_tokens})`,
+    );
+  }
+  if (
+    limits.max_cost_usd !== undefined &&
+    counters.totalCostUsd !== undefined &&
+    counters.totalCostUsd >= limits.max_cost_usd
+  ) {
+    reasons.push("max_cost_usd_exceeded");
+    details.push(
+      `totalCostUsd ($${counters.totalCostUsd.toFixed(4)}) >= max_cost_usd ($${limits.max_cost_usd.toFixed(4)})`,
     );
   }
 

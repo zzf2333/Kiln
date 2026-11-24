@@ -36,6 +36,7 @@ import {
   TaskCardSchema,
   TaskRetroReportSchema,
   TrackSchema,
+  UpdateTaskLimitsRequestSchema,
   UpsertSpaceRequestSchema,
   WorkflowBlueprintSchema,
   WorkspaceModeSchema,
@@ -87,6 +88,7 @@ import {
   deriveTaskStatus,
   readNdjsonValidated,
   readYamlOptional,
+  writeYamlAtomic,
 } from "../store/index.js";
 import type { CaffeinateController } from "./caffeinate.js";
 import {
@@ -140,6 +142,11 @@ import {
   rollbackPolicyChange,
 } from "./improvements.js";
 import { extractDeterministicTaskRetro } from "./retro-engine.js";
+import {
+  computeGlobalBudgetStatus,
+  computeTaskBudgetStatus,
+  computeTaskSpentUsd,
+} from "./budget.js";
 import { realpathCanonical } from "../store/fs-atomic.js";
 import {
   buildPrDraft,
@@ -314,6 +321,7 @@ const DecideExtensionsSchema = z.object({
   affected_stages: z.array(StageIdSchema).optional(),
   contractUpdate: ContractUpdatePayloadSchema.optional(),
   contract_update: ContractUpdateSnakePayloadSchema.optional(),
+  new_max_cost_usd: z.number().finite().positive().optional(),
 });
 
 const CommitSplitDraftRequestSchema = z.object({
@@ -1614,6 +1622,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       limits,
       pricing,
       usage,
+      budget: computeGlobalBudgetStatus(store),
       runningCount: countRunningLeafTasks(store),
     });
   });
@@ -1742,6 +1751,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       runs,
       usageTurns,
       usage,
+      budget: computeTaskBudgetStatus(store, card),
       liveViewUrl,
       activeAcceptEnv: getActiveAcceptEnv ? getActiveAcceptEnv(taskId) : null,
       hostBackup,
@@ -2528,6 +2538,29 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     });
   });
 
+  app.patch("/api/tasks/:id/limits", async (c) => {
+    const taskId = requireExistingTask(c.req.param("id"));
+    const body = UpdateTaskLimitsRequestSchema.parse(await readJsonBodyStrict(c));
+    const card = store.readTaskCard(taskId);
+    const nextLimits = { ...card.limits };
+    if (body.max_cost_usd === null) {
+      delete nextLimits.max_cost_usd;
+    } else if (body.max_cost_usd !== undefined) {
+      nextLimits.max_cost_usd = body.max_cost_usd;
+    }
+    const updatedCard = TaskCardSchema.parse({
+      ...card,
+      limits: nextLimits,
+      updated_at: new Date().toISOString(),
+    });
+    writeYamlAtomic(store.paths.cardYaml(taskId), updatedCard, TaskCardSchema);
+    return c.json({
+      ok: true,
+      card: updatedCard,
+      budget: computeTaskBudgetStatus(store, updatedCard),
+    });
+  });
+
   app.post("/api/tasks/:id/decide", async (c) => {
     const taskId = requireExistingTask(c.req.param("id"));
     const rawBody = await readJsonBodyStrict(c);
@@ -2609,6 +2642,54 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       (pending.reason === "upstream_cancelled" || pending.category === "upstream_cancelled");
 
     await Promise.resolve(onBeforeDecisionApply?.(taskId));
+
+    if (pending.reason === "budget_exceeded" && selectedOption.action === "resume") {
+      const card = store.readTaskCard(taskId);
+      const spent = computeTaskSpentUsd(store, taskId);
+      if (selectedOption.id === "opt-raise-card-budget") {
+        const curLimit = card.limits.max_cost_usd ?? 0;
+        const nextMax =
+          ext.new_max_cost_usd ??
+          Math.max(Number((spent * 1.5).toFixed(2)), Number((curLimit * 1.5).toFixed(2)), 0.5);
+        const updatedCard = TaskCardSchema.parse({
+          ...card,
+          limits: {
+            ...card.limits,
+            max_cost_usd: nextMax,
+          },
+          updated_at: new Date().toISOString(),
+        });
+        writeYamlAtomic(store.paths.cardYaml(taskId), updatedCard, TaskCardSchema);
+      } else if (selectedOption.id === "opt-unlimited-card-budget") {
+        const nextLimits = { ...card.limits };
+        delete nextLimits.max_cost_usd;
+        const updatedCard = TaskCardSchema.parse({
+          ...card,
+          limits: nextLimits,
+          updated_at: new Date().toISOString(),
+        });
+        writeYamlAtomic(store.paths.cardYaml(taskId), updatedCard, TaskCardSchema);
+      } else if (selectedOption.id === "opt-raise-global-budget") {
+        const curLimits = store.readConfig("limits") ?? LimitsConfigSchema.parse({ schema_version: 1 });
+        const globalBudget = computeGlobalBudgetStatus(store);
+        const nextLimitsPayload: Record<string, unknown> = { ...curLimits };
+        if (globalBudget.daily.level === "exceeded" && globalBudget.daily.limit_usd !== null) {
+          nextLimitsPayload.daily_budget_usd = Math.max(
+            Number((globalBudget.daily.spent_usd * 1.5).toFixed(2)),
+            Number((globalBudget.daily.limit_usd * 1.5).toFixed(2)),
+            1,
+          );
+        }
+        if (globalBudget.monthly.level === "exceeded" && globalBudget.monthly.limit_usd !== null) {
+          nextLimitsPayload.monthly_budget_usd = Math.max(
+            Number((globalBudget.monthly.spent_usd * 1.5).toFixed(2)),
+            Number((globalBudget.monthly.limit_usd * 1.5).toFixed(2)),
+            1,
+          );
+        }
+        store.writeConfig("limits", LimitsConfigSchema.parse(nextLimitsPayload));
+      }
+    }
 
     let result;
     try {

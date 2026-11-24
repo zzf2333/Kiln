@@ -16,6 +16,15 @@ export interface DecisionNotificationInput {
   question: string;
 }
 
+export interface BudgetAlertNotificationInput {
+  scope: "card" | "daily" | "monthly";
+  level: "warning" | "exceeded";
+  spentUsd: number;
+  limitUsd: number;
+  taskId?: string;
+  priority?: Priority;
+}
+
 export interface NotificationDeliveryResult {
   delivered: boolean;
   skipped?: "disabled" | "priority_filtered";
@@ -135,6 +144,64 @@ export class RemoteNotifier {
   }
 
   /**
+   * Dispatches a non-blocking budget soft-warning or hard-circuit-breaker alert over
+   * the configured remote notification channel (respecting `notifications.priorities`).
+   */
+  async notifyBudgetAlert(
+    input: BudgetAlertNotificationInput,
+  ): Promise<NotificationDeliveryResult> {
+    try {
+      const remoteConfig = this.store.readConfig("remote");
+      if (
+        !remoteConfig ||
+        !remoteConfig.notifications.enabled ||
+        remoteConfig.notifications.url.trim().length === 0
+      ) {
+        return { delivered: false, skipped: "disabled" };
+      }
+
+      const priority: Priority = input.priority ?? "P1";
+      const { channel, url, secret, priorities } = remoteConfig.notifications;
+      if (!priorities.includes(priority)) {
+        return { delivered: false, skipped: "priority_filtered", channel };
+      }
+
+      const scopeLabel =
+        input.scope === "card"
+          ? `单卡 (${input.taskId ?? "-"})`
+          : input.scope === "daily"
+            ? "全局每日预算"
+            : "全局每月预算";
+      const isExceeded = input.level === "exceeded";
+      const ratioPct = Math.round((input.spentUsd / Math.max(input.limitUsd, 1e-6)) * 100);
+      const clickUrl =
+        input.taskId && remoteConfig.public_url
+          ? `${remoteConfig.public_url.replace(/\/+$/, "")}/tasks/${encodeURIComponent(input.taskId)}`
+          : remoteConfig.public_url
+            ? remoteConfig.public_url.replace(/\/+$/, "")
+            : undefined;
+
+      return await this.sendPayload({
+        event: isExceeded ? "budget.exceeded" : "budget.warning",
+        channel,
+        url,
+        ...(secret !== undefined ? { secret } : {}),
+        priority,
+        taskId: input.taskId ?? `budget-${input.scope}`,
+        title: `[${priority}] Kiln 预算${isExceeded ? "熔断" : "预警"} · ${scopeLabel}`,
+        asciiTitle: `[${priority}] Kiln Budget ${isExceeded ? "Exceeded" : "Warning"} (${input.scope})`,
+        body: `${scopeLabel} 已消耗 $${input.spentUsd.toFixed(4)} / 上限 $${input.limitUsd.toFixed(4)}（${ratioPct}%）${isExceeded ? "，已暂停新阶段派发并等待确认" : "，已触发软预警"}`,
+        ...(clickUrl !== undefined ? { clickUrl } : {}),
+      });
+    } catch (err) {
+      return {
+        delivered: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  /**
    * Sends a test push notification using saved `remote.notifications` config merged
    * with optional request overrides. Throws `400` if URL is missing/invalid.
    */
@@ -177,7 +244,7 @@ export class RemoteNotifier {
   }
 
   private async sendPayload(params: {
-    event: "decision.requested" | "notification.test";
+    event: "decision.requested" | "notification.test" | "budget.warning" | "budget.exceeded";
     channel: RemoteNotificationChannel;
     url: string;
     secret?: string;
@@ -241,7 +308,7 @@ export class RemoteNotifier {
   }
 
   private buildChannelRequest(params: {
-    event: "decision.requested" | "notification.test";
+    event: "decision.requested" | "notification.test" | "budget.warning" | "budget.exceeded";
     channel: RemoteNotificationChannel;
     secret?: string;
     priority: Priority;
