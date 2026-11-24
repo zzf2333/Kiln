@@ -1,7 +1,12 @@
 // @vitest-environment happy-dom
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { BootstrapResponse, ProvidersConfig, RosterConfig } from "../api/types";
+import type {
+  BootstrapResponse,
+  ProvidersConfig,
+  RosterConfig,
+  WorkflowsConfig,
+} from "../api/types";
 import { App } from "../app";
 
 type MockFetchHandler = (url: string, init?: RequestInit) => Promise<Response> | Response;
@@ -409,9 +414,9 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusbar", () => {
-  it("LineupView displays honest pool quotas, hides disabled/unavailable providers, detects hetero collision, resolves via fallback, creates locked-perm custom role, and saves RosterConfig", async () => {
-    let savedRoster: RosterConfig | null = null;
+describe("Slice 6a: WorkflowView, Providers, Space Pin/Scripts, Usage V2, Statusbar", () => {
+  it("WorkflowView displays honest pool quotas, hides disabled/unavailable providers, detects hetero collision, resolves via fallback, inserts locked-perm slot step, and saves WorkflowsConfig", async () => {
+    let savedWorkflows: WorkflowsConfig | null = null;
     const bootWithMissingProviders = (): BootstrapResponse => {
       const base = makeV3Bootstrap();
       return {
@@ -479,18 +484,18 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
       if (url === "/api/bootstrap") {
         return jsonResponse(bootWithMissingProviders());
       }
-      if (url === "/api/settings/roster" && (init?.method ?? "GET") === "PUT") {
-        savedRoster = JSON.parse(String(init?.body)) as RosterConfig;
-        return jsonResponse({ ok: true, section: "roster", data: savedRoster });
+      if (url === "/api/settings/workflows" && (init?.method ?? "GET") === "PUT") {
+        savedWorkflows = JSON.parse(String(init?.body)) as WorkflowsConfig;
+        return jsonResponse({ ok: true, section: "workflows", data: savedWorkflows });
       }
       return jsonResponse({ ok: true });
     });
 
-    window.location.hash = "#view=lineup";
+    window.location.hash = "#view=workflow";
     const { container } = render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByRole("heading", { name: "编排与阵容" })).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "工作流" })).toBeTruthy();
     });
 
     // Pool tiles: Codex native_quota (42%), Claude cooldown (.limited), Agy no official quota;
@@ -540,29 +545,27 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
     expect(fbVals).not.toContain("gemini");
     expect(fbVals).not.toContain("paseo");
 
-    // Hetero review collides initially (main_dev & reviewer both codex/gpt-5.4 with no fallback on reviewer)
+    // Hetero review collides initially (implement & review both codex/gpt-5.4 with no fallback on review)
     expect(screen.getByText("审查与实施撞模型")).toBeTruthy();
 
-    // Advisor row renders under 核心推进 with 顾问 & 只读 perm and can be selected for editing
-    const advisorRowBtn = container.querySelector('[data-roster-row="advisor"]')!;
-    expect(advisorRowBtn).toBeTruthy();
-    expect(advisorRowBtn.textContent).toContain("技术顾问");
-    expect(advisorRowBtn.textContent).toContain("顾问");
-    expect(advisorRowBtn.textContent).toContain("只读");
-    fireEvent.click(advisorRowBtn);
+    // Advisor dock renders with 顾问 & 只读 perm and can be selected for editing
+    const advisorBtn = container.querySelector('[data-wf-node="advisor"]')!;
+    expect(advisorBtn).toBeTruthy();
+    expect(advisorBtn.textContent).toContain("技术顾问");
+    expect(advisorBtn.textContent).toContain("顾问");
+    expect(advisorBtn.textContent).toContain("只读");
+    fireEvent.click(advisorBtn);
     await waitFor(() => {
       const modelCombo = screen.getByLabelText("主模型");
       expect(modelCombo.getAttribute("data-value")).toBe("claude-opus-4-6");
       expect(modelCombo.textContent).toContain("claude-opus-4-6");
     });
 
-    // Verify enable checkbox is NOT nested inside row select button (accessibility)
-    const reviewerRowBtn = container.querySelector('[data-roster-row="reviewer"]')!;
-    expect(reviewerRowBtn.querySelector('input[type="checkbox"]')).toBeNull();
-    expect(screen.getByLabelText("启用 异构审查")).toBeTruthy();
+    // Select review node and verify heterogeneous toggle + add Agy fallback -> resolves collision
+    const reviewerBtn = container.querySelector('[data-wf-node="review"]')!;
+    fireEvent.click(reviewerBtn);
+    expect(screen.getByLabelText("审查避开实施所用模型")).toBeTruthy();
 
-    // Select reviewer and add Agy fallback -> resolves collision
-    fireEvent.click(reviewerRowBtn);
     await selectComboboxValue("备选 Provider", "agy");
     fireEvent.click(screen.getByRole("button", { name: "添加备选" }));
 
@@ -570,7 +573,7 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
       expect(screen.getByText(/主力 gpt-5\.4 ≠ 审查 gemini-3-pro/)).toBeTruthy();
     });
 
-    // Background SSE bootstrap refresh must NOT clobber unsaved dirty roster edits
+    // Background SSE bootstrap refresh must NOT clobber unsaved dirty workflow edits
     const sse = MockEventSource.instances[0]!;
     sse.emit("task.updated", {
       seq: 1,
@@ -585,40 +588,40 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
     });
     expect(screen.getByText(/主力 gpt-5\.4 ≠ 审查 gemini-3-pro/)).toBeTruthy();
 
-    // Create custom specialist role (research stage locks perm = read_only)
-    fireEvent.click(screen.getByRole("button", { name: "自定义角色" }));
-    const dialog = await screen.findByRole("dialog", { name: "新增自定义专长角色" });
-    fireEvent.change(within(dialog).getByLabelText("自定义角色 ID"), {
-      target: { value: "perf_scout" },
+    // Insert custom step via pre-implement (+) connector slot (locked to read_only)
+    fireEvent.click(container.querySelector('[data-wf-slot="after_intake"]')!);
+    await waitFor(() => {
+      expect(container.querySelector('[data-slot-perm="read_only"]')?.textContent).toBe("只读");
     });
-    fireEvent.change(within(dialog).getByLabelText("自定义角色名称"), {
+    fireEvent.change(screen.getByLabelText("自定义步骤名称"), {
       target: { value: "性能侦察" },
     });
-    await selectComboboxValue("自定义角色阶段", "research", dialog);
-    fireEvent.change(within(dialog).getByLabelText("自定义角色能力特性"), {
+    fireEvent.change(screen.getByLabelText("插槽步骤提示词"), {
       target: { value: "只读性能分析与火焰图排查" },
     });
-    fireEvent.click(within(dialog).getByRole("button", { name: "添加角色" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认插入步骤" }));
 
     await waitFor(() => {
-      expect(container.querySelector('[data-role-perm="read_only"]')?.textContent).toBe("只读");
+      expect(container.textContent).toContain("性能侦察");
     });
 
-    // Save roster
-    fireEvent.click(screen.getByRole("button", { name: /保存阵容/ }));
+    // Save workflows
+    fireEvent.click(screen.getByRole("button", { name: /保存工作流/ }));
     await waitFor(() => {
-      expect(savedRoster).not.toBeNull();
+      expect(savedWorkflows).not.toBeNull();
     });
-    expect(savedRoster!.schema_version).toBe(2);
-    expect(savedRoster!.roster.reviewer?.fallbacks[0]).toMatchObject({
+    expect(savedWorkflows!.schema_version).toBe(1);
+    expect(savedWorkflows!.stage_fallbacks.review?.[0]).toMatchObject({
       provider: "agy",
       model: "gemini-3-pro",
     });
-    expect(savedRoster!.roster.perf_scout).toMatchObject({
-      group: "specialist",
+    const inserted = savedWorkflows!.templates[0]!.blueprint.steps.find(
+      (s) => s.kind === "agent" && s.label === "性能侦察",
+    );
+    expect(inserted).toMatchObject({
+      kind: "agent",
       stage: "research",
-      perm: "read_only",
-      builtin: false,
+      label: "性能侦察",
     });
   });
 
@@ -1199,8 +1202,7 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
     expect(screen.getByText("90%")).toBeTruthy();
   });
 
-  it("LineupView supports Track 2 derived inheritance hints, tier_hint, escalation_target, and deliverer on_conflict mode", async () => {
-    let savedRoster: RosterConfig | null = null;
+  it("WorkflowView supports derived inheritance hints and deliverer on_conflict mode", async () => {
     const boot = makeV3Bootstrap();
     const curRoster = boot.roster!;
     const nextRoster: RosterConfig = {
@@ -1256,6 +1258,7 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
       boot.settings.roster = nextRoster;
     }
 
+    let savedWorkflows: WorkflowsConfig | null = null;
     fetchMock.mockImplementation(async (url, init) => {
       if (url === "/api/auth/status") {
         return jsonResponse({ ok: true, mode: "local", authenticated: true, device: null });
@@ -1263,45 +1266,35 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
       if (url === "/api/bootstrap") {
         return jsonResponse(boot);
       }
-      if (url === "/api/settings/roster" && (init?.method ?? "GET") === "PUT") {
-        savedRoster = JSON.parse(String(init?.body ?? "{}")) as RosterConfig;
-        return jsonResponse({ ok: true, section: "roster", data: savedRoster });
+      if (url === "/api/settings/workflows" && (init?.method ?? "GET") === "PUT") {
+        savedWorkflows = JSON.parse(String(init?.body ?? "{}")) as WorkflowsConfig;
+        return jsonResponse({ ok: true, section: "workflows", data: savedWorkflows });
       }
       return jsonResponse({ ok: true });
     });
 
-    window.location.hash = "#view=lineup";
+    window.location.hash = "#view=workflow";
     const { container } = render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "编排与阵容" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "工作流" })).toBeTruthy();
 
-    // Disabled architect surfaces automatic inheritance from advisor
+    // Aux dock surfaces automatic inheritance from advisor
     await waitFor(() => {
-      expect(container.querySelector('[data-roster-row="architect"]')).not.toBeNull();
+      expect(container.querySelector('[data-wf-node="triage"]')).not.toBeNull();
     });
-    const architectRow = container.querySelector('[data-roster-row="architect"]')!;
-    expect(architectRow.textContent).toContain("自动继承 技术顾问");
-
-    // Inspect fast_fix tier_hint & escalation_target
-    const fastFixRow = container.querySelector('[data-roster-row="fast_fix"]')!;
-    fireEvent.click(fastFixRow);
-    const tierSelect = screen.getByLabelText("模型档位定位");
-    const escSelect = screen.getByLabelText("失败自动升档目标");
-    expect(tierSelect.getAttribute("data-value")).toBe("economy");
-    expect(escSelect.getAttribute("data-value")).toBe("main_dev");
+    const triageNode = container.querySelector('[data-wf-node="triage"]')!;
+    expect(triageNode.textContent).toContain("自动继承 技术顾问");
 
     // Switch deliverer to 3-way on_conflict mode and save
-    const delivererRow = container.querySelector('[data-roster-row="deliverer"]')!;
-    fireEvent.click(delivererRow);
+    const deliverNode = container.querySelector('[data-wf-node="deliver"]')!;
+    fireEvent.click(deliverNode);
     fireEvent.click(screen.getByRole("button", { name: "冲突按需" }));
-    fireEvent.click(screen.getByRole("button", { name: /保存阵容/ }));
+    fireEvent.click(screen.getByRole("button", { name: /保存工作流/ }));
 
     await waitFor(() => {
-      expect(savedRoster).not.toBeNull();
+      expect(savedWorkflows).not.toBeNull();
     });
-    expect(savedRoster!.roster.deliverer?.mode).toBe("on_conflict");
-    expect(savedRoster!.roster.fast_fix?.tier_hint).toBe("economy");
-    expect(savedRoster!.roster.fast_fix?.escalation_target).toBe("main_dev");
+    expect(savedWorkflows!.deliver_mode).toBe("on_conflict");
   });
 
   it("supports Track 3 verifier_capabilities, SpaceModal accept_entry builder, and DetailView real acceptance evidence & service logs", async () => {
@@ -1328,7 +1321,7 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
     if (boot.settings) {
       boot.settings.roster = boot.roster;
     }
-    let savedRoster: RosterConfig | null = null;
+    let savedWorkflowCaps: string[] = [];
     let savedSpaceBody: Record<string, unknown> | null = null;
 
     boot.tasks.push({
@@ -1359,10 +1352,6 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
       }
       if (url === "/api/bootstrap") {
         return jsonResponse(boot);
-      }
-      if (url === "/api/settings/roster" && method === "PUT") {
-        savedRoster = JSON.parse(String(init?.body ?? "{}")) as RosterConfig;
-        return jsonResponse({ ok: true, section: "roster", data: savedRoster });
       }
       if (url === "/api/spaces/inspect" && method === "POST") {
         return jsonResponse({
@@ -1529,6 +1518,11 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
           usage: boot.usage,
         });
       }
+      if (url === "/api/settings/workflows" && (init?.method ?? "GET") === "PUT") {
+        const saved = JSON.parse(String(init?.body ?? "{}")) as WorkflowsConfig;
+        savedWorkflowCaps = saved.verifier_capabilities;
+        return jsonResponse({ ok: true, section: "workflows", data: saved });
+      }
       if (url === "/api/tasks/t-track3-ui/runs/002-accept/accept-logs/web") {
         return new Response("server listening on 45122\n", {
           status: 200,
@@ -1538,19 +1532,20 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
       return jsonResponse({ ok: true });
     });
 
-    // 1. LineupView verifier_capabilities toggle
-    window.location.hash = "#view=lineup";
+    // 1. WorkflowView verifier_capabilities toggle
+    window.location.hash = "#view=workflow";
     const { container } = render(<App />);
-    expect(await screen.findByRole("heading", { name: "编排与阵容" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "工作流" })).toBeTruthy();
 
+    fireEvent.click(screen.getByRole("button", { name: "真实验收" }));
     await waitFor(() => {
-      expect(container.querySelector('[data-roster-row="verifier"]')).not.toBeNull();
+      expect(container.querySelector('[data-wf-node="accept"]')).not.toBeNull();
     });
-    fireEvent.click(container.querySelector('[data-roster-row="verifier"]')!);
+    fireEvent.click(container.querySelector('[data-wf-node="accept"]')!);
     fireEvent.click(screen.getByRole("button", { name: "真实浏览器操作" }));
-    fireEvent.click(screen.getByRole("button", { name: /保存阵容/ }));
+    fireEvent.click(screen.getByRole("button", { name: /保存工作流/ }));
     await waitFor(() => {
-      expect(savedRoster?.roster.verifier?.verifier_capabilities).toContain("browser");
+      expect(savedWorkflowCaps).toContain("browser");
     });
 
     // 2. SpaceModal suggested_accept_entry apply & save

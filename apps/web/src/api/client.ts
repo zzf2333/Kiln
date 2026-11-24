@@ -59,6 +59,7 @@ import type {
   RevokeDeviceResponse,
   RollbackCheckpointRequest,
   RollbackCheckpointResponse,
+  RosterConfig,
   RosterSettingsResponse,
   RunSpaceScriptRequest,
   RunSpaceScriptResponse,
@@ -75,6 +76,7 @@ import type {
   UpdateRemoteSettingsResponse,
   UpsertDraftPayload,
   UpsertSpacePayload,
+  WorkflowsSettingsResponse,
 } from "./types";
 
 export class ApiError extends Error {
@@ -600,7 +602,7 @@ export async function commitDraft(
 export async function updateSettings<K extends keyof SettingsSectionMap>(
   section: K,
   data: SettingsSectionMap[K],
-): Promise<{ ok: boolean; section: K; data: SettingsSectionMap[K] }> {
+): Promise<{ ok: boolean; section: K; data: SettingsSectionMap[K]; roster?: RosterConfig }> {
   return await requestJson(`/api/settings/${encodeURIComponent(section)}`, {
     method: "PUT",
     body: JSON.stringify(data),
@@ -788,6 +790,10 @@ export async function fetchProvidersSettings(): Promise<ProviderSettingsResponse
 
 export async function fetchRosterSettings(): Promise<RosterSettingsResponse> {
   return await requestJson<RosterSettingsResponse>("/api/settings/roster");
+}
+
+export async function fetchWorkflowsSettings(): Promise<WorkflowsSettingsResponse> {
+  return await requestJson<WorkflowsSettingsResponse>("/api/settings/workflows");
 }
 
 export async function fetchTaskCheckpoints(taskId: string): Promise<TaskCheckpointsResponse> {

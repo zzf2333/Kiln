@@ -121,7 +121,7 @@ export function Statusbar() {
           type="button"
           className="sb-item sb-ask"
           onClick={() => store.go("lineup")}
-          title="查看限流冷却中的订阅"
+          title="前往工作流查看限流冷却中的订阅"
         >
           <span className="dot dot-ask" />
           <span>{cooldownProviders.map((p) => p.label || p.provider_id).join("·")} 429 冷却</span>

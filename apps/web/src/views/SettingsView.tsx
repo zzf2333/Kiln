@@ -1,18 +1,12 @@
 import { Accordion, Dialog } from "radix-ui";
 import { useEffect, useRef, useState } from "react";
 import {
-  REASONING_EFFORTS,
   ROLE_IDS,
   type LimitsConfig,
   type PricingSyncSource,
   type ProviderEntry,
   type ProvidersConfig,
-  type ReasoningEffort,
-  type RoleAssignment,
-  type RoleId,
-  type RolesConfig,
 } from "@kiln/protocol/web";
-import type { AgentDescriptorInfo, AgentModeInfo } from "../api/types";
 import {
   ChevronRightIcon,
   CloseIcon,
@@ -21,83 +15,11 @@ import {
   RefreshIcon,
   TrashIcon,
 } from "../components/Icons";
-import { KilnSelect } from "../components/KilnSelect";
 import { ProviderAvatar, formatAdapterLabel } from "../components/ProviderAvatar";
 import { RemoteSettingsPanel } from "../components/RemoteSettingsPanel";
 import { ViewFrame } from "../components/ViewFrame";
 import { fmtTime } from "../state/format";
 import { isProjectSpace, useKilnStore, type SettingsTab } from "../state/store";
-
-const ROLE_INFO: Record<RoleId, { label: string; desc: string; interactive: boolean }> = {
-  intake: {
-    label: "立项对话",
-    desc: "查在途任务与账本，把想法聊成立项单",
-    interactive: true,
-  },
-  worker: {
-    label: "实施",
-    desc: "写代码、生成本机暂存补丁",
-    interactive: false,
-  },
-  reviewer: {
-    label: "独立审查",
-    desc: "新上下文，只读固定版本",
-    interactive: false,
-  },
-  verifier: {
-    label: "真实验收",
-    desc: "从真实入口跑验收场景",
-    interactive: false,
-  },
-  triage: {
-    label: "异常研判",
-    desc: "核查失败与阻塞事实，决定重试或升级",
-    interactive: false,
-  },
-  advisor: {
-    label: "技术顾问",
-    desc: "授权内的技术路线取舍",
-    interactive: false,
-  },
-  resolver: {
-    label: "讨论对话",
-    desc: "载入整卡上下文陪你处理待决问题",
-    interactive: true,
-  },
-};
-
-function isFullAccessOnlyAgent(agent: AgentDescriptorInfo | undefined): boolean {
-  if (!agent?.modes || agent.modes.length === 0) return false;
-  return agent.modes.every(
-    (m: AgentModeInfo) => m.isFullAccess === true || /full[-_\s]?access|bypass/i.test(m.id),
-  );
-}
-
-function modelsForAgent(
-  agent: AgentDescriptorInfo | undefined,
-  currentModel: string,
-): Array<{ id: string; efforts: ReasoningEffort[] }> {
-  const result: Array<{ id: string; efforts: ReasoningEffort[] }> = [];
-  if (agent?.models) {
-    for (const m of agent.models) {
-      if (typeof m === "string") {
-        result.push({ id: m, efforts: [...REASONING_EFFORTS] });
-      } else {
-        result.push({
-          id: m.id,
-          efforts:
-            m.thinkingOptions && m.thinkingOptions.length > 0
-              ? m.thinkingOptions
-              : [...REASONING_EFFORTS],
-        });
-      }
-    }
-  }
-  if (currentModel && !result.some((r) => r.id === currentModel)) {
-    result.unshift({ id: currentModel, efforts: [...REASONING_EFFORTS] });
-  }
-  return result;
-}
 
 const BUILTIN_PROVIDER_IDS = new Set([
   "codex",
@@ -167,6 +89,7 @@ export function SettingsView() {
     authMode,
     roles,
     roster,
+    workflows,
     limits,
     pricing,
     pricingSyncBusy,
@@ -179,11 +102,6 @@ export function SettingsView() {
     sseStatus,
   } = state;
 
-  const [rolesDraft, setRolesDraft] = useState<RolesConfig>(() => ({
-    schema_version: 1,
-    heterogeneous_review: roles.heterogeneous_review,
-    roles: { ...roles.roles },
-  }));
   const [providersDraft, setProvidersDraft] = useState<ProvidersConfig>(() =>
     cloneProvidersConfig(providersConfig),
   );
@@ -220,19 +138,10 @@ export function SettingsView() {
   const [limitsDraft, setLimitsDraft] = useState<LimitsConfig>(() => ({
     ...limits,
   }));
-  const [pendingConfirmRole, setPendingConfirmRole] = useState<RoleId | null>(null);
   const [pendingDeleteSpaceId, setPendingDeleteSpaceId] = useState<string | null>(null);
   const [newModelName, setNewModelName] = useState("");
   const [showExtraPricingModels, setShowExtraPricingModels] = useState(false);
   const [refreshBusy, setRefreshBusy] = useState(false);
-
-  useEffect(() => {
-    setRolesDraft({
-      schema_version: 1,
-      heterogeneous_review: roles.heterogeneous_review,
-      roles: { ...roles.roles },
-    });
-  }, [roles]);
 
   useEffect(() => {
     if (providersDirtyRef.current) return;
@@ -262,7 +171,6 @@ export function SettingsView() {
   }, [limits]);
 
   const tabs: Array<[SettingsTab, string]> = [
-    ["roles", "角色与模型"],
     ["providers", "Providers 订阅底座"],
     ["spaces", "项目空间"],
     ["limits", "限额与熔断"],
@@ -270,51 +178,6 @@ export function SettingsView() {
     ["remote", "远程访问"],
     ["conn", "连接与底座"],
   ];
-
-  const agentById = new Map(agents.map((a) => [a.id, a]));
-  const allFallbackCombos: Array<{ agent: string; model: string }> = [];
-  for (const a of agents) {
-    for (const m of modelsForAgent(a, "")) {
-      allFallbackCombos.push({ agent: a.id, model: m.id });
-    }
-  }
-  for (const r of Object.values(rolesDraft.roles)) {
-    if (
-      r?.agent &&
-      r?.model &&
-      !allFallbackCombos.some((c) => c.agent === r.agent && c.model === r.model)
-    ) {
-      allFallbackCombos.push({ agent: r.agent, model: r.model });
-    }
-    if (
-      r?.fallback &&
-      !allFallbackCombos.some((c) => c.agent === r.fallback!.agent && c.model === r.fallback!.model)
-    ) {
-      allFallbackCombos.push({
-        agent: r.fallback.agent,
-        model: r.fallback.model,
-      });
-    }
-  }
-
-  const updateRole = (roleId: RoleId, patch: Partial<RoleAssignment>): void => {
-    const existing = rolesDraft.roles[roleId] ?? {
-      agent: agents[0]?.id ?? "codex",
-      model: "",
-      allow_full_access_fallback: false,
-    };
-    const nextAssignment: RoleAssignment = {
-      ...existing,
-      ...patch,
-    };
-    setRolesDraft({
-      ...rolesDraft,
-      roles: {
-        ...rolesDraft.roles,
-        [roleId]: nextAssignment,
-      },
-    });
-  };
 
   const updateProviderDraft = (providerId: string, patch: Partial<ProviderEntry>): void => {
     setProvidersDraft((prev) => ({
@@ -1055,328 +918,6 @@ export function SettingsView() {
     );
   };
 
-  const renderRolesTab = () => {
-    const worker = rolesDraft.roles.worker;
-    const reviewer = rolesDraft.roles.reviewer;
-    const samePrimaryModel =
-      Boolean(rolesDraft.heterogeneous_review) &&
-      Boolean(worker?.agent && worker?.model) &&
-      worker?.agent === reviewer?.agent &&
-      worker?.model === reviewer?.model;
-
-    const fbClash =
-      samePrimaryModel &&
-      (!reviewer?.fallback ||
-        (reviewer.fallback.agent === worker?.agent && reviewer.fallback.model === worker?.model));
-
-    const totalModels = agents.reduce((sum, agent) => sum + (agent.models?.length ?? 0), 0);
-
-    return (
-      <>
-        <div className="sync-line">
-          <span>
-            可选项来自 ExecutionBackend.listAgents()（当前已发现 {agents.length} 个 Agent，共{" "}
-            {totalModels} 个模型）
-          </span>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            disabled={refreshBusy}
-            onClick={async () => {
-              if (refreshBusy) return;
-              setRefreshBusy(true);
-              try {
-                await store.refreshAgents(true);
-              } finally {
-                setRefreshBusy(false);
-              }
-            }}
-          >
-            {refreshBusy ? "刷新中…" : "重新读取"}
-          </button>
-        </div>
-
-        <table className="t">
-          <thead>
-            <tr>
-              <th style={{ width: "22%" }}>角色</th>
-              <th>Agent</th>
-              <th>主模型</th>
-              <th style={{ width: "112px" }}>推理档位</th>
-              <th>备选（撞模型/限流）</th>
-              <th style={{ width: "110px" }}>允许全权兜底</th>
-            </tr>
-          </thead>
-          <tbody>
-            {ROLE_IDS.map((roleId) => {
-              const info = ROLE_INFO[roleId];
-              const assignment = rolesDraft.roles[roleId];
-              const currentAgentId = assignment?.agent ?? "";
-              const currentModel = assignment?.model ?? "";
-
-              const candidateAgents = info.interactive
-                ? agents.filter((a) => a.capabilities.interactiveChat)
-                : agents;
-
-              const selectedAgentObj = agentById.get(currentAgentId);
-              const modelOpts = modelsForAgent(selectedAgentObj, currentModel);
-              const selectedModelObj = modelOpts.find((m) => m.id === currentModel);
-              const effortOpts = selectedModelObj?.efforts ?? [...REASONING_EFFORTS];
-
-              const fallbackKey = assignment?.fallback
-                ? `${assignment.fallback.agent} / ${assignment.fallback.model}`
-                : "";
-
-              const fullAccessOnly = isFullAccessOnlyAgent(selectedAgentObj);
-              const currentIneligible =
-                info.interactive &&
-                Boolean(selectedAgentObj) &&
-                !selectedAgentObj!.capabilities.interactiveChat;
-              const isNonMcpInteractive =
-                info.interactive &&
-                Boolean(selectedAgentObj) &&
-                selectedAgentObj!.capabilities.interactiveChat &&
-                !selectedAgentObj!.capabilities.mcpInjection;
-
-              return (
-                <tr key={roleId}>
-                  <td>
-                    <div className="role-name">
-                      {info.label}{" "}
-                      <span className="mono muted" style={{ fontSize: "11px" }}>
-                        {roleId}
-                      </span>
-                    </div>
-                    <div className="role-desc">{info.desc}</div>
-                    {currentIneligible ? (
-                      <div className="warn-line" style={{ marginTop: "4px", fontSize: "11.5px" }}>
-                        当前 {currentAgentId} 不支持实时交互对话，请更换
-                      </div>
-                    ) : isNonMcpInteractive ? (
-                      <div className="role-desc" style={{ marginTop: "4px" }}>
-                        无 MCP 模式：自动通过结构化补丁同步草稿/契约
-                      </div>
-                    ) : null}
-                    {fullAccessOnly && !assignment?.allow_full_access_fallback ? (
-                      <div className="warn-line" style={{ marginTop: "4px", fontSize: "11.5px" }}>
-                        仅暴露 full-access，默认拦截派发，需先开启右侧「允许全权兜底」
-                      </div>
-                    ) : null}
-                  </td>
-
-                  <td>
-                    <KilnSelect
-                      className="select"
-                      ariaLabel={`${info.label} Agent`}
-                      value={currentAgentId}
-                      options={[
-                        ...(!currentAgentId ? [{ value: "", label: "选择 Agent" }] : []),
-                        ...(currentAgentId && !candidateAgents.some((a) => a.id === currentAgentId)
-                          ? [
-                              {
-                                value: currentAgentId,
-                                label: `${currentAgentId}${currentIneligible ? "（不兼容）" : ""}`,
-                              },
-                            ]
-                          : []),
-                        ...candidateAgents.map((a) => ({
-                          value: a.id,
-                          label: a.label ?? a.id,
-                        })),
-                      ]}
-                      onChange={(nextAgentId) => {
-                        const nextAgent = agentById.get(nextAgentId);
-                        const nextModels = modelsForAgent(nextAgent, "");
-                        const firstModel = nextModels[0]?.id ?? "";
-                        updateRole(roleId, {
-                          agent: nextAgentId,
-                          model: firstModel,
-                          ...(nextAgent?.backendId ? { backend_id: nextAgent.backendId } : {}),
-                        });
-                      }}
-                    />
-                  </td>
-
-                  <td>
-                    <KilnSelect
-                      className="select mono"
-                      ariaLabel={`${info.label} 主模型`}
-                      style={{ fontSize: "12px" }}
-                      value={currentModel}
-                      options={[
-                        ...(!currentModel ? [{ value: "", label: "选择模型" }] : []),
-                        ...modelOpts.map((m) => ({ value: m.id, label: m.id })),
-                      ]}
-                      onChange={(nextModel) =>
-                        updateRole(roleId, {
-                          model: nextModel,
-                        })
-                      }
-                    />
-                  </td>
-
-                  <td>
-                    <KilnSelect
-                      className="select"
-                      ariaLabel={`${info.label} 推理档位`}
-                      value={assignment?.reasoning_effort ?? "medium"}
-                      options={effortOpts.map((eff) => ({ value: eff, label: eff }))}
-                      onChange={(nextEffort) =>
-                        updateRole(roleId, {
-                          reasoning_effort: nextEffort as ReasoningEffort,
-                        })
-                      }
-                    />
-                  </td>
-
-                  <td>
-                    {info.interactive ? (
-                      <span className="muted" style={{ fontSize: "12px" }}>
-                        —
-                      </span>
-                    ) : (
-                      <KilnSelect
-                        className="select mono"
-                        ariaLabel={`${info.label} 备选`}
-                        style={{ fontSize: "11.5px" }}
-                        value={fallbackKey}
-                        options={[
-                          { value: "", label: "无备选" },
-                          ...allFallbackCombos.map((c) => {
-                            const k = `${c.agent} / ${c.model}`;
-                            return { value: k, label: k };
-                          }),
-                        ]}
-                        onChange={(val) => {
-                          if (!val) {
-                            const next = { ...rolesDraft.roles[roleId]! };
-                            delete next.fallback;
-                            setRolesDraft({
-                              ...rolesDraft,
-                              roles: { ...rolesDraft.roles, [roleId]: next },
-                            });
-                            return;
-                          }
-                          const [fbAgent, fbModel] = val.split(" / ");
-                          if (fbAgent && fbModel) {
-                            updateRole(roleId, {
-                              fallback: { agent: fbAgent, model: fbModel },
-                            });
-                          }
-                        }}
-                      />
-                    )}
-                  </td>
-
-                  <td>
-                    <label className="switch">
-                      <input
-                        type="checkbox"
-                        aria-label={`${info.label} 允许全权兜底`}
-                        checked={Boolean(assignment?.allow_full_access_fallback)}
-                        onChange={(e) => {
-                          const checked = (e.currentTarget as HTMLInputElement).checked;
-                          if (checked) {
-                            setPendingConfirmRole(roleId);
-                          } else {
-                            if (pendingConfirmRole === roleId) {
-                              setPendingConfirmRole(null);
-                            }
-                            updateRole(roleId, {
-                              allow_full_access_fallback: false,
-                            });
-                          }
-                        }}
-                      />
-                      <span />
-                    </label>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-
-        {pendingConfirmRole ? (
-          <div className="confirm-bar" role="alertdialog" aria-label="确认开启全权兜底">
-            <p>
-              高风险确认：仅为「{ROLE_INFO[pendingConfirmRole].label}」显式启用{" "}
-              <span className="mono">allow_full_access_fallback</span>？当所选 Provider 仅暴露
-              full-access 模式时，守护进程将放行无人值守派发。
-            </p>
-            <div style={{ display: "flex", gap: "8px" }}>
-              <button
-                type="button"
-                className="btn btn-light btn-sm"
-                onClick={() => {
-                  updateRole(pendingConfirmRole, {
-                    allow_full_access_fallback: true,
-                  });
-                  setPendingConfirmRole(null);
-                }}
-              >
-                确认开启
-              </button>
-              <button
-                type="button"
-                className="btn btn-sm"
-                onClick={() => setPendingConfirmRole(null)}
-              >
-                取消
-              </button>
-            </div>
-          </div>
-        ) : null}
-
-        {samePrimaryModel ? (
-          <p className="warn-line" role="alert">
-            {fbClash
-              ? `独立审查与实施主模型和备选均撞车（${worker?.agent} / ${worker?.model}），请为独立审查选择不同的备选模型`
-              : `独立审查与实施当前选了同一模型（${worker?.agent} / ${worker?.model}），派发时将自动切换为备选（${reviewer?.fallback?.agent} / ${reviewer?.fallback?.model}）`}
-          </p>
-        ) : null}
-
-        <div className="setting-row">
-          <div>
-            <span>审查避开实施所用模型</span>
-            <p>独立审查与实施撞同一模型时，自动改用该行的备选模型</p>
-          </div>
-          <label className="switch" style={{ justifySelf: "end" }}>
-            <input
-              type="checkbox"
-              checked={rolesDraft.heterogeneous_review}
-              onChange={(e) =>
-                setRolesDraft({
-                  ...rolesDraft,
-                  heterogeneous_review: (e.currentTarget as HTMLInputElement).checked,
-                })
-              }
-            />
-            <span />
-          </label>
-        </div>
-
-        <div
-          style={{
-            marginTop: "20px",
-            display: "flex",
-            gap: "12px",
-            alignItems: "center",
-          }}
-        >
-          <button
-            type="button"
-            className="btn btn-light"
-            onClick={() => void store.saveSettingsSection("roles", rolesDraft)}
-          >
-            保存
-          </button>
-          <span className="muted">修改写入 config/roles.yaml，只影响之后派发的执行</span>
-        </div>
-      </>
-    );
-  };
-
   const renderSpacesTab = () => {
     const customSpaces = Object.values(spaces)
       .filter((sp) => sp.id !== "local")
@@ -1842,10 +1383,21 @@ export function SettingsView() {
     for (const roleId of ROLE_IDS) {
       const assignment = roles.roles[roleId];
       if (!assignment) continue;
-      recordRoleModel(assignment.model, ROLE_INFO[roleId].label);
+      recordRoleModel(assignment.model, roleId);
       if (assignment.fallback?.model) {
-        recordRoleModel(assignment.fallback.model, `${ROLE_INFO[roleId].label}·备选`);
+        recordRoleModel(assignment.fallback.model, `${roleId}·备选`);
       }
+    }
+    for (const [k, b] of Object.entries(workflows.stage_bindings ?? {})) {
+      if (b?.model) recordRoleModel(b.model, k);
+    }
+    for (const [k, fbs] of Object.entries(workflows.stage_fallbacks ?? {})) {
+      for (const fb of fbs ?? []) {
+        if (fb.model) recordRoleModel(fb.model, `${k}·备选`);
+      }
+    }
+    if (workflows.deliver_binding?.model) {
+      recordRoleModel(workflows.deliver_binding.model, "deliver");
     }
     for (const rKey of Object.keys(roster.roster)) {
       const entry = roster.roster[rKey];
@@ -2231,9 +1783,7 @@ export function SettingsView() {
               </button>
             ))}
           </div>
-          {settingsTab === "roles" ? (
-            renderRolesTab()
-          ) : settingsTab === "providers" ? (
+          {settingsTab === "providers" ? (
             renderProvidersTab()
           ) : settingsTab === "spaces" ? (
             renderSpacesTab()

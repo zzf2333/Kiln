@@ -854,9 +854,9 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     expect(within(alertBox).getByText(/\+export MANUAL_EDIT=1/)).toBeTruthy();
   });
 
-  it("SettingsView allows Codex/Pi/Antigravity on intake/resolver with interactiveChat filtering, warns on non-MCP and full-access, refreshes via /api/agents?refresh=1, and recalculates cost immediately", async () => {
+  it("WorkflowView redirects legacy #view=settings&tab=roles, filters interactiveChat, warns on non-MCP and full-access, refreshes via /api/agents?refresh=1, and removes roles tab from SettingsView", async () => {
     const bootstrap = makeBaseBootstrap();
-    // Make worker and reviewer use the exact same model and colliding fallback
+    // Make implement and review use the exact same model and colliding fallback with hetero enabled
     bootstrap.roles!.roles.reviewer = {
       agent: "pi",
       model: "claude-sonnet-4-6",
@@ -908,7 +908,9 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     });
 
     window.location.hash = "#view=settings&tab=roles";
-    render(<App />);
+    const { container } = render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "工作流" })).toBeTruthy();
 
     const readComboboxValues = async (label: string): Promise<string[]> => {
       const trigger = screen.getByLabelText(label);
@@ -934,30 +936,36 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       fireEvent.click(option);
     };
 
-    // Wait for bootstrap agents to populate the role selectors: intake/resolver allow codex, pi, antigravity
-    await waitFor(async () => {
-      const vals = await readComboboxValues("立项对话 Agent");
-      expect(vals).toEqual(["codex", "pi", "antigravity"]);
+    // Select intake node: interactiveChat allows codex, pi, antigravity
+    await waitFor(() => {
+      expect(container.querySelector('[data-wf-node="intake"]')).not.toBeNull();
     });
+    fireEvent.click(container.querySelector('[data-wf-node="intake"]')!);
+    await waitFor(() => {
+      expect(screen.getByLabelText("主订阅 Provider").textContent).toContain("Codex");
+    });
+    expect(await readComboboxValues("主订阅 Provider")).toEqual(["codex", "pi", "antigravity"]);
 
-    const resolverOpts = await readComboboxValues("讨论对话 Agent");
-    expect(resolverOpts).toEqual(["codex", "pi", "antigravity"]);
+    // Select resolver in aux dock: interactiveChat allows codex, pi, antigravity
+    fireEvent.click(container.querySelector('[data-wf-node="resolver"]')!);
+    expect(await readComboboxValues("主订阅 Provider")).toEqual(["codex", "pi", "antigravity"]);
 
     // Switching intake to Pi displays non-MCP structured patch notice
-    await selectComboboxValue("立项对话 Agent", "pi");
+    fireEvent.click(container.querySelector('[data-wf-node="intake"]')!);
+    await selectComboboxValue("主订阅 Provider", "pi");
     await waitFor(() => {
       expect(screen.getByText(/无 MCP 模式：自动通过结构化补丁同步草稿\/契约/)).toBeTruthy();
     });
 
     // Switching intake to Antigravity triggers full-access-only warning until fallback opt-in is confirmed
-    await selectComboboxValue("立项对话 Agent", "antigravity");
+    await selectComboboxValue("主订阅 Provider", "antigravity");
     await waitFor(() => {
       expect(
-        screen.getByText(/仅暴露 full-access，默认拦截派发，需先开启右侧「允许全权兜底」/),
+        screen.getByText(/仅暴露 full-access，默认拦截派发，需先开启下方「允许全权兜底」/),
       ).toBeTruthy();
     });
 
-    const intakeFallbackToggle = screen.getByLabelText("立项对话 允许全权兜底") as HTMLInputElement;
+    const intakeFallbackToggle = screen.getByLabelText("允许全权兜底") as HTMLInputElement;
     expect(intakeFallbackToggle.checked).toBe(false);
     fireEvent.click(intakeFallbackToggle);
     const intakeConfirmDialog = await screen.findByRole("alertdialog", {
@@ -966,24 +974,29 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     fireEvent.click(within(intakeConfirmDialog).getByRole("button", { name: "确认开启" }));
     expect(intakeFallbackToggle.checked).toBe(true);
 
-    // Click 重新读取 -> hits /api/agents?refresh=1, keeps interactiveChat=false batch out of intake while adding it to worker
+    // Click 重新读取 -> hits /api/agents?refresh=1, keeps interactiveChat=false batch out of intake while adding it to implement
     fireEvent.click(screen.getByRole("button", { name: "重新读取" }));
-    await waitFor(async () => {
-      const vals = await readComboboxValues("实施 Agent");
-      expect(vals).toEqual(["codex", "pi", "antigravity", "batch"]);
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([u]) => u === "/api/agents?refresh=1")).toBe(true);
+      expect(screen.getByRole("button", { name: "重新读取" })).toBeTruthy();
     });
-    expect(await readComboboxValues("立项对话 Agent")).toEqual(["codex", "pi", "antigravity"]);
+    fireEvent.click(container.querySelector('[data-wf-node="implement"]')!);
+    expect(await readComboboxValues("主订阅 Provider")).toEqual([
+      "codex",
+      "pi",
+      "antigravity",
+      "batch",
+    ]);
+    fireEvent.click(container.querySelector('[data-wf-node="intake"]')!);
+    expect(await readComboboxValues("主订阅 Provider")).toEqual(["codex", "pi", "antigravity"]);
 
-    // Verify backends snapshot updated on 连接与底座 tab
-    fireEvent.click(screen.getByRole("tab", { name: "连接与底座" }));
-    expect(screen.getByText("4 agent(s) available")).toBeTruthy();
-    fireEvent.click(screen.getByRole("tab", { name: "角色与模型" }));
+    // Verify heterogeneous_review collision warning on review node
+    fireEvent.click(container.querySelector('[data-wf-node="review"]')!);
+    expect(screen.getByText(/独立审查与实施同模型/)).toBeTruthy();
 
-    // heterogeneous_review collision warning
-    expect(screen.getByText(/独立审查与实施主模型和备选均撞车/)).toBeTruthy();
-
-    // worker allow_full_access_fallback requires explicit secondary confirmation
-    const fallbackToggle = screen.getByLabelText("实施 允许全权兜底") as HTMLInputElement;
+    // Implement allow_full_access_fallback requires explicit secondary confirmation
+    fireEvent.click(container.querySelector('[data-wf-node="implement"]')!);
+    const fallbackToggle = screen.getByLabelText("允许全权兜底") as HTMLInputElement;
     expect(fallbackToggle.checked).toBe(false);
     fireEvent.click(fallbackToggle);
     const confirmDialog = await screen.findByRole("alertdialog", {
@@ -993,9 +1006,16 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     fireEvent.click(within(confirmDialog).getByRole("button", { name: "确认开启" }));
     expect(fallbackToggle.checked).toBe(true);
 
+    // Navigate to SettingsView: 角色与模型 tab is completely removed (no duplication)
+    fireEvent.click(container.querySelector('[data-nav="settings"]')!);
+    expect(await screen.findByRole("heading", { name: "设置" })).toBeTruthy();
+    expect(screen.queryByRole("tab", { name: "角色与模型" })).toBeNull();
+
+    // Verify backends snapshot updated on 连接与底座 tab
+    fireEvent.click(screen.getByRole("tab", { name: "连接与底座" }));
+    expect(screen.getByText("4 agent(s) available")).toBeTruthy();
+
     // Switch to pricing tab and change gpt-5.4 input price from 1.25 -> 10
-    // Baseline usage: 1M in, 400k cached, 100k out -> old cost: (600k*1.25 + 400k*0.125 + 100k*10)/1e6 = $1.80
-    // New cost with in=10: (600k*10 + 400k*0.125 + 100k*10)/1e6 = 6 + 0.05 + 1 = $7.05
     expect(document.getElementById("upTotalCost")?.textContent).toBe("$1.80");
 
     fireEvent.click(screen.getByRole("tab", { name: "模型单价" }));

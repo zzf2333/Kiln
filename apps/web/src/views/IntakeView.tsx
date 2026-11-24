@@ -15,6 +15,7 @@ import { importGithubIssue } from "../api/client";
 import { ChatComposer } from "../components/ChatComposer";
 import { ChatTimeline } from "../components/ChatTimeline";
 import { CheckIcon, CloseIcon, GitPrIcon } from "../components/Icons";
+import { KilnSelect } from "../components/KilnSelect";
 import { MarkdownContent } from "../components/MarkdownContent";
 import { RosterRolePicker } from "../components/RosterRolePicker";
 import { SplitCardsPanel } from "../components/SplitCardsPanel";
@@ -138,6 +139,9 @@ export function IntakeView() {
       ? `/api/drafts/${encodeURIComponent(intakeDraftId)}/attachments/${encodeURIComponent(att.id)}`
       : "";
   const wfToggles = extractWorkflowToggles(effectiveWorkflow);
+  const customLabels = agentStepNodes
+    .filter((n) => Boolean(n.id && n.label))
+    .map((n) => n.label!.trim());
   const workflowPreviewParts: string[] = ["立项"];
   if (wfToggles.includePlan) {
     workflowPreviewParts.push("方案(顾问)");
@@ -161,7 +165,24 @@ export function IntakeView() {
     workflowPreviewParts.push("交付审批");
   }
   workflowPreviewParts.push(wfToggles.hostTwoPhase ? "交付(落盘+终验)" : "交付");
-  const workflowPreview = workflowPreviewParts.join(" → ");
+  const workflowPreview =
+    customLabels.length > 0
+      ? `${workflowPreviewParts.join(" → ")} · +${customLabels.length} 自定义（${customLabels.join("、")}）`
+      : workflowPreviewParts.join(" → ");
+
+  const workflowSig = (steps: typeof effectiveWorkflow.steps): string =>
+    steps
+      .map((s) =>
+        s.kind === "loop"
+          ? `loop(${workflowSig(s.steps)})`
+          : s.kind === "agent"
+            ? `${s.kind}:${s.stage}:${s.id ?? ""}:${s.label ?? ""}`
+            : `${s.kind}:${s.stage}`,
+      )
+      .join("|");
+  const curSig = workflowSig(effectiveWorkflow.steps);
+  const matchedTemplate =
+    state.workflows.templates.find((tpl) => workflowSig(tpl.blueprint.steps) === curSig) ?? null;
   const targetSummary = isProjectMode
     ? selectedProject
       ? `${selectedProject.name} (${selectedProject.id}) · 代码工作树 git_worktree`
@@ -795,6 +816,39 @@ export function IntakeView() {
                     <div>
                       <dt>流程蓝图 · {WORKFLOW_PRESET_LABEL[effectiveWorkflow.preset]}</dt>
                       <dd className="bp-box">
+                        {state.workflows.templates.length > 0 ? (
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "8px",
+                              marginBottom: "8px",
+                            }}
+                          >
+                            <span className="bp-rounds-label">工作流模板</span>
+                            <KilnSelect
+                              className="select select-sm"
+                              ariaLabel="流程模板"
+                              value={matchedTemplate?.id ?? ""}
+                              options={[
+                                ...state.workflows.templates.map((tpl) => ({
+                                  value: tpl.id,
+                                  label:
+                                    tpl.id === state.workflows.default_template_id
+                                      ? `${tpl.name}（默认）`
+                                      : tpl.name,
+                                })),
+                                ...(!matchedTemplate
+                                  ? [{ value: "", label: "手动调配（未存为模板）" }]
+                                  : []),
+                              ]}
+                              onChange={(tplId) => {
+                                const tpl = state.workflows.templates.find((t) => t.id === tplId);
+                                if (tpl) store.applyIntakeWorkflowTemplate(tpl);
+                              }}
+                            />
+                          </div>
+                        ) : null}
                         <div className="seg seg-wrap" role="radiogroup" aria-label="流程预设">
                           {WORKFLOW_PRESET_TABS.map(([val, label]) => (
                             <button
@@ -937,7 +991,7 @@ export function IntakeView() {
                     {agentStepNodes.map((node, nodeIdx) => (
                       <div key={`${node.stage}-${nodeIdx}`} className="assign-row">
                         <div className="assign-stage">
-                          <b>{stageMeta(node.stage).label}</b>
+                          <b>{node.label?.trim() || stageMeta(node.stage).label}</b>
                           {node.rationale ? (
                             <small title={node.rationale}>{node.rationale}</small>
                           ) : (

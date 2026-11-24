@@ -11,11 +11,11 @@ import { DetailView } from "./views/DetailView";
 import { InboxView } from "./views/InboxView";
 import { IntakeView } from "./views/IntakeView";
 import { LedgerView } from "./views/LedgerView";
-import { LineupView } from "./views/LineupView";
 import { RemoteAuthView } from "./views/RemoteAuthView";
 import { ResolveView } from "./views/ResolveView";
 import { SettingsView } from "./views/SettingsView";
 import { UsageView } from "./views/UsageView";
+import { WorkflowView } from "./views/WorkflowView";
 
 function AppShell() {
   const { store, state } = useKilnStore();
@@ -74,7 +74,7 @@ function AppShell() {
   const renderView = () => {
     switch (state.view) {
       case "lineup":
-        return <LineupView />;
+        return <WorkflowView />;
       case "detail":
         return <DetailView />;
       case "inbox":

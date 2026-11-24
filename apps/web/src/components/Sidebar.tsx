@@ -142,7 +142,7 @@ export function Sidebar() {
         >
           <span className="nav-l">
             <LineupIcon />
-            <span>编排与阵容</span>
+            <span>工作流</span>
           </span>
         </button>
 

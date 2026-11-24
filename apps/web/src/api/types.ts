@@ -95,12 +95,25 @@ import type {
   UpdateTaskLimitsRequest,
   UpsertSpaceRequest,
   VerifierCapability,
+  WorkflowBindingKey,
   WorkflowBlueprint,
+  WorkflowNodeBinding,
+  WorkflowNodeOnFail,
   WorkflowPreset,
+  WorkflowTemplate,
+  WorkflowsConfig,
   WorkspaceMode,
   RollbackCheckpointRequest,
   CommitPrActionRequest,
 } from "@kiln/protocol/web";
+
+export type {
+  WorkflowBindingKey,
+  WorkflowNodeBinding,
+  WorkflowNodeOnFail,
+  WorkflowTemplate,
+  WorkflowsConfig,
+};
 
 export interface BootstrapTask {
   id: string;
@@ -260,10 +273,12 @@ export interface BootstrapResponse {
     limits: LimitsConfig | null;
     pricing: PricingConfig | null;
     roster?: RosterConfig | null;
+    workflows?: WorkflowsConfig | null;
     providers?: ProvidersConfig | null;
   };
   roles: RolesConfig | null;
   roster?: RosterConfig | null;
+  workflows?: WorkflowsConfig | null;
   limits: LimitsConfig | null;
   pricing: PricingConfig | null;
   providers?: ProviderRuntimeStatus[];
@@ -591,7 +606,15 @@ export type SettingsSectionMap = {
   pricing: PricingConfig;
   providers: ProvidersConfig;
   roster: RosterConfig;
+  workflows: WorkflowsConfig;
 };
+
+export interface WorkflowsSettingsResponse {
+  ok: true;
+  section?: "workflows";
+  data: WorkflowsConfig;
+  roster?: RosterConfig;
+}
 
 export interface ProvidersStatusResponse {
   ok: true;

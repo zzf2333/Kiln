@@ -3,11 +3,14 @@ import { useContext, useEffect, useState } from "react";
 import {
   ATTACHMENT_MIME_TYPES,
   MAX_ATTACHMENT_BYTES,
+  WORKFLOW_BINDING_KEYS,
   WORKFLOW_PRESETS,
   buildCustomWorkflow,
   buildWorkflowPreset,
+  createDefaultWorkflowTemplates,
   extractLocalPreviewUrls,
   extractWorkflowToggles,
+  normalizeWorkflowBlueprintSafety,
   validateSplitCardsDag,
   validateWorkflowBlueprint,
   type AttachmentMimeType,
@@ -28,9 +31,13 @@ import {
   type Track,
   type WorkflowAgentNode,
   type WorkflowAgentStage,
+  type WorkflowBindingKey,
   type WorkflowBlueprint,
+  type WorkflowNodeBinding,
   type WorkflowPreset,
   type WorkflowStep,
+  type WorkflowTemplate,
+  type WorkflowsConfig,
   type WorkspaceMode,
 } from "@kiln/protocol/web";
 import {
@@ -54,6 +61,7 @@ import {
   fetchProviders as apiFetchProviders,
   fetchProvidersSettings as apiFetchProvidersSettings,
   fetchRosterSettings as apiFetchRosterSettings,
+  fetchWorkflowsSettings as apiFetchWorkflowsSettings,
   fetchScriptRuns as apiFetchScriptRuns,
   fetchTaskChat as apiFetchTaskChat,
   fetchTaskCheckpoints as apiFetchTaskCheckpoints,
@@ -137,14 +145,7 @@ export type MvpView =
   | "ledger"
   | "settings";
 
-export type SettingsTab =
-  | "roles"
-  | "providers"
-  | "spaces"
-  | "limits"
-  | "pricing"
-  | "remote"
-  | "conn";
+export type SettingsTab = "providers" | "spaces" | "limits" | "pricing" | "remote" | "conn";
 export type PeriodFilter = "week" | "month" | "year" | "all";
 export type IntakeMode = "project" | "local";
 export type IntakeRightTab = "brief" | "settings";
@@ -352,6 +353,7 @@ export interface KilnStoreState {
   spaces: Record<string, SpaceConfig>;
   roles: RolesConfig;
   roster: RosterConfig;
+  workflows: WorkflowsConfig;
   providersConfig: ProvidersConfig | null;
   providersConfigLoaded: boolean;
   providerStatuses: ProviderRuntimeStatus[];
@@ -421,7 +423,6 @@ const VALID_VIEWS = new Set<MvpView>([
 ]);
 
 const VALID_SETTINGS_TABS = new Set<SettingsTab>([
-  "roles",
   "providers",
   "spaces",
   "limits",
@@ -458,6 +459,122 @@ const DEFAULT_ROSTER: RosterConfig = {
   },
   roster: {},
 };
+
+const BINDING_TO_ROSTER_KEY: Record<WorkflowBindingKey, string> = {
+  intake: "pm",
+  research: "researcher",
+  plan: "architect",
+  implement: "main_dev",
+  review: "reviewer",
+  accept: "verifier",
+  advisor: "advisor",
+  resolver: "resolver",
+  triage: "triage",
+  retro: "retro",
+};
+
+const BINDING_TO_LEGACY_ROLE: Partial<Record<WorkflowBindingKey, keyof RolesConfig["roles"]>> = {
+  intake: "intake",
+  implement: "worker",
+  review: "reviewer",
+  accept: "verifier",
+  advisor: "advisor",
+  resolver: "resolver",
+  triage: "triage",
+};
+
+export function createFallbackWorkflowsConfig(
+  roster?: RosterConfig | null,
+  roles?: RolesConfig | null,
+): WorkflowsConfig {
+  const stage_bindings: Partial<Record<WorkflowBindingKey, WorkflowNodeBinding>> = {};
+  const stage_fallbacks: Partial<Record<WorkflowBindingKey, WorkflowNodeBinding[]>> = {};
+  const allow_full_access_fallback: Partial<Record<WorkflowBindingKey, boolean>> = {};
+
+  for (const key of WORKFLOW_BINDING_KEYS) {
+    const rKey = BINDING_TO_ROSTER_KEY[key];
+    const rEntry = roster?.roster?.[rKey];
+    if (
+      rEntry?.primary &&
+      (key === "intake" ||
+        key === "implement" ||
+        key === "review" ||
+        key === "accept" ||
+        key === "advisor" ||
+        rEntry.enabled)
+    ) {
+      stage_bindings[key] = {
+        provider: rEntry.primary.provider,
+        model: rEntry.primary.model,
+        effort: rEntry.primary.effort,
+      };
+      if (rEntry.fallbacks && rEntry.fallbacks.length > 0) {
+        stage_fallbacks[key] = rEntry.fallbacks.map((fb) => ({
+          provider: fb.provider,
+          model: fb.model,
+          effort: fb.effort,
+        }));
+      }
+      if (rEntry.allow_full_access_fallback) {
+        allow_full_access_fallback[key] = true;
+      }
+      continue;
+    }
+
+    const legacyKey = BINDING_TO_LEGACY_ROLE[key];
+    const legacy = legacyKey ? roles?.roles?.[legacyKey] : undefined;
+    if (legacy) {
+      stage_bindings[key] = {
+        provider: legacy.agent,
+        model: legacy.model,
+        effort: legacy.reasoning_effort ?? "medium",
+      };
+      if (legacy.fallback) {
+        stage_fallbacks[key] = [
+          {
+            provider: legacy.fallback.agent,
+            model: legacy.fallback.model,
+            effort: legacy.reasoning_effort ?? "medium",
+          },
+        ];
+      }
+      if (legacy.allow_full_access_fallback) {
+        allow_full_access_fallback[key] = true;
+      }
+    }
+  }
+
+  const deliverEntry = roster?.roster?.deliverer;
+  const deliver_mode: WorkflowsConfig["deliver_mode"] =
+    deliverEntry?.mode === "agent"
+      ? "agent"
+      : deliverEntry?.mode === "on_conflict"
+        ? "on_conflict"
+        : "kernel";
+
+  return {
+    schema_version: 1,
+    default_template_id: "standard_dev",
+    heterogeneous_review: roster?.heterogeneous_review ?? false,
+    stage_bindings,
+    stage_fallbacks,
+    allow_full_access_fallback,
+    verifier_capabilities: roster?.roster?.verifier?.verifier_capabilities
+      ? [...roster.roster.verifier.verifier_capabilities]
+      : ["cli"],
+    deliver_mode,
+    ...(deliverEntry?.primary
+      ? {
+          deliver_binding: {
+            provider: deliverEntry.primary.provider,
+            model: deliverEntry.primary.model,
+            effort: deliverEntry.primary.effort,
+          },
+        }
+      : {}),
+    templates: createDefaultWorkflowTemplates(),
+  };
+}
 
 const DEFAULT_PRICING: PricingConfig = {
   schema_version: 1,
@@ -734,7 +851,7 @@ function parseLocationHash(): {
     return {
       view: "board",
       taskId: null,
-      settingsTab: "roles",
+      settingsTab: "providers",
       hadInvalidRoute: false,
       pairToken: null,
     };
@@ -750,7 +867,7 @@ function parseLocationHash(): {
         return {
           view: "detail",
           taskId: decodeURIComponent(pathMatch[1]),
-          settingsTab: "roles",
+          settingsTab: "providers",
           hadInvalidRoute: false,
           pairToken: null,
         };
@@ -761,7 +878,7 @@ function parseLocationHash(): {
     return {
       view: "board",
       taskId: null,
-      settingsTab: "roles",
+      settingsTab: "providers",
       hadInvalidRoute: false,
       pairToken: null,
     };
@@ -772,14 +889,16 @@ function parseLocationHash(): {
     return {
       view: "board",
       taskId: null,
-      settingsTab: "roles",
+      settingsTab: "providers",
       hadInvalidRoute: false,
       pairToken: pairParam,
     };
   }
   const rawTab = params.get("tab");
   const settingsTab: SettingsTab =
-    rawTab && VALID_SETTINGS_TABS.has(rawTab as SettingsTab) ? (rawTab as SettingsTab) : "roles";
+    rawTab && VALID_SETTINGS_TABS.has(rawTab as SettingsTab)
+      ? (rawTab as SettingsTab)
+      : "providers";
 
   const taskParam = params.get("task");
   if (taskParam) {
@@ -803,6 +922,20 @@ function parseLocationHash(): {
   }
   const viewParam = params.get("view");
   if (viewParam) {
+    // Redirect legacy role configuration URLs directly to the unified Workflow view.
+    if (
+      viewParam === "workflow" ||
+      viewParam === "roles" ||
+      (viewParam === "settings" && rawTab === "roles")
+    ) {
+      return {
+        view: "lineup",
+        taskId: null,
+        settingsTab: "providers",
+        hadInvalidRoute: false,
+        pairToken: null,
+      };
+    }
     if (
       viewParam !== "detail" &&
       viewParam !== "resolve" &&
@@ -937,6 +1070,7 @@ export class KilnWebStore {
         pm_orchestration: { ...DEFAULT_ROSTER.pm_orchestration },
         roster: {},
       },
+      workflows: createFallbackWorkflowsConfig(),
       providersConfig: null,
       providersConfigLoaded: false,
       providerStatuses: [],
@@ -1043,9 +1177,11 @@ export class KilnWebStore {
       next = `#resolve=${encodeURIComponent(this.state.taskId)}`;
     } else if (this.state.view === "settings") {
       next =
-        this.state.settingsTab !== "roles"
+        this.state.settingsTab !== "providers"
           ? `#view=settings&tab=${this.state.settingsTab}`
           : "#view=settings";
+    } else if (this.state.view === "lineup") {
+      next = "#view=workflow";
     } else if (this.state.view !== "board") {
       next = `#view=${this.state.view}`;
     }
@@ -1384,6 +1520,11 @@ export class KilnWebStore {
           typeof rawRoster.roster === "object"
             ? rawRoster
             : this.state.roster;
+        const rawWorkflows = data.settings?.workflows ?? data.workflows;
+        const workflows =
+          rawWorkflows && typeof rawWorkflows === "object" && Array.isArray(rawWorkflows.templates)
+            ? rawWorkflows
+            : createFallbackWorkflowsConfig(roster, roles);
         const providersConfig = data.settings?.providers ?? this.state.providersConfig;
         const providersConfigLoaded =
           data.settings?.providers !== undefined ? true : this.state.providersConfigLoaded;
@@ -1479,6 +1620,7 @@ export class KilnWebStore {
           intakeHasUnreadReply: nextIntakeHasUnread,
           roles,
           roster,
+          workflows,
           providersConfig,
           providersConfigLoaded,
           ...(data.providers !== undefined ? { providerStatuses: data.providers } : {}),
@@ -1509,7 +1651,10 @@ export class KilnWebStore {
           }
         } else if (this.state.view === "ledger" && Object.keys(this.state.ledgers).length === 0) {
           void this.refreshLedgers();
-        } else if (this.state.view === "settings" && this.state.agents.length === 0) {
+        } else if (
+          (this.state.view === "settings" || this.state.view === "lineup") &&
+          this.state.agents.length === 0
+        ) {
           void this.refreshAgents();
         }
 
@@ -1796,6 +1941,9 @@ export class KilnWebStore {
     if (view === "lineup") {
       if (Object.keys(this.state.roster.roster).length === 0) {
         void this.refreshRoster();
+      }
+      if (this.state.workflows.templates.length === 0) {
+        void this.refreshWorkflows();
       }
       if (this.state.providerStatuses.length === 0) {
         void this.refreshProviders();
@@ -2524,6 +2672,43 @@ export class KilnWebStore {
     const nextForm: IntakeFormState = {
       ...cur,
       track: merged.includeReview ? "L2" : "L1",
+      workflow: nextWorkflow,
+    };
+    this.setState({ intakeForm: nextForm });
+    if (this.state.intakeActiveOpen) {
+      writeLocalIntakeSnapshot(nextForm, this.state.intakeMessages);
+    }
+  }
+
+  applyIntakeWorkflowTemplate(template: WorkflowTemplate): void {
+    const cur = this.state.intakeForm;
+    const hasDeliverCmd = cur.deliver_cmd.trim().length > 0;
+    const cloned = normalizeWorkflowBlueprintSafety(template.blueprint);
+    const dropHostRoles = cloned.preset !== "host_op" ? this.getHostStagedRoleIds() : undefined;
+    const preserved = preserveWorkflowAssignments(cur.workflow, cloned, {
+      preserveResearch: false,
+      ...(dropHostRoles ? { dropRosterRoles: dropHostRoles } : {}),
+    });
+
+    let steps = [...preserved.steps];
+    if (hasDeliverCmd && !steps.some((s) => s.kind === "approval" && s.stage === "deliver")) {
+      steps.push({ kind: "approval", stage: "deliver", show: ["report", "commands"] });
+    }
+    const nextWorkflow: WorkflowBlueprint = {
+      ...preserved,
+      steps,
+    };
+    const nextWs: Exclude<WorkspaceMode, "external_only"> =
+      nextWorkflow.preset === "host_op"
+        ? "host_scoped"
+        : cur.mode === "project"
+          ? "git_worktree"
+          : "scratch_dir";
+    const nextForm: IntakeFormState = {
+      ...cur,
+      ...(nextWorkflow.preset === "host_op" ? { mode: "local" as const, space: "local" } : {}),
+      workspace_mode: nextWs,
+      track: extractWorkflowToggles(nextWorkflow).includeReview ? "L2" : "L1",
       workflow: nextWorkflow,
     };
     this.setState({ intakeForm: nextForm });
@@ -3754,6 +3939,20 @@ export class KilnWebStore {
         void this.refreshProviders();
         void this.refreshAgents(true);
       } else if (
+        section === "workflows" &&
+        res?.data &&
+        typeof res.data === "object" &&
+        "templates" in res.data &&
+        Array.isArray((res.data as WorkflowsConfig).templates)
+      ) {
+        this.setState({
+          workflows: res.data as WorkflowsConfig,
+          ...(res.roster ? { roster: res.roster } : {}),
+        });
+        void this.bootstrap();
+        this.showToast("已保存工作流配置");
+        return true;
+      } else if (
         section === "roster" &&
         res?.data &&
         typeof res.data === "object" &&
@@ -3775,7 +3974,9 @@ export class KilnWebStore {
   async refreshProviders(): Promise<void> {
     try {
       const res = await apiFetchProviders();
-      this.setState({ providerStatuses: res.providers });
+      if (Array.isArray(res?.providers)) {
+        this.setState({ providerStatuses: res.providers });
+      }
     } catch {
       // Best-effort refresh; keep current snapshot on transient error
     }
@@ -3805,10 +4006,12 @@ export class KilnWebStore {
     if (this.state.authMode !== "local") return;
     try {
       const res = await apiFetchProvidersSettings();
-      this.setState({
-        providersConfig: res.data,
-        providersConfigLoaded: true,
-      });
+      if (res?.data && Array.isArray(res.data.providers)) {
+        this.setState({
+          providersConfig: res.data,
+          providersConfigLoaded: true,
+        });
+      }
     } catch (err) {
       this.showToast(err instanceof Error ? err.message : "读取 Providers 配置失败");
     }
@@ -3824,6 +4027,17 @@ export class KilnWebStore {
         typeof res.data.roster === "object"
       ) {
         this.setState({ roster: res.data });
+      }
+    } catch {
+      // Ignore if endpoint is absent in legacy mock servers
+    }
+  }
+
+  async refreshWorkflows(): Promise<void> {
+    try {
+      const res = await apiFetchWorkflowsSettings();
+      if (res?.data && typeof res.data === "object" && Array.isArray(res.data.templates)) {
+        this.setState({ workflows: res.data });
       }
     } catch {
       // Ignore if endpoint is absent in legacy mock servers
