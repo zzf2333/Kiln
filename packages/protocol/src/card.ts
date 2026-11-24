@@ -588,9 +588,7 @@ export const SpaceConfigSchema = z.object({
   scripts: SpaceScriptsSchema.optional(),
   intake_checklist: z.array(z.string().trim().min(1)).optional(),
   accept_scenarios: z.array(z.string().trim().min(1)).optional(),
-  default_workflow_preset: z
-    .enum(["quick", "host_op", "standard_dev", "full_delivery"])
-    .optional(),
+  default_workflow_preset: z.enum(["quick", "host_op", "standard_dev", "full_delivery"]).optional(),
 });
 export type SpaceConfig = z.infer<typeof SpaceConfigSchema>;
 

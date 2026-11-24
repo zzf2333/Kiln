@@ -22,18 +22,13 @@ export function ScriptDrawer({ spaceId, taskId, scripts }: ScriptDrawerProps) {
     [scripts],
   );
 
-  const [selectedKey, setSelectedKey] = useState<SpaceScriptKey>(
-    () =>
-      configuredKeys.includes("test")
-        ? "test"
-        : (configuredKeys[0] ?? "test"),
+  const [selectedKey, setSelectedKey] = useState<SpaceScriptKey>(() =>
+    configuredKeys.includes("test") ? "test" : (configuredKeys[0] ?? "test"),
   );
 
   useEffect(() => {
     if (configuredKeys.length > 0 && !configuredKeys.includes(selectedKey)) {
-      setSelectedKey(
-        configuredKeys.includes("test") ? "test" : configuredKeys[0]!,
-      );
+      setSelectedKey(configuredKeys.includes("test") ? "test" : configuredKeys[0]!);
     }
   }, [configuredKeys, selectedKey]);
 
@@ -104,11 +99,7 @@ export function ScriptDrawer({ spaceId, taskId, scripts }: ScriptDrawerProps) {
         {currentRun ? (
           <span
             className={`chip ${
-              !currentRun.done
-                ? "chip-live"
-                : currentRun.exitCode === 0
-                  ? "chip-ok"
-                  : "chip-bad"
+              !currentRun.done ? "chip-live" : currentRun.exitCode === 0 ? "chip-ok" : "chip-bad"
             }`}
           >
             {!currentRun.done
@@ -140,9 +131,7 @@ export function ScriptDrawer({ spaceId, taskId, scripts }: ScriptDrawerProps) {
             <button
               type="button"
               className="btn btn-sm btn-light"
-              onClick={() =>
-                void store.startSpaceScript(spaceId, selectedKey, taskId)
-              }
+              onClick={() => void store.startSpaceScript(spaceId, selectedKey, taskId)}
             >
               {currentRun ? "重新运行" : "运行"}
             </button>
@@ -193,7 +182,8 @@ export function ScriptDrawer({ spaceId, taskId, scripts }: ScriptDrawerProps) {
       {configuredKeys.length === 0 ? (
         <div className="script-empty">
           <span>
-            当前项目空间尚未配置脚本，可在「设置 → 项目空间」配置 setup / dev / test / lint / deliver。
+            当前项目空间尚未配置脚本，可在「设置 → 项目空间」配置 setup / dev / test / lint /
+            deliver。
           </span>
           <button
             type="button"

@@ -31,16 +31,12 @@ const STOP_POLL_INTERVAL_MS = 25;
 
 export const MACOS_LAUNCH_AGENT_LABEL = "work.kiln.daemon";
 export const LINUX_SYSTEMD_SERVICE_NAME = "kilnd.service";
-export const WINDOWS_RUN_REGISTRY_KEY =
-  "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+export const WINDOWS_RUN_REGISTRY_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 export const WINDOWS_RUN_VALUE_NAME = "KilnDaemon";
 
 export type SupportedServicePlatform = "darwin" | "linux" | "win32";
 
-export type SystemControlFn = (
-  command: string,
-  args: readonly string[],
-) => Promise<void> | void;
+export type SystemControlFn = (command: string, args: readonly string[]) => Promise<void> | void;
 
 export interface WindowsRegistryBackend {
   add(key: string, valueName: string, data: string): Promise<void> | void;
@@ -246,9 +242,7 @@ function quoteWindowsCommandArg(value: string, fieldLabel: string): string {
 function assertValidWindowsUserRunKey(rawKey: string): string {
   const key = assertNoControlChars(rawKey, "windowsRunKey").trim();
   if (!/^HKCU\\/i.test(key) && !/^HKEY_CURRENT_USER\\/i.test(key)) {
-    throw new Error(
-      `windowsRunKey must be user-level under HKCU\\ (no UAC/HKLM): got "${rawKey}"`,
-    );
+    throw new Error(`windowsRunKey must be user-level under HKCU\\ (no UAC/HKLM): got "${rawKey}"`);
   }
   return key;
 }
@@ -308,10 +302,7 @@ export function resolveCliHomeDir(homeDir?: string): string {
  * Resolves the Kiln data directory (`kilnHome` override -> `<homeDir>/.kiln` when `homeDir`
  * is injected -> `resolveKilnHome()`).
  */
-export function resolveCliKilnHome(options: {
-  kilnHome?: string;
-  homeDir?: string;
-}): string {
+export function resolveCliKilnHome(options: { kilnHome?: string; homeDir?: string }): string {
   if (options.kilnHome !== undefined) {
     return resolveKilnHome(options.kilnHome);
   }
@@ -491,14 +482,8 @@ export function renderSystemdUnit(input: RenderSystemdUnitInput): string {
     .map((arg, index) => quoteSystemdExecArg(arg, `programArg[${index}]`))
     .join(" ");
 
-  const stdoutLog = escapeSystemdPathValue(
-    path.join(logDir, "kilnd.out.log"),
-    "stdoutLog",
-  );
-  const stderrLog = escapeSystemdPathValue(
-    path.join(logDir, "kilnd.err.log"),
-    "stderrLog",
-  );
+  const stdoutLog = escapeSystemdPathValue(path.join(logDir, "kilnd.out.log"), "stdoutLog");
+  const stderrLog = escapeSystemdPathValue(path.join(logDir, "kilnd.err.log"), "stderrLog");
 
   return [
     "[Unit]",
@@ -562,15 +547,11 @@ export function renderWindowsRunCommand(input: RenderWindowsRunCommandInput): st
  * `systemd --user` unit on Linux, or user-level `HKCU\...\Run` entry on Windows without UAC).
  * Never invoked automatically during installation.
  */
-export async function installService(
-  options: ServiceOptions = {},
-): Promise<InstallServiceResult> {
+export async function installService(options: ServiceOptions = {}): Promise<InstallServiceResult> {
   const descriptor = resolveServiceDescriptor(options);
   const kilnHome = resolveCliKilnHome(options);
   const logDir =
-    options.logDir !== undefined
-      ? path.resolve(options.logDir)
-      : path.join(kilnHome, "logs");
+    options.logDir !== undefined ? path.resolve(options.logDir) : path.join(kilnHome, "logs");
   const nodeExecutable = options.nodeExecutable ?? process.execPath;
   const usingDefaultEntrypoint = options.kilndEntrypoint === undefined;
   const kilndEntrypoint =
@@ -639,8 +620,7 @@ export async function installService(
     };
   }
 
-  const args =
-    options.args ?? (usingDefaultEntrypoint ? ["up", "--foreground"] : []);
+  const args = options.args ?? (usingDefaultEntrypoint ? ["up", "--foreground"] : []);
 
   const content =
     descriptor.platform === "darwin"
@@ -666,11 +646,7 @@ export async function installService(
   let executedControl = false;
   if (options.executeSystemControl) {
     if (descriptor.platform === "darwin") {
-      await options.executeSystemControl("launchctl", [
-        "load",
-        "-w",
-        descriptor.servicePath,
-      ]);
+      await options.executeSystemControl("launchctl", ["load", "-w", descriptor.servicePath]);
     } else {
       await options.executeSystemControl("systemctl", [
         "--user",
@@ -716,10 +692,8 @@ export async function uninstallService(
     if (options.executeSystemControl) {
       const existed =
         process.platform === "win32"
-          ? queryHostWindowsRegistryValue(
-              descriptor.windowsRunKey,
-              descriptor.windowsValueName,
-            ) !== null
+          ? queryHostWindowsRegistryValue(descriptor.windowsRunKey, descriptor.windowsValueName) !==
+            null
           : true;
       if (existed) {
         await options.executeSystemControl("reg.exe", [
@@ -739,10 +713,7 @@ export async function uninstallService(
     }
 
     const existed =
-      queryHostWindowsRegistryValue(
-        descriptor.windowsRunKey,
-        descriptor.windowsValueName,
-      ) !== null;
+      queryHostWindowsRegistryValue(descriptor.windowsRunKey, descriptor.windowsValueName) !== null;
     if (!existed) {
       return {
         removed: false,
@@ -754,13 +725,7 @@ export async function uninstallService(
 
     await execFileAsync(
       "reg.exe",
-      [
-        "delete",
-        descriptor.windowsRunKey,
-        "/v",
-        descriptor.windowsValueName,
-        "/f",
-      ],
+      ["delete", descriptor.windowsRunKey, "/v", descriptor.windowsValueName, "/f"],
       { windowsHide: true, encoding: "utf8" },
     );
     return {
@@ -776,11 +741,7 @@ export async function uninstallService(
 
   if (existed && options.executeSystemControl) {
     if (descriptor.platform === "darwin") {
-      await options.executeSystemControl("launchctl", [
-        "unload",
-        "-w",
-        descriptor.servicePath,
-      ]);
+      await options.executeSystemControl("launchctl", ["unload", "-w", descriptor.servicePath]);
     } else {
       await options.executeSystemControl("systemctl", [
         "--user",
@@ -810,14 +771,8 @@ export function getServiceStatus(options: ServiceOptions = {}): ServiceStatusRes
 
   if (descriptor.platform === "win32") {
     const value = options.windowsRegistry
-      ? options.windowsRegistry.query(
-          descriptor.windowsRunKey,
-          descriptor.windowsValueName,
-        )
-      : queryHostWindowsRegistryValue(
-          descriptor.windowsRunKey,
-          descriptor.windowsValueName,
-        );
+      ? options.windowsRegistry.query(descriptor.windowsRunKey, descriptor.windowsValueName)
+      : queryHostWindowsRegistryValue(descriptor.windowsRunKey, descriptor.windowsValueName);
     return {
       installed: value !== null,
       platform: "win32",
@@ -858,11 +813,7 @@ export function readPidFile(pidFile: string): { exists: boolean; pid: number | n
 }
 
 function isErrCode(err: unknown, code: string): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    (err as NodeJS.ErrnoException).code === code
-  );
+  return typeof err === "object" && err !== null && (err as NodeJS.ErrnoException).code === code;
 }
 
 function isProcessAlive(pid: number, signalProcess: SignalProcessFn): boolean {
@@ -1034,19 +985,11 @@ export async function stopManagedDaemon(options: {
   // Step 1: Prefer graceful shutdown via local IPC + per-instance 0600 control token.
   const shutdownToken = readShutdownTokenFile(shutdownTokenFile);
   if (shutdownToken !== null) {
-    const socketPath =
-      options.socketPath ?? resolveDefaultIpcPath(options.kilnHome, platform);
-    const requestShutdown =
-      options.requestGracefulShutdown ?? requestDaemonGracefulShutdown;
-    const accepted = await requestShutdown({ socketPath, shutdownToken }).catch(
-      () => false,
-    );
+    const socketPath = options.socketPath ?? resolveDefaultIpcPath(options.kilnHome, platform);
+    const requestShutdown = options.requestGracefulShutdown ?? requestDaemonGracefulShutdown;
+    const accepted = await requestShutdown({ socketPath, shutdownToken }).catch(() => false);
     if (accepted) {
-      const exitedGracefully = await waitForProcessExit(
-        pidState.pid,
-        signalProcess,
-        waitTimeoutMs,
-      );
+      const exitedGracefully = await waitForProcessExit(pidState.pid, signalProcess, waitTimeoutMs);
       if (exitedGracefully) {
         fs.rmSync(pidFile, { force: true });
         fs.rmSync(shutdownTokenFile, { force: true });
@@ -1161,15 +1104,10 @@ function safeRealpath(targetPath: string): string {
 function isInsideDirectory(candidatePath: string, parentDir: string): boolean {
   const resolvedCandidate = safeRealpath(candidatePath);
   const resolvedParent = safeRealpath(parentDir);
-  const prefix = resolvedParent.endsWith(path.sep)
-    ? resolvedParent
-    : resolvedParent + path.sep;
+  const prefix = resolvedParent.endsWith(path.sep) ? resolvedParent : resolvedParent + path.sep;
   if (process.platform === "win32") {
     const candLower = resolvedCandidate.toLowerCase();
-    return (
-      candLower === resolvedParent.toLowerCase() ||
-      candLower.startsWith(prefix.toLowerCase())
-    );
+    return candLower === resolvedParent.toLowerCase() || candLower.startsWith(prefix.toLowerCase());
   }
   return resolvedCandidate === resolvedParent || resolvedCandidate.startsWith(prefix);
 }
@@ -1225,12 +1163,7 @@ async function inspectSpaceWorktrees(
       let dirty = false;
       if (!missing) {
         try {
-          const statusOut = await execGit([
-            "-C",
-            block.worktreePath,
-            "status",
-            "--porcelain=v1",
-          ]);
+          const statusOut = await execGit(["-C", block.worktreePath, "status", "--porcelain=v1"]);
           dirty = statusOut.trim().length > 0;
         } catch {
           dirty = true;
@@ -1259,9 +1192,7 @@ async function inspectSpaceWorktrees(
  *    any worktree containing uncommitted changes, and prunes stale/missing refs;
  * 4. Preserves `<kilnHome>` ledger & data by default unless `purgeData === true`.
  */
-export async function runUninstall(
-  options: UninstallOptions = {},
-): Promise<UninstallResult> {
+export async function runUninstall(options: UninstallOptions = {}): Promise<UninstallResult> {
   const kilnHome = resolveCliKilnHome(options);
   const execGit = options.execGit ?? defaultExecGit;
 

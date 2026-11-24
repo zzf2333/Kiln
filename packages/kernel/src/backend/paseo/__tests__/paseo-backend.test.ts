@@ -1,7 +1,4 @@
-import {
-  calculateTurnCostUsd,
-  type RunEvent,
-} from "@kiln/protocol";
+import { calculateTurnCostUsd, type RunEvent } from "@kiln/protocol";
 import { describe, expect, it, vi } from "vitest";
 import {
   type ApprovalRequestEvent,
@@ -170,10 +167,7 @@ class MockPaseoDaemon implements PaseoDaemonLike {
   private readonly daemonListeners = new Set<(event: PaseoDaemonEvent) => void>();
   private readonly eventObservers = new Set<(event: PaseoDaemonEvent) => void>();
   private readonly connectionListeners = new Set<(state: PaseoConnectionState) => void>();
-  private readonly timelineListeners = new Map<
-    string,
-    Set<(msg: PaseoTimelineMessage) => void>
-  >();
+  private readonly timelineListeners = new Map<string, Set<(msg: PaseoTimelineMessage) => void>>();
   private readonly pendingPermWaiters = new Map<
     string,
     (response: PaseoPermissionResponse) => void
@@ -186,7 +180,11 @@ class MockPaseoDaemon implements PaseoDaemonLike {
       payload: {
         agentId,
         timestamp: at,
-        event: { type: "turn_started", provider: "codex", turnId: `${agentId}-paseo-t${turnNumber}` },
+        event: {
+          type: "turn_started",
+          provider: "codex",
+          turnId: `${agentId}-paseo-t${turnNumber}`,
+        },
       },
     });
     daemon.emitTimeline(agentId, {
@@ -340,10 +338,7 @@ class MockPaseoDaemon implements PaseoDaemonLike {
     this.agents.delete(agentId);
   }
 
-  async sendAgentMessage(
-    agentId: string,
-    text: string,
-  ): Promise<{ deliveryStatus?: "queued" }> {
+  async sendAgentMessage(agentId: string, text: string): Promise<{ deliveryStatus?: "queued" }> {
     this.callOrder.push(`sendAgentMessage:${agentId}`);
     this.sentMessages.push({ agentId, text });
     const runtime = this.agents.get(agentId);
@@ -460,9 +455,7 @@ class MockPaseoDaemon implements PaseoDaemonLike {
 
   observeEvents(
     events: Array<
-      | "agent_permission_request"
-      | "agent_permission_resolved"
-      | "providers_snapshot_update"
+      "agent_permission_request" | "agent_permission_resolved" | "providers_snapshot_update"
     >,
   ): PaseoObservationHandle & {
     subscriptionId: string | null;
@@ -892,11 +885,7 @@ describe("PaseoBackend constructor & single-connection construction", () => {
     const agents = await backend.listAgents();
     expect(agents.map((a) => a.id)).toEqual(["codex", "pi", "antigravity"]);
     expect(observeCalls).toEqual([
-      [
-        "agent_permission_request",
-        "agent_permission_resolved",
-        "providers_snapshot_update",
-      ],
+      ["agent_permission_request", "agent_permission_resolved", "providers_snapshot_update"],
       ["providers_snapshot_update"],
     ]);
 
@@ -1085,7 +1074,9 @@ describe("PaseoBackend V2: conservative approvals=false & deduplicated dual-sour
 
     // Answering unknown or already-resolved ID rejects
     await expect(backend.answer("perm-dup-1", true)).rejects.toThrow(/Unknown or already resolved/);
-    await expect(backend.answer("perm-missing", false)).rejects.toThrow(/Unknown or already resolved/);
+    await expect(backend.answer("perm-missing", false)).rejects.toThrow(
+      /Unknown or already resolved/,
+    );
 
     await backend.dispose();
   });
@@ -1398,7 +1389,11 @@ describe("PaseoBackend V4 & V5 & V6: timeline subscription ordering, tool dedupl
     const cancelEvents = await streamPromise;
     expect(stopFallback).toHaveBeenCalledWith(cancelRef.sessionId);
     expect(cancelEvents).toHaveLength(1);
-    expect(cancelEvents[0]).toMatchObject({ kind: "exit", reason: "cancelled", detail: "cli stop" });
+    expect(cancelEvents[0]).toMatchObject({
+      kind: "exit",
+      reason: "cancelled",
+      detail: "cli stop",
+    });
 
     // 3. Fatal disconnect terminates active turn cleanly
     daemon.cancelError = null;
@@ -1661,11 +1656,7 @@ describe("PaseoBackend Round 1 review fixes: isolation, observations, reconnect 
     await bgBackend.connect();
 
     expect(daemonWithBg.observeEventsCalls).toEqual([
-      [
-        "agent_permission_request",
-        "agent_permission_resolved",
-        "providers_snapshot_update",
-      ],
+      ["agent_permission_request", "agent_permission_resolved", "providers_snapshot_update"],
     ]);
     expect(daemonWithBg.observeAgentsCalls).toEqual([{ includeBackground: true }]);
 
@@ -1924,13 +1915,7 @@ describe("PaseoBackend Round 1 review fixes: isolation, observations, reconnect 
 
     const ref = await backend.start(makeRunSpec({ runId: "r-tool-states" }));
     const events = await collectAll(backend.events(ref));
-    expect(events.map((e) => e.kind)).toEqual([
-      "tool",
-      "tool",
-      "file_write",
-      "usage",
-      "exit",
-    ]);
+    expect(events.map((e) => e.kind)).toEqual(["tool", "tool", "file_write", "usage", "exit"]);
     expect(events[0]).toMatchObject({
       kind: "tool",
       name: "write_file",
@@ -2274,9 +2259,7 @@ describe("PaseoBackend Round 1 review fixes: isolation, observations, reconnect 
       });
     });
 
-    const piRef = await backend.start(
-      makeRunSpec({ agent: "pi", model: "magpie/group/fast" }),
-    );
+    const piRef = await backend.start(makeRunSpec({ agent: "pi", model: "magpie/group/fast" }));
     expect(piRef.meta?.providerSessionId).toBe("pi-native-01");
     expect(piRef.meta?.providerSessionPath).toBe("/tmp/kiln-pi/pi-native-01.jsonl");
     const piEvents = await collectAll(backend.events(piRef));
@@ -2389,9 +2372,7 @@ describe("PaseoBackend Round 1 review fixes: isolation, observations, reconnect 
         },
       });
     });
-    const fetchRef = await backend.start(
-      makeRunSpec({ agent: "pi", model: "magpie/group/fast" }),
-    );
+    const fetchRef = await backend.start(makeRunSpec({ agent: "pi", model: "magpie/group/fast" }));
     const fetchEvents = await collectAll(backend.events(fetchRef));
     expect(fetchEvents.map((e) => e.kind)).toEqual(["session_bound", "usage", "exit"]);
     expect(fetchEvents[0]).toMatchObject({

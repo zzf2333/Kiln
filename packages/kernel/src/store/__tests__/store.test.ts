@@ -211,9 +211,7 @@ describe("fs-atomic & ndjson validation", () => {
     fs.mkdirSync(path.join(blockingDir, "child"), { recursive: true });
     expect(() => writeFileAtomic(blockingDir, "should fail")).toThrow();
 
-    const tempLeftovers = fs
-      .readdirSync(tempDir)
-      .filter((name) => name.startsWith(".tmp."));
+    const tempLeftovers = fs.readdirSync(tempDir).filter((name) => name.startsWith(".tmp."));
     expect(tempLeftovers).toEqual([]);
   });
 
@@ -709,7 +707,10 @@ describe("KilnStore concurrency, contract bump, locks, usage, and isolation", ()
     expect(fs.existsSync(store.paths.ledgerFile("my-space"))).toBe(false);
 
     // Pure derivation checks
-    const derived = deriveTaskStatus(store.readTaskCard("t-pause"), store.readStateEvents("t-pause"));
+    const derived = deriveTaskStatus(
+      store.readTaskCard("t-pause"),
+      store.readStateEvents("t-pause"),
+    );
     expect(derived.status).toBe("cancelled");
   });
 

@@ -138,12 +138,7 @@ export function commitSplitCards(
 
       let resolvedAttachments: TaskAttachment[] | undefined;
       if (input.draft_id !== undefined) {
-        const copied = copyDraftAttachmentsToTask(
-          store,
-          input.draft_id,
-          taskId,
-          item.attachments,
-        );
+        const copied = copyDraftAttachmentsToTask(store, input.draft_id, taskId, item.attachments);
         if (copied.length > 0) {
           resolvedAttachments = copied;
         }

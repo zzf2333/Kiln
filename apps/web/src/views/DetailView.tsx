@@ -82,17 +82,12 @@ function parseStageFromDir(dirName: string): StageId {
     "advise",
     "deliver",
   ];
-  return known.includes(candidate as StageId)
-    ? (candidate as StageId)
-    : "implement";
+  return known.includes(candidate as StageId) ? (candidate as StageId) : "implement";
 }
 
 function isGatePassed(gate: GateReport): boolean {
   return (
-    gate.schema_ok &&
-    gate.scope_ok &&
-    gate.artifacts_ok !== false &&
-    gate.accept_exit_code === 0
+    gate.schema_ok && gate.scope_ok && gate.artifacts_ok !== false && gate.accept_exit_code === 0
   );
 }
 
@@ -101,12 +96,7 @@ function verdictMeta(vs: RunVisualState, stage: StageId): [string, string] {
   if (vs === "paused") return ["等你决定", "ask"];
   if (vs === "paused_manual") return ["已暂停", "paused"];
   if (vs === "returned") return ["退回", "bad"];
-  return [
-    stage === "verify" || stage === "review" || stage === "accept"
-      ? "通过"
-      : "完成",
-    "ok",
-  ];
+  return [stage === "verify" || stage === "review" || stage === "accept" ? "通过" : "完成", "ok"];
 }
 
 export function DetailView() {
@@ -123,8 +113,7 @@ export function DetailView() {
   const [showRetroMd, setShowRetroMd] = useState(false);
   const [budgetInput, setBudgetInput] = useState("");
   const [budgetSaving, setBudgetSaving] = useState(false);
-  const [lightboxAttachment, setLightboxAttachment] =
-    useState<TaskAttachment | null>(null);
+  const [lightboxAttachment, setLightboxAttachment] = useState<TaskAttachment | null>(null);
   const [lightboxCustomUrl, setLightboxCustomUrl] = useState<string | null>(null);
   const [acceptLogPreview, setAcceptLogPreview] = useState<{
     runDir: string;
@@ -144,9 +133,7 @@ export function DetailView() {
 
   const taskId = state.taskId;
   const detail = taskId ? state.taskDetails[taskId] : undefined;
-  const taskSummary = taskId
-    ? state.tasks.find((t) => t.id === taskId)
-    : undefined;
+  const taskSummary = taskId ? state.tasks.find((t) => t.id === taskId) : undefined;
 
   useEffect(() => {
     setShowHandoff(false);
@@ -243,9 +230,7 @@ export function DetailView() {
   useEffect(() => {
     if (!detail) return;
     setBudgetInput(
-      detail.card.limits.max_cost_usd !== undefined
-        ? String(detail.card.limits.max_cost_usd)
-        : "",
+      detail.card.limits.max_cost_usd !== undefined ? String(detail.card.limits.max_cost_usd) : "",
     );
   }, [detail?.card.id, detail?.card.limits.max_cost_usd]);
 
@@ -291,8 +276,7 @@ export function DetailView() {
     );
   }
 
-  const { card, state: taskState, brief, decisions, pendingDecision, ledgerProposals } =
-    detail;
+  const { card, state: taskState, brief, decisions, pendingDecision, ledgerProposals } = detail;
   const spaceName = state.spaces[card.space]?.name ?? card.space;
   const statusChip = STATUS_CHIP[taskState.status];
   const nowMs = Date.now();
@@ -300,11 +284,7 @@ export function DetailView() {
   const normalizedRuns: NormalizedRun[] = detail.runs.map((r, idx) => {
     const stage = r.meta?.stage ?? parseStageFromDir(r.dirName);
     const round = r.meta?.round ?? 1;
-    const startIso =
-      r.startedAt ??
-      r.meta?.started_at ??
-      r.events[0]?.at ??
-      card.created_at;
+    const startIso = r.startedAt ?? r.meta?.started_at ?? r.events[0]?.at ?? card.created_at;
     const startMs = Number.isFinite(new Date(startIso).getTime())
       ? new Date(startIso).getTime()
       : nowMs;
@@ -338,10 +318,8 @@ export function DetailView() {
     const isLastRun = idx === detail.runs.length - 1;
     const gateFailed = r.gate !== null && !isGatePassed(r.gate);
     const receiptReturned =
-      r.receipt !== null &&
-      /\bverdict:\s*(changes_requested|fail)\b/i.test(r.receipt);
-    const exitFailed =
-      exitEvent?.kind === "exit" && exitEvent.reason === "failed";
+      r.receipt !== null && /\bverdict:\s*(changes_requested|fail)\b/i.test(r.receipt);
+    const exitFailed = exitEvent?.kind === "exit" && exitEvent.reason === "failed";
 
     let visualState: RunVisualState = "done";
     if (isActiveRun) {
@@ -358,9 +336,7 @@ export function DetailView() {
       visualState = "returned";
     }
 
-    const executorLabel = r.meta
-      ? `${r.meta.role} · ${r.meta.agent} / ${r.meta.model}`
-      : "内核";
+    const executorLabel = r.meta ? `${r.meta.role} · ${r.meta.agent} / ${r.meta.model}` : "内核";
     const outLabel = r.gate
       ? `exit ${r.gate.accept_exit_code}`
       : r.receipt
@@ -398,8 +374,7 @@ export function DetailView() {
     state.selectedRunIdx < normalizedRuns.length
       ? state.selectedRunIdx
       : defaultRunIdx;
-  const selectedRun =
-    selectedIdx >= 0 ? normalizedRuns[selectedIdx] : undefined;
+  const selectedRun = selectedIdx >= 0 ? normalizedRuns[selectedIdx] : undefined;
 
   const pipelineStages = getPipelineStages(
     taskState.track,
@@ -414,9 +389,7 @@ export function DetailView() {
     pipelineStages.splice(pipelineStages.length - 1, 0, taskState.stage);
   }
 
-  const stationStatus = (
-    st: StageId,
-  ): { cls: string; sub: string } => {
+  const stationStatus = (st: StageId): { cls: string; sub: string } => {
     const matching = normalizedRuns.filter((r) => r.stage === st);
     if (matching.length === 0) {
       if (st === "intake") {
@@ -485,9 +458,7 @@ export function DetailView() {
 
   // Gantt bounds
   const ganttMin =
-    normalizedRuns.length > 0
-      ? Math.min(...normalizedRuns.map((r) => r.startMs))
-      : nowMs;
+    normalizedRuns.length > 0 ? Math.min(...normalizedRuns.map((r) => r.startMs)) : nowMs;
   const ganttMax =
     normalizedRuns.length > 0
       ? Math.max(
@@ -502,32 +473,20 @@ export function DetailView() {
   const ganttStages = Array.from(new Set(normalizedRuns.map((r) => r.stage)));
   const taskRate = Math.round(state.ratesByTask[card.id] ?? 0);
 
-  const canShowRestore =
-    card.workspace_mode === "host_scoped" && detail.hostBackup !== null;
-  const returnedCount = normalizedRuns.filter(
-    (r) => r.visualState === "returned",
-  ).length;
-  const taskCostUsd = computeTurnsCostUsd(
-    detail.usageTurns,
-    detail.usage.costUsd,
-    state.pricing,
-  );
+  const canShowRestore = card.workspace_mode === "host_scoped" && detail.hostBackup !== null;
+  const returnedCount = normalizedRuns.filter((r) => r.visualState === "returned").length;
+  const taskCostUsd = computeTurnsCostUsd(detail.usageTurns, detail.usage.costUsd, state.pricing);
   const taskSavedUsd = computeGrandSavedUsd(detail.usage, state.pricing);
 
   const spaceObj = state.spaces[card.space];
   const spaceScripts = spaceObj?.scripts;
   const hasConfiguredScripts = Boolean(
     spaceScripts &&
-      Object.values(spaceScripts).some(
-        (cmd) => typeof cmd === "string" && cmd.trim().length > 0,
-      ),
+    Object.values(spaceScripts).some((cmd) => typeof cmd === "string" && cmd.trim().length > 0),
   );
   const canToggleScriptDrawer = isProjectSpace(spaceObj) || hasConfiguredScripts;
   const hasRunningScript = Object.values(state.scriptRuns).some(
-    (run) =>
-      run.spaceId === card.space &&
-      (run.taskId === card.id || !run.taskId) &&
-      !run.done,
+    (run) => run.spaceId === card.space && (run.taskId === card.id || !run.taskId) && !run.done,
   );
 
   // Latest context window telemetry: prefer live SSE snapshot, fallback to run events.
@@ -541,10 +500,7 @@ export function DetailView() {
         if (ev.kind === "context_window") {
           const percent =
             ev.percent ??
-            Math.min(
-              100,
-              Math.round((ev.usedTokens / Math.max(1, ev.contextWindowTokens)) * 100),
-            );
+            Math.min(100, Math.round((ev.usedTokens / Math.max(1, ev.contextWindowTokens)) * 100));
           return {
             usedTokens: ev.usedTokens,
             contextWindowTokens: ev.contextWindowTokens,
@@ -589,9 +545,7 @@ export function DetailView() {
     latestGate
       ? {
           label: "范围门禁",
-          text: latestGate.scope_ok
-            ? "0 越界"
-            : `${latestGate.out_of_scope_paths.length} 越界`,
+          text: latestGate.scope_ok ? "0 越界" : `${latestGate.out_of_scope_paths.length} 越界`,
           tone: latestGate.scope_ok ? "ok" : "bad",
         }
       : card.workspace_mode === "scratch_dir"
@@ -612,10 +566,7 @@ export function DetailView() {
         }
       : {
           label: "冻结测试",
-          text:
-            card.contract.accept_files_hash === "pending"
-              ? "待锁定"
-              : "SHA256 就绪",
+          text: card.contract.accept_files_hash === "pending" ? "待锁定" : "SHA256 就绪",
           tone: card.contract.accept_files_hash === "pending" ? "warn" : "ok",
         },
     latestImplMeta && latestReviewMeta
@@ -681,8 +632,7 @@ export function DetailView() {
     }
   };
 
-  const restoreErr =
-    state.restoreResult && !state.restoreResult.ok ? state.restoreResult : null;
+  const restoreErr = state.restoreResult && !state.restoreResult.ok ? state.restoreResult : null;
 
   const latestExternalEvent =
     taskState.status === "external" && detail.stateEvents
@@ -690,8 +640,7 @@ export function DetailView() {
           .reverse()
           .find(
             (ev) =>
-              ev.type === "external" ||
-              (ev.type === "decided" && ev.action === "return_external"),
+              ev.type === "external" || (ev.type === "decided" && ev.action === "return_external"),
           )
       : undefined;
 
@@ -738,11 +687,7 @@ export function DetailView() {
             </button>
           ) : null}
           {taskState.status === "running" || taskState.status === "queued" ? (
-            <button
-              type="button"
-              className="btn"
-              onClick={() => void store.pauseTask(card.id)}
-            >
+            <button type="button" className="btn" onClick={() => void store.pauseTask(card.id)}>
               暂停
             </button>
           ) : null}
@@ -756,11 +701,7 @@ export function DetailView() {
             </button>
           ) : null}
           {taskState.status === "external" ? (
-            <button
-              type="button"
-              className="btn"
-              onClick={() => void store.completeTask(card.id)}
-            >
+            <button type="button" className="btn" onClick={() => void store.completeTask(card.id)}>
               标记已完成
             </button>
           ) : null}
@@ -774,12 +715,7 @@ export function DetailView() {
             </button>
           ) : null}
           {isSafeHttpOrPaseoUrl(detail.liveViewUrl) ? (
-            <a
-              className="btn"
-              href={detail.liveViewUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
+            <a className="btn" href={detail.liveViewUrl} target="_blank" rel="noopener noreferrer">
               在 Paseo 中打开
             </a>
           ) : null}
@@ -790,11 +726,7 @@ export function DetailView() {
                 checkpoints={detail.checkpoints ?? []}
                 isRunning={taskState.status === "running"}
               />
-              <button
-                type="button"
-                className="btn"
-                onClick={() => setDeliverPrOpen(true)}
-              >
+              <button type="button" className="btn" onClick={() => setDeliverPrOpen(true)}>
                 <GitPrIcon />
                 <span>提交 / PR</span>
               </button>
@@ -813,11 +745,7 @@ export function DetailView() {
               {hasRunningScript ? <span className="dot dot-run" /> : null}
             </button>
           ) : null}
-          <button
-            type="button"
-            className="btn"
-            onClick={() => void handleExportHandoff()}
-          >
+          <button type="button" className="btn" onClick={() => void handleExportHandoff()}>
             导出交接包
           </button>
           {taskState.status !== "done" && taskState.status !== "cancelled" ? (
@@ -855,17 +783,12 @@ export function DetailView() {
           <div className="d-sub">
             <PrioritySelect
               value={taskState.priority}
-              disabled={
-                taskState.status === "done" || taskState.status === "cancelled"
-              }
+              disabled={taskState.status === "done" || taskState.status === "cancelled"}
               onChange={(next) => void store.updatePriority(card.id, next)}
             />
             <span>
-              {card.workflow
-                ? `${WORKFLOW_PRESET_LABEL[card.workflow.preset]} · `
-                : ""}
-              {TRACK_LABEL[taskState.track]} ·{" "}
-              {WORKSPACE_LABEL[card.workspace_mode]} · 契约 v
+              {card.workflow ? `${WORKFLOW_PRESET_LABEL[card.workflow.preset]} · ` : ""}
+              {TRACK_LABEL[taskState.track]} · {WORKSPACE_LABEL[card.workspace_mode]} · 契约 v
               {taskState.contractVersion}
             </span>
             {card.parent ? (
@@ -892,11 +815,7 @@ export function DetailView() {
             <span className="align-txt" title={alignHeadline}>
               {alignHeadline}
             </span>
-            <button
-              type="button"
-              className="btn btn-sm"
-              onClick={() => setBriefModalOpen(true)}
-            >
+            <button type="button" className="btn btn-sm" onClick={() => setBriefModalOpen(true)}>
               <FileTextIcon />
               <span>BRIEF.md</span>
             </button>
@@ -907,11 +826,7 @@ export function DetailView() {
                 <span className="align-gate-l">
                   <span
                     className={`dot ${
-                      g.tone === "ok"
-                        ? "dot-ok"
-                        : g.tone === "bad"
-                          ? "dot-bad"
-                          : "dot-ask"
+                      g.tone === "ok" ? "dot-ok" : g.tone === "bad" ? "dot-bad" : "dot-ask"
                     }`}
                   />
                   <span>{g.label}</span>
@@ -933,17 +848,16 @@ export function DetailView() {
               if (candidate.acceptReport) break;
             }
           }
-          const latestReport: AcceptVerificationReport | undefined =
-            latestAcceptRun?.acceptReport;
+          const latestReport: AcceptVerificationReport | undefined = latestAcceptRun?.acceptReport;
           const liveEnv = detail.activeAcceptEnv;
           const displayedServices: AcceptServiceStatus[] =
             liveEnv?.services && liveEnv.services.length > 0
               ? liveEnv.services
-              : latestReport?.services ?? [];
+              : (latestReport?.services ?? []);
           const logRunDir =
             latestAcceptRun?.dirName ??
-            normalizedRuns.find((r) => r.stage === "accept" && r.visualState === "active")
-              ?.raw.dirName ??
+            normalizedRuns.find((r) => r.stage === "accept" && r.visualState === "active")?.raw
+              .dirName ??
             null;
           const validImages =
             latestReport?.evidence_files.filter((ev) => ev.valid && ev.kind === "image") ?? [];
@@ -959,9 +873,7 @@ export function DetailView() {
               id: `ev-${relPath}`,
               filename: relPath,
               mime_type:
-                mimeType === "image/jpeg" || mimeType === "image/webp"
-                  ? mimeType
-                  : "image/png",
+                mimeType === "image/jpeg" || mimeType === "image/webp" ? mimeType : "image/png",
               size_bytes: Math.max(1, sizeBytes),
               sha256: "verified-evidence",
               rel_path: relPath,
@@ -1021,10 +933,14 @@ export function DetailView() {
                         {svc.proxy_port || svc.port ? (
                           <span className="mono muted">:{svc.proxy_port ?? svc.port}</span>
                         ) : null}
-                        <span>{svc.status === "ready" ? "就绪" : svc.status === "stopped" ? "已清理" : svc.status}</span>
-                        {liveEnv &&
-                        state.authMode === "local" &&
-                        isSafeHttpOrPaseoUrl(svc.url) ? (
+                        <span>
+                          {svc.status === "ready"
+                            ? "就绪"
+                            : svc.status === "stopped"
+                              ? "已清理"
+                              : svc.status}
+                        </span>
+                        {liveEnv && state.authMode === "local" && isSafeHttpOrPaseoUrl(svc.url) ? (
                           <a
                             href={svc.url}
                             target="_blank"
@@ -1065,8 +981,17 @@ export function DetailView() {
                   aria-label="真实验收证据"
                 >
                   <div className="accept-evidence-head">
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                      <b style={{ fontSize: "12.5px" }}>真实验收证据（{latestAcceptRun.dirName}）</b>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "8px",
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <b style={{ fontSize: "12.5px" }}>
+                        真实验收证据（{latestAcceptRun.dirName}）
+                      </b>
                       <span
                         className={`chip ${
                           latestReport.verdict === "pass" && latestReport.gate_ok
@@ -1107,11 +1032,7 @@ export function DetailView() {
                         <span
                           key={`${sc.name}-${sIdx}`}
                           className={`chip ${
-                            sc.status === "pass"
-                              ? "is-ok"
-                              : sc.status === "fail"
-                                ? "is-bad"
-                                : ""
+                            sc.status === "pass" ? "is-ok" : sc.status === "fail" ? "is-bad" : ""
                           }`}
                           title={sc.note}
                         >
@@ -1225,9 +1146,7 @@ export function DetailView() {
                 {detail.steers.map((s) => (
                   <li key={s.id} className="steer-item">
                     <span className="mono muted">{fmtTime(s.at)}</span>
-                    <span className="chip">
-                      {s.interrupt ? "中断重跑" : "下一棒生效"}
-                    </span>
+                    <span className="chip">{s.interrupt ? "中断重跑" : "下一棒生效"}</span>
                     <span className="steer-msg">{s.message}</span>
                   </li>
                 ))}
@@ -1279,10 +1198,7 @@ export function DetailView() {
               return (
                 <div key={st} className="g-row">
                   <div className="g-label">
-                    <span
-                      className="dot"
-                      style={{ background: `var(${meta.colorVar})` }}
-                    />
+                    <span className="dot" style={{ background: `var(${meta.colorVar})` }} />
                     <span>{meta.label}</span>
                     {stageRuns.length > 1 ? (
                       <span className="muted mono">×{stageRuns.length}</span>
@@ -1300,11 +1216,13 @@ export function DetailView() {
                           <div
                             key={i}
                             className={`flame fire${selCls}`}
-                            style={{
-                              left: `${left}%`,
-                              width: `${width}%`,
-                              "--speed": `${(260 / (taskRate || 120)).toFixed(2)}s`,
-                            } as Record<string, string>}
+                            style={
+                              {
+                                left: `${left}%`,
+                                width: `${width}%`,
+                                "--speed": `${(260 / (taskRate || 120)).toFixed(2)}s`,
+                              } as Record<string, string>
+                            }
                             onClick={() => store.selectRun(i)}
                             title={`${meta.label} · 进行中`}
                           >
@@ -1319,11 +1237,13 @@ export function DetailView() {
                         <div
                           key={i}
                           className={`bar is-${r.visualState}${selCls}`}
-                          style={{
-                            left: `${left}%`,
-                            width: `${width}%`,
-                            "--c": `var(${meta.colorVar})`,
-                          } as Record<string, string>}
+                          style={
+                            {
+                              left: `${left}%`,
+                              width: `${width}%`,
+                              "--c": `var(${meta.colorVar})`,
+                            } as Record<string, string>
+                          }
                           onClick={() => store.selectRun(i)}
                           title={`${meta.label} · 第 ${r.round} 轮`}
                         />
@@ -1368,18 +1288,13 @@ export function DetailView() {
                           {meta.label}
                           {r.round > 1 ? ` · 第 ${r.round} 轮` : ""}
                         </span>
-                        <span
-                          className={`v v-${vTone === "paused" ? "muted" : vTone}`}
-                        >
+                        <span className={`v v-${vTone === "paused" ? "muted" : vTone}`}>
                           {vText}
                         </span>
                       </span>
                       <span className="run-meta">
                         {fmtTime(new Date(r.startMs).toISOString())}
-                        {r.endMs
-                          ? `–${fmtTime(new Date(r.endMs).toISOString())}`
-                          : " 起"}{" "}
-                        ·{" "}
+                        {r.endMs ? `–${fmtTime(new Date(r.endMs).toISOString())}` : " 起"} ·{" "}
                         {r.raw.meta
                           ? `${r.raw.meta.agent}${r.raw.session?.displaySessionId ? ` #${r.raw.session.displaySessionId}` : ""}${r.raw.meta.role ? ` (${r.raw.meta.role})` : ""}`
                           : "内核"}
@@ -1547,9 +1462,9 @@ export function DetailView() {
                       const canOpenTui = !isRemote && Boolean(s?.tuiSupported);
                       const tuiTooltip = isRemote
                         ? "仅本机端支持打开原生 Agent TUI"
-                        : s?.tuiCommandPreview ??
+                        : (s?.tuiCommandPreview ??
                           s?.tuiUnavailableReason ??
-                          "该执行轮次暂不支持打开原生 TUI";
+                          "该执行轮次暂不支持打开原生 TUI");
                       const runDurMs = (r.endMs ?? nowMs) - r.startMs;
 
                       return (
@@ -1559,9 +1474,7 @@ export function DetailView() {
                         >
                           <div className="session-card-head">
                             <div className="session-card-title">
-                              <span
-                                className={`v v-${vTone === "paused" ? "muted" : vTone}`}
-                              >
+                              <span className={`v v-${vTone === "paused" ? "muted" : vTone}`}>
                                 {io?.outputVerdict ?? vText}
                               </span>
                               <strong>
@@ -1581,9 +1494,7 @@ export function DetailView() {
                                 className="session-trigger"
                                 disabled={!canOpenTui}
                                 title={tuiTooltip}
-                                onClick={() =>
-                                  void store.openRunTui(card.id, r.raw.dirName)
-                                }
+                                onClick={() => void store.openRunTui(card.id, r.raw.dirName)}
                               >
                                 <ProviderAvatar providerId={agentName} />
                                 <span>{agentName}</span>
@@ -1606,8 +1517,7 @@ export function DetailView() {
                               <span className="mono">{fmtDurationMs(runDurMs)}</span>
                               {io && (io.costUsd > 0 || io.totalTokens > 0) ? (
                                 <span className="mono">
-                                  {fmtTokens(io.totalTokens)} tok ·{" "}
-                                  {fmtUsd(io.costUsd)}
+                                  {fmtTokens(io.totalTokens)} tok · {fmtUsd(io.costUsd)}
                                 </span>
                               ) : null}
                             </div>
@@ -1626,13 +1536,9 @@ export function DetailView() {
                             <div className="session-io-row">
                               <span className="session-io-label">输出</span>
                               <div className="session-io-val">
-                                <span>
-                                  {io?.outputSummary ?? "已完成本轮动作"}
-                                </span>
+                                <span>{io?.outputSummary ?? "已完成本轮动作"}</span>
                                 {io && io.gatePassed !== null ? (
-                                  <span
-                                    className={`chip ${io.gatePassed ? "is-ok" : "is-bad"}`}
-                                  >
+                                  <span className={`chip ${io.gatePassed ? "is-ok" : "is-bad"}`}>
                                     {io.gatePassed ? "门禁通过" : "门禁未过"}
                                   </span>
                                 ) : null}
@@ -1644,9 +1550,7 @@ export function DetailView() {
                                       </code>
                                     ))}
                                     {io.changedPaths.length > 3 ? (
-                                      <span className="muted">
-                                        +{io.changedPaths.length - 3}
-                                      </span>
+                                      <span className="muted">+{io.changedPaths.length - 3}</span>
                                     ) : null}
                                   </span>
                                 ) : null}
@@ -1699,11 +1603,9 @@ export function DetailView() {
                               </div>
                               {r.raw.antiDriftSummary.alignment_points.length > 0 ? (
                                 <ul className="anti-drift-points">
-                                  {r.raw.antiDriftSummary.alignment_points.map(
-                                    (pt, ptIdx) => (
-                                      <li key={ptIdx}>{pt}</li>
-                                    ),
-                                  )}
+                                  {r.raw.antiDriftSummary.alignment_points.map((pt, ptIdx) => (
+                                    <li key={ptIdx}>{pt}</li>
+                                  ))}
                                 </ul>
                               ) : null}
                             </div>
@@ -1734,12 +1636,8 @@ export function DetailView() {
                 <>
                   {(() => {
                     const meta = stageMeta(selectedRun.stage);
-                    const [vText, vTone] = verdictMeta(
-                      selectedRun.visualState,
-                      selectedRun.stage,
-                    );
-                    const durationMs =
-                      (selectedRun.endMs ?? nowMs) - selectedRun.startMs;
+                    const [vText, vTone] = verdictMeta(selectedRun.visualState, selectedRun.stage);
+                    const durationMs = (selectedRun.endMs ?? nowMs) - selectedRun.startMs;
 
                     return (
                       <>
@@ -1747,15 +1645,11 @@ export function DetailView() {
                           <div>
                             <div className="art-kicker">
                               {meta.label}
-                              {selectedRun.round > 1
-                                ? ` · 第 ${selectedRun.round} 轮`
-                                : ""}
+                              {selectedRun.round > 1 ? ` · 第 ${selectedRun.round} 轮` : ""}
                             </div>
                             <h2>{selectedRun.raw.dirName}</h2>
                           </div>
-                          <span
-                            className={`chip chip-${vTone === "ask" ? "ask" : vTone}`}
-                          >
+                          <span className={`chip chip-${vTone === "ask" ? "ask" : vTone}`}>
                             {vText}
                           </span>
                         </header>
@@ -1767,9 +1661,7 @@ export function DetailView() {
                           </div>
                           <div>
                             <dt>开始</dt>
-                            <dd>
-                              {fmtTime(new Date(selectedRun.startMs).toISOString())}
-                            </dd>
+                            <dd>{fmtTime(new Date(selectedRun.startMs).toISOString())}</dd>
                           </div>
                           <div>
                             <dt>耗时</dt>
@@ -1805,8 +1697,7 @@ export function DetailView() {
                                 <CheckIcon />
                                 <span>冻结测试文件哈希</span>
                                 <span className="r">
-                                  {selectedRun.raw.gate.frozen_files_changed
-                                    .length === 0
+                                  {selectedRun.raw.gate.frozen_files_changed.length === 0
                                     ? "一致"
                                     : `${selectedRun.raw.gate.frozen_files_changed.length} 处变更${selectedRun.raw.gate.escalated_to_l2 ? "（已升轨 L2）" : ""}`}
                                 </span>
@@ -1823,29 +1714,22 @@ export function DetailView() {
                           </div>
                         ) : null}
 
-                        {selectedRun.raw.receipt ? (
-                          (() => {
-                            const { metaLines, body } = splitFrontmatter(
-                              selectedRun.raw.receipt,
-                            );
-                            return (
-                              <div className="block">
-                                <h4>阶段回执（RECEIPT.md）</h4>
-                                {metaLines.length > 0 ? (
-                                  <div
-                                    className="code"
-                                    style={{ marginBottom: "12px" }}
-                                  >
-                                    {metaLines
-                                      .map(([k, v]) => `${k}: ${v}`)
-                                      .join("\n")}
-                                  </div>
-                                ) : null}
-                                <MarkdownContent text={body} />
-                              </div>
-                            );
-                          })()
-                        ) : null}
+                        {selectedRun.raw.receipt
+                          ? (() => {
+                              const { metaLines, body } = splitFrontmatter(selectedRun.raw.receipt);
+                              return (
+                                <div className="block">
+                                  <h4>阶段回执（RECEIPT.md）</h4>
+                                  {metaLines.length > 0 ? (
+                                    <div className="code" style={{ marginBottom: "12px" }}>
+                                      {metaLines.map(([k, v]) => `${k}: ${v}`).join("\n")}
+                                    </div>
+                                  ) : null}
+                                  <MarkdownContent text={body} />
+                                </div>
+                              );
+                            })()
+                          : null}
 
                         {selectedRun.raw.events.length > 0 ? (
                           <div className="block">
@@ -1863,7 +1747,8 @@ export function DetailView() {
                             </div>
                             {!showRawEvents ? (
                               <p className="muted events-collapsed-hint">
-                                完整步骤细节默认折叠；可点击上方「Agent + Session」直接打开原生 TUI，或按需展开原始事件流。
+                                完整步骤细节默认折叠；可点击上方「Agent + Session」直接打开原生
+                                TUI，或按需展开原始事件流。
                               </p>
                             ) : (
                               <div className="code">
@@ -1909,8 +1794,7 @@ export function DetailView() {
                           </div>
                         ) : null}
 
-                        {(showHandoff || !selectedRun.raw.receipt) &&
-                        selectedRun.raw.handoff ? (
+                        {(showHandoff || !selectedRun.raw.receipt) && selectedRun.raw.handoff ? (
                           <div className="block">
                             <h4>交接包（HANDOFF.md）</h4>
                             <MarkdownContent text={selectedRun.raw.handoff} />
@@ -1933,7 +1817,14 @@ export function DetailView() {
               taskState.status === "external" ? (
                 <section className="retro-card" aria-label="任务复盘（RETRO）">
                   <div className="retro-card-head">
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "8px",
+                        flexWrap: "wrap",
+                      }}
+                    >
                       <h4>任务复盘（RETRO）</h4>
                       {detail.retro?.report.high_signal ? (
                         <span className="chip chip-warn">高信号任务</span>
@@ -1966,9 +1857,7 @@ export function DetailView() {
                           }
                         }}
                       >
-                        {retroLoading === "deterministic"
-                          ? "分析中…"
-                          : "刷新确定性复盘（0 Token）"}
+                        {retroLoading === "deterministic" ? "分析中…" : "刷新确定性复盘（0 Token）"}
                       </button>
                       <button
                         type="button"
@@ -1992,9 +1881,7 @@ export function DetailView() {
                     </div>
                   </div>
 
-                  {retroError ? (
-                    <p className="retro-err">{retroError}</p>
-                  ) : null}
+                  {retroError ? <p className="retro-err">{retroError}</p> : null}
 
                   {detail.retro ? (
                     <>
@@ -2018,13 +1905,18 @@ export function DetailView() {
                           返工 <b className="mono">{detail.retro.report.metrics.rework_rounds}</b>
                         </span>
                         <span>
-                          升级 <b className="mono">{detail.retro.report.metrics.escalations_count}</b>
+                          升级{" "}
+                          <b className="mono">{detail.retro.report.metrics.escalations_count}</b>
                         </span>
                         <span>
-                          验收打回 <b className="mono">{detail.retro.report.metrics.accept_failures}</b>
+                          验收打回{" "}
+                          <b className="mono">{detail.retro.report.metrics.accept_failures}</b>
                         </span>
                         <span>
-                          花费 <b className="mono">{fmtUsd(detail.retro.report.metrics.total_cost_usd)}</b>
+                          花费{" "}
+                          <b className="mono">
+                            {fmtUsd(detail.retro.report.metrics.total_cost_usd)}
+                          </b>
                         </span>
                       </div>
 
@@ -2076,7 +1968,8 @@ export function DetailView() {
                     </>
                   ) : (
                     <p className="muted" style={{ fontSize: "12.5px" }}>
-                      尚未生成复盘报告，点击上方按钮可立即生成 0-Token 确定性归因或冷只读 AI 深度分析。
+                      尚未生成复盘报告，点击上方按钮可立即生成 0-Token 确定性归因或冷只读 AI
+                      深度分析。
                     </p>
                   )}
                 </section>
@@ -2084,16 +1977,24 @@ export function DetailView() {
 
               {card.workspace_mode === "git_worktree" ? (
                 <section className="pr-feedback-panel" aria-label="GitHub PR 与 CI 反馈">
-                  <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                  <div
+                    className="row"
+                    style={{
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: "8px",
+                      flexWrap: "wrap",
+                    }}
+                  >
                     <div className="row" style={{ gap: "6px", alignItems: "center" }}>
                       <GitPrIcon />
                       <strong>GitHub PR 与 CI 反馈</strong>
                       {prFeedback ? (
-                        <span className="chip">{prFeedback.repo}#{prFeedback.number}</span>
+                        <span className="chip">
+                          {prFeedback.repo}#{prFeedback.number}
+                        </span>
                       ) : null}
-                      {prFeedback ? (
-                        <span className="chip">{prFeedback.state}</span>
-                      ) : null}
+                      {prFeedback ? <span className="chip">{prFeedback.state}</span> : null}
                     </div>
                     <button
                       type="button"
@@ -2110,9 +2011,22 @@ export function DetailView() {
 
                   {prFeedback ? (
                     <div className="col" style={{ gap: "8px" }}>
-                      <div className="row" style={{ gap: "8px", flexWrap: "wrap", alignItems: "center", fontSize: "12.5px" }}>
+                      <div
+                        className="row"
+                        style={{
+                          gap: "8px",
+                          flexWrap: "wrap",
+                          alignItems: "center",
+                          fontSize: "12.5px",
+                        }}
+                      >
                         {isSafeHttpOrPaseoUrl(prFeedback.url) ? (
-                          <a href={prFeedback.url} target="_blank" rel="noreferrer" className="mono">
+                          <a
+                            href={prFeedback.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="mono"
+                          >
                             {prFeedback.title}
                           </a>
                         ) : (
@@ -2128,7 +2042,9 @@ export function DetailView() {
 
                       {prFeedback.checks.length > 0 ? (
                         <div className="pr-feedback-list">
-                          <div className="muted" style={{ fontSize: "12px" }}>CI Checks</div>
+                          <div className="muted" style={{ fontSize: "12px" }}>
+                            CI Checks
+                          </div>
                           {prFeedback.checks.map((chk) => {
                             const checked = selectedCheckNames.includes(chk.name);
                             const verdict = chk.conclusion ?? chk.status;
@@ -2156,7 +2072,9 @@ export function DetailView() {
                           })}
                         </div>
                       ) : (
-                        <div className="muted" style={{ fontSize: "12px" }}>暂无 CI Check 记录</div>
+                        <div className="muted" style={{ fontSize: "12px" }}>
+                          暂无 CI Check 记录
+                        </div>
                       )}
 
                       {prFeedback.comments.length > 0 ? (
@@ -2196,10 +2114,15 @@ export function DetailView() {
                           })}
                         </div>
                       ) : (
-                        <div className="muted" style={{ fontSize: "12px" }}>暂无 PR 评论或 Review</div>
+                        <div className="muted" style={{ fontSize: "12px" }}>
+                          暂无 PR 评论或 Review
+                        </div>
                       )}
 
-                      <div className="row" style={{ gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                      <div
+                        className="row"
+                        style={{ gap: "8px", alignItems: "center", flexWrap: "wrap" }}
+                      >
                         <input
                           type="text"
                           className="input input-sm"
@@ -2237,10 +2160,7 @@ export function DetailView() {
                   <dt>交付终点与动作</dt>
                   <dd>
                     {card.contract.end}（{card.contract.deliver.mode}
-                    {card.contract.deliver.cmd
-                      ? `: ${card.contract.deliver.cmd}`
-                      : ""}
-                    ）
+                    {card.contract.deliver.cmd ? `: ${card.contract.deliver.cmd}` : ""}）
                   </dd>
                 </div>
                 <div>
@@ -2248,11 +2168,7 @@ export function DetailView() {
                   <dd className="mono">{card.contract.accept_cmd}</dd>
                 </div>
                 <div>
-                  <dt>
-                    {card.workspace_mode === "host_scoped"
-                      ? "本机白名单路径"
-                      : "可改范围"}
-                  </dt>
+                  <dt>{card.workspace_mode === "host_scoped" ? "本机白名单路径" : "可改范围"}</dt>
                   <dd className="mono">{card.contract.scope.join("\n")}</dd>
                 </div>
                 {card.contract.non_goals && card.contract.non_goals.length > 0 ? (
@@ -2360,9 +2276,7 @@ export function DetailView() {
                           <span>
                             <b>{ev.type}</b>
                             {"reason" in ev && ev.reason ? ` · ${ev.reason}` : ""}
-                            {"stage" in ev && ev.stage
-                              ? ` · ${stageMeta(ev.stage).label}`
-                              : ""}
+                            {"stage" in ev && ev.stage ? ` · ${stageMeta(ev.stage).label}` : ""}
                           </span>
                         </div>
                       ))}
@@ -2447,9 +2361,7 @@ export function DetailView() {
                     缓存读 {fmtTokens(detail.usage.cachedInputTokens)} · 写{" "}
                     {fmtTokens(detail.usage.cacheWriteTokens ?? 0)}
                   </span>
-                  <span className="mono ctx-ok-val">
-                    净省 {fmtUsd(taskSavedUsd)}
-                  </span>
+                  <span className="mono ctx-ok-val">净省 {fmtUsd(taskSavedUsd)}</span>
                 </div>
               </div>
               <div className="ctx-meter" aria-label="单卡 USD 预算" style={{ marginTop: "10px" }}>
@@ -2486,7 +2398,9 @@ export function DetailView() {
                     />
                   </div>
                 ) : null}
-                <div style={{ display: "flex", gap: "6px", marginTop: "6px", alignItems: "center" }}>
+                <div
+                  style={{ display: "flex", gap: "6px", marginTop: "6px", alignItems: "center" }}
+                >
                   <input
                     type="number"
                     step="0.01"
@@ -2514,7 +2428,9 @@ export function DetailView() {
                         await updateTaskLimits(card.id, { max_cost_usd: val });
                         await store.loadTaskDetail(card.id);
                         store.showToast(
-                          val === null ? "已清除单卡 USD 上限" : `已更新单卡上限为 $${val.toFixed(2)}`,
+                          val === null
+                            ? "已清除单卡 USD 上限"
+                            : `已更新单卡上限为 $${val.toFixed(2)}`,
                         );
                       } catch (err) {
                         store.showToast(err instanceof Error ? err.message : String(err));
@@ -2531,11 +2447,7 @@ export function DetailView() {
           </aside>
         </div>
 
-        <ScriptDrawer
-          spaceId={card.space}
-          taskId={card.id}
-          scripts={spaceScripts}
-        />
+        <ScriptDrawer spaceId={card.space} taskId={card.id} scripts={spaceScripts} />
       </div>
 
       <DeliverPrModal
@@ -2548,9 +2460,7 @@ export function DetailView() {
       <AttachmentLightbox
         attachment={lightboxAttachment}
         imageUrl={
-          lightboxAttachment
-            ? lightboxCustomUrl ?? taskAttachmentUrl(lightboxAttachment)
-            : null
+          lightboxAttachment ? (lightboxCustomUrl ?? taskAttachmentUrl(lightboxAttachment)) : null
         }
         onClose={() => {
           setLightboxAttachment(null);

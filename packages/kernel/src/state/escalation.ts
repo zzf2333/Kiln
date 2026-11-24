@@ -75,12 +75,7 @@ export function evaluateAdvisorAuthorityGuard(
  */
 export function computeGateFailureFingerprint(report: GateReport): string | null {
   const artifactsOk = report.artifacts_ok !== false;
-  if (
-    report.schema_ok &&
-    report.scope_ok &&
-    artifactsOk &&
-    report.accept_exit_code === 0
-  ) {
+  if (report.schema_ok && report.scope_ok && artifactsOk && report.accept_exit_code === 0) {
     return null;
   }
 
@@ -101,9 +96,7 @@ export function computeGateFailureFingerprint(report: GateReport): string | null
 }
 
 function extractDefectListBody(markdownBody: string): string {
-  const headingMatch = /^#{1,3}[ \t]+缺陷清单(?:[ \t:(（][^\r\n]*)?(?=\r?\n|$)/m.exec(
-    markdownBody,
-  );
+  const headingMatch = /^#{1,3}[ \t]+缺陷清单(?:[ \t:(（][^\r\n]*)?(?=\r?\n|$)/m.exec(markdownBody);
   if (!headingMatch) {
     return "";
   }
@@ -235,9 +228,7 @@ export function checkCircuitBreaker(
   }
   if (counters.totalTokens >= limits.max_tokens) {
     reasons.push("max_tokens_exceeded");
-    details.push(
-      `totalTokens (${counters.totalTokens}) >= max_tokens (${limits.max_tokens})`,
-    );
+    details.push(`totalTokens (${counters.totalTokens}) >= max_tokens (${limits.max_tokens})`);
   }
   if (
     limits.max_cost_usd !== undefined &&
@@ -315,7 +306,9 @@ export type ExecutionFailureDecision =
       breaker: CircuitBreakerResult;
     };
 
-function formatFailureMessage(failure: Exclude<ExecutionFailureReason, { kind: "rate_limited" }>): string {
+function formatFailureMessage(
+  failure: Exclude<ExecutionFailureReason, { kind: "rate_limited" }>,
+): string {
   switch (failure.kind) {
     case "timeout":
       return failure.message ?? "stage_timeout";
@@ -575,12 +568,9 @@ export function evaluateWorkerStageOutcome(
     });
   }
 
-  const receipt = isValidationResult(receiptResult)
-    ? receiptResult.frontmatter
-    : receiptResult;
+  const receipt = isValidationResult(receiptResult) ? receiptResult.frontmatter : receiptResult;
 
-  const escalateToL2 =
-    card.track === "L1" && (frozenChanged || receipt.complexity_escalate);
+  const escalateToL2 = card.track === "L1" && (frozenChanged || receipt.complexity_escalate);
   const escalateReason: WorkerStageEscalateReason | undefined =
     card.track === "L1"
       ? frozenChanged
@@ -593,14 +583,10 @@ export function evaluateWorkerStageOutcome(
 
   const artifactsOk = gateReport.artifacts_ok !== false;
   const gatePassed =
-    gateReport.schema_ok &&
-    gateReport.scope_ok &&
-    artifactsOk &&
-    gateReport.accept_exit_code === 0;
+    gateReport.schema_ok && gateReport.scope_ok && artifactsOk && gateReport.accept_exit_code === 0;
 
   if (receipt.outcome === "need_decision") {
-    const escalateMeta =
-      escalateReason !== undefined ? { escalateReason } : {};
+    const escalateMeta = escalateReason !== undefined ? { escalateReason } : {};
     if (counters.totalTokens >= card.limits.max_tokens || options?.triageAttempted) {
       return {
         action: "wait_human",
@@ -643,8 +629,7 @@ export function evaluateWorkerStageOutcome(
       (options?.consecutiveSameFailureCount ?? 0) >= loopPolicy.stuckThreshold &&
       counters.totalTokens < card.limits.max_tokens
     ) {
-      const escalateMeta =
-        escalateReason !== undefined ? { escalateReason } : {};
+      const escalateMeta = escalateReason !== undefined ? { escalateReason } : {};
       const stuckReason = `stuck_same_failure (${gateFailureReason})`;
       if (options?.advisorAvailable && counters.advisorCalls < card.limits.advisor_calls) {
         return {
@@ -847,9 +832,7 @@ export function evaluateReviewerStageOutcome(
     }
   }
 
-  const receipt = isValidationResult(receiptResult)
-    ? receiptResult.frontmatter
-    : receiptResult;
+  const receipt = isValidationResult(receiptResult) ? receiptResult.frontmatter : receiptResult;
 
   const hasBlockingIssues = receipt.p0 > 0 || receipt.p1 > 0;
   const forgedPassIgnored = receipt.verdict === "pass" && hasBlockingIssues;

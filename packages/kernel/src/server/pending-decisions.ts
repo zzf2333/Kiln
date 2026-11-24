@@ -342,10 +342,7 @@ export function readLedgerProposals(store: KilnStore, taskId: string): LedgerPro
  * Atomically records a ledger rule proposal under `tasks/<id>/ledger_proposals.json`
  * without mutating `ledger/<space>.yaml`.
  */
-export function appendLedgerProposal(
-  store: KilnStore,
-  proposal: LedgerProposal,
-): LedgerProposal {
+export function appendLedgerProposal(store: KilnStore, proposal: LedgerProposal): LedgerProposal {
   const validated = LedgerProposalSchema.parse(proposal);
   const existing = readLedgerProposals(store, validated.task_id);
   const next = LedgerProposalsFileSchema.parse({
@@ -434,10 +431,7 @@ export class PendingDecisionStore {
    * (or refreshes an `upstream_cancelled` decision), preventing contract updates from
    * stranding a waiting task without a pending decision.
    */
-  rebindContractVersion(
-    taskId: string,
-    newContractVersion: number,
-  ): PendingDecision | null {
+  rebindContractVersion(taskId: string, newContractVersion: number): PendingDecision | null {
     const safeTaskId = assertSafeSegment(taskId, "taskId");
     const taskRow = this.store.getTaskIndex(safeTaskId);
     if (!taskRow || taskRow.status !== "waiting") {
@@ -479,10 +473,7 @@ export class PendingDecisionStore {
    * Ensures a deterministic `PendingDecision` exists on disk for a `waiting` task
    * blocked by `upstream_cancelled`, without recursing into `get()`.
    */
-  ensureUpstreamCancelledDecision(
-    taskId: string,
-    createdAt?: string,
-  ): PendingDecision | null {
+  ensureUpstreamCancelledDecision(taskId: string, createdAt?: string): PendingDecision | null {
     const safeTaskId = assertSafeSegment(taskId, "taskId");
     const taskRow = this.store.getTaskIndex(safeTaskId);
     const card = readTaskCardOptional(this.store, safeTaskId);

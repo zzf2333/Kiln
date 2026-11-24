@@ -1,20 +1,10 @@
 // @vitest-environment happy-dom
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BootstrapResponse, TaskDetailResponse } from "../api/types";
 import { App } from "../app";
 
-type MockFetchHandler = (
-  url: string,
-  init?: RequestInit,
-) => Promise<Response> | Response;
+type MockFetchHandler = (url: string, init?: RequestInit) => Promise<Response> | Response;
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -57,9 +47,7 @@ class MockEventSource {
   }
 }
 
-function makeRosterBootstrap(
-  overrides: Partial<BootstrapResponse> = {},
-): BootstrapResponse {
+function makeRosterBootstrap(overrides: Partial<BootstrapResponse> = {}): BootstrapResponse {
   return {
     version: "0.0.5",
     tasks: [],
@@ -239,9 +227,7 @@ beforeEach(() => {
   window.history.replaceState(null, "", "/");
   document.body.className = "";
   (window as unknown as { EventSource?: unknown }).EventSource = MockEventSource;
-  fetchMock = vi.fn<MockFetchHandler>(async () =>
-    jsonResponse(makeRosterBootstrap()),
-  );
+  fetchMock = vi.fn<MockFetchHandler>(async () => jsonResponse(makeRosterBootstrap()));
   vi.stubGlobal("fetch", fetchMock);
 });
 
@@ -525,10 +511,7 @@ describe("@kiln/web Slice 6b DetailView & IntakeView", () => {
           commit_sha: "1234567890abcdef",
         });
       }
-      if (
-        typeof url === "string" &&
-        (url === "/api/scripts" || url.startsWith("/api/scripts?"))
-      ) {
+      if (typeof url === "string" && (url === "/api/scripts" || url.startsWith("/api/scripts?"))) {
         return jsonResponse({ ok: true, runs: [] });
       }
       return jsonResponse({});
@@ -563,9 +546,7 @@ describe("@kiln/web Slice 6b DetailView & IntakeView", () => {
     expect(screen.getByText("技术调研报告（RESEARCH.md）")).toBeTruthy();
     expect(screen.getByText("技术实施方案（PLAN.md）")).toBeTruthy();
     expect(screen.getByText("不修改内核协议")).toBeTruthy();
-    expect(
-      within(alignPanel).getByText("核心模块，指派主力开发并开启异构审查"),
-    ).toBeTruthy();
+    expect(within(alignPanel).getByText("核心模块，指派主力开发并开启异构审查")).toBeTruthy();
     expect(
       screen.getAllByText("核心模块，指派主力开发并开启异构审查").length,
     ).toBeGreaterThanOrEqual(2);
@@ -752,10 +733,7 @@ describe("@kiln/web Slice 6b DetailView & IntakeView", () => {
         );
       }
       if (url === "/api/tasks/t-s6b-2") return jsonResponse(detail);
-      if (
-        typeof url === "string" &&
-        (url === "/api/scripts" || url.startsWith("/api/scripts?"))
-      ) {
+      if (typeof url === "string" && (url === "/api/scripts" || url.startsWith("/api/scripts?"))) {
         return jsonResponse({ ok: true, runs: [] });
       }
       if (url === "/api/spaces/kiln/scripts/run" && init?.method === "POST") {
@@ -968,10 +946,7 @@ describe("@kiln/web Slice 6b DetailView & IntakeView", () => {
           201,
         );
       }
-      if (
-        url === "/api/drafts/d-mm-1/attachments/att-u1" &&
-        init?.method === "DELETE"
-      ) {
+      if (url === "/api/drafts/d-mm-1/attachments/att-u1" && init?.method === "DELETE") {
         deletedAttachmentIds.push("att-u1");
         return jsonResponse({
           ok: true,
@@ -994,10 +969,7 @@ describe("@kiln/web Slice 6b DetailView & IntakeView", () => {
       }
       if (url === "/api/drafts/d-mm-1/commit" && init?.method === "POST") {
         commitPayload = JSON.parse(String(init.body ?? "{}")) as Record<string, unknown>;
-        return jsonResponse(
-          { ok: true, card: { id: "t-101", ...commitPayload }, state: {} },
-          201,
-        );
+        return jsonResponse({ ok: true, card: { id: "t-101", ...commitPayload }, state: {} }, 201);
       }
       return jsonResponse({});
     });
@@ -1103,9 +1075,9 @@ describe("@kiln/web Slice 6b DetailView & IntakeView", () => {
         }>;
       }
     ).steps.flatMap((s) => (s.kind === "loop" ? (s.steps ?? []) : [s]));
-    expect(
-      wfSteps.find((s) => s.kind === "agent" && s.stage === "implement")?.roster_role,
-    ).toBe("fast_fix");
+    expect(wfSteps.find((s) => s.kind === "agent" && s.stage === "implement")?.roster_role).toBe(
+      "fast_fix",
+    );
     expect((commitPayload!.contract as { non_goals?: string[] }).non_goals).toEqual([
       "不引入外部 UI 库",
     ]);

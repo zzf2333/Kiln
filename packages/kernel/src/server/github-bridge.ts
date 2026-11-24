@@ -48,11 +48,7 @@ export interface ImportedGithubIssueInfo {
 
 function rejectControlOrLeadingDash(raw: string, field: string): string {
   const trimmed = raw.trim();
-  if (
-    trimmed.length === 0 ||
-    trimmed.startsWith("-") ||
-    /[\u0000-\u001f\u007f]/.test(trimmed)
-  ) {
+  if (trimmed.length === 0 || trimmed.startsWith("-") || /[\u0000-\u001f\u007f]/.test(trimmed)) {
     throw new ServerHttpError(400, {
       error: "invalid_github_ref",
       field,
@@ -134,9 +130,7 @@ export function parseGithubIssueInput(
       message: "仅支持 https://github.com/ 域名下的 Issue 链接",
     });
   }
-  const m = /^\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)\/issues\/(\d+)\/?$/.exec(
-    parsed.pathname,
-  );
+  const m = /^\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)\/issues\/(\d+)\/?$/.exec(parsed.pathname);
   if (!m) {
     throw new ServerHttpError(400, {
       error: "invalid_github_issue",
@@ -186,9 +180,7 @@ async function runGhSafe(
       });
     }
     const errText = `${nodeErr.stderr ?? ""}\n${nodeErr.message ?? ""}`;
-    if (
-      /gh auth login|not logged into|authentication|HTTP 401/i.test(errText)
-    ) {
+    if (/gh auth login|not logged into|authentication|HTTP 401/i.test(errText)) {
       throw new ServerHttpError(401, {
         error: "gh_not_authenticated",
         message: "GitHub CLI 尚未登录，请先在本机终端执行 `gh auth login` 授权后再试",
@@ -206,15 +198,11 @@ async function resolveOriginGithubRepo(
   repoPath: string,
 ): Promise<string | null> {
   try {
-    const res = await execCommand(
-      "git",
-      ["-C", repoPath, "remote", "get-url", "origin"],
-      {
-        cwd: repoPath,
-        env: buildSanitizedEnv(),
-        timeoutMs: 10_000,
-      },
-    );
+    const res = await execCommand("git", ["-C", repoPath, "remote", "get-url", "origin"], {
+      cwd: repoPath,
+      env: buildSanitizedEnv(),
+      timeoutMs: 10_000,
+    });
     return parseGithubRepoFromUrl(res.stdout);
   } catch {
     return null;
@@ -247,10 +235,7 @@ export async function importGithubIssueToDraft(params: {
 
   const execCommand = params.execCommand ?? defaultGhExec;
   const originRepo = await resolveOriginGithubRepo(execCommand, space.repo_path);
-  const { repo, issueNumber } = parseGithubIssueInput(
-    params.issueInput,
-    originRepo ?? undefined,
-  );
+  const { repo, issueNumber } = parseGithubIssueInput(params.issueInput, originRepo ?? undefined);
 
   const ghRes = await runGhSafe(
     execCommand,
@@ -373,9 +358,7 @@ function parsePrRefArg(rawRef: string, fallbackRepo?: string): { repo?: string; 
         message: "仅支持 https://github.com/ 域名下的 Pull Request 链接",
       });
     }
-    const m = /^\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)\/pull\/(\d+)\/?$/.exec(
-      parsed.pathname,
-    );
+    const m = /^\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)\/pull\/(\d+)\/?$/.exec(parsed.pathname);
     if (!m) {
       throw new ServerHttpError(400, {
         error: "invalid_pr_ref",
@@ -441,11 +424,11 @@ export async function fetchTaskPrFeedback(params: {
     refArg = rejectControlOrLeadingDash(card.external_ref.pr_branch, "pr_branch");
   } else {
     try {
-      const brRes = await execCommand(
-        "git",
-        ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
-        { cwd, env: buildSanitizedEnv(), timeoutMs: 10_000 },
-      );
+      const brRes = await execCommand("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], {
+        cwd,
+        env: buildSanitizedEnv(),
+        timeoutMs: 10_000,
+      });
       const curBranch = brRes.stdout.trim();
       if (curBranch && curBranch !== "HEAD") {
         refArg = curBranch;

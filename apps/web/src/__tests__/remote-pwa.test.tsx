@@ -10,10 +10,7 @@ import type {
 import { App } from "../app";
 import { buildQrSvgGeometry, encodeQrMatrix, type QrMatrix } from "../lib/qr";
 
-type MockFetchHandler = (
-  url: string,
-  init?: RequestInit,
-) => Promise<Response> | Response;
+type MockFetchHandler = (url: string, init?: RequestInit) => Promise<Response> | Response;
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -22,9 +19,7 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-function makeBaseBootstrap(
-  overrides: Partial<BootstrapResponse> = {},
-): BootstrapResponse {
+function makeBaseBootstrap(overrides: Partial<BootstrapResponse> = {}): BootstrapResponse {
   const now = new Date().toISOString();
   return {
     tasks: [
@@ -392,9 +387,7 @@ beforeEach(() => {
   window.history.replaceState(null, "", "/");
   document.body.className = "";
   (window as unknown as { EventSource?: unknown }).EventSource = MockEventSource;
-  fetchMock = vi.fn<MockFetchHandler>(async () =>
-    jsonResponse(makeBaseBootstrap()),
-  );
+  fetchMock = vi.fn<MockFetchHandler>(async () => jsonResponse(makeBaseBootstrap()));
   vi.stubGlobal("fetch", fetchMock);
 });
 
@@ -640,10 +633,7 @@ describe("@kiln/web Slice 4: QR Generator, PWA, Remote Auth Gate, Offline Banner
       }
       if (url === "/api/tasks/t-remote-1/resume" && method === "POST") {
         revokedOnServer = true;
-        return jsonResponse(
-          { error: "unauthorized", message: "Device revoked" },
-          401,
-        );
+        return jsonResponse({ error: "unauthorized", message: "Device revoked" }, 401);
       }
       return jsonResponse({ ok: true });
     });
@@ -871,9 +861,7 @@ describe("@kiln/web Slice 4: QR Generator, PWA, Remote Auth Gate, Offline Banner
         recordedMutations.push({
           url,
           method,
-          clientHeader: (init?.headers as Record<string, string> | undefined)?.[
-            "X-Kiln-Client"
-          ],
+          clientHeader: (init?.headers as Record<string, string> | undefined)?.["X-Kiln-Client"],
           ...(body ? { body } : {}),
         });
       }
@@ -940,9 +928,7 @@ describe("@kiln/web Slice 4: QR Generator, PWA, Remote Auth Gate, Offline Banner
         });
       }
       if (url === "/api/remote/devices/dev-a1" && method === "DELETE") {
-        devicesState = devicesState.map((d) =>
-          d.id === "dev-a1" ? { ...d, revoked_at: now } : d,
-        );
+        devicesState = devicesState.map((d) => (d.id === "dev-a1" ? { ...d, revoked_at: now } : d));
         return jsonResponse({
           ok: true,
           revoked: true,
@@ -951,9 +937,7 @@ describe("@kiln/web Slice 4: QR Generator, PWA, Remote Auth Gate, Offline Banner
         });
       }
       if (url === "/api/remote/devices/revoke-all" && method === "POST") {
-        devicesState = devicesState.map((d) =>
-          d.revoked_at ? d : { ...d, revoked_at: now },
-        );
+        devicesState = devicesState.map((d) => (d.revoked_at ? d : { ...d, revoked_at: now }));
         return jsonResponse({
           ok: true,
           revokedCount: 1,
@@ -977,9 +961,7 @@ describe("@kiln/web Slice 4: QR Generator, PWA, Remote Auth Gate, Offline Banner
     // 2. Copy Tailscale command & one-click fill MagicDNS HTTPS URL
     fireEvent.click(screen.getByRole("button", { name: "复制命令" }));
     await waitFor(() => {
-      expect(writeTextMock).toHaveBeenCalledWith(
-        "tailscale serve --bg http://127.0.0.1:4311",
-      );
+      expect(writeTextMock).toHaveBeenCalledWith("tailscale serve --bg http://127.0.0.1:4311");
     });
     fireEvent.click(screen.getByRole("button", { name: "填入公网地址" }));
     expect((screen.getByLabelText("公网 HTTPS 地址") as HTMLInputElement).value).toBe(
@@ -1080,15 +1062,12 @@ describe("@kiln/web Slice 4: QR Generator, PWA, Remote Auth Gate, Offline Banner
     await waitFor(() => {
       expect(
         recordedMutations.some(
-          (m) =>
-            m.url === "/api/remote/devices/revoke-all" && m.method === "POST",
+          (m) => m.url === "/api/remote/devices/revoke-all" && m.method === "POST",
         ),
       ).toBe(true);
       expect(screen.getByText("已配对设备（有效 0 台）")).toBeTruthy();
     });
-    expect(
-      recordedMutations.every((m) => m.clientHeader === "web"),
-    ).toBe(true);
+    expect(recordedMutations.every((m) => m.clientHeader === "web")).toBe(true);
   });
 
   it("hides host-only 从文件目录选择 action in remote mode while keeping discovered Git repos accessible in SpaceModal", async () => {

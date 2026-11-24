@@ -63,9 +63,7 @@ export function SplitCardsPanel({
   const toggleDep = (cardIndex: number, depTempId: string): void => {
     const target = cards[cardIndex];
     if (!target) return;
-    const currentDeps = Array.isArray(target.depends_on_temp_ids)
-      ? target.depends_on_temp_ids
-      : [];
+    const currentDeps = Array.isArray(target.depends_on_temp_ids) ? target.depends_on_temp_ids : [];
     const exists = currentDeps.includes(depTempId);
     const nextDeps = exists
       ? currentDeps.filter((d) => d !== depTempId)
@@ -90,21 +88,14 @@ export function SplitCardsPanel({
             <PlusIcon />
             <span>添加切片</span>
           </button>
-          <button
-            type="button"
-            className="btn btn-sm btn-ghost"
-            disabled={busy}
-            onClick={onCancel}
-          >
+          <button type="button" className="btn btn-sm btn-ghost" disabled={busy} onClick={onCancel}>
             返回单卡
           </button>
         </div>
       </div>
 
       {!countValid ? (
-        <div className="note note-bad">
-          批量拆卡数量须为 2–12 张（当前 {cards.length} 张）
-        </div>
+        <div className="note note-bad">批量拆卡数量须为 2–12 张（当前 {cards.length} 张）</div>
       ) : null}
 
       {dag.ok ? (
@@ -248,7 +239,11 @@ export function SplitCardsPanel({
               {otherTempIds.length > 0 ? (
                 <div className="split-deps-row">
                   <span className="muted">前置依赖：</span>
-                  <div className="split-dep-chips" role="group" aria-label={`切片 ${card.temp_id} 前置依赖`}>
+                  <div
+                    className="split-dep-chips"
+                    role="group"
+                    aria-label={`切片 ${card.temp_id} 前置依赖`}
+                  >
                     {otherTempIds.map((depId) => {
                       const active = Array.isArray(card.depends_on_temp_ids)
                         ? card.depends_on_temp_ids.includes(depId)
@@ -274,12 +269,7 @@ export function SplitCardsPanel({
       </div>
 
       <div className="split-panel-foot">
-        <button
-          type="button"
-          className="btn btn-light"
-          disabled={!canCommit}
-          onClick={onCommit}
-        >
+        <button type="button" className="btn btn-light" disabled={!canCommit} onClick={onCommit}>
           {busy ? "正在批量建卡…" : `批量立项（${cards.length} 张卡）`}
         </button>
       </div>

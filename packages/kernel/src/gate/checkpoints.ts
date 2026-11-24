@@ -48,9 +48,7 @@ async function runGit(
 function assertSafeCheckpointSegment(value: string, label: string): string {
   const safe = assertSafeSegment(value, label);
   if (safe.startsWith("-")) {
-    throw new InvalidCheckpointRefError(
-      `Invalid ${label} "${safe}": leading "-" is forbidden`,
-    );
+    throw new InvalidCheckpointRefError(`Invalid ${label} "${safe}": leading "-" is forbidden`);
   }
   return safe;
 }
@@ -134,12 +132,9 @@ export async function createGitWorktreeCheckpoint(
 
   try {
     await runGit(["-C", input.worktreePath, "add", "-A"], { env });
-    const treeSha = (
-      await runGit(["-C", input.worktreePath, "write-tree"], { env })
-    ).trim();
+    const treeSha = (await runGit(["-C", input.worktreePath, "write-tree"], { env })).trim();
     const message =
-      input.message ??
-      `kiln checkpoint: ${input.taskId} ${input.stage} r${input.round} (${key})`;
+      input.message ?? `kiln checkpoint: ${input.taskId} ${input.stage} r${input.round} (${key})`;
     const commitSha = (
       await runGit(["-C", input.worktreePath, "commit-tree", treeSha, "-m", message], {
         env,
@@ -205,9 +200,7 @@ export async function listTaskCheckpoints(
 
     const leaf = ref.slice(refPrefix.length);
     const derivedRunId = leaf.replace(/-(pre|post)$/, "");
-    const matchedRun = runs.find(
-      (r) => r.checkpoint_ref === ref || r.run_id === derivedRunId,
-    );
+    const matchedRun = runs.find((r) => r.checkpoint_ref === ref || r.run_id === derivedRunId);
 
     records.push(
       CheckpointRecordSchema.parse({
@@ -287,10 +280,7 @@ export async function rollbackGitWorktreeToCheckpoint(
 /**
  * Deletes all `refs/kiln/checkpoints/<taskId>/*` refs from `repoPath` on task archive.
  */
-export async function cleanupTaskCheckpoints(
-  repoPath: string,
-  taskId: string,
-): Promise<number> {
+export async function cleanupTaskCheckpoints(repoPath: string, taskId: string): Promise<number> {
   const safeTaskId = assertSafeCheckpointSegment(taskId, "taskId");
   if (!fs.existsSync(repoPath)) {
     return 0;

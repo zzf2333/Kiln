@@ -66,10 +66,7 @@ import {
   type FrozenSnapshot,
   type StagedHostFileSpec,
 } from "../gate/index.js";
-import {
-  KilnScheduler,
-  type DispatchPlan,
-} from "../scheduler/index.js";
+import { KilnScheduler, type DispatchPlan } from "../scheduler/index.js";
 import {
   TaskStateMachine,
   assertCanInvokeAdvisor,
@@ -97,10 +94,7 @@ import { resolveRunAttachmentInputs } from "./attachments.js";
 import { computeTaskSpentUsd, evaluateDispatchBudget } from "./budget.js";
 import type { CaffeinateController } from "./caffeinate.js";
 import type { RemoteNotifier } from "./remote-notify.js";
-import {
-  resolveMcpServerCommand,
-  type McpCommandSpec,
-} from "./chat.js";
+import { resolveMcpServerCommand, type McpCommandSpec } from "./chat.js";
 import { ServerHttpError } from "./errors.js";
 import type {
   TechnicalDecisionAdvisorRouteInput,
@@ -342,18 +336,15 @@ function resolveStagedHostMapping(
 
     let matchedTarget: string | undefined =
       absChanged.find(
-        (p) =>
-          p.replace(/\\/g, "/").endsWith(`/${stagedRel}`) ||
-          path.basename(p) === stagedBase,
+        (p) => p.replace(/\\/g, "/").endsWith(`/${stagedRel}`) || path.basename(p) === stagedBase,
       ) ?? (absChanged.length === stagedFiles.length ? absChanged[i] : undefined);
 
     if (!matchedTarget) {
       matchedTarget =
         literalScopePaths.find(
-          (p) =>
-            p.replace(/\\/g, "/").endsWith(`/${stagedRel}`) ||
-            path.basename(p) === stagedBase,
-        ) ?? (literalScopePaths.length === 1 && stagedFiles.length === 1
+          (p) => p.replace(/\\/g, "/").endsWith(`/${stagedRel}`) || path.basename(p) === stagedBase,
+        ) ??
+        (literalScopePaths.length === 1 && stagedFiles.length === 1
           ? literalScopePaths[0]
           : undefined);
     }
@@ -361,12 +352,12 @@ function resolveStagedHostMapping(
     if (!matchedTarget && scopeDirs.length > 0) {
       const candidateDir = scopeDirs[0]!;
       try {
-        if (
-          fs.existsSync(candidateDir) &&
-          fs.statSync(candidateDir).isDirectory()
-        ) {
+        if (fs.existsSync(candidateDir) && fs.statSync(candidateDir).isDirectory()) {
           matchedTarget = path.join(candidateDir, stagedRel);
-        } else if (scopeDirs.length > 0 && contractScope.some((s) => /[*?{}]/.test(s) || s.endsWith("/"))) {
+        } else if (
+          scopeDirs.length > 0 &&
+          contractScope.some((s) => /[*?{}]/.test(s) || s.endsWith("/"))
+        ) {
           matchedTarget = path.join(candidateDir, stagedRel);
         }
       } catch {
@@ -450,8 +441,7 @@ export class KilnOrchestrator {
     this.mcpServerCommand = resolveMcpServerCommand(options.mcpServerCommand);
     this.deliverHandler = options.deliverHandler;
     this.approvalHandler = options.approvalHandler;
-    this.rateLimitCooldownMs =
-      options.rateLimitCooldownMs ?? DEFAULT_RATE_LIMIT_COOLDOWN_MS;
+    this.rateLimitCooldownMs = options.rateLimitCooldownMs ?? DEFAULT_RATE_LIMIT_COOLDOWN_MS;
     this.providerHealth = options.providerHealth;
     this.scriptRunner = options.scriptRunner;
     this.remoteNotifier = options.remoteNotifier;
@@ -604,8 +594,7 @@ export class KilnOrchestrator {
       backendRegistry: this.backendRegistry,
       syncAgentCapabilities: () => this.syncAgentCapabilities(),
       listTaskRunDirs: (taskId) => this.listTaskRunDirs(taskId),
-      finalizePlanRun: (taskId, dirName, meta) =>
-        this.finalizePlanRun(taskId, dirName, meta),
+      finalizePlanRun: (taskId, dirName, meta) => this.finalizePlanRun(taskId, dirName, meta),
       finalizeResearchRun: (taskId, dirName, meta) =>
         this.finalizeResearchRun(taskId, dirName, meta),
       finalizeWorkerRun: (taskId, dirName, meta, exitEvent) =>
@@ -616,10 +605,8 @@ export class KilnOrchestrator {
         this.finalizeReviewerRun(taskId, dirName, meta, exitEvent),
       finalizeVerifierRun: (taskId, dirName, meta) =>
         this.finalizeVerifierRun(taskId, dirName, meta),
-      finalizeTriageRun: (taskId, dirName, meta) =>
-        this.finalizeTriageRun(taskId, dirName, meta),
-      finalizeAdvisorRun: (taskId, dirName, meta) =>
-        this.finalizeAdvisorRun(taskId, dirName, meta),
+      finalizeTriageRun: (taskId, dirName, meta) => this.finalizeTriageRun(taskId, dirName, meta),
+      finalizeAdvisorRun: (taskId, dirName, meta) => this.finalizeAdvisorRun(taskId, dirName, meta),
       finalizeDeliverAgentRun: (taskId, dirName, meta) =>
         this.finalizeDeliverAgentRun(taskId, dirName, meta),
       attachSessionConsumer: (taskId, dirName, meta, backend, sessionRef) =>
@@ -834,10 +821,7 @@ export class KilnOrchestrator {
           continue;
         }
 
-        if (
-          evalResult.action === "abort_dead" ||
-          evalResult.action === "abort_hard_timeout"
-        ) {
+        if (evalResult.action === "abort_dead" || evalResult.action === "abort_hard_timeout") {
           await this.recoverStalledRun(handle, evalResult, probeResult);
         }
       }
@@ -919,12 +903,7 @@ export class KilnOrchestrator {
     this.store.sqlite.expireActiveLeaseByTask(handle.taskId, nowIso, "expired");
 
     const card = this.store.readTaskCard(handle.taskId);
-    const { counters } = this.computeStageCounters(
-      handle.taskId,
-      card,
-      handle.stage,
-      handle.runId,
-    );
+    const { counters } = this.computeStageCounters(handle.taskId, card, handle.stage, handle.runId);
     const priorStalls = this.countPriorAbortedStallsInWindow(
       handle.taskId,
       card,
@@ -1060,11 +1039,7 @@ export class KilnOrchestrator {
     }
 
     const before = deriveTaskStatus(card, this.store.readStateEvents(safeTaskId));
-    if (
-      before.status !== "queued" &&
-      before.status !== "running" &&
-      before.status !== "paused"
-    ) {
+    if (before.status !== "queued" && before.status !== "running" && before.status !== "paused") {
       throw new ServerHttpError(409, {
         error: "invalid_task_state",
         taskId: safeTaskId,
@@ -1092,16 +1067,9 @@ export class KilnOrchestrator {
       this.abortingBeforeDispatch.add(safeTaskId);
       try {
         await this.abortActiveRun(safeTaskId);
-        this.store.sqlite.expireActiveLeaseByTask(
-          safeTaskId,
-          new Date().toISOString(),
-          "expired",
-        );
+        this.store.sqlite.expireActiveLeaseByTask(safeTaskId, new Date().toISOString(), "expired");
         const latestCard = this.store.readTaskCard(safeTaskId);
-        const currentDerived = deriveTaskStatus(
-          latestCard,
-          this.store.readStateEvents(safeTaskId),
-        );
+        const currentDerived = deriveTaskStatus(latestCard, this.store.readStateEvents(safeTaskId));
         if (currentDerived.status === "running") {
           const targetStage = currentDerived.stage ?? before.stage ?? "implement";
           const targetStepIndex =
@@ -1133,15 +1101,14 @@ export class KilnOrchestrator {
       this.store.readStateEvents(safeTaskId),
       before.contractVersion,
     );
-    const createdSteer =
-      activeSteers.find((s) => s.id === steerId) ?? {
-        id: steerId,
-        at: now,
-        message: input.message,
-        interrupt: wantsInterrupt,
-        contract_version: before.contractVersion,
-        ...(before.stage !== null ? { stage: before.stage } : {}),
-      };
+    const createdSteer = activeSteers.find((s) => s.id === steerId) ?? {
+      id: steerId,
+      at: now,
+      message: input.message,
+      interrupt: wantsInterrupt,
+      contract_version: before.contractVersion,
+      ...(before.stage !== null ? { stage: before.stage } : {}),
+    };
 
     return {
       steer: createdSteer,
@@ -1159,10 +1126,7 @@ export class KilnOrchestrator {
     if (this.stopped) {
       return false;
     }
-    const card = readYamlOptional(
-      this.store.paths.cardYaml(taskId),
-      TaskCardSchema,
-    );
+    const card = readYamlOptional(this.store.paths.cardYaml(taskId), TaskCardSchema);
     if (!card || card.contract_version !== expectedContractVersion) {
       return false;
     }
@@ -1205,7 +1169,9 @@ export class KilnOrchestrator {
   private publishTaskUpdated(
     taskId: string,
     patch: {
-      status?: TaskCard["priority"] extends never ? never : "queued" | "running" | "paused" | "waiting" | "external" | "done" | "cancelled";
+      status?: TaskCard["priority"] extends never
+        ? never
+        : "queued" | "running" | "paused" | "waiting" | "external" | "done" | "cancelled";
       stage?: StageId;
       round?: number;
       priority?: TaskCard["priority"];
@@ -1293,10 +1259,7 @@ export class KilnOrchestrator {
     return path.join(this.store.paths.taskDir(safeTaskId), "frozen_baseline.json");
   }
 
-  private readSavedFrozenBaseline(
-    taskId: string,
-    card: TaskCard,
-  ): FrozenSnapshot | undefined {
+  private readSavedFrozenBaseline(taskId: string, card: TaskCard): FrozenSnapshot | undefined {
     const file = this.frozenBaselineFilePath(taskId);
     const raw = readOptionalText(file);
     if (!raw) {
@@ -1317,10 +1280,7 @@ export class KilnOrchestrator {
   }
 
   private saveFrozenBaseline(taskId: string, snapshot: FrozenSnapshot): void {
-    writeFileAtomic(
-      this.frozenBaselineFilePath(taskId),
-      `${JSON.stringify(snapshot, null, 2)}\n`,
-    );
+    writeFileAtomic(this.frozenBaselineFilePath(taskId), `${JSON.stringify(snapshot, null, 2)}\n`);
   }
 
   private ensureFrozenBaselineInitialized(card: TaskCard, rootDir: string): void {
@@ -1328,11 +1288,7 @@ export class KilnOrchestrator {
     const freezePatterns = space?.freeze_patterns ?? [];
 
     if (card.contract.accept_files_hash === "pending") {
-      const snap = computeFrozenSnapshot(
-        rootDir,
-        freezePatterns,
-        card.contract.accept_cmd,
-      );
+      const snap = computeFrozenSnapshot(rootDir, freezePatterns, card.contract.accept_cmd);
       const updatedCard = {
         ...card,
         contract: { ...card.contract, accept_files_hash: snap.hash },
@@ -1344,11 +1300,7 @@ export class KilnOrchestrator {
       freezePatterns.length > 0 &&
       this.readSavedFrozenBaseline(card.id, card) === undefined
     ) {
-      const snap = computeFrozenSnapshot(
-        rootDir,
-        freezePatterns,
-        card.contract.accept_cmd,
-      );
+      const snap = computeFrozenSnapshot(rootDir, freezePatterns, card.contract.accept_cmd);
       if (snap.hash === card.contract.accept_files_hash) {
         this.saveFrozenBaseline(card.id, snap);
       }
@@ -1535,9 +1487,7 @@ export class KilnOrchestrator {
     agent: string,
   ): Promise<ExecutionBackend | null> {
     if (backendId) {
-      return this.backendRegistry.has(backendId)
-        ? this.backendRegistry.get(backendId)
-        : null;
+      return this.backendRegistry.has(backendId) ? this.backendRegistry.get(backendId) : null;
     }
 
     for (const candidate of this.backendRegistry.list()) {
@@ -1560,13 +1510,10 @@ export class KilnOrchestrator {
     );
   }
 
-  private resolveVerifierCapabilities(
-    rosterRoleId?: string,
-  ): readonly VerifierCapability[] {
+  private resolveVerifierCapabilities(rosterRoleId?: string): readonly VerifierCapability[] {
     const roster = this.store.readEffectiveRosterConfig();
     const entry =
-      (rosterRoleId ? roster.roster[rosterRoleId] : undefined) ??
-      roster.roster.verifier;
+      (rosterRoleId ? roster.roster[rosterRoleId] : undefined) ?? roster.roster.verifier;
     if (entry?.verifier_capabilities && entry.verifier_capabilities.length > 0) {
       return entry.verifier_capabilities;
     }
@@ -1763,10 +1710,7 @@ export class KilnOrchestrator {
         }
         continue;
       }
-      const gate = readYamlOptional(
-        this.store.paths.gateYaml(taskId, r.dirName),
-        GateReportSchema,
-      );
+      const gate = readYamlOptional(this.store.paths.gateYaml(taskId, r.dirName), GateReportSchema);
       const fp = gate ? computeGateFailureFingerprint(gate) : null;
       if (!fp) {
         break;
@@ -1807,11 +1751,8 @@ export class KilnOrchestrator {
       params.stage === "advise"
         ? this.readAdvisorRequest(params.card.id, params.card.contract_version)
         : null;
-    const {
-      previousFailureSummary,
-      previousReviewSummary,
-      previousAcceptSummary,
-    } = this.buildPreviousDeltaSummaries(params.card.id, params.card, params.stage);
+    const { previousFailureSummary, previousReviewSummary, previousAcceptSummary } =
+      this.buildPreviousDeltaSummaries(params.card.id, params.card, params.stage);
     return buildHandoffPayload({
       store: this.store,
       ...params,
@@ -1822,10 +1763,7 @@ export class KilnOrchestrator {
     });
   }
 
-  private async handleSchedulerDispatchError(
-    taskId: string,
-    error: unknown,
-  ): Promise<void> {
+  private async handleSchedulerDispatchError(taskId: string, error: unknown): Promise<void> {
     if (this.stopped) {
       return;
     }
@@ -1947,7 +1885,12 @@ export class KilnOrchestrator {
     }
 
     if ((plan.stage === "plan" || plan.stage === "research") && plan.roleAssignment === null) {
-      const nextStep = nextWorkflowStepAfter(plan.card, plan.stepIndex, plan.stage, plan.card.track);
+      const nextStep = nextWorkflowStepAfter(
+        plan.card,
+        plan.stepIndex,
+        plan.stage,
+        plan.card.track,
+      );
       await this.advanceToNextStage(
         plan.taskId,
         nextStep?.stage ?? "implement",
@@ -2011,10 +1954,7 @@ export class KilnOrchestrator {
     }
 
     const assignment = plan.roleAssignment;
-    const backend = await this.findBackendWithAgent(
-      assignment.backendId,
-      assignment.agent,
-    );
+    const backend = await this.findBackendWithAgent(assignment.backendId, assignment.agent);
     if (!backend) {
       throw new Error(
         `No registered ExecutionBackend available for agent "${assignment.agent}" (role "${plan.role}")`,
@@ -2092,11 +2032,19 @@ export class KilnOrchestrator {
         }
       }
     }
-    if (budgetEval.blocked && budgetEval.blockingStatus && budgetEval.blockingStatus.limit_usd !== null) {
+    if (
+      budgetEval.blocked &&
+      budgetEval.blockingStatus &&
+      budgetEval.blockingStatus.limit_usd !== null
+    ) {
       const bScope = budgetEval.blockingScope ?? budgetEval.blockingStatus.scope;
       const bStatus = budgetEval.blockingStatus;
       const scopeLabel =
-        bScope === "card" ? "单卡 USD 预算" : bScope === "daily" ? "全局每日 USD 预算" : "全局每月 USD 预算";
+        bScope === "card"
+          ? "单卡 USD 预算"
+          : bScope === "daily"
+            ? "全局每日 USD 预算"
+            : "全局每月 USD 预算";
       const raiseTarget = Math.max(
         Number((bStatus.spent_usd * 1.5).toFixed(2)),
         Number(((bStatus.limit_usd ?? 0) * 1.5).toFixed(2)),
@@ -2194,7 +2142,9 @@ export class KilnOrchestrator {
             ...(plan.stepIndex !== null ? { step_index: plan.stepIndex } : {}),
             round: plan.round,
             role: plan.role,
-            ...(assignment.rosterRoleId !== undefined ? { roster_role: assignment.rosterRoleId } : {}),
+            ...(assignment.rosterRoleId !== undefined
+              ? { roster_role: assignment.rosterRoleId }
+              : {}),
             contract_version: plan.contractVersion,
             backend_id: backend.backendId,
             agent: assignment.agent,
@@ -2234,7 +2184,7 @@ export class KilnOrchestrator {
             traffic: startRes.traffic,
             evidence_files: [],
             scenarios: [],
-            ...(startRes.prepareError ?? startRes.errorMessage
+            ...((startRes.prepareError ?? startRes.errorMessage)
               ? { prepare_error: startRes.prepareError ?? startRes.errorMessage }
               : {}),
           });
@@ -2295,11 +2245,7 @@ export class KilnOrchestrator {
             this.transitionTaskToWaiting(plan.taskId, decision, guard);
             return;
           }
-          const restartIdx = findLoopRestartStepIndex(
-            plan.card,
-            "implement",
-            plan.card.track,
-          );
+          const restartIdx = findLoopRestartStepIndex(plan.card, "implement", plan.card.track);
           await this.advanceToNextStage(plan.taskId, "implement", guard, restartIdx);
           return;
         }
@@ -2456,11 +2402,7 @@ export class KilnOrchestrator {
         ...(checkpointRef !== undefined ? { checkpoint_ref: checkpointRef } : {}),
         started_at: now,
       };
-      const leaseResult = this.store.persistRunBeforeDispatch(
-        warmRunMeta,
-        runDirName,
-        warmMessage,
-      );
+      const leaseResult = this.store.persistRunBeforeDispatch(warmRunMeta, runDirName, warmMessage);
       if (!leaseResult.acquired) {
         void backend.cancel(warmEntry.sessionRef).catch(() => {});
         return;
@@ -2490,13 +2432,7 @@ export class KilnOrchestrator {
         this.startingBackendCount = Math.max(0, this.startingBackendCount - 1);
       }
       if (sendSucceeded) {
-        this.attachSessionConsumer(
-          plan.taskId,
-          runDirName,
-          warmRunMeta,
-          backend,
-          warmSessionRef,
-        );
+        this.attachSessionConsumer(plan.taskId, runDirName, warmRunMeta, backend, warmSessionRef);
         this.flushDeferredApprovals();
         return;
       }
@@ -2508,9 +2444,7 @@ export class KilnOrchestrator {
 
     const handoffMarkdown = handoff.fullMarkdown;
     const coldSessionKey =
-      plan.stage === "implement" &&
-      plan.role === "worker" &&
-      caps.warmSessionReuse === true
+      plan.stage === "implement" && plan.role === "worker" && caps.warmSessionReuse === true
         ? `sk-${randomUUID().slice(0, 12)}`
         : undefined;
 
@@ -2547,18 +2481,10 @@ export class KilnOrchestrator {
     };
 
     if (alreadyPersistedLease) {
-      writeYamlAtomic(
-        this.store.paths.runYaml(plan.taskId, runDirName),
-        runMeta,
-        RunMetaSchema,
-      );
+      writeYamlAtomic(this.store.paths.runYaml(plan.taskId, runDirName), runMeta, RunMetaSchema);
       writeFileAtomic(this.store.paths.handoffMd(plan.taskId, runDirName), handoffMarkdown);
     } else {
-      const leaseResult = this.store.persistRunBeforeDispatch(
-        runMeta,
-        runDirName,
-        handoffMarkdown,
-      );
+      const leaseResult = this.store.persistRunBeforeDispatch(runMeta, runDirName, handoffMarkdown);
       if (!leaseResult.acquired) {
         return;
       }
@@ -2683,10 +2609,7 @@ export class KilnOrchestrator {
       RunMetaSchema,
     );
 
-    const latestCard = readYamlOptional(
-      this.store.paths.cardYaml(plan.taskId),
-      TaskCardSchema,
-    );
+    const latestCard = readYamlOptional(this.store.paths.cardYaml(plan.taskId), TaskCardSchema);
     const latestDerived = latestCard
       ? deriveTaskStatus(latestCard, this.store.readStateEvents(plan.taskId))
       : null;
@@ -2707,11 +2630,7 @@ export class KilnOrchestrator {
         this.activeAcceptEnvConfigs.delete(plan.taskId);
       }
       if (existingLease?.state === "active" && existingLease.run_id === runId) {
-        this.store.sqlite.expireActiveLeaseByTask(
-          plan.taskId,
-          new Date().toISOString(),
-          "expired",
-        );
+        this.store.sqlite.expireActiveLeaseByTask(plan.taskId, new Date().toISOString(), "expired");
       }
       await backend.cancel(sessionRef).catch(() => {});
       this.syncCaffeinate();
@@ -2731,13 +2650,7 @@ export class KilnOrchestrator {
       });
     }
 
-    this.attachSessionConsumer(
-      plan.taskId,
-      runDirName,
-      updatedRunMeta,
-      backend,
-      sessionRef,
-    );
+    this.attachSessionConsumer(plan.taskId, runDirName, updatedRunMeta, backend, sessionRef);
     this.flushDeferredApprovals();
   }
 
@@ -2747,14 +2660,9 @@ export class KilnOrchestrator {
     runMeta: RunMeta,
     err: unknown,
   ): Promise<void> {
-    if (
-      !this.isRunStillCurrent(plan.taskId, runMeta.run_id, plan.contractVersion, true)
-    ) {
+    if (!this.isRunStillCurrent(plan.taskId, runMeta.run_id, plan.contractVersion, true)) {
       const existingLease = this.store.getStageLease(plan.taskId);
-      const latestCard = readYamlOptional(
-        this.store.paths.cardYaml(plan.taskId),
-        TaskCardSchema,
-      );
+      const latestCard = readYamlOptional(this.store.paths.cardYaml(plan.taskId), TaskCardSchema);
       if (
         this.isRunStillCurrent(plan.taskId, runMeta.run_id, plan.contractVersion, false) &&
         latestCard?.contract_version === plan.contractVersion &&
@@ -2763,61 +2671,37 @@ export class KilnOrchestrator {
         existingLease.contract_version === plan.contractVersion &&
         fs.existsSync(this.store.paths.receiptMd(plan.taskId, runDirName))
       ) {
-        await this.runTrackedStageOperation(
-          plan.taskId,
-          runMeta.run_id,
-          async (signal) => {
-            try {
-              await this.finalizeActiveRun(
+        await this.runTrackedStageOperation(plan.taskId, runMeta.run_id, async (signal) => {
+          try {
+            await this.finalizeActiveRun(plan.taskId, runDirName, runMeta, null, signal);
+          } catch (finalizeErr) {
+            if (
+              !signal.aborted &&
+              this.isRunStillCurrent(plan.taskId, runMeta.run_id, plan.contractVersion)
+            ) {
+              await this.applyStageFailure(
                 plan.taskId,
-                runDirName,
+                plan.stage,
                 runMeta,
-                null,
-                signal,
-              );
-            } catch (finalizeErr) {
-              if (
-                !signal.aborted &&
-                this.isRunStillCurrent(
-                  plan.taskId,
-                  runMeta.run_id,
-                  plan.contractVersion,
-                )
-              ) {
-                await this.applyStageFailure(
-                  plan.taskId,
-                  plan.stage,
-                  runMeta,
-                  {
-                    kind: "runtime_error",
-                    message:
-                      finalizeErr instanceof Error
-                        ? finalizeErr.message
-                        : String(finalizeErr),
-                  },
-                  {
-                    runId: runMeta.run_id,
-                    contractVersion: plan.contractVersion,
-                  },
-                ).catch(() => {
-                  this.syncCaffeinate();
-                });
-              }
+                {
+                  kind: "runtime_error",
+                  message: finalizeErr instanceof Error ? finalizeErr.message : String(finalizeErr),
+                },
+                {
+                  runId: runMeta.run_id,
+                  contractVersion: plan.contractVersion,
+                },
+              ).catch(() => {
+                this.syncCaffeinate();
+              });
             }
-          },
-        );
+          }
+        });
         return;
       }
 
-      if (
-        existingLease?.state === "active" &&
-        existingLease.run_id === runMeta.run_id
-      ) {
-        this.store.sqlite.expireActiveLeaseByTask(
-          plan.taskId,
-          new Date().toISOString(),
-          "expired",
-        );
+      if (existingLease?.state === "active" && existingLease.run_id === runMeta.run_id) {
+        this.store.sqlite.expireActiveLeaseByTask(plan.taskId, new Date().toISOString(), "expired");
       }
       this.syncCaffeinate();
       return;
@@ -2861,10 +2745,7 @@ export class KilnOrchestrator {
       return;
     }
 
-    if (
-      err instanceof FullAccessOnlyProviderError ||
-      err instanceof IneligibleRoleAgentError
-    ) {
+    if (err instanceof FullAccessOnlyProviderError || err instanceof IneligibleRoleAgentError) {
       const decision = PendingDecisionSchema.parse({
         id: `dec-${randomUUID().slice(0, 8)}`,
         task_id: plan.taskId,
@@ -3047,11 +2928,7 @@ export class KilnOrchestrator {
           }
         }
 
-        if (
-          this.stopped ||
-          handle.cancelledByControl ||
-          abortController.signal.aborted
-        ) {
+        if (this.stopped || handle.cancelledByControl || abortController.signal.aborted) {
           return;
         }
 
@@ -3069,11 +2946,7 @@ export class KilnOrchestrator {
             !abortController.signal.aborted &&
             this.isRunStillCurrent(taskId, runMeta.run_id, runMeta.contract_version)
           ) {
-            this.store.sqlite.expireActiveLeaseByTask(
-              taskId,
-              new Date().toISOString(),
-              "expired",
-            );
+            this.store.sqlite.expireActiveLeaseByTask(taskId, new Date().toISOString(), "expired");
             await this.applyStageFailure(
               taskId,
               runMeta.stage,
@@ -3188,8 +3061,7 @@ export class KilnOrchestrator {
     this.recentSpaceCompletedAtMs.set(card.space, Date.now());
     const sessionKey = this.sessionKeyByRunId.get(runMeta.run_id);
     const reuseCount = this.reuseCountByRunId.get(runMeta.run_id) ?? 0;
-    const lastContextPercent =
-      this.latestContextPercentByRunId.get(runMeta.run_id) ?? null;
+    const lastContextPercent = this.latestContextPercentByRunId.get(runMeta.run_id) ?? null;
     this.sessionKeyByRunId.delete(runMeta.run_id);
     this.reuseCountByRunId.delete(runMeta.run_id);
     this.latestContextPercentByRunId.delete(runMeta.run_id);
@@ -3201,10 +3073,7 @@ export class KilnOrchestrator {
       sessionKey !== undefined
     ) {
       const latestRunMeta =
-        readYamlOptional(
-          this.store.paths.runYaml(taskId, runDirName),
-          RunMetaSchema,
-        ) ?? runMeta;
+        readYamlOptional(this.store.paths.runYaml(taskId, runDirName), RunMetaSchema) ?? runMeta;
       const backend = this.backendRegistry.get(latestRunMeta.backend_id);
       const caps =
         this.agentCapabilitiesMap.get(latestRunMeta.agent) ??
@@ -3220,8 +3089,7 @@ export class KilnOrchestrator {
         backend &&
         caps?.warmSessionReuse === true &&
         reuseCount < WARM_MAX_CONSECUTIVE_REUSES &&
-        (lastContextPercent === null ||
-          lastContextPercent < WARM_CONTEXT_PERCENT_LIMIT)
+        (lastContextPercent === null || lastContextPercent < WARM_CONTEXT_PERCENT_LIMIT)
       ) {
         this.warmPool.park(
           {
@@ -3292,10 +3160,7 @@ export class KilnOrchestrator {
     }
   }
 
-  private ensureLeaseCommittedForDiskReceipt(
-    taskId: string,
-    runMeta: RunMeta,
-  ): boolean {
+  private ensureLeaseCommittedForDiskReceipt(taskId: string, runMeta: RunMeta): boolean {
     const lease = this.store.getStageLease(taskId);
     if (!lease || lease.run_id !== runMeta.run_id) {
       return false;
@@ -3340,11 +3205,7 @@ export class KilnOrchestrator {
 
   private writeAdvisorRequest(taskId: string, request: AdvisorRequest): void {
     const parsed = AdvisorRequestSchema.parse(request);
-    writeYamlAtomic(
-      this.store.paths.advisorRequestYaml(taskId),
-      parsed,
-      AdvisorRequestSchema,
-    );
+    writeYamlAtomic(this.store.paths.advisorRequestYaml(taskId), parsed, AdvisorRequestSchema);
   }
 
   private readAdvisorRequest(
@@ -3369,18 +3230,13 @@ export class KilnOrchestrator {
     return await computeWorktreeDirtySignature(worktreePath);
   }
 
-  private async detectAdvisorWorkspaceMutation(
-    card: TaskCard,
-    runId: string,
-  ): Promise<boolean> {
+  private async detectAdvisorWorkspaceMutation(card: TaskCard, runId: string): Promise<boolean> {
     const preSig = this.advisorPreRunDirtySignatures.get(runId);
     this.advisorPreRunDirtySignatures.delete(runId);
     if (preSig === undefined || card.workspace_mode !== "git_worktree") {
       return false;
     }
-    const postSig = await this.computeWorktreeDirtySignature(
-      this.getGitWorktreeDir(card.id),
-    );
+    const postSig = await this.computeWorktreeDirtySignature(this.getGitWorktreeDir(card.id));
     return postSig !== preSig;
   }
 
@@ -3391,10 +3247,7 @@ export class KilnOrchestrator {
     const events = this.store.readStateEvents(taskId);
     let lastResetIso = card.created_at;
     for (const ev of events) {
-      if (
-        ev.type === "contract_updated" ||
-        (ev.type === "decided" && ev.action === "resume")
-      ) {
+      if (ev.type === "contract_updated" || (ev.type === "decided" && ev.action === "resume")) {
         if (ev.at > lastResetIso) {
           lastResetIso = ev.at;
         }
@@ -3427,12 +3280,7 @@ export class KilnOrchestrator {
     if (!this.isAdvisorConfigured()) {
       return false;
     }
-    const { counters } = this.computeStageCounters(
-      taskId,
-      card,
-      currentStage,
-      currentRunId,
-    );
+    const { counters } = this.computeStageCounters(taskId, card, currentStage, currentRunId);
     return (
       counters.advisorCalls < card.limits.advisor_calls &&
       counters.totalTokens < card.limits.max_tokens &&
@@ -3519,10 +3367,7 @@ export class KilnOrchestrator {
         if (!parsed.ok) {
           break;
         }
-        const prevFp = computeReviewerFailureFingerprint(
-          parsed.frontmatter,
-          parsed.body,
-        );
+        const prevFp = computeReviewerFailureFingerprint(parsed.frontmatter, parsed.body);
         if (prevFp === currentFp) {
           count += 1;
           continue;
@@ -3546,10 +3391,7 @@ export class KilnOrchestrator {
     ) {
       return { routedToAdvisor: false };
     }
-    const card = readYamlOptional(
-      this.store.paths.cardYaml(input.taskId),
-      TaskCardSchema,
-    );
+    const card = readYamlOptional(this.store.paths.cardYaml(input.taskId), TaskCardSchema);
     if (!card || card.contract_version !== input.contractVersion) {
       return { routedToAdvisor: false };
     }
@@ -3623,11 +3465,7 @@ export class KilnOrchestrator {
       if (r.meta.stage === "advise") {
         advisorCalls += 1;
       }
-      if (
-        r.meta.stage === "review" &&
-        r.meta.run_id !== currentRunId &&
-        r.hasReceipt
-      ) {
+      if (r.meta.stage === "review" && r.meta.run_id !== currentRunId && r.hasReceipt) {
         reviewRounds += 1;
       }
     }
@@ -3744,12 +3582,7 @@ export class KilnOrchestrator {
     });
 
     if (decision.action === "retry_stage") {
-      await this.advanceToNextStage(
-        taskId,
-        stage,
-        guard,
-        runMeta.step_index ?? null,
-      );
+      await this.advanceToNextStage(taskId, stage, guard, runMeta.step_index ?? null);
       return;
     }
 
@@ -3815,10 +3648,7 @@ export class KilnOrchestrator {
       contractVersion: runMeta.contract_version,
     };
 
-    if (
-      signal?.aborted ||
-      !this.isRunStillCurrent(taskId, activeRunId, runMeta.contract_version)
-    ) {
+    if (signal?.aborted || !this.isRunStillCurrent(taskId, activeRunId, runMeta.contract_version)) {
       this.syncCaffeinate();
       return;
     }
@@ -4015,7 +3845,8 @@ export class KilnOrchestrator {
           "-z",
           "-uall",
         ]);
-        const dirtyPaths = statusRaw.length > 0 ? parseGitPorcelainStatusZ(statusRaw).dirtyPaths : [];
+        const dirtyPaths =
+          statusRaw.length > 0 ? parseGitPorcelainStatusZ(statusRaw).dirtyPaths : [];
         const scopeCheck = checkScope(dirtyPaths, card.contract.scope);
         if (!scopeCheck.ok) {
           await this.applyStageFailure(
@@ -4030,67 +3861,56 @@ export class KilnOrchestrator {
           );
           return;
         }
-          let frozenChanged: string[] = [];
-          if (baselineSnapshot && baselineSnapshot.files.length > 0) {
-            const space = this.store.readSpace(card.space);
-            const currentFrozen = computeFrozenSnapshot(
-              worktreePath,
-              space?.freeze_patterns ?? [],
-              card.contract.accept_cmd,
-            );
-            const baselineMap = new Map(baselineSnapshot.files.map((f) => [f.path, f]));
-            frozenChanged = currentFrozen.files
-              .filter((f) => {
-                const prev = baselineMap.get(f.path);
-                return prev && (prev.exists !== f.exists || prev.sha256 !== f.sha256);
-              })
-              .map((f) => f.path);
-          }
-          if (
-            (frozenChanged.length > 0 || parsedReceipt.frontmatter.complexity_escalate) &&
-            card.track === "L1"
-          ) {
-            const escalatedState = this.stateMachine.escalateTrackToL2(
-              taskId,
-              frozenChanged.length > 0 ? "frozen_files_changed" : "complexity_escalate",
-            );
-            this.publishTaskUpdated(taskId, {
-              contractVersion: escalatedState.contractVersion,
-            });
-          }
-          const latestCardForIntermediate = this.store.readTaskCard(taskId);
-          await this.commitVerifiedWorktreeChanges(
-            latestCardForIntermediate,
+        let frozenChanged: string[] = [];
+        if (baselineSnapshot && baselineSnapshot.files.length > 0) {
+          const space = this.store.readSpace(card.space);
+          const currentFrozen = computeFrozenSnapshot(
             worktreePath,
-            runMeta.round,
+            space?.freeze_patterns ?? [],
+            card.contract.accept_cmd,
           );
-          await createGitWorktreeCheckpoint({
-            worktreePath,
+          const baselineMap = new Map(baselineSnapshot.files.map((f) => [f.path, f]));
+          frozenChanged = currentFrozen.files
+            .filter((f) => {
+              const prev = baselineMap.get(f.path);
+              return prev && (prev.exists !== f.exists || prev.sha256 !== f.sha256);
+            })
+            .map((f) => f.path);
+        }
+        if (
+          (frozenChanged.length > 0 || parsedReceipt.frontmatter.complexity_escalate) &&
+          card.track === "L1"
+        ) {
+          const escalatedState = this.stateMachine.escalateTrackToL2(
             taskId,
-            runId: runMeta.run_id,
-            phase: "post",
-            stage: "implement",
-            round: runMeta.round,
-          }).catch(() => {});
-      } else if (
-        parsedReceipt.frontmatter.complexity_escalate &&
-        card.track === "L1"
-      ) {
-        const escalatedState = this.stateMachine.escalateTrackToL2(
-          taskId,
-          "complexity_escalate",
+            frozenChanged.length > 0 ? "frozen_files_changed" : "complexity_escalate",
+          );
+          this.publishTaskUpdated(taskId, {
+            contractVersion: escalatedState.contractVersion,
+          });
+        }
+        const latestCardForIntermediate = this.store.readTaskCard(taskId);
+        await this.commitVerifiedWorktreeChanges(
+          latestCardForIntermediate,
+          worktreePath,
+          runMeta.round,
         );
+        await createGitWorktreeCheckpoint({
+          worktreePath,
+          taskId,
+          runId: runMeta.run_id,
+          phase: "post",
+          stage: "implement",
+          round: runMeta.round,
+        }).catch(() => {});
+      } else if (parsedReceipt.frontmatter.complexity_escalate && card.track === "L1") {
+        const escalatedState = this.stateMachine.escalateTrackToL2(taskId, "complexity_escalate");
         this.publishTaskUpdated(taskId, {
           contractVersion: escalatedState.contractVersion,
         });
       }
 
-      await this.advanceToNextStage(
-        taskId,
-        preNextStep.stage,
-        guard,
-        preNextStep.stepIndex,
-      );
+      await this.advanceToNextStage(taskId, preNextStep.stage, guard, preNextStep.stepIndex);
       return;
     }
 
@@ -4119,10 +3939,7 @@ export class KilnOrchestrator {
       ...(signal !== undefined ? { signal } : {}),
     });
 
-    if (
-      signal?.aborted ||
-      !this.isRunStillCurrent(taskId, activeRunId, card.contract_version)
-    ) {
+    if (signal?.aborted || !this.isRunStillCurrent(taskId, activeRunId, card.contract_version)) {
       this.syncCaffeinate();
       return;
     }
@@ -4173,11 +3990,7 @@ export class KilnOrchestrator {
       worktreePath &&
       fs.existsSync(worktreePath)
     ) {
-      await this.commitVerifiedWorktreeChanges(
-        latestCard,
-        worktreePath,
-        runMeta.round,
-      );
+      await this.commitVerifiedWorktreeChanges(latestCard, worktreePath, runMeta.round);
       if (
         signal?.aborted ||
         !this.isRunStillCurrent(taskId, activeRunId, latestCard.contract_version)
@@ -4259,8 +4072,7 @@ export class KilnOrchestrator {
 
     if (stageDecision.action === "invoke_advisor") {
       assertCanInvokeAdvisor("kernel");
-      const failureFp =
-        computeGateFailureFingerprint(gateResult.report) ?? stageDecision.reason;
+      const failureFp = computeGateFailureFingerprint(gateResult.report) ?? stageDecision.reason;
       this.writeAdvisorRequest(taskId, {
         schema_version: 1,
         contract_version: latestCard.contract_version,
@@ -4281,12 +4093,7 @@ export class KilnOrchestrator {
     }
 
     if (stageDecision.action === "retry_stage") {
-      await this.advanceToNextStage(
-        taskId,
-        stageDecision.stage,
-        guard,
-        runMeta.step_index ?? null,
-      );
+      await this.advanceToNextStage(taskId, stageDecision.stage, guard, runMeta.step_index ?? null);
       return;
     }
 
@@ -4304,9 +4111,7 @@ export class KilnOrchestrator {
       run_id: runMeta.run_id,
       contract_version: latestCard.contract_version,
       reason: stageDecision.reason,
-      category: stageDecision.escalateToL2
-        ? "frozen_test_escalation"
-        : "gate_failure_escalation",
+      category: stageDecision.escalateToL2 ? "frozen_test_escalation" : "gate_failure_escalation",
       question: `任务 "${latestCard.title}" 门禁或实施异常 (${stageDecision.reason})，请选择后续处理方式。`,
       options: [
         {
@@ -4384,10 +4189,7 @@ export class KilnOrchestrator {
     }
 
     const card = this.store.readTaskCard(taskId);
-    const workspaceMutated = await this.detectAdvisorWorkspaceMutation(
-      card,
-      runMeta.run_id,
-    );
+    const workspaceMutated = await this.detectAdvisorWorkspaceMutation(card, runMeta.run_id);
     if (workspaceMutated) {
       await this.applyStageFailure(
         taskId,
@@ -4469,32 +4271,20 @@ export class KilnOrchestrator {
         reviewDecision.targetStage,
         card.track,
       );
-      await this.advanceToNextStage(
-        taskId,
-        reviewDecision.targetStage,
-        guard,
-        restartStepIndex,
-      );
+      await this.advanceToNextStage(taskId, reviewDecision.targetStage, guard, restartStepIndex);
       return;
     }
 
     if (reviewDecision.action === "retry_stage") {
-      await this.advanceToNextStage(
-        taskId,
-        "review",
-        guard,
-        runMeta.step_index ?? null,
-      );
+      await this.advanceToNextStage(taskId, "review", guard, runMeta.step_index ?? null);
       return;
     }
 
     if (reviewDecision.action === "invoke_advisor") {
       assertCanInvokeAdvisor("kernel");
       const failureFp = parsedReceipt.ok
-        ? (computeReviewerFailureFingerprint(
-            parsedReceipt.frontmatter,
-            parsedReceipt.body,
-          ) ?? reviewDecision.reason)
+        ? (computeReviewerFailureFingerprint(parsedReceipt.frontmatter, parsedReceipt.body) ??
+          reviewDecision.reason)
         : reviewDecision.reason;
       this.writeAdvisorRequest(taskId, {
         schema_version: 1,
@@ -4573,10 +4363,7 @@ export class KilnOrchestrator {
     const receiptLoad = this.readReceiptAndCommitLease(taskId, runDirName, runMeta);
     const card = this.store.readTaskCard(taskId);
     const acceptEntry = capturedAcceptEntry ?? this.resolveEffectiveAcceptEntry(card);
-    const workspaceMutated = await this.detectAdvisorWorkspaceMutation(
-      card,
-      runMeta.run_id,
-    );
+    const workspaceMutated = await this.detectAdvisorWorkspaceMutation(card, runMeta.run_id);
     const leaseExpired = !receiptLoad.ok && receiptLoad.reason === "lease_expired";
 
     if (workspaceMutated && !leaseExpired) {
@@ -4756,10 +4543,7 @@ export class KilnOrchestrator {
 
     const receiptLoad = this.readReceiptAndCommitLease(taskId, runDirName, runMeta);
     const card = this.store.readTaskCard(taskId);
-    const workspaceMutated = await this.detectAdvisorWorkspaceMutation(
-      card,
-      runMeta.run_id,
-    );
+    const workspaceMutated = await this.detectAdvisorWorkspaceMutation(card, runMeta.run_id);
     if (workspaceMutated) {
       const pending = PendingDecisionSchema.parse({
         id: `dec-${randomUUID().slice(0, 8)}`,
@@ -4837,12 +4621,7 @@ export class KilnOrchestrator {
 
     if (versionMatches && parsed.frontmatter.recommendation === "escalate_advisor") {
       assertCanInvokeAdvisor("triage");
-      const { counters } = this.computeStageCounters(
-        taskId,
-        card,
-        "triage",
-        runMeta.run_id,
-      );
+      const { counters } = this.computeStageCounters(taskId, card, "triage", runMeta.run_id);
       if (counters.advisorCalls < card.limits.advisor_calls && this.isAdvisorConfigured()) {
         this.writeAdvisorRequest(taskId, {
           schema_version: 1,
@@ -4975,10 +4754,7 @@ export class KilnOrchestrator {
     }
 
     const card = this.store.readTaskCard(taskId);
-    const workspaceMutated = await this.detectAdvisorWorkspaceMutation(
-      card,
-      runMeta.run_id,
-    );
+    const workspaceMutated = await this.detectAdvisorWorkspaceMutation(card, runMeta.run_id);
     const parsed = receiptLoad.ok
       ? parseAndValidateReceipt("advisor", receiptLoad.rawReceipt)
       : null;
@@ -5155,9 +4931,7 @@ export class KilnOrchestrator {
     safeMutationTarget?: "implement" | "review";
   }): void {
     const approachSuffix = input.approach ? `\n- 顾问建议: ${input.approach}` : "";
-    const contextSuffix = input.advisorReq
-      ? `\n- 原触发问题: ${input.advisorReq.question}`
-      : "";
+    const contextSuffix = input.advisorReq ? `\n- 原触发问题: ${input.advisorReq.question}` : "";
     const options =
       input.stage === "plan" || input.stage === "research"
         ? [
@@ -5248,10 +5022,7 @@ export class KilnOrchestrator {
     const card = this.store.readTaskCard(taskId);
     const derivedForPipeline = deriveTaskStatus(card, this.store.readStateEvents(taskId));
     const pipelineStages = getTaskPipelineStages(card, derivedForPipeline.track);
-    const workspaceMutated = await this.detectAdvisorWorkspaceMutation(
-      card,
-      runMeta.run_id,
-    );
+    const workspaceMutated = await this.detectAdvisorWorkspaceMutation(card, runMeta.run_id);
     const advisorReq = this.readAdvisorRequest(taskId, card.contract_version);
     const resumeTargetStage: "implement" | "review" =
       advisorReq?.source_stage === "review" && pipelineStages.includes("review")
@@ -5263,8 +5034,8 @@ export class KilnOrchestrator {
       : null;
     const versionMatches = Boolean(
       parsed?.ok &&
-        parsed.frontmatter.run_id === runMeta.run_id &&
-        parsed.frontmatter.contract_version === card.contract_version,
+      parsed.frontmatter.run_id === runMeta.run_id &&
+      parsed.frontmatter.contract_version === card.contract_version,
     );
 
     if (workspaceMutated) {
@@ -5291,9 +5062,7 @@ export class KilnOrchestrator {
       });
       if (!authGuard.allowed) {
         this.clearAdvisorRequest(taskId);
-        const contextSuffix = advisorReq
-          ? `\n- 原触发问题: ${advisorReq.question}`
-          : "";
+        const contextSuffix = advisorReq ? `\n- 原触发问题: ${advisorReq.question}` : "";
         const pending = PendingDecisionSchema.parse({
           id: `dec-${randomUUID().slice(0, 8)}`,
           task_id: taskId,
@@ -5305,10 +5074,7 @@ export class KilnOrchestrator {
           options: [
             {
               id: "opt-resume-target",
-              label:
-                resumeTargetStage === "review"
-                  ? "按讨论方向继续审查"
-                  : "按讨论方向继续实施",
+              label: resumeTargetStage === "review" ? "按讨论方向继续审查" : "按讨论方向继续实施",
               action: "resume",
               target_stage: resumeTargetStage,
               recommended: true,
@@ -5327,10 +5093,7 @@ export class KilnOrchestrator {
       }
 
       const requestedTargetStage = parsed.frontmatter.target_stage;
-      if (
-        requestedTargetStage !== undefined &&
-        !pipelineStages.includes(requestedTargetStage)
-      ) {
+      if (requestedTargetStage !== undefined && !pipelineStages.includes(requestedTargetStage)) {
         this.clearAdvisorRequest(taskId);
         const pending = PendingDecisionSchema.parse({
           id: `dec-${randomUUID().slice(0, 8)}`,
@@ -5364,8 +5127,7 @@ export class KilnOrchestrator {
         return;
       }
 
-      const nextTargetStage: "implement" | "review" =
-        requestedTargetStage ?? resumeTargetStage;
+      const nextTargetStage: "implement" | "review" = requestedTargetStage ?? resumeTargetStage;
       const now = new Date().toISOString();
       const record = DecisionRecordSchema.parse({
         schema_version: 1,
@@ -5415,9 +5177,7 @@ export class KilnOrchestrator {
     }
 
     this.clearAdvisorRequest(taskId);
-    const originalContext = advisorReq
-      ? `\n- 原触发问题: ${advisorReq.question}`
-      : "";
+    const originalContext = advisorReq ? `\n- 原触发问题: ${advisorReq.question}` : "";
     const pending = PendingDecisionSchema.parse({
       id: `dec-${randomUUID().slice(0, 8)}`,
       task_id: taskId,
@@ -5433,8 +5193,7 @@ export class KilnOrchestrator {
       options: [
         {
           id: "opt-resume-impl",
-          label:
-            resumeTargetStage === "review" ? "按讨论方向继续审查" : "按讨论方向继续实施",
+          label: resumeTargetStage === "review" ? "按讨论方向继续审查" : "按讨论方向继续实施",
           action: "resume",
           target_stage: resumeTargetStage,
           recommended: true,
@@ -5542,7 +5301,8 @@ export class KilnOrchestrator {
           "-z",
           "-uall",
         ]);
-        const dirtyPaths = statusRaw.length > 0 ? parseGitPorcelainStatusZ(statusRaw).dirtyPaths : [];
+        const dirtyPaths =
+          statusRaw.length > 0 ? parseGitPorcelainStatusZ(statusRaw).dirtyPaths : [];
         const scopeCheck = checkScope(dirtyPaths, card.contract.scope);
         if (!scopeCheck.ok) {
           await this.applyStageFailure(
@@ -5558,31 +5318,19 @@ export class KilnOrchestrator {
           return;
         }
         await this.commitVerifiedWorktreeChanges(card, worktreePath, runMeta.round);
-        const postHead = (
-          await runGitCommand(["-C", worktreePath, "rev-parse", "HEAD"])
-        ).trim();
+        const postHead = (await runGitCommand(["-C", worktreePath, "rev-parse", "HEAD"])).trim();
         if (runMeta.input_ref && postHead !== runMeta.input_ref) {
           const derived = deriveTaskStatus(card, this.store.readStateEvents(taskId));
           const verifyIdx = getWorkflowFlatSteps(card, derived.track).findIndex(
             (n) => n.stage === "verify",
           );
-          await this.advanceToNextStage(
-            taskId,
-            "verify",
-            guard,
-            verifyIdx >= 0 ? verifyIdx : null,
-          );
+          await this.advanceToNextStage(taskId, "verify", guard, verifyIdx >= 0 ? verifyIdx : null);
           return;
         }
       }
     }
 
-    await this.advanceToNextStage(
-      taskId,
-      "deliver",
-      guard,
-      runMeta.step_index ?? null,
-    );
+    await this.advanceToNextStage(taskId, "deliver", guard, runMeta.step_index ?? null);
   }
 
   private findCompletedDelivererAfterLastImplement(
@@ -5655,10 +5403,7 @@ export class KilnOrchestrator {
         .reverse()
         .find((r) => r.meta?.stage === "implement");
 
-      const postDeliverRun = this.findCompletedDelivererAfterLastImplement(
-        plan.taskId,
-        plan.card,
-      );
+      const postDeliverRun = this.findCompletedDelivererAfterLastImplement(plan.taskId, plan.card);
       if (postDeliverRun !== null) {
         const card = this.store.readTaskCard(plan.taskId);
         const worktreePath =
@@ -5713,11 +5458,7 @@ export class KilnOrchestrator {
         };
         if (gateResult.passed) {
           if (worktreePath && fs.existsSync(worktreePath)) {
-            await this.commitVerifiedWorktreeChanges(
-              card,
-              worktreePath,
-              postDeliverRun.meta.round,
-            );
+            await this.commitVerifiedWorktreeChanges(card, worktreePath, postDeliverRun.meta.round);
           }
           const derived = deriveTaskStatus(card, this.store.readStateEvents(plan.taskId));
           const deliverIdx = getWorkflowFlatSteps(card, derived.track).findIndex(
@@ -5893,10 +5634,7 @@ export class KilnOrchestrator {
     }
   }
 
-  async triggerTaskRetro(
-    taskId: string,
-    opts?: { useAi?: boolean },
-  ): Promise<TaskRetroReport> {
+  async triggerTaskRetro(taskId: string, opts?: { useAi?: boolean }): Promise<TaskRetroReport> {
     const safeTaskId = assertSafeSegment(taskId, "taskId");
     if (opts?.useAi) {
       return await runAiTaskRetro({

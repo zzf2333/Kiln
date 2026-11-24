@@ -187,7 +187,11 @@ describe("Native TUI launcher, run overview I/O summary & local-only open-tui en
         return { stdout: "", stderr: "" };
       },
     });
-    expect(macRes.cwd).toBe(fs.realpathSync(quotedCwd).startsWith("/private") ? path.resolve(quotedCwd) : path.resolve(quotedCwd));
+    expect(macRes.cwd).toBe(
+      fs.realpathSync(quotedCwd).startsWith("/private")
+        ? path.resolve(quotedCwd)
+        : path.resolve(quotedCwd),
+    );
     expect(macRes.cwdFallback).toBe(false);
     expect(macCalls).toHaveLength(1);
     expect(macCalls[0]!.file).toBe("/usr/bin/open");

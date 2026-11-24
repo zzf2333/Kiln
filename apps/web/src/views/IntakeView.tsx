@@ -55,8 +55,7 @@ export function IntakeView() {
   const [editingBriefRaw, setEditingBriefRaw] = useState(false);
   const [contractEditOpen, setContractEditOpen] = useState(false);
   const [newNonGoalInput, setNewNonGoalInput] = useState("");
-  const [lightboxAttachment, setLightboxAttachment] =
-    useState<TaskAttachment | null>(null);
+  const [lightboxAttachment, setLightboxAttachment] = useState<TaskAttachment | null>(null);
   const [ghOpen, setGhOpen] = useState(false);
   const [ghIssueInput, setGhIssueInput] = useState("");
   const [ghBusy, setGhBusy] = useState(false);
@@ -122,17 +121,14 @@ export function IntakeView() {
   const hasBrief = intakeForm.brief_markdown.trim().length > 0;
   const openQuestions = intakeForm.open_questions;
   const effectiveWorkflow = resolveFormEffectiveWorkflow(intakeForm);
-  const effectiveWorkspaceMode: Exclude<WorkspaceMode, "external_only"> =
-    isProjectMode
-      ? "git_worktree"
-      : intakeForm.workspace_mode === "host_scoped"
-        ? "host_scoped"
-        : "scratch_dir";
-  const rosterValidation = validateBlueprintAgainstRoster(
-    effectiveWorkflow,
-    state.roster.roster,
-    { workspaceMode: effectiveWorkspaceMode },
-  );
+  const effectiveWorkspaceMode: Exclude<WorkspaceMode, "external_only"> = isProjectMode
+    ? "git_worktree"
+    : intakeForm.workspace_mode === "host_scoped"
+      ? "host_scoped"
+      : "scratch_dir";
+  const rosterValidation = validateBlueprintAgainstRoster(effectiveWorkflow, state.roster.roster, {
+    workspaceMode: effectiveWorkspaceMode,
+  });
   const agentStepNodes = flattenWorkflowSteps(effectiveWorkflow).filter(
     (node): node is WorkflowAgentNode => node.kind === "agent",
   );
@@ -159,16 +155,12 @@ export function IntakeView() {
     );
   }
   if (wfToggles.includeAccept) {
-    workflowPreviewParts.push(
-      wfToggles.acceptMode === "approval" ? "人工验收" : "独立验收",
-    );
+    workflowPreviewParts.push(wfToggles.acceptMode === "approval" ? "人工验收" : "独立验收");
   }
   if (wfToggles.deliverApproval) {
     workflowPreviewParts.push("交付审批");
   }
-  workflowPreviewParts.push(
-    wfToggles.hostTwoPhase ? "交付(落盘+终验)" : "交付",
-  );
+  workflowPreviewParts.push(wfToggles.hostTwoPhase ? "交付(落盘+终验)" : "交付");
   const workflowPreview = workflowPreviewParts.join(" → ");
   const targetSummary = isProjectMode
     ? selectedProject
@@ -198,9 +190,7 @@ export function IntakeView() {
       left={
         <>
           <h1 className="tb-title">新需求</h1>
-          <span className="tb-sub">
-            聊清楚就能离开，未聊完保存在 drafts/ 目录
-          </span>
+          <span className="tb-sub">聊清楚就能离开，未聊完保存在 drafts/ 目录</span>
         </>
       }
       right={
@@ -233,11 +223,7 @@ export function IntakeView() {
               新建需求
             </button>
           ) : null}
-          <button
-            type="button"
-            className="btn btn-ghost"
-            onClick={() => store.go("board")}
-          >
+          <button type="button" className="btn btn-ghost" onClick={() => store.go("board")}>
             返回看板
           </button>
         </>
@@ -323,10 +309,7 @@ export function IntakeView() {
                   </div>
                 ) : null}
                 {selectedProject?.repo_path ? (
-                  <span
-                    className="intake-path mono muted"
-                    title={selectedProject.repo_path}
-                  >
+                  <span className="intake-path mono muted" title={selectedProject.repo_path}>
                     {selectedProject.repo_path}
                   </span>
                 ) : null}
@@ -365,26 +348,26 @@ export function IntakeView() {
               <div className="intake-target">
                 <span className="chip">本机与临时 (local)</span>
                 <div className="seg" role="radiogroup" aria-label="本机工作区模式">
-                    <button
-                      type="button"
-                      role="radio"
-                      aria-checked={intakeForm.workspace_mode !== "host_scoped"}
-                      data-workspace-mode="scratch_dir"
-                      className={intakeForm.workspace_mode !== "host_scoped" ? "on" : ""}
-                      onClick={() => store.selectIntakeWorkspaceMode("scratch_dir")}
-                    >
-                      临时沙盒
-                    </button>
-                    <button
-                      type="button"
-                      role="radio"
-                      aria-checked={intakeForm.workspace_mode === "host_scoped"}
-                      data-workspace-mode="host_scoped"
-                      className={intakeForm.workspace_mode === "host_scoped" ? "on" : ""}
-                      onClick={() => store.selectIntakeWorkspaceMode("host_scoped")}
-                    >
-                      本机配置修改
-                    </button>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={intakeForm.workspace_mode !== "host_scoped"}
+                    data-workspace-mode="scratch_dir"
+                    className={intakeForm.workspace_mode !== "host_scoped" ? "on" : ""}
+                    onClick={() => store.selectIntakeWorkspaceMode("scratch_dir")}
+                  >
+                    临时沙盒
+                  </button>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={intakeForm.workspace_mode === "host_scoped"}
+                    data-workspace-mode="host_scoped"
+                    className={intakeForm.workspace_mode === "host_scoped" ? "on" : ""}
+                    onClick={() => store.selectIntakeWorkspaceMode("host_scoped")}
+                  >
+                    本机配置修改
+                  </button>
                 </div>
               </div>
             )}
@@ -598,9 +581,7 @@ export function IntakeView() {
                         前置侦察简报 (RESEARCH.md)
                       </span>
                       <span
-                        className={`chip ${
-                          intakeForm.research_markdown.trim() ? "chip-live" : ""
-                        }`}
+                        className={`chip ${intakeForm.research_markdown.trim() ? "chip-live" : ""}`}
                       >
                         {intakeForm.research_markdown.trim() ? "已就绪" : "待侦察"}
                       </span>
@@ -627,7 +608,8 @@ export function IntakeView() {
                         </div>
                       ) : (
                         <p className="muted" style={{ fontSize: "12px", margin: 0 }}>
-                          发出首条需求时将自动由 researcher 扫描项目结构与测试基线，也可手动点击「刷新侦察」。
+                          发出首条需求时将自动由 researcher
+                          扫描项目结构与测试基线，也可手动点击「刷新侦察」。
                         </p>
                       )}
                     </div>
@@ -665,7 +647,8 @@ export function IntakeView() {
                 ) : (
                   <div className="brief-empty">
                     <p>
-                      在左侧描述你的想法后，立项助手会先只读探索代码库与账本，输出结构化的《产品方案》(BRIEF.md) 并在本页实时预览，提交后直接驱动后续实施与验收。
+                      在左侧描述你的想法后，立项助手会先只读探索代码库与账本，输出结构化的《产品方案》(BRIEF.md)
+                      并在本页实时预览，提交后直接驱动后续实施与验收。
                     </p>
                     <button
                       type="button"
@@ -728,9 +711,7 @@ export function IntakeView() {
                 onUpdateCard={(idx, patch) => store.updateSplitCard(idx, patch)}
                 onAddCard={() => store.addSplitCard()}
                 onRemoveCard={(idx) => store.removeSplitCard(idx)}
-                onCommit={() =>
-                  void store.commitSplitIntakeTasks(intakeForm.split_cards)
-                }
+                onCommit={() => void store.commitSplitIntakeTasks(intakeForm.split_cards)}
                 onCancel={() => store.clearSplitCards()}
               />
             ) : (
@@ -873,8 +854,7 @@ export function IntakeView() {
                             className={`chip-tab ${wfToggles.deliverApproval ? "on" : ""}`}
                             aria-pressed={wfToggles.deliverApproval}
                             disabled={
-                              wfToggles.hostTwoPhase ||
-                              intakeForm.deliver_cmd.trim().length > 0
+                              wfToggles.hostTwoPhase || intakeForm.deliver_cmd.trim().length > 0
                             }
                             onClick={() =>
                               store.updateIntakeWorkflowToggles({
@@ -933,9 +913,7 @@ export function IntakeView() {
                       </dd>
                     </div>
                     <span className="field-mark">
-                      {requiredChecks[2]![1] && requiredChecks[4]![1] ? (
-                        <CheckIcon />
-                      ) : null}
+                      {requiredChecks[2]![1] && requiredChecks[4]![1] ? <CheckIcon /> : null}
                     </span>
                   </div>
                 </dl>
@@ -943,11 +921,7 @@ export function IntakeView() {
                 <div className="pm-assign" aria-label="PM 排兵点将">
                   <div className="contract-head">
                     <span className="contract-title">PM 排兵点将</span>
-                    <span
-                      className={`chip ${
-                        rosterValidation.ok ? "chip-ok" : "chip-bad"
-                      }`}
-                    >
+                    <span className={`chip ${rosterValidation.ok ? "chip-ok" : "chip-bad"}`}>
                       {rosterValidation.ok
                         ? "权限校验通过"
                         : `红线拦截 (${rosterValidation.errors.length})`}
@@ -961,10 +935,7 @@ export function IntakeView() {
                   ) : null}
                   <div className="assign-list">
                     {agentStepNodes.map((node, nodeIdx) => (
-                      <div
-                        key={`${node.stage}-${nodeIdx}`}
-                        className="assign-row"
-                      >
+                      <div key={`${node.stage}-${nodeIdx}`} className="assign-row">
                         <div className="assign-stage">
                           <b>{stageMeta(node.stage).label}</b>
                           {node.rationale ? (
@@ -980,9 +951,7 @@ export function IntakeView() {
                           roster={state.roster}
                           providerStatuses={state.providerStatuses}
                           disabled={intakeBusy}
-                          onSelect={(roleId) =>
-                            store.setIntakeStepRosterRole(node.stage, roleId)
-                          }
+                          onSelect={(roleId) => store.setIntakeStepRosterRole(node.stage, roleId)}
                         />
                       </div>
                     ))}
@@ -998,9 +967,7 @@ export function IntakeView() {
                   <div className="contract-head">
                     <div>
                       <span className="contract-title">PM 执行契约摘要</span>
-                      <span className="mono muted contract-count">
-                        {contractDoneCount} / 3
-                      </span>
+                      <span className="mono muted contract-count">{contractDoneCount} / 3</span>
                     </div>
                     <div className="contract-actions">
                       <button
@@ -1300,9 +1267,7 @@ export function IntakeView() {
 
       <AttachmentLightbox
         attachment={lightboxAttachment}
-        imageUrl={
-          lightboxAttachment ? draftAttachmentUrl(lightboxAttachment) : null
-        }
+        imageUrl={lightboxAttachment ? draftAttachmentUrl(lightboxAttachment) : null}
         onClose={() => setLightboxAttachment(null)}
       />
     </ViewFrame>

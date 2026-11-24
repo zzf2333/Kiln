@@ -125,9 +125,7 @@ function modelsForProvider(
   extraModels: readonly string[] = [],
 ): string[] {
   const set = new Set<string>();
-  const agent = agents.find(
-    (a) => a.id === providerId || a.backendId === providerId,
-  );
+  const agent = agents.find((a) => a.id === providerId || a.backendId === providerId);
   if (agent?.models) {
     for (const m of agent.models) {
       const id = typeof m === "string" ? m : m.id;
@@ -145,17 +143,9 @@ function modelsForProvider(
 
 export function LineupView() {
   const { store, state } = useKilnStore();
-  const {
-    roster,
-    providerStatuses,
-    providersConfig,
-    agents,
-    authMode,
-  } = state;
+  const { roster, providerStatuses, providersConfig, agents, authMode } = state;
 
-  const [rosterDraft, setRosterDraft] = useState<RosterConfig>(() =>
-    cloneRosterConfig(roster),
-  );
+  const [rosterDraft, setRosterDraft] = useState<RosterConfig>(() => cloneRosterConfig(roster));
   const [dirty, setDirty] = useState(false);
   const dirtyRef = useRef(false);
   dirtyRef.current = dirty;
@@ -203,18 +193,14 @@ export function LineupView() {
     providerStatuses.map((p) => [p.provider_id, p]),
   );
   const disabledProviderIds = new Set(
-    (providersConfig?.providers ?? [])
-      .filter((p) => !p.enabled)
-      .map((p) => p.id),
+    (providersConfig?.providers ?? []).filter((p) => !p.enabled).map((p) => p.id),
   );
   const isProviderVisible = (providerId: string): boolean => {
     if (disabledProviderIds.has(providerId)) return false;
     const st = statusByProvider.get(providerId)?.status;
     return st !== "unavailable";
   };
-  const visibleProviders = providerStatuses.filter((p) =>
-    isProviderVisible(p.provider_id),
-  );
+  const visibleProviders = providerStatuses.filter((p) => isProviderVisible(p.provider_id));
 
   const customModelsByProvider = new Map<string, string[]>();
   const quotaBudgetByProvider = new Map<string, number>();
@@ -229,27 +215,29 @@ export function LineupView() {
 
   const providerChoices = Array.from(
     new Map<string, { id: string; label: string; status: ProviderRuntimeStatus["status"] }>([
-      ...visibleProviders.map((p): [string, { id: string; label: string; status: ProviderRuntimeStatus["status"] }] => [
-        p.provider_id,
-        { id: p.provider_id, label: p.label, status: p.status },
-      ]),
+      ...visibleProviders.map(
+        (p): [string, { id: string; label: string; status: ProviderRuntimeStatus["status"] }] => [
+          p.provider_id,
+          { id: p.provider_id, label: p.label, status: p.status },
+        ],
+      ),
       ...agents
         .filter((a) => isProviderVisible(a.id))
-        .map((a): [string, { id: string; label: string; status: ProviderRuntimeStatus["status"] }] => [
-          a.id,
-          {
-            id: a.id,
-            label: a.label ?? a.id,
-            status: statusByProvider.get(a.id)?.status ?? "ready",
-          },
-        ]),
+        .map(
+          (a): [string, { id: string; label: string; status: ProviderRuntimeStatus["status"] }] => [
+            a.id,
+            {
+              id: a.id,
+              label: a.label ?? a.id,
+              status: statusByProvider.get(a.id)?.status ?? "ready",
+            },
+          ],
+        ),
     ]).values(),
   );
 
   const defaultProviderId =
-    providerChoices.find((p) => p.status === "ready")?.id ??
-    providerChoices[0]?.id ??
-    "codex";
+    providerChoices.find((p) => p.status === "ready")?.id ?? providerChoices[0]?.id ?? "codex";
 
   const pickDefaultBinding = (preferredProvider?: string): RosterModelBinding => {
     const pid = preferredProvider || defaultProviderId;
@@ -342,17 +330,19 @@ export function LineupView() {
         ? rosterDraft.roster[planAncId]?.primary
         : undefined;
 
-    const avoidImpl = rosterDraft.heterogeneous_review && avoidStages.includes("implement") && Boolean(impl);
-    const avoidPlan = rosterDraft.heterogeneous_review && avoidStages.includes("plan") && Boolean(planBinding);
+    const avoidImpl =
+      rosterDraft.heterogeneous_review && avoidStages.includes("implement") && Boolean(impl);
+    const avoidPlan =
+      rosterDraft.heterogeneous_review && avoidStages.includes("plan") && Boolean(planBinding);
 
     const sameAsImpl = (b: RosterModelBinding): boolean =>
       Boolean(avoidImpl && impl && b.provider === impl.provider && b.model === impl.model);
     const sameAsPlan = (b: RosterModelBinding): boolean =>
       Boolean(
         avoidPlan &&
-          planBinding &&
-          b.provider === planBinding.provider &&
-          b.model === planBinding.model,
+        planBinding &&
+        b.provider === planBinding.provider &&
+        b.model === planBinding.model,
       );
 
     const isUnavailable = (b: RosterModelBinding): boolean => {
@@ -437,15 +427,11 @@ export function LineupView() {
   };
 
   const selectedEntry = rosterDraft.roster[selectedId];
-  const selectedResolved = selectedEntry
-    ? resolveBindingStatus(selectedId, selectedEntry)
-    : null;
+  const selectedResolved = selectedEntry ? resolveBindingStatus(selectedId, selectedEntry) : null;
 
   const mainDevEntry = rosterDraft.roster.main_dev;
   const reviewerEntry = rosterDraft.roster.reviewer;
-  const revResolved = reviewerEntry
-    ? resolveBindingStatus("reviewer", reviewerEntry)
-    : null;
+  const revResolved = reviewerEntry ? resolveBindingStatus("reviewer", reviewerEntry) : null;
 
   const readyCount = visibleProviders.filter((p) => p.status === "ready").length;
   const enabledCount = roleIds.filter((id) => rosterDraft.roster[id]?.enabled).length;
@@ -537,8 +523,7 @@ export function LineupView() {
       return;
     }
     const stageMeta =
-      CUSTOM_STAGE_OPTIONS.find((o) => o.stage === newRoleStage) ??
-      CUSTOM_STAGE_OPTIONS[0]!;
+      CUSTOM_STAGE_OPTIONS.find((o) => o.stage === newRoleStage) ?? CUSTOM_STAGE_OPTIONS[0]!;
     const prov = newRoleProvider || defaultProviderId;
     const model = newRoleModel.trim() || "default";
 
@@ -605,7 +590,7 @@ export function LineupView() {
             leftLabel = `官方窗口 ${Math.round(p.native_quota.used_percent)}%`;
             rightLabel = p.native_quota.resets_at
               ? `${p.native_quota.resets_at} 重置`
-              : p.native_quota.plan_type ?? "官方配额";
+              : (p.native_quota.plan_type ?? "官方配额");
           } else if (softBudget && softBudget > 0) {
             ratio = Math.min(1, localCost / softBudget);
             barCls = ratio >= 0.85 ? "bad" : ratio >= 0.6 ? "warn" : "acc";
@@ -717,14 +702,10 @@ export function LineupView() {
       <aside className="inspector" aria-label="角色详情">
         <div className="insp-sec">
           <div className="role-head">
-            <ProviderAvatar
-              providerId={isKernelMode ? "kernel" : primaryProvider}
-              large
-            />
+            <ProviderAvatar providerId={isKernelMode ? "kernel" : primaryProvider} large />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="muted" style={{ fontSize: "11.5px", marginBottom: "2px" }}>
-                {STAGE_LABELS[selectedEntry.stage]} ·{" "}
-                <span className="mono">{selectedId}</span>
+                {STAGE_LABELS[selectedEntry.stage]} · <span className="mono">{selectedId}</span>
               </div>
               <input
                 className="role-name-in"
@@ -814,7 +795,9 @@ export function LineupView() {
           />
           <div className="primary-grid" style={{ marginTop: "8px" }}>
             <label className="modal-field" style={{ gap: "4px" }}>
-              <span style={{ fontSize: "11.5px" }} className="muted">模型档位定位</span>
+              <span style={{ fontSize: "11.5px" }} className="muted">
+                模型档位定位
+              </span>
               <select
                 className="select select-sm"
                 aria-label="模型档位定位"
@@ -844,7 +827,9 @@ export function LineupView() {
 
             {selectedEntry.stage === "implement" ? (
               <label className="modal-field" style={{ gap: "4px" }}>
-                <span style={{ fontSize: "11.5px" }} className="muted">失败自动升档目标</span>
+                <span style={{ fontSize: "11.5px" }} className="muted">
+                  失败自动升档目标
+                </span>
                 <select
                   className="select select-sm"
                   aria-label="失败自动升档目标"
@@ -865,7 +850,9 @@ export function LineupView() {
                 >
                   <option value="">不自动升档</option>
                   {roleIds
-                    .filter((rid) => rid !== selectedId && rosterDraft.roster[rid]?.stage === "implement")
+                    .filter(
+                      (rid) => rid !== selectedId && rosterDraft.roster[rid]?.stage === "implement",
+                    )
                     .map((rid) => (
                       <option key={rid} value={rid}>
                         {rosterDraft.roster[rid]!.name} ({rid})
@@ -918,9 +905,7 @@ export function LineupView() {
                     onClick={() =>
                       updateRole(selectedId, {
                         mode: "on_conflict",
-                        ...(selectedEntry.primary
-                          ? {}
-                          : { primary: pickDefaultBinding() }),
+                        ...(selectedEntry.primary ? {} : { primary: pickDefaultBinding() }),
                       })
                     }
                   >
@@ -933,9 +918,7 @@ export function LineupView() {
                   onClick={() =>
                     updateRole(selectedId, {
                       mode: "agent",
-                      ...(selectedEntry.primary
-                        ? {}
-                        : { primary: pickDefaultBinding() }),
+                      ...(selectedEntry.primary ? {} : { primary: pickDefaultBinding() }),
                     })
                   }
                 >
@@ -945,11 +928,14 @@ export function LineupView() {
             </div>
             {isKernelMode ? (
               <div className="kernel-box">
-                当前由确定性内核直接执行（0 Token），不调用订阅模型；若需 Agent 介入或复杂冲突处理，可切换为{selectedEntry.stage === "deliver" ? "「冲突按需」或" : ""} Agent 模式。
+                当前由确定性内核直接执行（0 Token），不调用订阅模型；若需 Agent
+                介入或复杂冲突处理，可切换为
+                {selectedEntry.stage === "deliver" ? "「冲突按需」或" : ""} Agent 模式。
               </div>
             ) : selectedEntry.mode === "on_conflict" ? (
               <div className="kernel-box">
-                平时仍由内核 0 Token 自动合并主分支；仅当 merge_main 遇到合并冲突时唤起绑定模型在隔离工作树解冲突，并强制重过确定性 verify 门禁。
+                平时仍由内核 0 Token 自动合并主分支；仅当 merge_main
+                遇到合并冲突时唤起绑定模型在隔离工作树解冲突，并强制重过确定性 verify 门禁。
               </div>
             ) : null}
           </div>
@@ -972,9 +958,7 @@ export function LineupView() {
                     aria-pressed={active}
                     className={`verifier-cap-btn ${active ? "on" : ""}`}
                     onClick={() => {
-                      const next = active
-                        ? declared.filter((c) => c !== cap)
-                        : [...declared, cap];
+                      const next = active ? declared.filter((c) => c !== cap) : [...declared, cap];
                       if (next.length === 0) return;
                       updateRole(selectedId, { verifier_capabilities: next });
                     }}
@@ -985,7 +969,8 @@ export function LineupView() {
               })}
             </div>
             <p className="muted" style={{ fontSize: "11.5px", marginTop: "6px" }}>
-              仅声明你为此槽位绑定的 Agent 自身具备的能力，用于调度前防配错（Kiln 不内置浏览器驱动）。
+              仅声明你为此槽位绑定的 Agent 自身具备的能力，用于调度前防配错（Kiln
+              不内置浏览器驱动）。
             </p>
           </div>
         ) : null}
@@ -1004,11 +989,7 @@ export function LineupView() {
                   value={primaryProvider}
                   onChange={(e) => {
                     const nextProv = (e.currentTarget as HTMLSelectElement).value;
-                    const nextModels = modelsForProvider(
-                      nextProv,
-                      agents,
-                      customModelsByProvider,
-                    );
+                    const nextModels = modelsForProvider(nextProv, agents, customModelsByProvider);
                     updateRole(selectedId, {
                       primary: {
                         provider: nextProv,
@@ -1037,8 +1018,7 @@ export function LineupView() {
                       primary: {
                         provider: primaryProvider,
                         model: primaryModel || primaryModels[0] || "default",
-                        effort: (e.currentTarget as HTMLSelectElement)
-                          .value as ReasoningEffort,
+                        effort: (e.currentTarget as HTMLSelectElement).value as ReasoningEffort,
                       },
                     })
                   }
@@ -1066,9 +1046,7 @@ export function LineupView() {
                   }
                 >
                   {primaryModels.length === 0 ? (
-                    <option value={primaryModel || "default"}>
-                      {primaryModel || "default"}
-                    </option>
+                    <option value={primaryModel || "default"}>{primaryModel || "default"}</option>
                   ) : (
                     primaryModels.map((m) => (
                       <option key={m} value={m}>
@@ -1215,9 +1193,7 @@ export function LineupView() {
                   className="select select-sm mono"
                   aria-label="备选模型"
                   value={activeFbModel}
-                  onChange={(e) =>
-                    setFbAddModel((e.currentTarget as HTMLSelectElement).value)
-                  }
+                  onChange={(e) => setFbAddModel((e.currentTarget as HTMLSelectElement).value)}
                 >
                   {fbModels.map((m) => (
                     <option key={m} value={m}>
@@ -1243,7 +1219,14 @@ export function LineupView() {
             </div>
 
             <div className="insp-sec">
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px" }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "10px",
+                }}
+              >
                 <div>
                   <div style={{ fontSize: "12.5px", fontWeight: 500 }}>允许全权兜底</div>
                   <div className="muted" style={{ fontSize: "11.5px" }}>
@@ -1270,9 +1253,7 @@ export function LineupView() {
               </div>
               {pendingConfirmFullAccessId === selectedId ? (
                 <div className="confirm-bar" role="alertdialog" aria-label="确认开启全权兜底">
-                  <p>
-                    仅为「{selectedEntry.name}」启用 full-access 兜底？
-                  </p>
+                  <p>仅为「{selectedEntry.name}」启用 full-access 兜底？</p>
                   <div style={{ display: "flex", gap: "8px" }}>
                     <button
                       type="button"
@@ -1369,9 +1350,7 @@ export function LineupView() {
       left={
         <>
           <h1 className="tb-title">编排与阵容</h1>
-          <span className="tb-sub">
-            配好常备角色，PM 每次只点将用得上的那几位
-          </span>
+          <span className="tb-sub">配好常备角色，PM 每次只点将用得上的那几位</span>
         </>
       }
       right={
@@ -1643,29 +1622,43 @@ export function LineupView() {
                                   <span className="rr-name">
                                     {entry.name}
                                     <small>{STAGE_LABELS[entry.stage]}</small>
-                                    <span className={`perm perm-${perm.tone}`}>
-                                      {perm.label}
-                                    </span>
+                                    <span className={`perm perm-${perm.tone}`}>{perm.label}</span>
                                     {entry.tier_hint ? (
-                                      <span className="chip" style={{ height: "18px", fontSize: "10.5px" }}>
+                                      <span
+                                        className="chip"
+                                        style={{ height: "18px", fontSize: "10.5px" }}
+                                      >
                                         {TIER_HINT_LABELS[entry.tier_hint]}
                                       </span>
                                     ) : null}
                                     {entry.escalation_target ? (
-                                      <span className="chip" style={{ height: "18px", fontSize: "10.5px" }}>
-                                        升档→{rosterDraft.roster[entry.escalation_target]?.name ?? entry.escalation_target}
+                                      <span
+                                        className="chip"
+                                        style={{ height: "18px", fontSize: "10.5px" }}
+                                      >
+                                        升档→
+                                        {rosterDraft.roster[entry.escalation_target]?.name ??
+                                          entry.escalation_target}
                                       </span>
                                     ) : null}
-                                    {!entry.enabled ? (() => {
-                                      const ancId = resolveDerivedAncestor(id);
-                                      return ancId ? (
-                                        <span className="chip" style={{ height: "18px", fontSize: "10.5px" }}>
-                                          自动继承 {rosterDraft.roster[ancId]?.name ?? ancId}
-                                        </span>
-                                      ) : null;
-                                    })() : null}
+                                    {!entry.enabled
+                                      ? (() => {
+                                          const ancId = resolveDerivedAncestor(id);
+                                          return ancId ? (
+                                            <span
+                                              className="chip"
+                                              style={{ height: "18px", fontSize: "10.5px" }}
+                                            >
+                                              自动继承 {rosterDraft.roster[ancId]?.name ?? ancId}
+                                            </span>
+                                          ) : null;
+                                        })()
+                                      : null}
                                     {!entry.builtin ? (
-                                      <span className="chip" style={{ height: "18px", fontSize: "10.5px" }}>
+                                      <span
+                                        className="chip"
+                                        style={{ height: "18px", fontSize: "10.5px" }}
+                                      >
                                         自定义
                                       </span>
                                     ) : null}
@@ -1683,7 +1676,9 @@ export function LineupView() {
                                     <>
                                       <ProviderAvatar providerId={used.provider} />
                                       <span>
-                                        {entry.mode === "on_conflict" ? `冲突按需 · ${used.model}` : used.model}
+                                        {entry.mode === "on_conflict"
+                                          ? `冲突按需 · ${used.model}`
+                                          : used.model}
                                       </span>
                                       {used.effort ? <em>{used.effort}</em> : null}
                                     </>
@@ -1700,7 +1695,10 @@ export function LineupView() {
                               </button>
 
                               <span className="rr-switch-wrap">
-                                <label className="switch" title={entry.enabled ? "已启用" : "已停用"}>
+                                <label
+                                  className="switch"
+                                  title={entry.enabled ? "已启用" : "已停用"}
+                                >
                                   <input
                                     type="checkbox"
                                     aria-label={`启用 ${entry.name}`}
@@ -1754,9 +1752,7 @@ export function LineupView() {
                       className="input mono"
                       placeholder="如 perf_auditor"
                       value={newRoleId}
-                      onChange={(e) =>
-                        setNewRoleId((e.currentTarget as HTMLInputElement).value)
-                      }
+                      onChange={(e) => setNewRoleId((e.currentTarget as HTMLInputElement).value)}
                     />
                   </label>
                   <label className="modal-field">
@@ -1766,9 +1762,7 @@ export function LineupView() {
                       className="input"
                       placeholder="如 性能剖析专员"
                       value={newRoleName}
-                      onChange={(e) =>
-                        setNewRoleName((e.currentTarget as HTMLInputElement).value)
-                      }
+                      onChange={(e) => setNewRoleName((e.currentTarget as HTMLInputElement).value)}
                     />
                   </label>
                 </div>
@@ -1781,9 +1775,7 @@ export function LineupView() {
                       aria-label="自定义角色阶段"
                       value={newRoleStage}
                       onChange={(e) =>
-                        setNewRoleStage(
-                          (e.currentTarget as HTMLSelectElement).value as StageId,
-                        )
+                        setNewRoleStage((e.currentTarget as HTMLSelectElement).value as StageId)
                       }
                     >
                       {CUSTOM_STAGE_OPTIONS.map((o) => (
@@ -1821,9 +1813,7 @@ export function LineupView() {
                     aria-label="自定义角色模型"
                     className="input mono"
                     value={newRoleModel}
-                    onChange={(e) =>
-                      setNewRoleModel((e.currentTarget as HTMLInputElement).value)
-                    }
+                    onChange={(e) => setNewRoleModel((e.currentTarget as HTMLInputElement).value)}
                   />
                 </label>
 
@@ -1848,18 +1838,10 @@ export function LineupView() {
               </div>
 
               <div className="modal-foot">
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => setNewRoleOpen(false)}
-                >
+                <button type="button" className="btn" onClick={() => setNewRoleOpen(false)}>
                   取消
                 </button>
-                <button
-                  type="button"
-                  className="btn btn-light"
-                  onClick={handleCreateCustomRole}
-                >
+                <button type="button" className="btn btn-light" onClick={handleCreateCustomRole}>
                   添加角色
                 </button>
               </div>

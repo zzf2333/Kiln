@@ -86,9 +86,7 @@ export class KilnRpcError extends Error {
 /**
  * Type guard verifying a 403 `role_forbidden` error returned by kilnd against `RoleForbiddenErrorSchema`.
  */
-export function isRoleForbiddenError(
-  err: unknown,
-): err is KilnRpcError & {
+export function isRoleForbiddenError(err: unknown): err is KilnRpcError & {
   status: 403;
   code: "role_forbidden";
   payload: RoleForbiddenError;
@@ -183,9 +181,7 @@ function parseRpcHttpJsonBody(
   }
 }
 
-function decodeChunkedResponseBuffer(
-  buf: Buffer,
-): { done: true; body: Buffer } | { done: false } {
+function decodeChunkedResponseBuffer(buf: Buffer): { done: true; body: Buffer } | { done: false } {
   const chunks: Buffer[] = [];
   let totalBytes = 0;
   let offset = 0;
@@ -252,7 +248,11 @@ export async function sendNamedPipeHttpRequest(
     "Connection: close",
   ];
   for (const [key, value] of Object.entries(req.headers)) {
-    if (key.toLowerCase() === "host" || key.toLowerCase() === "content-length" || key.toLowerCase() === "connection") {
+    if (
+      key.toLowerCase() === "host" ||
+      key.toLowerCase() === "content-length" ||
+      key.toLowerCase() === "connection"
+    ) {
       continue;
     }
     if (/[\r\n\0]/.test(key) || /[\r\n\0]/.test(value)) {
@@ -454,7 +454,8 @@ export class KilnSocketRpcClient {
     const validatedTool = McpToolNameSchema.parse(tool);
     const schema = MCP_TOOL_INPUT_SCHEMAS[validatedTool];
     const candidate =
-      input === undefined && (validatedTool === "wb_get_context" || validatedTool === "wb_list_tasks")
+      input === undefined &&
+      (validatedTool === "wb_get_context" || validatedTool === "wb_list_tasks")
         ? {}
         : input;
     const parsedInput = schema.parse(candidate);

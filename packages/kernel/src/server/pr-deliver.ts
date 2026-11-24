@@ -9,7 +9,12 @@ import {
   type GateReport,
 } from "@kiln/protocol";
 import { buildSanitizedEnv } from "../gate/command-runner.js";
-import { assertSafeSegment, deriveTaskStatus, readYamlOptional, type KilnStore } from "../store/index.js";
+import {
+  assertSafeSegment,
+  deriveTaskStatus,
+  readYamlOptional,
+  type KilnStore,
+} from "../store/index.js";
 import { ServerHttpError } from "./errors.js";
 
 const execFileAsync = promisify(execFile);
@@ -117,10 +122,7 @@ function readLatestTaskGate(store: KilnStore, taskId: string): GateReport | null
     .sort((a, b) => a.localeCompare(b));
 
   for (let i = dirs.length - 1; i >= 0; i--) {
-    const gate = readYamlOptional(
-      store.paths.gateYaml(taskId, dirs[i]!),
-      GateReportSchema,
-    );
+    const gate = readYamlOptional(store.paths.gateYaml(taskId, dirs[i]!), GateReportSchema);
     if (gate) {
       return gate;
     }
@@ -132,9 +134,7 @@ function excerptLines(markdown: string, maxChars = 600): string {
   if (!markdown) {
     return "";
   }
-  return markdown.length > maxChars
-    ? `${markdown.slice(0, maxChars).trimEnd()}\n...`
-    : markdown;
+  return markdown.length > maxChars ? `${markdown.slice(0, maxChars).trimEnd()}\n...` : markdown;
 }
 
 /**
@@ -312,11 +312,11 @@ export async function executeCommitPrAction(input: {
   }
 
   if (req.action === "commit") {
-    const statusRes = await execCommand(
-      "git",
-      ["-C", worktreePath, "status", "--porcelain"],
-      { cwd: worktreePath, env: localEnv, timeoutMs: COMMAND_TIMEOUT_MS },
-    );
+    const statusRes = await execCommand("git", ["-C", worktreePath, "status", "--porcelain"], {
+      cwd: worktreePath,
+      env: localEnv,
+      timeoutMs: COMMAND_TIMEOUT_MS,
+    });
     if (statusRes.stdout.trim().length === 0) {
       const headRes = await execCommand("git", ["-C", worktreePath, "rev-parse", "HEAD"], {
         cwd: worktreePath,
@@ -360,11 +360,11 @@ export async function executeCommitPrAction(input: {
   }
 
   if (req.action === "push") {
-    const statusRes = await execCommand(
-      "git",
-      ["-C", worktreePath, "status", "--porcelain"],
-      { cwd: worktreePath, env: localEnv, timeoutMs: COMMAND_TIMEOUT_MS },
-    );
+    const statusRes = await execCommand("git", ["-C", worktreePath, "status", "--porcelain"], {
+      cwd: worktreePath,
+      env: localEnv,
+      timeoutMs: COMMAND_TIMEOUT_MS,
+    });
     if (statusRes.stdout.trim().length > 0) {
       throw new ServerHttpError(409, {
         error: "dirty_worktree",
@@ -387,10 +387,7 @@ export async function executeCommitPrAction(input: {
       ["-C", worktreePath, "ls-remote", "--heads", "origin", targetRef],
       { cwd: worktreePath, env: remoteEnv, timeoutMs: COMMAND_TIMEOUT_MS },
     );
-    const remoteSha = lsRemote.stdout
-      .trim()
-      .split(/\s+/)[0]
-      ?.trim();
+    const remoteSha = lsRemote.stdout.trim().split(/\s+/)[0]?.trim();
     if (remoteSha && remoteSha === localHead) {
       return {
         ok: true,

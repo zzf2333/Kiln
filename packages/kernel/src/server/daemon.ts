@@ -29,11 +29,7 @@ import {
 import { TaskStateMachine } from "../state/index.js";
 import { KilnStore, writeFileAtomic, type AcquireStageLeaseResult } from "../store/index.js";
 import { CaffeinateController } from "./caffeinate.js";
-import {
-  KilnChatEngine,
-  type ChatResponder,
-  type McpCommandSpec,
-} from "./chat.js";
+import { KilnChatEngine, type ChatResponder, type McpCommandSpec } from "./chat.js";
 import { ServerHttpError } from "./errors.js";
 import {
   createHttpApiApp,
@@ -41,11 +37,7 @@ import {
   type RemoteRuntimeStatus,
 } from "./http-api.js";
 import type { IpcTransportMode } from "./ipc-http.js";
-import {
-  McpRpcServer,
-  type McpRpcHttpRequest,
-  type McpRpcHttpResponse,
-} from "./mcp-rpc.js";
+import { McpRpcServer, type McpRpcHttpRequest, type McpRpcHttpResponse } from "./mcp-rpc.js";
 import {
   KilnOrchestrator,
   type DeliverHandler,
@@ -59,10 +51,7 @@ import {
 import { LiveRateTracker } from "./rate-tracker.js";
 import { RemoteAuthManager } from "./remote-auth.js";
 import { RemoteNotifier } from "./remote-notify.js";
-import {
-  inspectTailscaleStatus,
-  type TailscaleExecFileFn,
-} from "./remote-tailscale.js";
+import { inspectTailscaleStatus, type TailscaleExecFileFn } from "./remote-tailscale.js";
 import { syncModelPricing as syncModelPricingImpl } from "./pricing-sync.js";
 import type { PrDeliverExecFn } from "./pr-deliver.js";
 import { KilnScriptRunner } from "./script-runner.js";
@@ -223,8 +212,7 @@ export class KilndServer {
     this.providerHealth = options.providerHealth ?? new ProviderHealthTracker();
     this.sseHub = options.sseHub ?? new SseHub();
     this.scriptRunner =
-      options.scriptRunner ??
-      new KilnScriptRunner({ store: this.store, sseHub: this.sseHub });
+      options.scriptRunner ?? new KilnScriptRunner({ store: this.store, sseHub: this.sseHub });
     this.caffeinate = options.caffeinate ?? new CaffeinateController();
     this.remoteAuth =
       options.remoteAuth ??
@@ -237,12 +225,8 @@ export class KilndServer {
       options.remoteNotifier ??
       new RemoteNotifier({
         store: this.store,
-        ...(options.notifyFetchImpl !== undefined
-          ? { fetchImpl: options.notifyFetchImpl }
-          : {}),
-        ...(options.notifyTimeoutMs !== undefined
-          ? { timeoutMs: options.notifyTimeoutMs }
-          : {}),
+        ...(options.notifyFetchImpl !== undefined ? { fetchImpl: options.notifyFetchImpl } : {}),
+        ...(options.notifyTimeoutMs !== undefined ? { timeoutMs: options.notifyTimeoutMs } : {}),
       });
     this.pendingDecisions = new PendingDecisionStore(this.store);
     this.enableOrchestrator = options.enableOrchestrator ?? false;
@@ -308,9 +292,7 @@ export class KilndServer {
       ...(options.mcpServerCommand !== undefined
         ? { mcpServerCommand: options.mcpServerCommand }
         : {}),
-      ...(options.chatResponder !== undefined
-        ? { chatResponder: options.chatResponder }
-        : {}),
+      ...(options.chatResponder !== undefined ? { chatResponder: options.chatResponder } : {}),
       ...(options.extensionsHomeDir !== undefined
         ? { extensionsHomeDir: options.extensionsHomeDir }
         : {}),
@@ -329,9 +311,7 @@ export class KilndServer {
       ...(options.mcpServerCommand !== undefined
         ? { mcpServerCommand: options.mcpServerCommand }
         : {}),
-      ...(options.deliverHandler !== undefined
-        ? { deliverHandler: options.deliverHandler }
-        : {}),
+      ...(options.deliverHandler !== undefined ? { deliverHandler: options.deliverHandler } : {}),
       ...(options.approvalHandler !== undefined
         ? { approvalHandler: options.approvalHandler }
         : {}),
@@ -347,9 +327,7 @@ export class KilndServer {
       ...(options.stallCheckIntervalMs !== undefined
         ? { stallCheckIntervalMs: options.stallCheckIntervalMs }
         : {}),
-      ...(options.orchestratorNowMs !== undefined
-        ? { nowMs: options.orchestratorNowMs }
-        : {}),
+      ...(options.orchestratorNowMs !== undefined ? { nowMs: options.orchestratorNowMs } : {}),
     });
 
     const inspectTailscale = (remotePort: number): Promise<TailscaleStatusResponse> =>
@@ -373,27 +351,17 @@ export class KilndServer {
       rateTracker: this.rateTracker,
       chatEngine: this.chatEngine,
       scriptRunner: this.scriptRunner,
-      ...(options.prDeliverExec !== undefined
-        ? { prDeliverExec: options.prDeliverExec }
-        : {}),
+      ...(options.prDeliverExec !== undefined ? { prDeliverExec: options.prDeliverExec } : {}),
       remoteAuth: this.remoteAuth,
       remoteNotifier: this.remoteNotifier,
       getLocalPort: () => this.activeAddress?.port ?? this.requestedPort,
       getRemoteRuntimeStatus: () => this.getRemoteRuntimeStatus(),
       onRemoteConfigUpdated: (nextConfig) => this.applyRemoteConfig(nextConfig),
       inspectTailscale,
-      ...(options.discoverSpaces !== undefined
-        ? { discoverSpaces: options.discoverSpaces }
-        : {}),
-      ...(options.pickDirectory !== undefined
-        ? { pickDirectory: options.pickDirectory }
-        : {}),
-      ...(options.revealPath !== undefined
-        ? { revealPath: options.revealPath }
-        : {}),
-      ...(options.openRunTui !== undefined
-        ? { openRunTui: options.openRunTui }
-        : {}),
+      ...(options.discoverSpaces !== undefined ? { discoverSpaces: options.discoverSpaces } : {}),
+      ...(options.pickDirectory !== undefined ? { pickDirectory: options.pickDirectory } : {}),
+      ...(options.revealPath !== undefined ? { revealPath: options.revealPath } : {}),
+      ...(options.openRunTui !== undefined ? { openRunTui: options.openRunTui } : {}),
       ...(options.extensionsHomeDir !== undefined
         ? { extensionsHomeDir: options.extensionsHomeDir }
         : {}),
@@ -418,13 +386,11 @@ export class KilndServer {
         this.orchestrator.handleTaskTerminatedRetro(taskId);
         void this.orchestrator.wake();
       },
-      triggerTaskRetro: (taskId, useAi) =>
-        this.orchestrator.triggerTaskRetro(taskId, { useAi }),
+      triggerTaskRetro: (taskId, useAi) => this.orchestrator.triggerTaskRetro(taskId, { useAi }),
       onBeforeDecisionApply: async (taskId) => {
         await this.orchestrator.abortActiveRun(taskId);
       },
-      getActiveAcceptEnv: (taskId) =>
-        this.orchestrator.getActiveAcceptEnvSnapshot(taskId),
+      getActiveAcceptEnv: (taskId) => this.orchestrator.getActiveAcceptEnvSnapshot(taskId),
       onSettingsUpdated: async (section) => {
         if (section === "roles" || section === "roster") {
           void this.orchestrator.wake();
@@ -734,9 +700,7 @@ export class KilndServer {
       }
 
       this.store.writeConfig("remote", nextConfig);
-      this.caffeinate.setRemoteKeepAwakeOnAc(
-        nextConfig.enabled && nextConfig.keep_awake_on_ac,
-      );
+      this.caffeinate.setRemoteKeepAwakeOnAc(nextConfig.enabled && nextConfig.keep_awake_on_ac);
     };
 
     const nextPromise = this.remoteConfigQueue.then(run, run);
@@ -783,9 +747,7 @@ export class KilndServer {
       await this.orchestrator.reconcileOnStart();
     }
     const remoteConfig = this.remoteAuth.readRemoteConfig();
-    this.caffeinate.setRemoteKeepAwakeOnAc(
-      remoteConfig.enabled && remoteConfig.keep_awake_on_ac,
-    );
+    this.caffeinate.setRemoteKeepAwakeOnAc(remoteConfig.enabled && remoteConfig.keep_awake_on_ac);
     this.syncCaffeinate();
 
     const instanceShutdownToken =
@@ -802,11 +764,9 @@ export class KilndServer {
     }
 
     try {
-      writeFileAtomic(
-        this.store.paths.shutdownTokenFile,
-        `${instanceShutdownToken}\n`,
-        { mode: 0o600 },
-      );
+      writeFileAtomic(this.store.paths.shutdownTokenFile, `${instanceShutdownToken}\n`, {
+        mode: 0o600,
+      });
     } catch (err) {
       this.caffeinate.stop();
       this.removeShutdownTokenFileIfOwned();
@@ -1080,11 +1040,7 @@ export class KilndServer {
       );
     }
 
-    const leaseResult = this.store.persistRunBeforeDispatch(
-      runMeta,
-      runDirName,
-      handoffMarkdown,
-    );
+    const leaseResult = this.store.persistRunBeforeDispatch(runMeta, runDirName, handoffMarkdown);
     if (leaseResult.acquired) {
       this.syncCaffeinate();
       this.sseHub.publish({

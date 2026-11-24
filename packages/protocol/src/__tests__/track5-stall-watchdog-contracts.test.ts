@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  AdvisorRequestSchema,
-  LimitsConfigSchema,
-  RunEventSchema,
-} from "../index.js";
+import { AdvisorRequestSchema, LimitsConfigSchema, RunEventSchema } from "../index.js";
 
 describe("Track 5 [B12.1] Run heartbeat stall watchdog protocol contracts", () => {
   it("validates LimitsConfig.stall_timeout_sec boundaries (0 disables watchdog, 1..86400 enables, rejects invalid)", () => {
@@ -22,9 +18,7 @@ describe("Track 5 [B12.1] Run heartbeat stall watchdog protocol contracts", () =
     });
     expect(enabledCfg.stall_timeout_sec).toBe(300);
 
-    expect(() =>
-      LimitsConfigSchema.parse({ schema_version: 1, stall_timeout_sec: -1 }),
-    ).toThrow();
+    expect(() => LimitsConfigSchema.parse({ schema_version: 1, stall_timeout_sec: -1 })).toThrow();
     expect(() =>
       LimitsConfigSchema.parse({ schema_version: 1, stall_timeout_sec: 86_401 }),
     ).toThrow();

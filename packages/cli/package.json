@@ -2,18 +2,16 @@
   "name": "@zzf2333/kiln",
   "version": "0.0.5",
   "description": "Local-first autonomous developer workbench and kilnd CLI",
-  "license": "Apache-2.0",
   "homepage": "https://github.com/zzf2333/Kiln",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/zzf2333/Kiln.git"
   },
-  "type": "module",
-  "engines": {
-    "node": ">=22.0.0"
-  },
-  "publishConfig": {
-    "access": "public"
+  "bin": {
+    "kiln": "./dist/bin.js",
+    "kiln-mcp": "./mcp/dist/bin.js",
+    "kl": "./dist/bin.js"
   },
   "files": [
     "dist",
@@ -22,16 +20,15 @@
     "README.md",
     "LICENSE"
   ],
-  "bin": {
-    "kiln": "./dist/bin.js",
-    "kl": "./dist/bin.js",
-    "kiln-mcp": "./mcp/dist/bin.js"
-  },
+  "type": "module",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "vp pack && node scripts/stage-assets.mjs",
@@ -51,5 +48,8 @@
     "@kiln/mcp": "workspace:*",
     "@kiln/protocol": "workspace:*",
     "@kiln/web": "workspace:*"
+  },
+  "engines": {
+    "node": ">=22.0.0"
   }
 }

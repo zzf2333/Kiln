@@ -508,10 +508,7 @@ function extractFirstMeaningfulSectionLine(body: string, headings: readonly stri
 
 function isGateReportPassed(gate: GateReport): boolean {
   return (
-    gate.schema_ok &&
-    gate.scope_ok &&
-    gate.artifacts_ok !== false &&
-    gate.accept_exit_code === 0
+    gate.schema_ok && gate.scope_ok && gate.artifacts_ok !== false && gate.accept_exit_code === 0
   );
 }
 
@@ -523,8 +520,7 @@ export function buildRunOverviewSummary(input: BuildRunOverviewInput): {
   ioSummary: RunIoSummary;
   antiDriftSummary: RunAntiDriftSummary;
 } {
-  const { card, meta, receipt, gate, events, usageTurns, pricing, activeRunId, taskStatus } =
-    input;
+  const { card, meta, receipt, gate, events, usageTurns, pricing, activeRunId, taskStatus } = input;
 
   let providerSessionId = meta?.session_ref.meta?.providerSessionId?.trim() || null;
   let providerSessionPath = meta?.session_ref.meta?.providerSessionPath?.trim() || null;
@@ -569,8 +565,7 @@ export function buildRunOverviewSummary(input: BuildRunOverviewInput): {
   const runUsage = computeUsageSnapshot(runUsageRows, pricing);
   const gatePassed = gate ? isGateReportPassed(gate) : null;
   const exitEv = [...events].reverse().find((e) => e.kind === "exit");
-  const isActive =
-    taskStatus === "running" && meta !== null && meta.run_id === activeRunId;
+  const isActive = taskStatus === "running" && meta !== null && meta.run_id === activeRunId;
 
   let outputVerdict = "完成";
   let outputSummary = "";
@@ -592,8 +587,7 @@ export function buildRunOverviewSummary(input: BuildRunOverviewInput): {
 
       const verdict = typeof fm.verdict === "string" ? fm.verdict : "";
       const outcome = typeof fm.outcome === "string" ? fm.outcome : "";
-      const recommendation =
-        typeof fm.recommendation === "string" ? fm.recommendation : "";
+      const recommendation = typeof fm.recommendation === "string" ? fm.recommendation : "";
       const chosen = typeof fm.chosen_approach === "string" ? fm.chosen_approach : "";
 
       if (verdict === "changes_requested" || verdict === "fail") {
@@ -660,7 +654,9 @@ export function buildRunOverviewSummary(input: BuildRunOverviewInput): {
   const alignmentPoints: string[] = [
     `目标对齐: ${card.contract.goal}`,
     ...(card.contract.non_goals && card.contract.non_goals.length > 0
-      ? [`非目标护栏: 已锁定 ${card.contract.non_goals.length} 项（如：${card.contract.non_goals[0]}）`]
+      ? [
+          `非目标护栏: 已锁定 ${card.contract.non_goals.length} 项（如：${card.contract.non_goals[0]}）`,
+        ]
       : []),
     ...(changedPaths.length > 0
       ? [`改动文件 (${changedPaths.length}): ${changedPaths.slice(0, 3).join(", ")}`]

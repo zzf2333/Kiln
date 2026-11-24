@@ -7,17 +7,9 @@ import { MiniRail } from "../components/MiniRail";
 import { ViewFrame } from "../components/ViewFrame";
 import { isProjectSpace, useKilnStore } from "../state/store";
 
-export function HostStagedDiffSection({
-  detail,
-}: {
-  detail: TaskDetailResponse | undefined;
-}) {
+export function HostStagedDiffSection({ detail }: { detail: TaskDetailResponse | undefined }) {
   const diffs = detail?.hostStagedDiffs;
-  if (
-    detail?.hostBackup?.status !== "staged_awaiting_approval" ||
-    !diffs ||
-    diffs.length === 0
-  ) {
+  if (detail?.hostBackup?.status !== "staged_awaiting_approval" || !diffs || diffs.length === 0) {
     return null;
   }
 
@@ -37,9 +29,7 @@ export function HostStagedDiffSection({
               <span className="staged-diff-path mono" title={entry.targetPath}>
                 {entry.targetPath}
               </span>
-              {entry.truncated ? (
-                <span className="staged-tag is-trunc">内容已截断</span>
-              ) : null}
+              {entry.truncated ? <span className="staged-tag is-trunc">内容已截断</span> : null}
             </div>
             <pre className="mono staged-diff-pre">{entry.diff}</pre>
           </div>
@@ -54,15 +44,11 @@ export function ResolveView() {
   const [chatInput, setChatInput] = useState("");
 
   const taskId = state.taskId;
-  const taskSummary = taskId
-    ? state.tasks.find((t) => t.id === taskId)
-    : undefined;
+  const taskSummary = taskId ? state.tasks.find((t) => t.id === taskId) : undefined;
   const detail = taskId ? state.taskDetails[taskId] : undefined;
   const pendingDecision =
     detail?.pendingDecision ??
-    (taskId
-      ? state.pendingDecisions.find((d) => d.task_id === taskId) ?? null
-      : null);
+    (taskId ? (state.pendingDecisions.find((d) => d.task_id === taskId) ?? null) : null);
 
   const customMessages = taskId ? state.resolveMessagesByTask[taskId] : undefined;
   const messages =
@@ -82,11 +68,7 @@ export function ResolveView() {
     return (
       <ViewFrame
         left={
-          <button
-            type="button"
-            className="btn btn-ghost"
-            onClick={() => store.go("board")}
-          >
+          <button type="button" className="btn btn-ghost" onClick={() => store.go("board")}>
             返回总览
           </button>
         }
@@ -130,11 +112,7 @@ export function ResolveView() {
           >
             {state.desktopDraftCollapsed ? "展开拍板栏" : "收起侧栏"}
           </button>
-          <button
-            type="button"
-            className="btn btn-ghost"
-            onClick={() => store.openTask(taskId)}
-          >
+          <button type="button" className="btn btn-ghost" onClick={() => store.openTask(taskId)}>
             返回详情
           </button>
         </>
@@ -200,12 +178,9 @@ export function ResolveView() {
                     </div>
                     <div>
                       <dt>可改范围</dt>
-                      <dd className="mono">
-                        {detail.card.contract.scope.join("\n")}
-                      </dd>
+                      <dd className="mono">{detail.card.contract.scope.join("\n")}</dd>
                     </div>
-                    {detail.card.contract.non_goals &&
-                    detail.card.contract.non_goals.length > 0 ? (
+                    {detail.card.contract.non_goals && detail.card.contract.non_goals.length > 0 ? (
                       <div>
                         <dt>明确不做</dt>
                         <dd>

@@ -271,7 +271,10 @@ export interface BootstrapResponse {
   budget?: GlobalBudgetStatus;
   runningCount: number;
   mergeQueue?: MergeQueueEntry[];
-  ledgers?: Record<string, LedgerFile> | LedgerFile[] | Array<{ space: string; entries: LedgerEntry[] }>;
+  ledgers?:
+    | Record<string, LedgerFile>
+    | LedgerFile[]
+    | Array<{ space: string; entries: LedgerEntry[] }>;
   agents?: AgentDescriptorInfo[];
   backends?: BackendConnectionInfo[];
   providerUsage?: Record<string, RawProviderUsageEntry> | RawProviderUsageEntry[];

@@ -188,7 +188,13 @@ function resolveImplementRosterRole(
     const hasPlanMd =
       fs.existsSync(planPath) && fs.readFileSync(planPath, "utf8").trim().length > 0;
     const fastFix = rosterConfig.roster.fast_fix;
-    if (prefersFast && hasPlanMd && fastFix?.enabled && fastFix.mode === "agent" && fastFix.primary) {
+    if (
+      prefersFast &&
+      hasPlanMd &&
+      fastFix?.enabled &&
+      fastFix.mode === "agent" &&
+      fastFix.primary
+    ) {
       candidateId = "fast_fix";
     } else {
       candidateId = "main_dev";
@@ -202,7 +208,12 @@ function resolveImplementRosterRole(
   }
 
   const targetEntry = rosterConfig.roster[escalationTargetId];
-  if (!targetEntry || !targetEntry.enabled || targetEntry.mode !== "agent" || !targetEntry.primary) {
+  if (
+    !targetEntry ||
+    !targetEntry.enabled ||
+    targetEntry.mode !== "agent" ||
+    !targetEntry.primary
+  ) {
     return { rosterRoleId: candidateId };
   }
 
@@ -331,10 +342,7 @@ function computeBlockedDownstreamCounts(
   return counts;
 }
 
-function isReadOnlyStage(
-  stage: StageId | null,
-  perm?: RosterPermission,
-): boolean {
+function isReadOnlyStage(stage: StageId | null, perm?: RosterPermission): boolean {
   if (
     stage === "plan" ||
     stage === "research" ||
@@ -372,12 +380,7 @@ function computeNextStageAndRound(
   if (derived.stage === "triage" || derived.stage === "advise") {
     stage = derived.stage;
   } else {
-    const resolved = resolveWorkflowStepAt(
-      card,
-      derived.stepIndex,
-      derived.stage,
-      derived.track,
-    );
+    const resolved = resolveWorkflowStepAt(card, derived.stepIndex, derived.stage, derived.track);
     if (resolved) {
       stage = resolved.node.stage;
       stepIndex = resolved.stepIndex;
@@ -440,9 +443,7 @@ export class KilnScheduler {
   private readonly onWaitingAttentionBlocked:
     | ((event: WaitingAttentionBlockedEvent) => void)
     | undefined;
-  private readonly onRateLimitDeferred:
-    | ((event: RateLimitDeferredEvent) => void)
-    | undefined;
+  private readonly onRateLimitDeferred: ((event: RateLimitDeferredEvent) => void) | undefined;
   private readonly onDispatchError: ((taskId: string, error: unknown) => void) | undefined;
 
   private stopped = false;
@@ -459,9 +460,7 @@ export class KilnScheduler {
   constructor(options: KilnSchedulerOptions) {
     this.store = options.store;
     void options.stateMachine;
-    this.limitsOverride = options.limits
-      ? LimitsConfigSchema.parse(options.limits)
-      : undefined;
+    this.limitsOverride = options.limits ? LimitsConfigSchema.parse(options.limits) : undefined;
     this.rolesConfigOverride = options.rolesConfig;
     this.rateLimitTracker = options.rateLimitTracker ?? new RateLimitTracker();
     this.providerHealth = options.providerHealth;
@@ -492,16 +491,8 @@ export class KilnScheduler {
    * Records a backend/agent/model rate-limit cooldown and schedules the single earliest
    * wakeup timer without counting as a stage failure, retry, or circuit-breaker trip.
    */
-  markRateLimited(
-    key: RateLimitKey,
-    retryAfterMs: number,
-    nowMs: number = this.now(),
-  ): number {
-    const cooldownUntilMs = this.rateLimitTracker.markRateLimited(
-      key,
-      retryAfterMs,
-      nowMs,
-    );
+  markRateLimited(key: RateLimitKey, retryAfterMs: number, nowMs: number = this.now()): number {
+    const cooldownUntilMs = this.rateLimitTracker.markRateLimited(key, retryAfterMs, nowMs);
     if (!this.stopped) {
       this.syncCooldownTimer(nowMs);
     }
@@ -659,9 +650,7 @@ export class KilnScheduler {
 
       const inFlight = this.inFlightDispatches.get(taskId);
       const hasActiveLease =
-        activeLeaseTaskIds.has(taskId) &&
-        !isTerminalStatus(status) &&
-        status !== "paused";
+        activeLeaseTaskIds.has(taskId) && !isTerminalStatus(status) && status !== "paused";
       const isRunning = status === "running" || hasActiveLease || inFlight !== undefined;
 
       if (isRunning) {
@@ -689,11 +678,7 @@ export class KilnScheduler {
               scope: snap.card.contract.scope,
               plannedCanonicalPaths:
                 inFlight?.hostTargets ??
-                resolveTaskPlannedHostPaths(
-                  snap.card,
-                  this.store,
-                  this.resolveHostTargetPaths,
-                ),
+                resolveTaskPlannedHostPaths(snap.card, this.store, this.resolveHostTargetPaths),
             });
           }
         }
@@ -749,10 +734,7 @@ export class KilnScheduler {
           const blocked = blockedCounts.get(snap.card.id) ?? 0;
           const waitIso = snap.derived.updatedAt || snap.card.created_at;
           const waitMs = Date.parse(waitIso);
-          if (
-            Number.isFinite(waitMs) &&
-            nowMs - waitMs >= this.cacheAffinityStarvationMs
-          ) {
+          if (Number.isFinite(waitMs) && nowMs - waitMs >= this.cacheAffinityStarvationMs) {
             starvingGroups.add(`${prio}:${blocked}`);
           }
         }
@@ -776,8 +758,7 @@ export class KilnScheduler {
 
       if (this.getCacheAffinity && !starvingGroups.has(`${prioA}:${blockedA}`)) {
         const affDiff =
-          (candidateAffinity.get(b.card.id) ?? 0) -
-          (candidateAffinity.get(a.card.id) ?? 0);
+          (candidateAffinity.get(b.card.id) ?? 0) - (candidateAffinity.get(a.card.id) ?? 0);
         if (affDiff !== 0) {
           return affDiff;
         }
@@ -799,8 +780,7 @@ export class KilnScheduler {
 
     for (const snap of candidates) {
       const taskId = snap.card.id;
-      const effectivePriority =
-        effectivePriorities.get(taskId) ?? snap.derived.priority;
+      const effectivePriority = effectivePriorities.get(taskId) ?? snap.derived.priority;
 
       // Attention gate: when waitingCount >= max_waiting_wip, pause dispatching P2/P3 tasks.
       if (
@@ -838,11 +818,7 @@ export class KilnScheduler {
       let roleAssignment: ResolvedRoleAssignment | null = null;
 
       try {
-        const resolvedStage = computeNextStageAndRound(
-          snap.card,
-          snap.derived,
-          snap.events,
-        );
+        const resolvedStage = computeNextStageAndRound(snap.card, snap.derived, snap.events);
         stage = resolvedStage.stage;
         stepIndex = resolvedStage.stepIndex;
         stageNode = resolvedStage.stageNode;
@@ -878,17 +854,10 @@ export class KilnScheduler {
           role = getRoleForStage(stage);
         }
 
-        if (
-          rosterConfig !== null &&
-          role !== null &&
-          stage !== "verify" &&
-          stage !== "deliver"
-        ) {
+        if (rosterConfig !== null && role !== null && stage !== "verify" && stage !== "deliver") {
           const workflowNodes = getWorkflowFlatSteps(snap.card, snap.derived.track);
           const effectiveNode =
-            stageNode ??
-            workflowNodes.find((n) => n.kind === "agent" && n.stage === stage) ??
-            null;
+            stageNode ?? workflowNodes.find((n) => n.kind === "agent" && n.stage === stage) ?? null;
           const explicitRosterRoleId =
             effectiveNode?.kind === "agent" && effectiveNode.roster_role
               ? effectiveNode.roster_role
@@ -950,15 +919,9 @@ export class KilnScheduler {
           if (stage === "research" && roleAssignment === null) {
             role = null;
           }
-        } else if (
-          rolesConfig &&
-          role !== null &&
-          stage !== "verify" &&
-          stage !== "deliver"
-        ) {
+        } else if (rolesConfig && role !== null && stage !== "verify" && stage !== "deliver") {
           const shouldResolveRole =
-            (stage !== "accept" && stage !== "plan") ||
-            rolesConfig.roles[role] !== undefined;
+            (stage !== "accept" && stage !== "plan") || rolesConfig.roles[role] !== undefined;
           if (shouldResolveRole) {
             roleAssignment = resolveRoleAssignment(
               rolesConfig,
@@ -1110,11 +1073,7 @@ export class KilnScheduler {
     );
 
     const endNowMs = this.now();
-    if (
-      result.deferredByRateLimit.some(
-        (ev) => ev.cooldownUntilMs <= endNowMs,
-      )
-    ) {
+    if (result.deferredByRateLimit.some((ev) => ev.cooldownUntilMs <= endNowMs)) {
       // Re-run immediately if a deferred task's cooldown already expired during executeTick,
       // otherwise syncCooldownTimer(endNowMs) would clear the timer without re-waking.
       this.dirty = true;

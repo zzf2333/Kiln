@@ -23,10 +23,7 @@ import {
   normalizeRepoRelativePath,
   type FrozenSnapshot,
 } from "./scope.js";
-import {
-  verifyScratchWorkspace,
-  type VerifyScratchWorkspaceResult,
-} from "./scratch-dir.js";
+import { verifyScratchWorkspace, type VerifyScratchWorkspaceResult } from "./scratch-dir.js";
 
 export interface RunVerificationGateInput {
   taskId: string;
@@ -169,8 +166,7 @@ function checkHostScopedTargets(
   const invalidPaths: string[] = [];
   const manifestPath = store.paths.backupManifest(taskId);
   const hasManifest = fs.existsSync(manifestPath);
-  const hasExplicitHostPaths =
-    hostChangedPaths !== undefined && hostChangedPaths.length > 0;
+  const hasExplicitHostPaths = hostChangedPaths !== undefined && hostChangedPaths.length > 0;
   const manifestStagedPaths = new Set<string>();
 
   if (hasManifest) {
@@ -272,9 +268,7 @@ export async function runVerificationGate(
 
   const runMeta = readYamlValidated(store.paths.runYaml(taskId, runDirName), RunMetaSchema);
   if (runMeta.task_id !== taskId) {
-    throw new Error(
-      `RUN.yaml task_id "${runMeta.task_id}" does not match "${taskId}"`,
-    );
+    throw new Error(`RUN.yaml task_id "${runMeta.task_id}" does not match "${taskId}"`);
   }
 
   const receiptPath = store.paths.receiptMd(taskId, runDirName);
@@ -355,10 +349,7 @@ export async function runVerificationGate(
       );
     }
 
-    const gitChanges = await inspectGitWorktreeChanges(
-      input.worktreePath,
-      authoritativeInputRef,
-    );
+    const gitChanges = await inspectGitWorktreeChanges(input.worktreePath, authoritativeInputRef);
     const scopeCheck = checkScope(gitChanges.changedPaths, card.contract.scope);
     scopeOk = scopeCheck.ok;
     outOfScopePaths = scopeCheck.outOfScopePaths;
@@ -450,9 +441,7 @@ export async function runVerificationGate(
     ).sort();
 
     scopeOk =
-      invalidScopeEntries.length === 0 &&
-      scratchScan.escapedSymlinks.length === 0 &&
-      scopeCheck.ok;
+      invalidScopeEntries.length === 0 && scratchScan.escapedSymlinks.length === 0 && scopeCheck.ok;
     outOfScopePaths = combinedOutOfScope;
 
     scratchResult = await verifyScratchWorkspace({
@@ -481,16 +470,8 @@ export async function runVerificationGate(
   }
 
   const escalatedToL2 = card.track === "L1" && frozenFilesChanged.length > 0;
-  const acceptExitCode = stagedOnlySkipped
-    ? 0
-    : commandResult
-      ? commandResult.exitCode
-      : -1;
-  const acceptDurationMs = stagedOnlySkipped
-    ? 0
-    : commandResult
-      ? commandResult.durationMs
-      : 0;
+  const acceptExitCode = stagedOnlySkipped ? 0 : commandResult ? commandResult.exitCode : -1;
+  const acceptDurationMs = stagedOnlySkipped ? 0 : commandResult ? commandResult.durationMs : 0;
   const scratchArtifactsOk =
     scratchResult === undefined ||
     (scratchResult.missingArtifacts.length === 0 &&

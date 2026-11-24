@@ -179,8 +179,7 @@ function isInsideCanonicalDir(canonicalTarget: string, canonicalDir: string): bo
   if (process.platform === "win32") {
     const targetLower = canonicalTarget.toLowerCase();
     return (
-      targetLower === canonicalDir.toLowerCase() ||
-      targetLower.startsWith(prefix.toLowerCase())
+      targetLower === canonicalDir.toLowerCase() || targetLower.startsWith(prefix.toLowerCase())
     );
   }
   return canonicalTarget === canonicalDir || canonicalTarget.startsWith(prefix);
@@ -291,10 +290,7 @@ function normalizeCanonicalForCompare(p: string): string {
   return process.platform === "win32" ? p.toLowerCase() : p;
 }
 
-function matchesSingleHostScopePattern(
-  canonicalTarget: string,
-  rawPattern: string,
-): boolean {
+function matchesSingleHostScopePattern(canonicalTarget: string, rawPattern: string): boolean {
   const trimmedTrailingSlash = rawPattern.replace(/\\/g, "/").endsWith("/");
   const expandedAbs = expandHomeAndValidateHostInput(rawPattern, "host scope pattern");
   const targetCmp = normalizeCanonicalForCompare(canonicalTarget);
@@ -327,9 +323,7 @@ function matchesSingleHostScopePattern(
 
   const parsedRoot = path.parse(expandedAbs).root;
   const tailAfterRoot = expandedAbs.slice(parsedRoot.length).replace(/\\/g, "/");
-  const segments = tailAfterRoot
-    .split("/")
-    .filter((s) => s.length > 0 && s !== ".");
+  const segments = tailAfterRoot.split("/").filter((s) => s.length > 0 && s !== ".");
 
   const firstGlobIdx = segments.findIndex((seg) => hasHostGlobSyntax(seg));
   if (firstGlobIdx === -1) {
@@ -338,9 +332,7 @@ function matchesSingleHostScopePattern(
   }
 
   const literalPrefixPath =
-    firstGlobIdx === 0
-      ? parsedRoot
-      : path.join(parsedRoot, ...segments.slice(0, firstGlobIdx));
+    firstGlobIdx === 0 ? parsedRoot : path.join(parsedRoot, ...segments.slice(0, firstGlobIdx));
   const canonicalPrefix = resolveCanonicalAbsolute(literalPrefixPath);
   const prefixWithSep = canonicalPrefix.endsWith(path.sep)
     ? canonicalPrefix
@@ -350,9 +342,7 @@ function matchesSingleHostScopePattern(
     return false;
   }
 
-  const relativeTail = canonicalTarget
-    .slice(prefixWithSep.length)
-    .replace(/\\/g, "/");
+  const relativeTail = canonicalTarget.slice(prefixWithSep.length).replace(/\\/g, "/");
   if (relativeTail.length === 0) {
     return false;
   }
@@ -376,15 +366,10 @@ export function isHostTargetWithinScope(
   if (contractScope.length === 0) {
     return false;
   }
-  return contractScope.some((pattern) =>
-    matchesSingleHostScopePattern(canonicalTarget, pattern),
-  );
+  return contractScope.some((pattern) => matchesSingleHostScopePattern(canonicalTarget, pattern));
 }
 
-export function readHostBackupManifest(
-  store: KilnStore,
-  taskId: string,
-): HostBackupManifest {
+export function readHostBackupManifest(store: KilnStore, taskId: string): HostBackupManifest {
   const safeTaskId = assertSafeSegment(taskId, "taskId");
   const manifestPath = store.paths.backupManifest(safeTaskId);
   const raw = fs.readFileSync(manifestPath, "utf8");
@@ -476,9 +461,7 @@ function rollbackFromBackupEntries(
       const backupFilePath = path.join(backupDir, entry.backup_relative_path);
       const backupBytes = fs.readFileSync(backupFilePath);
       if (entry.pre_sha256 && sha256Buffer(backupBytes) !== entry.pre_sha256) {
-        throw new Error(
-          `Backup integrity check failed for "${entry.target_canonical_path}"`,
-        );
+        throw new Error(`Backup integrity check failed for "${entry.target_canonical_path}"`);
       }
       writeFileAtomic(entry.target_canonical_path, backupBytes);
       if (process.platform !== "win32" && entry.file_mode !== undefined) {
@@ -544,8 +527,7 @@ function buildUnifiedLineDiffWithMeta(
 
   if (aLines.length > MAX_DIFF_LINES || bLines.length > MAX_DIFF_LINES) {
     truncated = true;
-    const isDefaultLabels =
-      options.fromLabel === undefined && options.toLabel === undefined;
+    const isDefaultLabels = options.fromLabel === undefined && options.toLabel === undefined;
     const beforeTailTag = isDefaultLabels ? "expected" : "before";
     const afterTailTag = isDefaultLabels ? "actual" : "after";
     lines = [
@@ -599,12 +581,7 @@ function buildUnifiedLineDiffWithMeta(
       j++;
     }
 
-    lines = [
-      `--- ${fromLabel}`,
-      `+++ ${toLabel}`,
-      hunkHeader,
-      ...diffBody,
-    ];
+    lines = [`--- ${fromLabel}`, `+++ ${toLabel}`, hunkHeader, ...diffBody];
   }
 
   if (options.maxOutputLines !== undefined && lines.length > options.maxOutputLines) {
@@ -620,10 +597,7 @@ function buildUnifiedLineDiffWithMeta(
   };
 }
 
-function buildUnifiedLineDiff(
-  expectedText: string | null,
-  actualText: string | null,
-): string {
+function buildUnifiedLineDiff(expectedText: string | null, actualText: string | null): string {
   return buildUnifiedLineDiffWithMeta(expectedText, actualText).diff;
 }
 
@@ -722,10 +696,7 @@ function readPreviewFileBounded(
  * Builds bounded per-file unified diffs between backed-up pre-apply originals and
  * staged host-scoped files while the task awaits human approval (`staged_awaiting_approval`).
  */
-export function buildHostStagedDiffs(
-  store: KilnStore,
-  taskId: string,
-): HostStagedDiffEntry[] {
+export function buildHostStagedDiffs(store: KilnStore, taskId: string): HostStagedDiffEntry[] {
   const safeTaskId = assertSafeSegment(taskId, "taskId");
 
   let manifest: HostBackupManifest;
@@ -814,8 +785,7 @@ export function buildHostStagedDiffs(
       preSha256: entry.pre_sha256,
       stagedSha256: entry.staged_sha256 ?? null,
       diff: diffResult.diff,
-      truncated:
-        beforeRead.bytesTruncated || afterRead.bytesTruncated || diffResult.truncated,
+      truncated: beforeRead.bytesTruncated || afterRead.bytesTruncated || diffResult.truncated,
     };
   });
 }
@@ -895,9 +865,7 @@ export function stageHostScopedChanges(
       if (existingBytes !== null) {
         const preSha = sha256Buffer(existingBytes);
         const fileMode =
-          process.platform !== "win32"
-            ? fs.statSync(item.canonicalTarget).mode & 0o777
-            : undefined;
+          process.platform !== "win32" ? fs.statSync(item.canonicalTarget).mode & 0o777 : undefined;
         const backupRelPath = `files/${String(i).padStart(4, "0")}.bak`;
         writeFileAtomic(path.join(backupDir, backupRelPath), existingBytes);
         manifestEntries.push({
@@ -959,9 +927,7 @@ export async function applyApprovedHostScopedChanges(
   const manifest = readHostBackupManifest(store, taskId);
 
   if (manifest.task_id !== taskId) {
-    throw new Error(
-      `Backup manifest task_id "${manifest.task_id}" does not match "${taskId}"`,
-    );
+    throw new Error(`Backup manifest task_id "${manifest.task_id}" does not match "${taskId}"`);
   }
   if (manifest.status !== "staged_awaiting_approval") {
     throw new Error(
@@ -1005,8 +971,7 @@ export async function applyApprovedHostScopedChanges(
     // Verify staged/ anti-tamper SHA-256 and pre-apply TOCTOU integrity before modifying any host file.
     const stagedConflicts: HostStagedHashConflict[] = [];
     const preConflicts: HostPreHashConflict[] = [];
-    const stagedPayload: Array<{ entry: HostBackupFileEntry; bytes: Buffer; postSha: string }> =
-      [];
+    const stagedPayload: Array<{ entry: HostBackupFileEntry; bytes: Buffer; postSha: string }> = [];
 
     for (const entry of manifest.files) {
       const stagedPath = resolveValidatedStagedFile(
@@ -1016,10 +981,7 @@ export async function applyApprovedHostScopedChanges(
       );
       const stagedBytes = fs.readFileSync(stagedPath);
       const actualStagedSha = sha256Buffer(stagedBytes);
-      if (
-        entry.staged_sha256 !== undefined &&
-        actualStagedSha !== entry.staged_sha256
-      ) {
+      if (entry.staged_sha256 !== undefined && actualStagedSha !== entry.staged_sha256) {
         stagedConflicts.push({
           stagedRelativePath: entry.staged_relative_path,
           targetCanonicalPath: entry.target_canonical_path,
@@ -1250,9 +1212,7 @@ export function restoreHostScopedBackup(
   const manifest = readHostBackupManifest(store, taskId);
 
   if (manifest.task_id !== taskId) {
-    throw new Error(
-      `Backup manifest task_id "${manifest.task_id}" does not match "${taskId}"`,
-    );
+    throw new Error(`Backup manifest task_id "${manifest.task_id}" does not match "${taskId}"`);
   }
   if (manifest.status !== "applied") {
     throw new Error(

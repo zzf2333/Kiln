@@ -31,7 +31,7 @@
   --hover: #1b1c20;
   --sunken: #0c0d0f;
   --line: rgba(255, 255, 255, 0.06);
-  --line-2: rgba(255, 255, 255, 0.10);
+  --line-2: rgba(255, 255, 255, 0.1);
   --line-3: rgba(255, 255, 255, 0.16);
   --line-focus: rgba(200, 135, 90, 0.48);
   --t1: #ececef;
@@ -91,7 +91,7 @@
   --code-inline-bg: rgba(255, 255, 255, 0.065);
   --code-inline-fg: #ebe6de;
   --file-pill-bg: rgba(255, 255, 255, 0.045);
-  --file-pill-border: rgba(255, 255, 255, 0.10);
+  --file-pill-border: rgba(255, 255, 255, 0.1);
   --file-pill-fg: #d9dce4;
   --file-pill-hover: rgba(255, 255, 255, 0.08);
   --file-pill-sep: rgba(255, 255, 255, 0.09);
@@ -130,7 +130,9 @@
   --bar-h: 52px;
   --status-h: 28px;
   --ease: cubic-bezier(0.2, 0, 0, 1);
-  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", sans-serif;
+  --sans:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei UI", sans-serif;
   --mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
 }
 
@@ -155,7 +157,7 @@
   --acc: #b5703f;
   --acc-2: #9e5c2d;
   --acc-soft: rgba(181, 112, 63, 0.11);
-  --acc-line: rgba(181, 112, 63, 0.40);
+  --acc-line: rgba(181, 112, 63, 0.4);
   --acc-ink: #ffffff;
 
   --btn-light-hover: #9e5c2d;
@@ -173,11 +175,11 @@
   --s-deliver: #686f77;
 
   --ask: #a87412;
-  --ask-soft: rgba(168, 116, 18, 0.10);
+  --ask-soft: rgba(168, 116, 18, 0.1);
   --bad: #c9443a;
   --bad-soft: rgba(201, 68, 58, 0.09);
   --ok: #1f8a7c;
-  --ok-soft: rgba(31, 138, 124, 0.10);
+  --ok-soft: rgba(31, 138, 124, 0.1);
   --live-fg: var(--acc-2);
   --ok-fg: #187266;
   --bad-fg: #b8372e;
@@ -191,7 +193,7 @@
   --file-pill-border: rgba(16, 19, 26, 0.12);
   --file-pill-fg: #343842;
   --file-pill-hover: rgba(16, 19, 26, 0.08);
-  --file-pill-sep: rgba(16, 19, 26, 0.10);
+  --file-pill-sep: rgba(16, 19, 26, 0.1);
   --table-stripe: rgba(16, 19, 26, 0.024);
   --link-fg: #1d5ea8;
   --link-hover: #12437d;
@@ -202,9 +204,9 @@
   --tok-num: #8f5e0c;
   --tok-key: #235c8c;
   --tok-add: #1c7265;
-  --tok-add-bg: rgba(31, 138, 124, 0.10);
+  --tok-add-bg: rgba(31, 138, 124, 0.1);
   --tok-del: #b3342d;
-  --tok-del-bg: rgba(201, 68, 58, 0.10);
+  --tok-del-bg: rgba(201, 68, 58, 0.1);
   --tok-hunk: #3659a3;
 
   --mask-bg: rgba(20, 24, 32, 0.24);
@@ -242,7 +244,7 @@
     --acc: #b5703f;
     --acc-2: #9e5c2d;
     --acc-soft: rgba(181, 112, 63, 0.11);
-    --acc-line: rgba(181, 112, 63, 0.40);
+    --acc-line: rgba(181, 112, 63, 0.4);
     --acc-ink: #ffffff;
 
     --btn-light-hover: #9e5c2d;
@@ -260,11 +262,11 @@
     --s-deliver: #686f77;
 
     --ask: #a87412;
-    --ask-soft: rgba(168, 116, 18, 0.10);
+    --ask-soft: rgba(168, 116, 18, 0.1);
     --bad: #c9443a;
     --bad-soft: rgba(201, 68, 58, 0.09);
     --ok: #1f8a7c;
-    --ok-soft: rgba(31, 138, 124, 0.10);
+    --ok-soft: rgba(31, 138, 124, 0.1);
     --live-fg: var(--acc-2);
     --ok-fg: #187266;
     --bad-fg: #b8372e;
@@ -278,7 +280,7 @@
     --file-pill-border: rgba(16, 19, 26, 0.12);
     --file-pill-fg: #343842;
     --file-pill-hover: rgba(16, 19, 26, 0.08);
-    --file-pill-sep: rgba(16, 19, 26, 0.10);
+    --file-pill-sep: rgba(16, 19, 26, 0.1);
     --table-stripe: rgba(16, 19, 26, 0.024);
     --link-fg: #1d5ea8;
     --link-hover: #12437d;
@@ -289,9 +291,9 @@
     --tok-num: #8f5e0c;
     --tok-key: #235c8c;
     --tok-add: #1c7265;
-    --tok-add-bg: rgba(31, 138, 124, 0.10);
+    --tok-add-bg: rgba(31, 138, 124, 0.1);
     --tok-del: #b3342d;
-    --tok-del-bg: rgba(201, 68, 58, 0.10);
+    --tok-del-bg: rgba(201, 68, 58, 0.1);
     --tok-hunk: #3659a3;
 
     --mask-bg: rgba(20, 24, 32, 0.24);

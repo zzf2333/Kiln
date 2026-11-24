@@ -23,7 +23,10 @@ export class SpaceMergeLock {
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const nextTail = prev.then(() => gate, () => gate);
+    const nextTail = prev.then(
+      () => gate,
+      () => gate,
+    );
     this.tails.set(key, nextTail);
 
     await prev.catch(() => {});

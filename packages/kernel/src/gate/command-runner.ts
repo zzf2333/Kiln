@@ -154,18 +154,13 @@ function defaultExecTaskkill(
   options: { windowsHide: true },
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
-    execFile(
-      command,
-      [...args],
-      { ...options, timeout: WINDOWS_TASKKILL_TIMEOUT_MS },
-      (err) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve();
-        }
-      },
-    );
+    execFile(command, [...args], { ...options, timeout: WINDOWS_TASKKILL_TIMEOUT_MS }, (err) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve();
+      }
+    });
   });
 }
 

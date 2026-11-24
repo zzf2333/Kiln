@@ -32,9 +32,7 @@ function formatPairError(res: PairSubmitOutcome): string {
 
 export function RemoteAuthView() {
   const { store, state } = useKilnStore();
-  const [deviceLabel, setDeviceLabel] = useState<string>(() =>
-    inferDefaultDeviceLabel(),
-  );
+  const [deviceLabel, setDeviceLabel] = useState<string>(() => inferDefaultDeviceLabel());
   const [codeInput, setCodeInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
@@ -125,9 +123,7 @@ export function RemoteAuthView() {
                 maxLength={120}
                 placeholder="例如：我的 iPhone"
                 value={deviceLabel}
-                onChange={(e) =>
-                  setDeviceLabel((e.currentTarget as HTMLInputElement).value)
-                }
+                onChange={(e) => setDeviceLabel((e.currentTarget as HTMLInputElement).value)}
               />
             </label>
 
@@ -165,9 +161,7 @@ export function RemoteAuthView() {
                 placeholder="000000"
                 maxLength={12}
                 value={codeInput}
-                onChange={(e) =>
-                  setCodeInput((e.currentTarget as HTMLInputElement).value)
-                }
+                onChange={(e) => setCodeInput((e.currentTarget as HTMLInputElement).value)}
               />
             </label>
 
@@ -180,17 +174,11 @@ export function RemoteAuthView() {
                 maxLength={120}
                 placeholder="例如：我的 iPhone"
                 value={deviceLabel}
-                onChange={(e) =>
-                  setDeviceLabel((e.currentTarget as HTMLInputElement).value)
-                }
+                onChange={(e) => setDeviceLabel((e.currentTarget as HTMLInputElement).value)}
               />
             </label>
 
-            <button
-              type="submit"
-              className="btn btn-light auth-submit"
-              disabled={busy}
-            >
+            <button type="submit" className="btn btn-light auth-submit" disabled={busy}>
               {busy ? "验证配对中…" : "配对并进入工作台"}
             </button>
           </form>
@@ -198,8 +186,8 @@ export function RemoteAuthView() {
 
         <p className="auth-foot">
           请在桌面端 Kiln 的「设置 → 远程访问」或终端运行{" "}
-          <span className="mono">kiln remote pair</span>{" "}
-          获取配对二维码或 6 位配对码。会话以 30 天 HttpOnly Cookie 持久保存，可随时在桌面端一键吊销。
+          <span className="mono">kiln remote pair</span> 获取配对二维码或 6 位配对码。会话以 30 天
+          HttpOnly Cookie 持久保存，可随时在桌面端一键吊销。
         </p>
       </div>
     </main>

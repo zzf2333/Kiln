@@ -54,10 +54,7 @@ export function readTaskChecklistDispositions(
  * Extracts structured review findings (from latest `review` run) and accept scenarios
  * (from latest `accept` run) and overlays persisted human dispositions.
  */
-export function buildTaskReviewChecklist(
-  store: KilnStore,
-  taskId: string,
-): ChecklistItem[] {
+export function buildTaskReviewChecklist(store: KilnStore, taskId: string): ChecklistItem[] {
   const runsDir = store.paths.runsDir(taskId);
   if (!fs.existsSync(runsDir)) {
     return [];
@@ -233,9 +230,7 @@ export function persistChecklistDispositions(
       run_dir: target.run_dir,
       source: target.source,
       disposition: req.disposition,
-      ...(cleanRationale && cleanRationale.length > 0
-        ? { rationale: cleanRationale }
-        : {}),
+      ...(cleanRationale && cleanRationale.length > 0 ? { rationale: cleanRationale } : {}),
       decided_at: timestamp,
       contract_version: contractVersion,
     };

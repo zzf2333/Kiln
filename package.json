@@ -2,11 +2,6 @@
   "name": "kiln-workspace",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@12.11.2",
-  "engines": {
-    "node": ">=22.0.0",
-    "pnpm": ">=9.0.0"
-  },
   "scripts": {
     "build": "pnpm -r --if-present build",
     "build:binary": "node scripts/build-binary.mjs",
@@ -24,5 +19,10 @@
     "typescript": "^7.0.2",
     "vite-plus": "^1.8.0",
     "vitest": "5.1.1"
-  }
+  },
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@12.11.2"
 }

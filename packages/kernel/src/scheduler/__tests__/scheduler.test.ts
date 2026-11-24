@@ -69,10 +69,7 @@ function makeTaskCard(overrides: Partial<TaskCard> = {}): TaskCard {
 }
 
 function makeRunMeta(
-  plan: Pick<
-    DispatchPlan,
-    "taskId" | "stage" | "round" | "role" | "contractVersion"
-  >,
+  plan: Pick<DispatchPlan, "taskId" | "stage" | "round" | "role" | "contractVersion">,
   runId: string,
   startedAt = "2026-11-19T10:05:00.000Z",
 ): RunMeta {
@@ -194,28 +191,16 @@ describe("scopesOverlap", () => {
     expect(scopesOverlap(["./src/a.ts"], ["src\\a.ts"])).toBe(true);
     expect(scopesOverlap(["src/a.ts"], ["src/b.ts"])).toBe(false);
 
-    expect(
-      scopesOverlap(["packages/kernel/src/state/**"], ["packages/kernel/src/gate/**"]),
-    ).toBe(false);
-    expect(
-      scopesOverlap(["packages/kernel/**"], ["packages/kernel/src/store/**"]),
-    ).toBe(true);
+    expect(scopesOverlap(["packages/kernel/src/state/**"], ["packages/kernel/src/gate/**"])).toBe(
+      false,
+    );
+    expect(scopesOverlap(["packages/kernel/**"], ["packages/kernel/src/store/**"])).toBe(true);
     expect(scopesOverlap(["packages/kernel/**"], ["packages/kernel/*.ts"])).toBe(true);
-    expect(scopesOverlap(["packages/kernel/*.ts"], ["packages/kernel/index.ts"])).toBe(
-      true,
-    );
-    expect(scopesOverlap(["packages/kernel/*.ts"], ["packages/kernel/index.js"])).toBe(
-      false,
-    );
-    expect(scopesOverlap(["packages/kernel/*.ts"], ["packages/kernel/src/**"])).toBe(
-      false,
-    );
-    expect(scopesOverlap(["packages/kernel"], ["packages/kernel/src/index.ts"])).toBe(
-      true,
-    );
-    expect(scopesOverlap(["packages/kernel"], ["packages/kernel-extra/index.ts"])).toBe(
-      false,
-    );
+    expect(scopesOverlap(["packages/kernel/*.ts"], ["packages/kernel/index.ts"])).toBe(true);
+    expect(scopesOverlap(["packages/kernel/*.ts"], ["packages/kernel/index.js"])).toBe(false);
+    expect(scopesOverlap(["packages/kernel/*.ts"], ["packages/kernel/src/**"])).toBe(false);
+    expect(scopesOverlap(["packages/kernel"], ["packages/kernel/src/index.ts"])).toBe(true);
+    expect(scopesOverlap(["packages/kernel"], ["packages/kernel-extra/index.ts"])).toBe(false);
     expect(scopesOverlap(["src/{a,b}.ts"], ["src/b.ts"])).toBe(true);
     expect(scopesOverlap(["src/{a,b}.ts"], ["src/c.ts"])).toBe(false);
     expect(scopesOverlap(["src/**/index.ts"], ["src/a/b/index.ts"])).toBe(true);
@@ -243,10 +228,7 @@ describe("RateLimitTracker", () => {
       tracker.isCoolingDown({ backendId: "paseo", agent: "codex", model: "gpt-5.4" }, t0),
     ).toBe(true);
     expect(
-      tracker.isCoolingDown(
-        { backendId: "other", agent: "codex", model: "gpt-5.4" },
-        t0,
-      ),
+      tracker.isCoolingDown({ backendId: "other", agent: "codex", model: "gpt-5.4" }, t0),
     ).toBe(false);
     // Compatible query omitting backendId
     expect(tracker.isCoolingDown({ agent: "codex", model: "gpt-5.4" }, t0)).toBe(true);
@@ -259,9 +241,7 @@ describe("RateLimitTracker", () => {
 
     expect(tracker.nextCooldownExpiryMs(t0)).toBe(t0 + 3_000);
     expect(tracker.getCooldownUntil({ agent: "pi", model: "magpie/work" }, t0 + 3_000)).toBeNull();
-    expect(tracker.isCoolingDown({ agent: "pi", model: "magpie/work" }, t0 + 3_000)).toBe(
-      false,
-    );
+    expect(tracker.isCoolingDown({ agent: "pi", model: "magpie/work" }, t0 + 3_000)).toBe(false);
     expect(tracker.pruneExpired(t0 + 3_000)).toBe(1);
     expect(tracker.nextCooldownExpiryMs(t0 + 3_000)).toBe(t0 + 5_000);
 
@@ -479,9 +459,7 @@ describe("resolveRoleAssignment", () => {
     expect(resolveRoleAssignment(config, "verifier").freshContext).toBe(true);
     expect(resolveRoleAssignment(config, "advisor").freshContext).toBe(true);
     expect(resolveRoleAssignment(config, "advisor").allowFullAccessFallback).toBe(true);
-    expect(() => resolveRoleAssignment(config, "triage")).toThrow(
-      RoleNotConfiguredError,
-    );
+    expect(() => resolveRoleAssignment(config, "triage")).toThrow(RoleNotConfiguredError);
   });
 
   it("resolves advise stage to standalone advisor first and preserves legacy architect secondary_stages fallback", () => {
@@ -549,9 +527,9 @@ describe("resolveRoleAssignment", () => {
         },
       },
     };
-    expect(() =>
-      resolveRosterStageAssignment(architectWithoutAdvise, "advise", "advisor"),
-    ).toThrow(RoleNotConfiguredError);
+    expect(() => resolveRosterStageAssignment(architectWithoutAdvise, "advise", "advisor")).toThrow(
+      RoleNotConfiguredError,
+    );
   });
 });
 
@@ -769,10 +747,7 @@ describe("KilnScheduler", () => {
   });
 
   it("enforces max_concurrent_slots and grants 1 extra slot to P0 when p0_extra_slot is enabled without preempting running tasks", async () => {
-    store.writeConfig(
-      "limits",
-      makeLimitsConfig({ max_concurrent_slots: 2, p0_extra_slot: true }),
-    );
+    store.writeConfig("limits", makeLimitsConfig({ max_concurrent_slots: 2, p0_extra_slot: true }));
 
     sm.createTask(makeTaskCard({ id: "t-run-1", space: "s1", priority: "P2" }), "# R1");
     sm.createTask(makeTaskCard({ id: "t-run-2", space: "s2", priority: "P2" }), "# R2");
@@ -813,10 +788,7 @@ describe("KilnScheduler", () => {
       stateMachine: sm,
       onDispatch: (plan) => {
         dispatched.push(plan.taskId);
-        store.persistRunBeforeDispatch(
-          makeRunMeta(plan, `run-${plan.taskId}`),
-          "001-implement",
-        );
+        store.persistRunBeforeDispatch(makeRunMeta(plan, `run-${plan.taskId}`), "001-implement");
       },
     });
     activeScheduler = scheduler;
@@ -831,10 +803,7 @@ describe("KilnScheduler", () => {
   });
 
   it("blocks P2/P3 when waiting >= max_waiting_wip while isolating paused tasks and allowing P0/P1", async () => {
-    store.writeConfig(
-      "limits",
-      makeLimitsConfig({ max_concurrent_slots: 10, max_waiting_wip: 2 }),
-    );
+    store.writeConfig("limits", makeLimitsConfig({ max_concurrent_slots: 10, max_waiting_wip: 2 }));
 
     // Create 4 paused tasks -> MUST NOT count toward waitingCount OR running slots!
     for (let i = 1; i <= 4; i++) {
@@ -859,10 +828,7 @@ describe("KilnScheduler", () => {
       stateMachine: sm,
       onDispatch: (plan) => {
         dispatched.push(plan.taskId);
-        store.persistRunBeforeDispatch(
-          makeRunMeta(plan, `run-${plan.taskId}`),
-          "001-implement",
-        );
+        store.persistRunBeforeDispatch(makeRunMeta(plan, `run-${plan.taskId}`), "001-implement");
       },
       onWaitingAttentionBlocked: (ev) => {
         blockedEvents.push(ev);
@@ -890,14 +856,8 @@ describe("KilnScheduler", () => {
       makeTaskCard({ id: "t-p3-blocked", space: "sb3", priority: "P3" }),
       "# P3 blocked",
     );
-    sm.createTask(
-      makeTaskCard({ id: "t-p1-urgent", space: "su1", priority: "P1" }),
-      "# P1 urgent",
-    );
-    sm.createTask(
-      makeTaskCard({ id: "t-p0-urgent", space: "su0", priority: "P0" }),
-      "# P0 urgent",
-    );
+    sm.createTask(makeTaskCard({ id: "t-p1-urgent", space: "su1", priority: "P1" }), "# P1 urgent");
+    sm.createTask(makeTaskCard({ id: "t-p0-urgent", space: "su0", priority: "P0" }), "# P0 urgent");
 
     const tick2 = await scheduler.wake();
     expect(tick2.dispatched.map((p) => p.taskId)).toEqual(["t-p0-urgent", "t-p1-urgent"]);
@@ -972,10 +932,7 @@ describe("KilnScheduler", () => {
       stateMachine: sm,
       onDispatch: (plan) => {
         dispatched.push(plan.taskId);
-        store.persistRunBeforeDispatch(
-          makeRunMeta(plan, `run-${plan.taskId}`),
-          "001-implement",
-        );
+        store.persistRunBeforeDispatch(makeRunMeta(plan, `run-${plan.taskId}`), "001-implement");
       },
     });
     activeScheduler = scheduler;
@@ -1093,10 +1050,7 @@ describe("KilnScheduler", () => {
       stateMachine: sm,
       onDispatch: (plan) => {
         dispatched.push(plan.taskId);
-        store.persistRunBeforeDispatch(
-          makeRunMeta(plan, `run-${plan.taskId}`),
-          "001-implement",
-        );
+        store.persistRunBeforeDispatch(makeRunMeta(plan, `run-${plan.taskId}`), "001-implement");
       },
     });
     activeScheduler = scheduler;
@@ -1139,14 +1093,8 @@ describe("KilnScheduler", () => {
     expect(escalationDecision.incrementRetry).toBe(false);
 
     // t-worker uses codex/gpt-5.4 (rate-limited); t-review uses pi/magpie/review (healthy)
-    sm.createTask(
-      makeTaskCard({ id: "t-worker", space: "s1", priority: "P1" }),
-      "# Worker",
-    );
-    sm.createTask(
-      makeTaskCard({ id: "t-review", space: "s2", priority: "P2" }),
-      "# Review",
-    );
+    sm.createTask(makeTaskCard({ id: "t-worker", space: "s1", priority: "P1" }), "# Worker");
+    sm.createTask(makeTaskCard({ id: "t-review", space: "s2", priority: "P2" }), "# Review");
     store.appendStateEvent("t-review", {
       type: "resumed",
       at: "2026-11-19T11:59:00.000Z",
@@ -1171,10 +1119,7 @@ describe("KilnScheduler", () => {
     });
     activeScheduler = scheduler;
 
-    scheduler.markRateLimited(
-      { backendId: "paseo", agent: "codex", model: "gpt-5.4" },
-      5_000,
-    );
+    scheduler.markRateLimited({ backendId: "paseo", agent: "codex", model: "gpt-5.4" }, 5_000);
 
     const tick1 = await scheduler.wake();
     expect(dispatched).toEqual(["t-review"]);
@@ -1206,10 +1151,7 @@ describe("KilnScheduler", () => {
       onDispatch: async (plan) => {
         await Promise.resolve();
         dispatched.push(plan.taskId);
-        store.persistRunBeforeDispatch(
-          makeRunMeta(plan, `run-${plan.taskId}`),
-          "001-implement",
-        );
+        store.persistRunBeforeDispatch(makeRunMeta(plan, `run-${plan.taskId}`), "001-implement");
         if (!triggeredReentrantWake) {
           triggeredReentrantWake = true;
           sm.createTask(makeTaskCard({ id: "t-2", space: "s2" }), "# T2");
@@ -1225,10 +1167,7 @@ describe("KilnScheduler", () => {
 
     // Cooldown timer scheduled then cancelled via stop() must not fire
     sm.createTask(makeTaskCard({ id: "t-3", space: "s3" }), "# T3");
-    scheduler.markRateLimited(
-      { backendId: "paseo", agent: "codex", model: "gpt-5.4" },
-      1_000,
-    );
+    scheduler.markRateLimited({ backendId: "paseo", agent: "codex", model: "gpt-5.4" }, 1_000);
     await scheduler.wake();
     expect(dispatched).toEqual(["t-1", "t-2"]);
 
@@ -1248,10 +1187,7 @@ describe("KilnScheduler", () => {
       round: 1,
       run_id: "run-epic",
     });
-    sm.createTask(
-      makeTaskCard({ id: "t-child-1", space: "s2", parent: "t-epic" }),
-      "# Child 1",
-    );
+    sm.createTask(makeTaskCard({ id: "t-child-1", space: "s2", parent: "t-epic" }), "# Child 1");
     store.persistRunBeforeDispatch(
       makeRunMeta(
         {
@@ -1266,10 +1202,7 @@ describe("KilnScheduler", () => {
       "001-implement",
     );
 
-    sm.createTask(
-      makeTaskCard({ id: "t-child-2", space: "s3", parent: "t-epic" }),
-      "# Child 2",
-    );
+    sm.createTask(makeTaskCard({ id: "t-child-2", space: "s3", parent: "t-epic" }), "# Child 2");
 
     const dispatched: string[] = [];
     const scheduler = new KilnScheduler({
@@ -1339,10 +1272,7 @@ describe("KilnScheduler", () => {
       stateMachine: sm,
       onDispatch: (plan) => {
         dispatched.push(plan.taskId);
-        store.persistRunBeforeDispatch(
-          makeRunMeta(plan, `run-${plan.taskId}`),
-          "001-implement",
-        );
+        store.persistRunBeforeDispatch(makeRunMeta(plan, `run-${plan.taskId}`), "001-implement");
       },
     });
     activeScheduler = scheduler;
@@ -1415,10 +1345,7 @@ describe("KilnScheduler", () => {
       stateMachine: sm,
       onDispatch: (plan) => {
         dispatched.push(plan);
-        store.persistRunBeforeDispatch(
-          makeRunMeta(plan, `run-${plan.taskId}`),
-          "001-implement",
-        );
+        store.persistRunBeforeDispatch(makeRunMeta(plan, `run-${plan.taskId}`), "001-implement");
       },
     });
     activeScheduler = scheduler;
@@ -1494,10 +1421,7 @@ describe("KilnScheduler", () => {
       at: "2026-11-19T11:58:00.000Z",
       stage: "review",
     });
-    sm.createTask(
-      makeTaskCard({ id: "t-triage", space: "s2", priority: "P1" }),
-      "# Triage",
-    );
+    sm.createTask(makeTaskCard({ id: "t-triage", space: "s2", priority: "P1" }), "# Triage");
     store.appendStateEvent("t-triage", {
       type: "resumed",
       at: "2026-11-19T11:59:00.000Z",
@@ -1519,14 +1443,8 @@ describe("KilnScheduler", () => {
     activeScheduler = scheduler;
 
     // Schedule long cooldown (10s) then shorter cooldown (2s) on triage -> earliest (2s) wins
-    scheduler.markRateLimited(
-      { backendId: "paseo", agent: "codex", model: "gpt-5.4" },
-      10_000,
-    );
-    scheduler.markRateLimited(
-      { backendId: "paseo", agent: "pi", model: "magpie/triage" },
-      2_000,
-    );
+    scheduler.markRateLimited({ backendId: "paseo", agent: "codex", model: "gpt-5.4" }, 10_000);
+    scheduler.markRateLimited({ backendId: "paseo", agent: "pi", model: "magpie/triage" }, 2_000);
 
     const tick1 = await scheduler.wake();
     expect(dispatched).toEqual([]);
@@ -1648,10 +1566,7 @@ describe("KilnScheduler", () => {
       rolesConfig: makeRolesConfig(),
       onDispatch: (plan) => {
         dispatched.push(plan.taskId);
-        store.persistRunBeforeDispatch(
-          makeRunMeta(plan, `run-${plan.taskId}`),
-          "001-implement",
-        );
+        store.persistRunBeforeDispatch(makeRunMeta(plan, `run-${plan.taskId}`), "001-implement");
       },
       onDispatchError: (_taskId, err) => {
         dispatchErrors.push(err);
@@ -1789,10 +1704,29 @@ describe("KilnScheduler", () => {
           schema_version: 1,
           preset: "full_delivery",
           steps: [
-            { kind: "agent", stage: "plan", role: "advisor", fresh_context: true, roster_role: "architect" },
-            { kind: "agent", stage: "implement", role: "worker", fresh_context: false, roster_role: "main_dev" },
+            {
+              kind: "agent",
+              stage: "plan",
+              role: "advisor",
+              fresh_context: true,
+              roster_role: "architect",
+            },
+            {
+              kind: "agent",
+              stage: "implement",
+              role: "worker",
+              fresh_context: false,
+              roster_role: "main_dev",
+            },
             { kind: "gate", stage: "verify", check: "full" },
-            { kind: "command", stage: "deliver", apply_staged: false, run_deliver_cmd: false, verify_sha256: false, final_accept_gate: false },
+            {
+              kind: "command",
+              stage: "deliver",
+              apply_staged: false,
+              run_deliver_cmd: false,
+              verify_sha256: false,
+              final_accept_gate: false,
+            },
           ],
         },
       }),
@@ -1872,11 +1806,7 @@ describe("KilnScheduler", () => {
     activeScheduler = scheduler;
 
     await scheduler.wake();
-    expect(dispatched.map((d) => d.taskId)).toEqual([
-      "t-plan-ro",
-      "t-review-ro",
-      "t-verify-agent",
-    ]);
+    expect(dispatched.map((d) => d.taskId)).toEqual(["t-plan-ro", "t-review-ro", "t-verify-agent"]);
     expect(dispatched[2]).toEqual({
       taskId: "t-verify-agent",
       stage: "verify",

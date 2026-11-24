@@ -73,9 +73,7 @@ export interface FakeScriptMatcher {
   message?: string | RegExp;
 }
 
-export type FakeTurnMatcher =
-  | FakeScriptMatcher
-  | ((ctx: FakeTurnMatchContext) => boolean);
+export type FakeTurnMatcher = FakeScriptMatcher | ((ctx: FakeTurnMatchContext) => boolean);
 
 export interface FakeBackendOptions {
   backendId?: string;
@@ -582,9 +580,7 @@ export class FakeBackend implements ExecutionBackend {
     }
     const session = this.sessions.get(sessionRef.sessionId);
     if (!session) {
-      throw new Error(
-        `Unknown session "${sessionRef.sessionId}" for backend "${this.backendId}"`,
-      );
+      throw new Error(`Unknown session "${sessionRef.sessionId}" for backend "${this.backendId}"`);
     }
     return session;
   }
@@ -752,9 +748,7 @@ export class FakeBackend implements ExecutionBackend {
                 at: new Date().toISOString(),
                 reason: step.onDenyExitReason,
                 detail:
-                  step.onDenyDetail ??
-                  decision.message ??
-                  `Approval denied for ${step.action}`,
+                  step.onDenyDetail ?? decision.message ?? `Approval denied for ${step.action}`,
               });
               return;
             }
@@ -808,11 +802,9 @@ export class FakeBackend implements ExecutionBackend {
 
     let resolved = false;
     let resolveDecision!: (decision: { allow: boolean; message?: string } | null) => void;
-    const decisionPromise = new Promise<{ allow: boolean; message?: string } | null>(
-      (resolve) => {
-        resolveDecision = resolve;
-      },
-    );
+    const decisionPromise = new Promise<{ allow: boolean; message?: string } | null>((resolve) => {
+      resolveDecision = resolve;
+    });
 
     const finishWith = (value: { allow: boolean; message?: string } | null): void => {
       if (resolved) {

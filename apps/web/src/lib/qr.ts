@@ -141,12 +141,7 @@ function interleaveEcc(data: Uint8Array, version: number): Uint8Array {
   return out;
 }
 
-function drawFormat(
-  modules: Uint8Array,
-  isFn: Uint8Array,
-  size: number,
-  mask: number,
-): void {
+function drawFormat(modules: Uint8Array, isFn: Uint8Array, size: number, mask: number): void {
   let rem = mask; // EC Level M bits = 0b00
   for (let i = 0; i < 10; i++) rem = (rem << 1) ^ (((rem >>> 9) & 1) * 0x537);
   const bits = ((mask << 10) | rem) ^ 0x5412;
@@ -244,14 +239,22 @@ function createMatrix(version: number): {
 
 function maskBit(mask: number, x: number, y: number): boolean {
   switch (mask) {
-    case 0: return (x + y) % 2 === 0;
-    case 1: return y % 2 === 0;
-    case 2: return x % 3 === 0;
-    case 3: return (x + y) % 3 === 0;
-    case 4: return (Math.floor(y / 2) + Math.floor(x / 3)) % 2 === 0;
-    case 5: return ((x * y) % 2) + ((x * y) % 3) === 0;
-    case 6: return (((x * y) % 2) + ((x * y) % 3)) % 2 === 0;
-    default: return (((x + y) % 2) + ((x * y) % 3)) % 2 === 0;
+    case 0:
+      return (x + y) % 2 === 0;
+    case 1:
+      return y % 2 === 0;
+    case 2:
+      return x % 3 === 0;
+    case 3:
+      return (x + y) % 3 === 0;
+    case 4:
+      return (Math.floor(y / 2) + Math.floor(x / 3)) % 2 === 0;
+    case 5:
+      return ((x * y) % 2) + ((x * y) % 3) === 0;
+    case 6:
+      return (((x * y) % 2) + ((x * y) % 3)) % 2 === 0;
+    default:
+      return (((x + y) % 2) + ((x * y) % 3)) % 2 === 0;
   }
 }
 
@@ -318,10 +321,7 @@ export function encodeQrMatrix(text: string): QrMatrix {
       for (let colOff = 0; colOff < 2; colOff++) {
         const idx = y * size + (right - colOff);
         if (isFn[idx] === 1) continue;
-        modules[idx] =
-          bitIdx < totalBits
-            ? (cw[bitIdx >>> 3]! >>> (7 - (bitIdx & 7))) & 1
-            : 0;
+        modules[idx] = bitIdx < totalBits ? (cw[bitIdx >>> 3]! >>> (7 - (bitIdx & 7))) & 1 : 0;
         bitIdx += 1;
       }
     }

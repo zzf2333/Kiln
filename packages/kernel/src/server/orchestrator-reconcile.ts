@@ -81,11 +81,7 @@ export async function reconcileOrchestratorOnStart(
     const derived = deriveTaskStatus(card, events);
     if (derived.status !== "running") {
       // Never touch paused/waiting/terminal tasks; ensure orphan lease is expired.
-      ctx.store.sqlite.expireActiveLeaseByTask(
-        taskId,
-        new Date().toISOString(),
-        "expired",
-      );
+      ctx.store.sqlite.expireActiveLeaseByTask(taskId, new Date().toISOString(), "expired");
       continue;
     }
 
@@ -161,11 +157,7 @@ export async function reconcileOrchestratorOnStart(
           }
         }
       } catch {
-        ctx.store.sqlite.expireActiveLeaseByTask(
-          taskId,
-          new Date().toISOString(),
-          "expired",
-        );
+        ctx.store.sqlite.expireActiveLeaseByTask(taskId, new Date().toISOString(), "expired");
       }
       const afterFinalize = deriveTaskStatus(
         ctx.store.readTaskCard(taskId),
@@ -210,13 +202,7 @@ export async function reconcileOrchestratorOnStart(
     }
 
     if (aliveRunning) {
-      ctx.attachSessionConsumer(
-        taskId,
-        matchingRun.dirName,
-        runMeta,
-        backend,
-        runMeta.session_ref,
-      );
+      ctx.attachSessionConsumer(taskId, matchingRun.dirName, runMeta, backend, runMeta.session_ref);
     } else {
       const now = new Date().toISOString();
       ctx.store.sqlite.expireActiveLeaseByTask(taskId, now, "expired");

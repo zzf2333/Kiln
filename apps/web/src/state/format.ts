@@ -279,9 +279,7 @@ export function isSafeHttpOrPaseoUrl(url: string | null | undefined): url is str
   try {
     const parsed = new URL(url);
     return (
-      parsed.protocol === "http:" ||
-      parsed.protocol === "https:" ||
-      parsed.protocol === "paseo:"
+      parsed.protocol === "http:" || parsed.protocol === "https:" || parsed.protocol === "paseo:"
     );
   } catch {
     return false;

@@ -225,7 +225,9 @@ export function RemoteSettingsPanel() {
       return;
     }
     if (port === DEFAULT_LOCAL_PORT) {
-      setSaveError(`远程端口不可与本机端口 ${DEFAULT_LOCAL_PORT} 冲突，默认 ${DEFAULT_REMOTE_PORT}。`);
+      setSaveError(
+        `远程端口不可与本机端口 ${DEFAULT_LOCAL_PORT} 冲突，默认 ${DEFAULT_REMOTE_PORT}。`,
+      );
       return;
     }
     const pub = publicUrlInput.trim();
@@ -294,7 +296,9 @@ export function RemoteSettingsPanel() {
       if (target === "all") {
         const res = await revokeAllRemoteDevices();
         await refreshDevices();
-        store.showToast(`已踢出全部 ${res.revokedCount} 台设备（断开 ${res.closedStreams} 条实时流）`);
+        store.showToast(
+          `已踢出全部 ${res.revokedCount} 台设备（断开 ${res.closedStreams} 条实时流）`,
+        );
       } else {
         const res = await revokeRemoteDevice(target.id);
         await refreshDevices();
@@ -388,7 +392,9 @@ export function RemoteSettingsPanel() {
         <div className="setting-row">
           <div>
             <span>远程监听端口</span>
-            <p>默认 {DEFAULT_REMOTE_PORT}，仅绑 127.0.0.1 供隧道转发，不可为 {DEFAULT_LOCAL_PORT}</p>
+            <p>
+              默认 {DEFAULT_REMOTE_PORT}，仅绑 127.0.0.1 供隧道转发，不可为 {DEFAULT_LOCAL_PORT}
+            </p>
           </div>
           <input
             type="number"
@@ -446,7 +452,11 @@ export function RemoteSettingsPanel() {
           </label>
         </div>
 
-        {saveError ? <p className="warn-line" role="alert">{saveError}</p> : null}
+        {saveError ? (
+          <p className="warn-line" role="alert">
+            {saveError}
+          </p>
+        ) : null}
 
         <div className="remote-actions-row">
           <button
@@ -466,7 +476,8 @@ export function RemoteSettingsPanel() {
           <div>
             <h3>Tailscale 隧道引导（兼容 Cloudflare / 任意 HTTPS 反代）</h3>
             <p className="remote-card-desc">
-              请将隧道指向 <span className="mono">http://127.0.0.1:{draft.remote_port}</span>（切勿指向 :{DEFAULT_LOCAL_PORT}）。
+              请将隧道指向 <span className="mono">http://127.0.0.1:{draft.remote_port}</span>
+              （切勿指向 :{DEFAULT_LOCAL_PORT}）。
             </p>
           </div>
           <div className="remote-head-actions">
@@ -513,7 +524,9 @@ export function RemoteSettingsPanel() {
         {tailscale?.magicDnsUrl ? (
           <div className="remote-inline-box">
             <div style={{ minWidth: 0 }}>
-              <div className="muted" style={{ fontSize: "11.5px" }}>已探测到 MagicDNS HTTPS 地址</div>
+              <div className="muted" style={{ fontSize: "11.5px" }}>
+                已探测到 MagicDNS HTTPS 地址
+              </div>
               <div className="mono" style={{ fontSize: "12.5px", wordBreak: "break-all" }}>
                 {tailscale.magicDnsUrl}
               </div>
@@ -545,7 +558,9 @@ export function RemoteSettingsPanel() {
           </button>
         </div>
         {tailscale?.detail ? (
-          <p className="muted" style={{ fontSize: "12px", marginTop: "6px" }}>{tailscale.detail}</p>
+          <p className="muted" style={{ fontSize: "12px", marginTop: "6px" }}>
+            {tailscale.detail}
+          </p>
         ) : null}
       </section>
 
@@ -646,7 +661,9 @@ export function RemoteSettingsPanel() {
             </div>
           </div>
         ) : (
-          <div className="remote-empty-hint">点击右上角「生成配对二维码」，手机扫码或输入 6 位码即可登录。</div>
+          <div className="remote-empty-hint">
+            点击右上角「生成配对二维码」，手机扫码或输入 6 位码即可登录。
+          </div>
         )}
       </section>
 
@@ -655,11 +672,16 @@ export function RemoteSettingsPanel() {
           <div>
             <h3>已配对设备（有效 {activeDevices.length} 台）</h3>
             <p className="remote-card-desc">
-              仅存 SHA-256 哈希于 <span className="mono">config/devices.yaml</span>（0600），吊销即时断流。
+              仅存 SHA-256 哈希于 <span className="mono">config/devices.yaml</span>
+              （0600），吊销即时断流。
             </p>
           </div>
           <div className="remote-head-actions">
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => void refreshDevices()}>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => void refreshDevices()}
+            >
               刷新
             </button>
             {activeDevices.length > 0 ? (
@@ -686,7 +708,8 @@ export function RemoteSettingsPanel() {
                 `确认吊销全部 ${activeDevices.length} 台有效远程设备并立即断开实时连接？`
               ) : (
                 <>
-                  确认吊销设备「{confirmTarget.label}」（<span className="mono">{confirmTarget.id}</span>）？会话将立即失效。
+                  确认吊销设备「{confirmTarget.label}」（
+                  <span className="mono">{confirmTarget.id}</span>）？会话将立即失效。
                 </>
               )}
             </p>
@@ -728,8 +751,12 @@ export function RemoteSettingsPanel() {
                       <div className="role-name">{dev.label}</div>
                       <div className="role-desc mono">{dev.id}</div>
                     </td>
-                    <td className="mono" style={{ fontSize: "12px" }}>{fmtTs(dev.created_at)}</td>
-                    <td className="mono" style={{ fontSize: "12px" }}>{fmtTs(dev.last_seen_at)}</td>
+                    <td className="mono" style={{ fontSize: "12px" }}>
+                      {fmtTs(dev.created_at)}
+                    </td>
+                    <td className="mono" style={{ fontSize: "12px" }}>
+                      {fmtTs(dev.last_seen_at)}
+                    </td>
                     <td>
                       <span className={`chip ${revoked ? "chip-bad" : "chip-ok"}`}>
                         {revoked ? "已吊销" : "有效"}
@@ -761,7 +788,9 @@ export function RemoteSettingsPanel() {
         <div className="remote-card-head">
           <div>
             <h3>待决推送通知（Bark / ntfy / Webhook）</h3>
-            <p className="remote-card-desc">命中选定优先级的待决任务将非阻塞推送至手机（默认 P0 / P1）。</p>
+            <p className="remote-card-desc">
+              命中选定优先级的待决任务将非阻塞推送至手机（默认 P0 / P1）。
+            </p>
           </div>
         </div>
 
@@ -803,13 +832,16 @@ export function RemoteSettingsPanel() {
                 ...draft,
                 notifications: {
                   ...draft.notifications,
-                  channel: (e.currentTarget as HTMLSelectElement).value as RemoteNotificationChannel,
+                  channel: (e.currentTarget as HTMLSelectElement)
+                    .value as RemoteNotificationChannel,
                 },
               })
             }
           >
             {REMOTE_NOTIFICATION_CHANNELS.map((ch) => (
-              <option key={ch} value={ch}>{CHANNELS[ch][0]}</option>
+              <option key={ch} value={ch}>
+                {CHANNELS[ch][0]}
+              </option>
             ))}
           </select>
         </div>
@@ -884,7 +916,11 @@ export function RemoteSettingsPanel() {
         </div>
 
         {pushFeedback ? (
-          <p className={pushFeedback.ok ? "modal-ok" : "warn-line"} role="status" style={{ marginTop: "10px" }}>
+          <p
+            className={pushFeedback.ok ? "modal-ok" : "warn-line"}
+            role="status"
+            style={{ marginTop: "10px" }}
+          >
             {pushFeedback.text}
           </p>
         ) : null}

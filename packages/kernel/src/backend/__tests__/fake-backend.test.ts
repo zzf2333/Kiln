@@ -156,9 +156,9 @@ describe("selectSafeModeId & isFullAccessMode", () => {
       expect(typed.modes).toHaveLength(1);
     }
 
-    expect(
-      selectSafeModeId("antigravity", fullOnlyModes, { allowFullAccessFallback: true }),
-    ).toBe("full-access");
+    expect(selectSafeModeId("antigravity", fullOnlyModes, { allowFullAccessFallback: true })).toBe(
+      "full-access",
+    );
   });
 });
 
@@ -234,9 +234,7 @@ describe("FakeBackend behavior & diagnostics", () => {
     const codexRef = await backend.start(makeRunSpec({ agent: "codex", role: "intake" }));
     expect(codexRef.meta?.modeId).toBe("auto");
     expect(backend.getSelectedModeId(codexRef)).toBe("auto");
-    expect(await backend.liveViewUrl(codexRef)).toBe(
-      `paseo://h/local/agent/${codexRef.sessionId}`,
-    );
+    expect(await backend.liveViewUrl(codexRef)).toBe(`paseo://h/local/agent/${codexRef.sessionId}`);
     await collectAll(backend.events(codexRef));
 
     // Pi omits modeId and is allowed for both intake and worker
@@ -383,7 +381,9 @@ describe("FakeBackend behavior & diagnostics", () => {
     expect(badUsageEvents[0]).toMatchObject({ kind: "exit", reason: "failed" });
 
     // Unknown approval and active-turn send guard
-    await expect(backend.answer("apr-missing", true)).rejects.toThrow(/Unknown or already resolved/);
+    await expect(backend.answer("apr-missing", true)).rejects.toThrow(
+      /Unknown or already resolved/,
+    );
 
     backend.enqueueScript([{ kind: "wait_for_cancel" }]);
     const activeRef = await backend.start(makeRunSpec({ runId: "r-busy" }));

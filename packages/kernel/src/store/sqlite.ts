@@ -119,9 +119,7 @@ export interface AcquireStageLeaseInput {
   heartbeat_at: string;
 }
 
-export type AcquireStageLeaseResult =
-  | { acquired: true }
-  | { acquired: false; activeRunId: string };
+export type AcquireStageLeaseResult = { acquired: true } | { acquired: false; activeRunId: string };
 
 export interface HostPathLockRow {
   canonical_path: string;
@@ -231,9 +229,7 @@ export class KilnSqliteIndex {
 
     this.getTaskStmt = this.db.prepare(`SELECT * FROM tasks_index WHERE id = ?`);
 
-    this.selectLeaseByTaskStmt = this.db.prepare(
-      `SELECT * FROM stage_leases WHERE task_id = ?`,
-    );
+    this.selectLeaseByTaskStmt = this.db.prepare(`SELECT * FROM stage_leases WHERE task_id = ?`);
 
     this.upsertLeaseStmt = this.db.prepare(`
       INSERT INTO stage_leases (
@@ -439,9 +435,7 @@ export class KilnSqliteIndex {
       params.contract_version = patch.contract_version;
     }
 
-    const stmt = this.db.prepare(
-      `UPDATE tasks_index SET ${assignments.join(", ")} WHERE id = @id`,
-    );
+    const stmt = this.db.prepare(`UPDATE tasks_index SET ${assignments.join(", ")} WHERE id = @id`);
     try {
       const info = stmt.run(params);
       return info.changes > 0;
@@ -466,9 +460,7 @@ export class KilnSqliteIndex {
         );
       }
 
-      const existing = this.selectLeaseByTaskStmt.get(input.task_id) as
-        | StageLeaseRow
-        | undefined;
+      const existing = this.selectLeaseByTaskStmt.get(input.task_id) as StageLeaseRow | undefined;
 
       if (existing) {
         if (existing.state === "active" && existing.run_id !== input.run_id) {
@@ -568,9 +560,7 @@ export class KilnSqliteIndex {
     return this.transaction((): AcquireHostPathLocksResult => {
       const conflicts: HostPathLockConflict[] = [];
       for (const canonicalPath of uniquePaths) {
-        const existing = this.selectHostLockStmt.get(canonicalPath) as
-          | HostPathLockRow
-          | undefined;
+        const existing = this.selectHostLockStmt.get(canonicalPath) as HostPathLockRow | undefined;
         if (existing && existing.task_id !== taskId) {
           conflicts.push({
             path: existing.canonical_path,
@@ -611,9 +601,7 @@ export class KilnSqliteIndex {
         stmt.finalize();
       }
     }
-    const stmt = this.db.prepare(
-      `SELECT * FROM host_path_locks ORDER BY canonical_path ASC`,
-    );
+    const stmt = this.db.prepare(`SELECT * FROM host_path_locks ORDER BY canonical_path ASC`);
     try {
       return stmt.all() as unknown as HostPathLockRow[];
     } finally {
@@ -666,10 +654,7 @@ export class KilnSqliteIndex {
     assertNonNegativeInt(row.output_tokens, "output_tokens");
     assertNonNegativeInt(cacheWriteTokens, "cache_write_tokens");
     assertNonNegativeInt(reasoningTokens, "reasoning_tokens");
-    if (
-      providerCostUsd !== null &&
-      (!Number.isFinite(providerCostUsd) || providerCostUsd < 0)
-    ) {
+    if (providerCostUsd !== null && (!Number.isFinite(providerCostUsd) || providerCostUsd < 0)) {
       throw new RangeError(
         `provider_cost_usd must be null or finite non-negative, got: ${providerCostUsd}`,
       );

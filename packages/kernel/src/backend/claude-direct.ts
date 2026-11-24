@@ -62,7 +62,11 @@ const CLAUDE_MODES: readonly BackendModeDescriptor[] = [
 ];
 
 const DEFAULT_CLAUDE_MODELS: readonly BackendModelDescriptor[] = [
-  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", thinkingOptions: ["low", "medium", "high"] },
+  {
+    id: "claude-sonnet-4-6",
+    label: "Claude Sonnet 4.6",
+    thinkingOptions: ["low", "medium", "high"],
+  },
   { id: "claude-opus-4-6", label: "Claude Opus 4.6", thinkingOptions: ["low", "medium", "high"] },
   { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", thinkingOptions: ["low", "medium", "high"] },
 ];
@@ -254,7 +258,10 @@ export class ClaudeDirectBackend implements ProviderTelemetryBackend {
     if (!runSpec.mcpServers || runSpec.mcpServers.length === 0) {
       return null;
     }
-    const mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {};
+    const mcpServers: Record<
+      string,
+      { command: string; args: string[]; env?: Record<string, string> }
+    > = {};
     for (const s of runSpec.mcpServers) {
       mcpServers[s.name] = {
         command: s.command,
@@ -413,7 +420,11 @@ export class ClaudeDirectBackend implements ProviderTelemetryBackend {
     if (session.status === "closed") {
       throw new Error(`Session "${sessionRef.sessionId}" is closed`);
     }
-    if (session.status === "running" && session.currentTurn && !session.currentTurn.queue.isFinished()) {
+    if (
+      session.status === "running" &&
+      session.currentTurn &&
+      !session.currentTurn.queue.isFinished()
+    ) {
       throw new Error(
         `Session "${sessionRef.sessionId}" already has an active turn "${session.currentTurn.turnId}"`,
       );
@@ -571,9 +582,10 @@ export class ClaudeDirectBackend implements ProviderTelemetryBackend {
           turn.queue.push({ kind: "thinking", at });
         } else if (b.type === "tool_use") {
           const name = typeof b.name === "string" ? b.name : "tool";
-          const input = (b.input && typeof b.input === "object"
-            ? b.input
-            : {}) as Record<string, unknown>;
+          const input = (b.input && typeof b.input === "object" ? b.input : {}) as Record<
+            string,
+            unknown
+          >;
           const target =
             typeof input.file_path === "string"
               ? input.file_path

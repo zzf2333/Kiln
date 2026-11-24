@@ -9,11 +9,7 @@ import {
   TaskCardSchema,
 } from "@kiln/protocol";
 import { TaskStateMachine } from "../../state/index.js";
-import {
-  KilnStore,
-  writeFileAtomic,
-  writeYamlAtomic,
-} from "../../store/index.js";
+import { KilnStore, writeFileAtomic, writeYamlAtomic } from "../../store/index.js";
 import { PendingDecisionStore } from "../pending-decisions.js";
 import { SseHub } from "../sse.js";
 import { createHttpApiApp } from "../http-api.js";
@@ -188,7 +184,13 @@ Checked.
     category: "review_escalation",
     question: "Review round exhausted, please decide",
     options: [
-      { id: "opt-fix", label: "Rework", action: "resume", target_stage: "implement", recommended: true },
+      {
+        id: "opt-fix",
+        label: "Rework",
+        action: "resume",
+        target_stage: "implement",
+        recommended: true,
+      },
     ],
     created_at: "2026-11-24T01:04:00Z",
   });
@@ -217,7 +219,13 @@ describe("Track 5 [B12.4] review checklist HTTP API", () => {
     const detailRes = await app.request("/api/tasks/t-chk-1");
     expect(detailRes.status).toBe(200);
     const detail = (await detailRes.json()) as {
-      reviewChecklist: Array<{ id: string; source: string; severity: string; title: string; location?: string }>;
+      reviewChecklist: Array<{
+        id: string;
+        source: string;
+        severity: string;
+        title: string;
+        location?: string;
+      }>;
     };
     expect(detail.reviewChecklist).toHaveLength(4);
     expect(detail.reviewChecklist[0]).toMatchObject({
@@ -258,7 +266,9 @@ describe("Track 5 [B12.4] review checklist HTTP API", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        items: [{ item_id: "002-review:rf-2", disposition: "waive", rationale: "Acceptable for now" }],
+        items: [
+          { item_id: "002-review:rf-2", disposition: "waive", rationale: "Acceptable for now" },
+        ],
         advance_after_waive: true,
       }),
     });
@@ -272,7 +282,11 @@ describe("Track 5 [B12.4] review checklist HTTP API", () => {
       body: JSON.stringify({
         items: [
           { item_id: "002-review:rf-1", disposition: "rework", rationale: "Fix before merge" },
-          { item_id: "002-review:rf-2", disposition: "waive", rationale: "Timeout handled upstream" },
+          {
+            item_id: "002-review:rf-2",
+            disposition: "waive",
+            rationale: "Timeout handled upstream",
+          },
           { item_id: "003-accept:sc-1", disposition: "rework" },
         ],
         extra_note: "Prioritize login 500",
@@ -308,7 +322,9 @@ describe("Track 5 [B12.4] review checklist HTTP API", () => {
       reviewChecklist: Array<{ id: string; disposition?: string; rationale?: string }>;
       steers: Array<{ message: string }>;
     };
-    expect(reloaded.reviewChecklist.find((i) => i.id === "002-review:rf-2")?.disposition).toBe("waive");
+    expect(reloaded.reviewChecklist.find((i) => i.id === "002-review:rf-2")?.disposition).toBe(
+      "waive",
+    );
     expect(reloaded.steers.at(-1)?.message).toContain("Prioritize login 500");
   });
 

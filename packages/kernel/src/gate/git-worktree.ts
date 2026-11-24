@@ -89,8 +89,7 @@ function isInsideCanonicalDir(canonicalTarget: string, canonicalDir: string): bo
   if (process.platform === "win32") {
     const targetLower = canonicalTarget.toLowerCase();
     return (
-      targetLower === canonicalDir.toLowerCase() ||
-      targetLower.startsWith(prefix.toLowerCase())
+      targetLower === canonicalDir.toLowerCase() || targetLower.startsWith(prefix.toLowerCase())
     );
   }
   return canonicalTarget === canonicalDir || canonicalTarget.startsWith(prefix);
@@ -120,10 +119,7 @@ async function gitRefExists(repoPath: string, fullRef: string): Promise<boolean>
   }
 }
 
-function resolveExistingSourceInsideRepo(
-  canonicalRepo: string,
-  relPath: string,
-): string | null {
+function resolveExistingSourceInsideRepo(canonicalRepo: string, relPath: string): string | null {
   const fullPath = path.join(canonicalRepo, relPath);
   let lstat: fs.Stats;
   try {
@@ -149,10 +145,7 @@ function resolveExistingSourceInsideRepo(
   return realSource;
 }
 
-function ensureDestinationInsideWorktree(
-  canonicalWorktree: string,
-  relPath: string,
-): string {
+function ensureDestinationInsideWorktree(canonicalWorktree: string, relPath: string): string {
   const destPath = path.join(canonicalWorktree, relPath);
   const parentDir = path.dirname(destPath);
   ensureDir(parentDir);
@@ -327,9 +320,7 @@ export async function prepareGitWorktree(
     }
 
     await runGit(["-C", canonicalRepo, "config", "extensions.worktreeConfig", "true"]);
-    const rawGitDir = (
-      await runGit(["-C", canonicalWorktree, "rev-parse", "--git-dir"])
-    ).trim();
+    const rawGitDir = (await runGit(["-C", canonicalWorktree, "rev-parse", "--git-dir"])).trim();
     const worktreeGitAdminDir = path.isAbsolute(rawGitDir)
       ? rawGitDir
       : path.resolve(canonicalWorktree, rawGitDir);
@@ -345,18 +336,9 @@ export async function prepareGitWorktree(
       fs.chmodSync(prePushHookPath, 0o755);
     }
 
-    await runGit([
-      "-C",
-      canonicalWorktree,
-      "config",
-      "--worktree",
-      "core.hooksPath",
-      hooksDir,
-    ]);
+    await runGit(["-C", canonicalWorktree, "config", "--worktree", "core.hooksPath", hooksDir]);
 
-    const baseCommit = (
-      await runGit(["-C", canonicalWorktree, "rev-parse", "HEAD"])
-    ).trim();
+    const baseCommit = (await runGit(["-C", canonicalWorktree, "rev-parse", "HEAD"])).trim();
 
     return {
       repoPath: canonicalRepo,

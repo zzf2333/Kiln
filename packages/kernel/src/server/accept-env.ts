@@ -13,7 +13,11 @@ import type {
   AcceptTrafficErrorResponse,
   AcceptTrafficSummary,
 } from "@kiln/protocol";
-import { buildSanitizedEnv, runIsolatedCommand, terminateProcessTree } from "../gate/command-runner.js";
+import {
+  buildSanitizedEnv,
+  runIsolatedCommand,
+  terminateProcessTree,
+} from "../gate/command-runner.js";
 import { realpathCanonical } from "../store/fs-atomic.js";
 import { ensureDir } from "../store/fs-atomic.js";
 
@@ -49,7 +53,9 @@ export interface StartAcceptEnvOptions {
   signal?: AbortSignal;
 }
 
-export type AcceptEnvStarterFn = (options: StartAcceptEnvOptions) => Promise<AcceptEnvStartResult & { session?: AcceptEnvSession }>;
+export type AcceptEnvStarterFn = (
+  options: StartAcceptEnvOptions,
+) => Promise<AcceptEnvStartResult & { session?: AcceptEnvSession }>;
 
 interface LoopbackObserverProxy {
   proxyPort: number;
@@ -267,7 +273,9 @@ export async function createLoopbackHttpObserverProxy(input: {
 /**
  * Topologically orders accept services by `depends_on`, preserving declaration order.
  */
-export function toposortAcceptServices(services: readonly AcceptServiceSpec[]): AcceptServiceSpec[] {
+export function toposortAcceptServices(
+  services: readonly AcceptServiceSpec[],
+): AcceptServiceSpec[] {
   const byName = new Map(services.map((s) => [s.name, s]));
   const inDegree = new Map<string, number>();
   const dependents = new Map<string, string[]>();
@@ -333,9 +341,7 @@ function resolveContainedServiceCwd(worktreeRoot: string, relCwd?: string): stri
     return canonicalRoot;
   }
   const candidate = path.resolve(canonicalRoot, relCwd.trim());
-  const canonicalCandidate = fs.existsSync(candidate)
-    ? realpathCanonical(candidate)
-    : candidate;
+  const canonicalCandidate = fs.existsSync(candidate) ? realpathCanonical(candidate) : candidate;
   const prefix = canonicalRoot.endsWith(path.sep) ? canonicalRoot : canonicalRoot + path.sep;
   if (canonicalCandidate !== canonicalRoot && !canonicalCandidate.startsWith(prefix)) {
     throw new Error(`Service cwd "${relCwd}" escapes workspace root "${canonicalRoot}"`);
@@ -442,7 +448,10 @@ async function waitForServiceReady(input: {
       }
     } else if (probe.kind === "http") {
       if (runtime.port === undefined) {
-        return { ok: false, reason: `HTTP probe requires needs_port=true on "${runtime.spec.name}"` };
+        return {
+          ok: false,
+          reason: `HTTP probe requires needs_port=true on "${runtime.spec.name}"`,
+        };
       }
       const ready = await probeHttpOnce(runtime.port, probe.path, probe.expected_status);
       if (ready) {
@@ -450,7 +459,10 @@ async function waitForServiceReady(input: {
       }
     } else if (probe.kind === "tcp") {
       if (runtime.port === undefined) {
-        return { ok: false, reason: `TCP probe requires needs_port=true on "${runtime.spec.name}"` };
+        return {
+          ok: false,
+          reason: `TCP probe requires needs_port=true on "${runtime.spec.name}"`,
+        };
       }
       const ready = await probeTcpOnce(runtime.port);
       if (ready) {
@@ -545,7 +557,11 @@ export async function startAcceptEnvSession(
         ...(signal ? { signal } : {}),
       });
       if (prep.exitCode !== 0) {
-        const msg = [prep.stderr, prep.stdout].filter(Boolean).join("\n").trim().slice(-MAX_TAIL_CHARS);
+        const msg = [prep.stderr, prep.stdout]
+          .filter(Boolean)
+          .join("\n")
+          .trim()
+          .slice(-MAX_TAIL_CHARS);
         return {
           ok: false,
           entryKind: entry.kind,
@@ -603,7 +619,11 @@ export async function startAcceptEnvSession(
         ...(signal ? { signal } : {}),
       });
       if (prep.exitCode !== 0) {
-        const msg = [prep.stderr, prep.stdout].filter(Boolean).join("\n").trim().slice(-MAX_TAIL_CHARS);
+        const msg = [prep.stderr, prep.stdout]
+          .filter(Boolean)
+          .join("\n")
+          .trim()
+          .slice(-MAX_TAIL_CHARS);
         await stopAll();
         return {
           ok: false,

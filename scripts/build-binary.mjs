@@ -281,7 +281,9 @@ function main() {
         GENERATED_ENTRY_PATH,
       ];
 
-      process.stdout.write(`\n[build-binary] ${targetName} -> ${path.relative(REPO_ROOT, outPath)}\n`);
+      process.stdout.write(
+        `\n[build-binary] ${targetName} -> ${path.relative(REPO_ROOT, outPath)}\n`,
+      );
       const res = spawnSync("bun", bunArgs, {
         cwd: REPO_ROOT,
         stdio: "inherit",

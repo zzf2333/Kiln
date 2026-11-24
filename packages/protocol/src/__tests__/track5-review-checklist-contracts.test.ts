@@ -142,7 +142,11 @@ All tests pass.
 
     const valid = ResolveTaskChecklistRequestSchema.parse({
       items: [
-        { item_id: "002-review:rf-1", disposition: "waive", rationale: "False positive on Windows" },
+        {
+          item_id: "002-review:rf-1",
+          disposition: "waive",
+          rationale: "False positive on Windows",
+        },
         { item_id: "003-accept:sc-1", disposition: "rework" },
       ],
       advance_after_waive: false,

@@ -2,8 +2,8 @@
   "name": "@kiln/protocol",
   "version": "0.0.5",
   "private": true,
-  "sideEffects": false,
   "type": "module",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

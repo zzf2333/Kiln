@@ -128,8 +128,7 @@ export class WindowsPowerController {
     this.powerApi =
       options.powerApi !== undefined ? options.powerApi : createDefaultWindowsPowerApi();
     this.acPollIntervalMs = options.acPollIntervalMs ?? DEFAULT_AC_POLL_INTERVAL_MS;
-    this.setIntervalFn =
-      options.setIntervalFn ?? ((cb, ms) => setInterval(cb, ms));
+    this.setIntervalFn = options.setIntervalFn ?? ((cb, ms) => setInterval(cb, ms));
     this.clearIntervalFn =
       options.clearIntervalFn ??
       ((handle) => clearInterval(handle as ReturnType<typeof setInterval>));

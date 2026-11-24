@@ -86,10 +86,7 @@ function stripMatchingQuotes(val: string): string {
   return trimmed;
 }
 
-function parseSkillMarkdown(
-  raw: string,
-  dirName: string,
-): { name: string; description: string } {
+function parseSkillMarkdown(raw: string, dirName: string): { name: string; description: string } {
   let name = dirName;
   let description = "";
   let body = raw;
@@ -188,7 +185,9 @@ function setBoundedCache<T>(
  * deduplicating by skill name with project scope overriding user scope.
  */
 export function discoverSkills(options: ExtensionsDiscoveryOptions = {}): DiscoveredSkill[] {
-  const homeDir = tryCanonicalDir(options.homeDir ?? os.homedir()) ?? path.resolve(options.homeDir ?? os.homedir());
+  const homeDir =
+    tryCanonicalDir(options.homeDir ?? os.homedir()) ??
+    path.resolve(options.homeDir ?? os.homedir());
   const projectDir = tryCanonicalDir(options.projectDir);
   const kilnHome = tryCanonicalDir(options.kilnHome);
   const agentFamily = normalizeAgentFamily(options.agent);
@@ -299,14 +298,12 @@ function extractMcpNamesFromJson(raw: string): string[] {
     obj.mcp && typeof obj.mcp === "object" && !Array.isArray(obj.mcp)
       ? (obj.mcp as Record<string, unknown>).servers
       : undefined;
-  return [
-    ...extractMcpNamesFromRecord(obj.mcpServers),
-    ...extractMcpNamesFromRecord(nestedMcp),
-  ];
+  return [...extractMcpNamesFromRecord(obj.mcpServers), ...extractMcpNamesFromRecord(nestedMcp)];
 }
 
 function extractMcpNamesFromToml(raw: string): string[] {
-  const sectionPattern = /^\s*\[mcp_servers\.(?:"([^"]+)"|'([^']+)'|([a-zA-Z0-9_:-]+))(?:\.[^\]]*)?\]\s*(?:#.*)?$/gm;
+  const sectionPattern =
+    /^\s*\[mcp_servers\.(?:"([^"]+)"|'([^']+)'|([a-zA-Z0-9_:-]+))(?:\.[^\]]*)?\]\s*(?:#.*)?$/gm;
   const headers: Array<{ name: string; isRoot: boolean; start: number; end: number }> = [];
   let match: RegExpExecArray | null;
   while ((match = sectionPattern.exec(raw)) !== null) {
@@ -381,7 +378,9 @@ function extractMcpNamesFromYaml(raw: string): string[] {
  * from project, Kiln, and user Agent configuration files.
  */
 export function discoverMcpServers(options: ExtensionsDiscoveryOptions = {}): ChatMcpServerItem[] {
-  const homeDir = tryCanonicalDir(options.homeDir ?? os.homedir()) ?? path.resolve(options.homeDir ?? os.homedir());
+  const homeDir =
+    tryCanonicalDir(options.homeDir ?? os.homedir()) ??
+    path.resolve(options.homeDir ?? os.homedir());
   const projectDir = tryCanonicalDir(options.projectDir);
   const kilnHome = tryCanonicalDir(options.kilnHome);
   const agentFamily = normalizeAgentFamily(options.agent);
@@ -401,9 +400,24 @@ export function discoverMcpServers(options: ExtensionsDiscoveryOptions = {}): Ch
 
   if (projectDir) {
     sources.push(
-      { file: path.join(projectDir, ".mcp.json"), format: "json", scope: "project", origin: ".mcp.json" },
-      { file: path.join(projectDir, ".codex", "config.toml"), format: "toml", scope: "project", origin: ".codex/config.toml" },
-      { file: path.join(projectDir, ".gemini", "settings.json"), format: "json", scope: "project", origin: ".gemini/settings.json" },
+      {
+        file: path.join(projectDir, ".mcp.json"),
+        format: "json",
+        scope: "project",
+        origin: ".mcp.json",
+      },
+      {
+        file: path.join(projectDir, ".codex", "config.toml"),
+        format: "toml",
+        scope: "project",
+        origin: ".codex/config.toml",
+      },
+      {
+        file: path.join(projectDir, ".gemini", "settings.json"),
+        format: "json",
+        scope: "project",
+        origin: ".gemini/settings.json",
+      },
     );
   }
   if (kilnHome) {
@@ -416,26 +430,71 @@ export function discoverMcpServers(options: ExtensionsDiscoveryOptions = {}): Ch
   }
 
   const addCodex = () => {
-    sources.push({ file: path.join(homeDir, ".codex", "config.toml"), format: "toml", scope: "agent", origin: "codex" });
+    sources.push({
+      file: path.join(homeDir, ".codex", "config.toml"),
+      format: "toml",
+      scope: "agent",
+      origin: "codex",
+    });
   };
   const addAntigravity = () => {
     sources.push(
-      { file: path.join(homeDir, ".gemini", "antigravity-cli", "mcp_config.json"), format: "json", scope: "agent", origin: "antigravity" },
-      { file: path.join(homeDir, ".gemini", "antigravity-cli", "settings.json"), format: "json", scope: "agent", origin: "antigravity" },
-      { file: path.join(homeDir, ".gemini", "antigravity", "mcp_config.json"), format: "json", scope: "agent", origin: "antigravity" },
-      { file: path.join(homeDir, ".gemini", "settings.json"), format: "json", scope: "agent", origin: "antigravity" },
+      {
+        file: path.join(homeDir, ".gemini", "antigravity-cli", "mcp_config.json"),
+        format: "json",
+        scope: "agent",
+        origin: "antigravity",
+      },
+      {
+        file: path.join(homeDir, ".gemini", "antigravity-cli", "settings.json"),
+        format: "json",
+        scope: "agent",
+        origin: "antigravity",
+      },
+      {
+        file: path.join(homeDir, ".gemini", "antigravity", "mcp_config.json"),
+        format: "json",
+        scope: "agent",
+        origin: "antigravity",
+      },
+      {
+        file: path.join(homeDir, ".gemini", "settings.json"),
+        format: "json",
+        scope: "agent",
+        origin: "antigravity",
+      },
     );
   };
   const addPi = () => {
     sources.push(
-      { file: path.join(homeDir, ".pi", "agent", "mcp.json"), format: "json", scope: "agent", origin: "pi" },
-      { file: path.join(homeDir, ".pi", "agent", "settings.json"), format: "json", scope: "agent", origin: "pi" },
+      {
+        file: path.join(homeDir, ".pi", "agent", "mcp.json"),
+        format: "json",
+        scope: "agent",
+        origin: "pi",
+      },
+      {
+        file: path.join(homeDir, ".pi", "agent", "settings.json"),
+        format: "json",
+        scope: "agent",
+        origin: "pi",
+      },
     );
   };
   const addClaude = () => {
     sources.push(
-      { file: path.join(homeDir, ".claude.json"), format: "json", scope: "agent", origin: "claude" },
-      { file: path.join(homeDir, ".claude", "settings.json"), format: "json", scope: "agent", origin: "claude" },
+      {
+        file: path.join(homeDir, ".claude.json"),
+        format: "json",
+        scope: "agent",
+        origin: "claude",
+      },
+      {
+        file: path.join(homeDir, ".claude", "settings.json"),
+        format: "json",
+        scope: "agent",
+        origin: "claude",
+      },
     );
   };
 

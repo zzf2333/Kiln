@@ -20,17 +20,17 @@
 
 ## 仓库结构
 
-| 路径 | 说明 |
-| :--- | :--- |
-| [`packages/protocol`](packages/protocol/package.json) | **纯数据契约层**：全链路 Zod Schema、可组合工作流蓝图契约（`workflow-core.ts` / `workflow.ts`）、顾问决策结构、`card.yaml` / 回执 / 配置解析、标价费用公式与浏览器入口（`@kiln/protocol/web`） |
-| [`packages/kernel`](packages/kernel/package.json) | **`kilnd` 守护进程核心**：可组合蓝图编排器与状态机、调度器、验真门禁与两阶段 `host_op` 暂存、零原生依赖 SQLite（`bun:sqlite` / `node:sqlite`）存储、双端口 HTTP+SSE、原生 TUI 启动器（`tui-launcher.ts`）、内嵌静态资源服务与执行底座抽象 |
-| [`packages/mcp`](packages/mcp/package.json) | **`kiln-mcp` 工具服务**：受限 `stdio` MCP 服务（同时内置为 `kiln __mcp`），通过 POSIX `0600` Unix Socket 或 Windows Named Pipe + `KILN_RUN_TOKEN` 调用 `kilnd` |
-| [`packages/cli`](packages/cli/package.json) | **`kiln` / `kl` CLI**：守护进程启停、状态查询、草稿/审批/空间/远程管理命令、环境自检及跨平台系统服务管理（macOS / Linux / Windows） |
-| [`apps/web`](apps/web/package.json) | **Web 工作台**：桌面与移动端（`<= 820px`）自适应 React 19 + Tailwind CSS v4 + Radix UI 前端，编译产出至 `packages/kernel/public/` 并内嵌进单文件二进制 |
-| [`apps/desktop`](apps/desktop/README.md) | **跨平台桌面托盘薄壳（macOS / Windows）**：Tauri v2 Sidecar 托盘壳（Windows `CREATE_NO_WINDOW` 无黑框、按需销毁 WebView、终端命令一键链接及纯 `std` `model.rs` 核心） |
-| [`scripts/`](scripts/install.sh) | **零依赖安装脚本与单文件编译**：POSIX [`install.sh`](scripts/install.sh)、Windows [`install.ps1`](scripts/install.ps1)、[`test-install.sh`](scripts/test-install.sh) 与 Bun 单文件编译 [`build-binary.mjs`](scripts/build-binary.mjs) |
-| [`packaging/`](packaging/README.md) | **发版打包模板**：预编译二进制 Homebrew [Formula](packaging/homebrew/Formula/kiln.rb)、macOS [Cask](packaging/homebrew/Casks/kiln-app.rb) 与发版核对清单 |
-| [`.github/workflows/`](.github/workflows/ci.yml) | **CI/Release 工作流**：3-OS [`ci.yml`](.github/workflows/ci.yml)（`ubuntu-latest` / `macos-latest` / `windows-latest`）与 3-OS 单文件 + 桌面 Sidecar [`release.yml`](.github/workflows/release.yml) |
+| 路径                                                  | 说明                                                                                                                                                                                                                                      |
+| :---------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`packages/protocol`](packages/protocol/package.json) | **纯数据契约层**：全链路 Zod Schema、可组合工作流蓝图契约（`workflow-core.ts` / `workflow.ts`）、顾问决策结构、`card.yaml` / 回执 / 配置解析、标价费用公式与浏览器入口（`@kiln/protocol/web`）                                            |
+| [`packages/kernel`](packages/kernel/package.json)     | **`kilnd` 守护进程核心**：可组合蓝图编排器与状态机、调度器、验真门禁与两阶段 `host_op` 暂存、零原生依赖 SQLite（`bun:sqlite` / `node:sqlite`）存储、双端口 HTTP+SSE、原生 TUI 启动器（`tui-launcher.ts`）、内嵌静态资源服务与执行底座抽象 |
+| [`packages/mcp`](packages/mcp/package.json)           | **`kiln-mcp` 工具服务**：受限 `stdio` MCP 服务（同时内置为 `kiln __mcp`），通过 POSIX `0600` Unix Socket 或 Windows Named Pipe + `KILN_RUN_TOKEN` 调用 `kilnd`                                                                            |
+| [`packages/cli`](packages/cli/package.json)           | **`kiln` / `kl` CLI**：守护进程启停、状态查询、草稿/审批/空间/远程管理命令、环境自检及跨平台系统服务管理（macOS / Linux / Windows）                                                                                                       |
+| [`apps/web`](apps/web/package.json)                   | **Web 工作台**：桌面与移动端（`<= 820px`）自适应 React 19 + Tailwind CSS v4 + Radix UI 前端，编译产出至 `packages/kernel/public/` 并内嵌进单文件二进制                                                                                    |
+| [`apps/desktop`](apps/desktop/README.md)              | **跨平台桌面托盘薄壳（macOS / Windows）**：Tauri v2 Sidecar 托盘壳（Windows `CREATE_NO_WINDOW` 无黑框、按需销毁 WebView、终端命令一键链接及纯 `std` `model.rs` 核心）                                                                     |
+| [`scripts/`](scripts/install.sh)                      | **零依赖安装脚本与单文件编译**：POSIX [`install.sh`](scripts/install.sh)、Windows [`install.ps1`](scripts/install.ps1)、[`test-install.sh`](scripts/test-install.sh) 与 Bun 单文件编译 [`build-binary.mjs`](scripts/build-binary.mjs)     |
+| [`packaging/`](packaging/README.md)                   | **发版打包模板**：预编译二进制 Homebrew [Formula](packaging/homebrew/Formula/kiln.rb)、macOS [Cask](packaging/homebrew/Casks/kiln-app.rb) 与发版核对清单                                                                                  |
+| [`.github/workflows/`](.github/workflows/ci.yml)      | **CI/Release 工作流**：3-OS [`ci.yml`](.github/workflows/ci.yml)（`ubuntu-latest` / `macos-latest` / `windows-latest`）与 3-OS 单文件 + 桌面 Sidecar [`release.yml`](.github/workflows/release.yml)                                       |
 
 ---
 
@@ -136,20 +136,20 @@ kiln uninstall                  # 停止守护进程、移除系统服务并巡�
 
 ## CLI 命令参考（`kiln` / `kl`）
 
-| 命令 | 说明 |
-| :--- | :--- |
-| `kiln up [--port <port>] [--host <host>] [--foreground] [--paseo-url <url>] [--no-paseo]` | 幂等启动 `kilnd`（默认 `127.0.0.1:4310` 并注册 `PaseoBackend`；可用 `--paseo-url`/`PASEO_URL`/`PASEO_PASSWORD` 覆盖，或 `--no-paseo`/`KILN_DISABLE_PASEO=1` 禁用；`--foreground` 前台运行） |
-| `kiln down` | 停止托管的 `kilnd` 守护进程 |
-| `kiln open [--port <port>] [--host <host>]` | 在系统默认浏览器打开 Kiln Web 工作台 |
-| `kiln status [--port <port>] [--host <host>] [--json]` | 输出任务状态、运行数、待决拍板、草稿与用量快照 |
-| `kiln space <list\|add [path]\|rm <id>> [--id <id>] [--name <name>] [--branch <branch>] [--accept-cmd <cmd>] [--copy-untracked <csv>] [--clone-deps <csv>] [--port <port>] [--host <host>] [--json]` | 列出项目空间、自动探测并登记本地 Git 仓库（`add` 默认当前目录），或删除无活跃任务的空间 |
-| `kiln draft "<idea>" [--id <id>] [--space <id>] [--priority <P0\|P1\|P2\|P3>] [--track <L1\|L2>] [--mode <git_worktree\|host_scoped\|scratch_dir>] [--port <port>] [--host <host>]` | 创建任务草稿卡 |
-| `kiln decide [task-id] [--option <id>] [--decision <id>] [--rationale <text>] [--apply-ledger] [--port <port>] [--host <host>]` | 列出或提交待决人工拍板 |
-| `kiln remote <status\|enable\|disable\|pair\|devices\|revoke\|tailscale> [...]` | 管理 `:4311` 远程访问开关、一次性配对码/链接、已配对设备、即时吊销与 Tailscale 状态 |
-| `kiln doctor [--port <port>] [--host <host>] [--json]` | 检查 Node、Git、APFS 克隆能力、`kilnd` 连通性、Paseo Agent 发现（非必填项）与服务状态 |
-| `kiln service <install\|uninstall\|status> [--platform <darwin\|linux>] [--label <label>] [--service-name <name>]` | 显式安装、卸载或查询操作系统自启服务 |
-| `kiln uninstall [--purge-data] [--platform <darwin\|linux>]` | 停止守护进程、清理服务并检测残余 worktree（加 `--purge-data` 删除 `~/.kiln`） |
-| `kiln -h, --help` / `kiln -v, --version` / `kiln help` | 显示帮助或 CLI 版本号（`0.0.5`） |
+| 命令                                                                                                                                                                                                 | 说明                                                                                                                                                                                        |
+| :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `kiln up [--port <port>] [--host <host>] [--foreground] [--paseo-url <url>] [--no-paseo]`                                                                                                            | 幂等启动 `kilnd`（默认 `127.0.0.1:4310` 并注册 `PaseoBackend`；可用 `--paseo-url`/`PASEO_URL`/`PASEO_PASSWORD` 覆盖，或 `--no-paseo`/`KILN_DISABLE_PASEO=1` 禁用；`--foreground` 前台运行） |
+| `kiln down`                                                                                                                                                                                          | 停止托管的 `kilnd` 守护进程                                                                                                                                                                 |
+| `kiln open [--port <port>] [--host <host>]`                                                                                                                                                          | 在系统默认浏览器打开 Kiln Web 工作台                                                                                                                                                        |
+| `kiln status [--port <port>] [--host <host>] [--json]`                                                                                                                                               | 输出任务状态、运行数、待决拍板、草稿与用量快照                                                                                                                                              |
+| `kiln space <list\|add [path]\|rm <id>> [--id <id>] [--name <name>] [--branch <branch>] [--accept-cmd <cmd>] [--copy-untracked <csv>] [--clone-deps <csv>] [--port <port>] [--host <host>] [--json]` | 列出项目空间、自动探测并登记本地 Git 仓库（`add` 默认当前目录），或删除无活跃任务的空间                                                                                                     |
+| `kiln draft "<idea>" [--id <id>] [--space <id>] [--priority <P0\|P1\|P2\|P3>] [--track <L1\|L2>] [--mode <git_worktree\|host_scoped\|scratch_dir>] [--port <port>] [--host <host>]`                  | 创建任务草稿卡                                                                                                                                                                              |
+| `kiln decide [task-id] [--option <id>] [--decision <id>] [--rationale <text>] [--apply-ledger] [--port <port>] [--host <host>]`                                                                      | 列出或提交待决人工拍板                                                                                                                                                                      |
+| `kiln remote <status\|enable\|disable\|pair\|devices\|revoke\|tailscale> [...]`                                                                                                                      | 管理 `:4311` 远程访问开关、一次性配对码/链接、已配对设备、即时吊销与 Tailscale 状态                                                                                                         |
+| `kiln doctor [--port <port>] [--host <host>] [--json]`                                                                                                                                               | 检查 Node、Git、APFS 克隆能力、`kilnd` 连通性、Paseo Agent 发现（非必填项）与服务状态                                                                                                       |
+| `kiln service <install\|uninstall\|status> [--platform <darwin\|linux>] [--label <label>] [--service-name <name>]`                                                                                   | 显式安装、卸载或查询操作系统自启服务                                                                                                                                                        |
+| `kiln uninstall [--purge-data] [--platform <darwin\|linux>]`                                                                                                                                         | 停止守护进程、清理服务并检测残余 worktree（加 `--purge-data` 删除 `~/.kiln`）                                                                                                               |
+| `kiln -h, --help` / `kiln -v, --version` / `kiln help`                                                                                                                                               | 显示帮助或 CLI 版本号（`0.0.5`）                                                                                                                                                            |
 
 ---
 

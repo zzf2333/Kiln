@@ -133,9 +133,7 @@ function makePolishBootstrap(): BootstrapResponse {
         reason: "approval_required",
         category: "release_publish",
         question: "是否允许合并到 release 分支？",
-        options: [
-          { id: "opt-a", label: "允许合并", action: "resume", recommended: true },
-        ],
+        options: [{ id: "opt-a", label: "允许合并", action: "resume", recommended: true }],
         created_at: now,
       },
       {
@@ -145,9 +143,7 @@ function makePolishBootstrap(): BootstrapResponse {
         reason: "contract_clarification",
         category: "external_domain",
         question: "域名策略选择方案一还是方案二？",
-        options: [
-          { id: "opt-b1", label: "采用方案一", action: "resume", recommended: true },
-        ],
+        options: [{ id: "opt-b1", label: "采用方案一", action: "resume", recommended: true }],
         created_at: now,
       },
     ],
@@ -257,7 +253,8 @@ describe("@kiln/web Slice 6c visual & interaction polish", () => {
             id,
             space: "kiln",
             parent_id: null,
-            title: id === "t-wait-1" ? "待决策任务 A：审批发布边界" : "运行中任务：补充视觉对齐单测",
+            title:
+              id === "t-wait-1" ? "待决策任务 A：审批发布边界" : "运行中任务：补充视觉对齐单测",
             priority: "P0",
             effective_priority: "P0",
             track: "L2",
@@ -297,8 +294,7 @@ describe("@kiln/web Slice 6c visual & interaction polish", () => {
           },
           brief: "# BRIEF",
           decisions: "",
-          pendingDecision:
-            id === "t-wait-1" ? makePolishBootstrap().pendingDecisions[0]! : null,
+          pendingDecision: id === "t-wait-1" ? makePolishBootstrap().pendingDecisions[0]! : null,
           ledgerProposals: [],
           runs: [],
           usageTurns: [],

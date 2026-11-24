@@ -11,11 +11,7 @@ export interface CheckpointPopoverProps {
   isRunning: boolean;
 }
 
-export function CheckpointPopover({
-  taskId,
-  checkpoints,
-  isRunning,
-}: CheckpointPopoverProps) {
+export function CheckpointPopover({ taskId, checkpoints, isRunning }: CheckpointPopoverProps) {
   const { store } = useKilnStore();
   const [open, setOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -64,16 +60,10 @@ export function CheckpointPopover({
       }}
     >
       <Popover.Trigger asChild>
-        <button
-          type="button"
-          className="btn"
-          aria-label={`快照（${checkpoints.length}）`}
-        >
+        <button type="button" className="btn" aria-label={`快照（${checkpoints.length}）`}>
           <HistoryIcon />
           <span>快照</span>
-          {checkpoints.length > 0 ? (
-            <span className="nav-count">{checkpoints.length}</span>
-          ) : null}
+          {checkpoints.length > 0 ? <span className="nav-count">{checkpoints.length}</span> : null}
         </button>
       </Popover.Trigger>
       <Popover.Portal>

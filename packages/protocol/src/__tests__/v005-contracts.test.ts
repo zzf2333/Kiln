@@ -208,9 +208,9 @@ describe("v0.0.5 protocol contracts", () => {
         },
       },
     });
-    expect(deriveLegacyRolesConfigFromRoster(legacyArchitectAdviseRoster).roles.advisor?.model).toBe(
-      "claude-sonnet-4-6",
-    );
+    expect(
+      deriveLegacyRolesConfigFromRoster(legacyArchitectAdviseRoster).roles.advisor?.model,
+    ).toBe("claude-sonnet-4-6");
   });
 
   it("supports 5-field pricing, cache-write fallback, orthogonal billing, and CacheNetSavedUsd", () => {
@@ -265,7 +265,12 @@ describe("v0.0.5 protocol contracts", () => {
     // Legacy calculateTurnCostUsd stays exact and optionally folds cacheWriteTokens
     expect(
       calculateTurnCostUsd(
-        { inputTokens: 10_000, cachedInputTokens: 0, cacheWriteTokens: 50_000, outputTokens: 1_000 },
+        {
+          inputTokens: 10_000,
+          cachedInputTokens: 0,
+          cacheWriteTokens: 50_000,
+          outputTokens: 1_000,
+        },
         fiveField,
       ),
     ).toBeCloseTo(0.2325, 8);
@@ -382,7 +387,9 @@ describe("v0.0.5 protocol contracts", () => {
         roster_role: "frontend_ui",
       };
     }
-    expect(validateBlueprintAgainstRoster(validBp, roster, { workspaceMode: "git_worktree" })).toEqual({
+    expect(
+      validateBlueprintAgainstRoster(validBp, roster, { workspaceMode: "git_worktree" }),
+    ).toEqual({
       ok: true,
     });
 
@@ -429,9 +436,7 @@ describe("v0.0.5 protocol contracts", () => {
       ]).ok,
     ).toBe(false);
 
-    expect(
-      validateSplitCardsDag([{ temp_id: "a", depends_on_temp_ids: ["a"] }]).ok,
-    ).toBe(false);
+    expect(validateSplitCardsDag([{ temp_id: "a", depends_on_temp_ids: ["a"] }]).ok).toBe(false);
 
     const validSplitMcp = WbSplitCardsPlanInputSchema.safeParse({
       mode: "commit_split_cards",
@@ -572,7 +577,8 @@ describe("v0.0.5 protocol contracts", () => {
       added_at: "2026-11-23T02:00:00.000Z",
     });
     expect(
-      TaskAttachmentSchema.safeParse({ ...attachment, size_bytes: MAX_ATTACHMENT_BYTES + 1 }).success,
+      TaskAttachmentSchema.safeParse({ ...attachment, size_bytes: MAX_ATTACHMENT_BYTES + 1 })
+        .success,
     ).toBe(false);
     expect(
       TaskAttachmentSchema.safeParse({ ...attachment, mime_type: "application/pdf" }).success,

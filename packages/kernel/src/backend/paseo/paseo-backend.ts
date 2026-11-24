@@ -226,8 +226,7 @@ function extractNativeSessionMeta(
   }
   const nativeHandle =
     typeof persistence.nativeHandle === "string" ? persistence.nativeHandle.trim() : "";
-  const sessionId =
-    typeof persistence.sessionId === "string" ? persistence.sessionId.trim() : "";
+  const sessionId = typeof persistence.sessionId === "string" ? persistence.sessionId.trim() : "";
   const metaFile =
     persistence.metadata && typeof persistence.metadata.sessionFile === "string"
       ? persistence.metadata.sessionFile.trim()
@@ -982,9 +981,7 @@ export class PaseoBackend implements ExecutionBackend {
     }
     const session = this.sessions.get(sessionRef.sessionId);
     if (!session) {
-      throw new Error(
-        `Unknown session "${sessionRef.sessionId}" for backend "${this.backendId}"`,
-      );
+      throw new Error(`Unknown session "${sessionRef.sessionId}" for backend "${this.backendId}"`);
     }
     return session;
   }
@@ -1108,11 +1105,7 @@ export class PaseoBackend implements ExecutionBackend {
       case "thread_started": {
         const sid = ev.sessionId.trim();
         if (sid.length > 0) {
-          this.recordNativeSessionBinding(
-            session,
-            { providerSessionId: sid },
-            at,
-          );
+          this.recordNativeSessionBinding(session, { providerSessionId: sid }, at);
         }
         break;
       }
@@ -1163,14 +1156,7 @@ export class PaseoBackend implements ExecutionBackend {
         }
         turn.completing = true;
         if (hasAnyTokenCounter(ev.usage)) {
-          this.completeTurnWithUsage(
-            session,
-            turn,
-            ev.usage,
-            "turn_completed",
-            ev.turnId,
-            at,
-          );
+          this.completeTurnWithUsage(session, turn, ev.usage, "turn_completed", ev.turnId, at);
         } else {
           void this.completeTurnFromFetchedAgent(session, turn, ev.turnId, at);
         }
@@ -1460,12 +1446,7 @@ export class PaseoBackend implements ExecutionBackend {
     turn.reconciling = true;
     try {
       const fetched = await this.daemonClient.fetchAgent({ agentId: session.agentId });
-      if (
-        this.disposed ||
-        turn.finished ||
-        turn.completing ||
-        session.currentTurn !== turn
-      ) {
+      if (this.disposed || turn.finished || turn.completing || session.currentTurn !== turn) {
         return;
       }
 
@@ -1524,14 +1505,7 @@ export class PaseoBackend implements ExecutionBackend {
 
       if (turn.dispatched && agent.status === "idle" && !agent.activeTurn) {
         turn.completing = true;
-        this.completeTurnWithUsage(
-          session,
-          turn,
-          agent.lastUsage,
-          "last_usage",
-          undefined,
-          now,
-        );
+        this.completeTurnWithUsage(session, turn, agent.lastUsage, "last_usage", undefined, now);
       }
     } catch {
       // Transient fetch failure during reconnect leaves turn open for timeline or disconnect grace timer.
@@ -1571,7 +1545,7 @@ export class PaseoBackend implements ExecutionBackend {
       this.clearDisconnectTimer();
       const detail =
         state.status === "disconnected"
-          ? state.reason ?? "Paseo daemon connection lost"
+          ? (state.reason ?? "Paseo daemon connection lost")
           : "Paseo daemon client disposed";
       this.failAllActiveTurns(detail);
       return;
@@ -1684,8 +1658,7 @@ export class PaseoBackend implements ExecutionBackend {
             kind: "exit",
             at: new Date().toISOString(),
             reason: "cancelled",
-            detail:
-              fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr),
+            detail: fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr),
           });
           return;
         }
@@ -1740,8 +1713,7 @@ export class PaseoBackend implements ExecutionBackend {
     const existingId = session.sessionRef.meta?.providerSessionId;
     const existingPath = session.sessionRef.meta?.providerSessionPath;
     const nextPath = binding.providerSessionPath ?? existingPath;
-    const changed =
-      binding.providerSessionId !== existingId || nextPath !== existingPath;
+    const changed = binding.providerSessionId !== existingId || nextPath !== existingPath;
     if (!changed) {
       return;
     }

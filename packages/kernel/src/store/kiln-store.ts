@@ -53,10 +53,7 @@ import {
   writeYamlAtomic,
   type AnyZodType,
 } from "./fs-atomic.js";
-import {
-  HostBackupManifestSchema,
-  type HostBackupManifest,
-} from "./backup-manifest.js";
+import { HostBackupManifestSchema, type HostBackupManifest } from "./backup-manifest.js";
 import { KilnPaths, assertSafeSegment, type KilnConfigName } from "./paths.js";
 import {
   KilnSqliteIndex,
@@ -101,10 +98,7 @@ type AnyKilnConfigValue =
   | ProvidersConfig
   | RosterConfig;
 
-const RESTRICTED_CONFIG_NAMES: ReadonlySet<KilnConfigName> = new Set([
-  "remote",
-  "devices",
-]);
+const RESTRICTED_CONFIG_NAMES: ReadonlySet<KilnConfigName> = new Set(["remote", "devices"]);
 
 export interface DerivedTaskState {
   status: TaskStatus;
@@ -521,10 +515,7 @@ export class KilnStore {
     const runDirName = assertSafeSegment(params.runDirName, "runDirName");
     const timestamp = params.now ?? new Date().toISOString();
 
-    const dirRunMeta = readYamlValidated(
-      this.paths.runYaml(taskId, runDirName),
-      RunMetaSchema,
-    );
+    const dirRunMeta = readYamlValidated(this.paths.runYaml(taskId, runDirName), RunMetaSchema);
     if (dirRunMeta.task_id !== taskId || dirRunMeta.run_id !== runId) {
       throw new Error(
         `Run directory "${runDirName}" belongs to (${dirRunMeta.task_id}, ${dirRunMeta.run_id}), cannot submit receipt for (${taskId}, ${runId})`,
@@ -579,8 +570,7 @@ export class KilnStore {
       params.contractPatch.accept_cmd !== undefined &&
       params.contractPatch.accept_cmd !== card.contract.accept_cmd;
     if (acceptCmdChanged) {
-      const suppliedHash =
-        params.acceptFilesHash ?? params.contractPatch.accept_files_hash;
+      const suppliedHash = params.acceptFilesHash ?? params.contractPatch.accept_files_hash;
       if (suppliedHash === undefined || suppliedHash === card.contract.accept_files_hash) {
         throw new Error(
           `Cannot update contract.accept_cmd for task "${taskId}" without supplying a new accept_files_hash`,
@@ -637,10 +627,7 @@ export class KilnStore {
         const receiptPath = this.paths.receiptMd(taskId, runDirName);
         if (!fs.existsSync(receiptPath)) continue;
 
-        const meta = readYamlOptional(
-          this.paths.runYaml(taskId, runDirName),
-          RunMetaSchema,
-        );
+        const meta = readYamlOptional(this.paths.runYaml(taskId, runDirName), RunMetaSchema);
 
         let runId: string;
         let runContractVersion: number;
@@ -750,14 +737,9 @@ export class KilnStore {
 
     let usageRunMeta: RunMeta | null = null;
     if (parsedEvent.kind === "usage") {
-      const runMeta = readYamlValidated(
-        this.paths.runYaml(safeTaskId, safeRunDir),
-        RunMetaSchema,
-      );
+      const runMeta = readYamlValidated(this.paths.runYaml(safeTaskId, safeRunDir), RunMetaSchema);
       if (runMeta.task_id !== safeTaskId) {
-        throw new Error(
-          `RUN.yaml task_id "${runMeta.task_id}" does not match "${safeTaskId}"`,
-        );
+        throw new Error(`RUN.yaml task_id "${runMeta.task_id}" does not match "${safeTaskId}"`);
       }
       usageRunMeta = runMeta;
     }
@@ -1050,9 +1032,7 @@ export class KilnStore {
 
         const card = readYamlValidated(cardPath, TaskCardSchema);
         if (card.id !== taskId) {
-          throw new Error(
-            `Corrupted task directory "${taskId}": card.yaml id is "${card.id}"`,
-          );
+          throw new Error(`Corrupted task directory "${taskId}": card.yaml id is "${card.id}"`);
         }
         const stateEvents = this.readStateEvents(taskId);
         const derived = deriveTaskStatus(card, stateEvents);

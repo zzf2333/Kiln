@@ -269,11 +269,10 @@ export class PiRpcBackend implements ProviderTelemetryBackend {
     });
 
     try {
-      const modelsRes = await proc.request(
-        { type: "get_available_models" },
-        undefined,
-        { id: "probe-models", timeoutMs: 8_000 },
-      );
+      const modelsRes = await proc.request({ type: "get_available_models" }, undefined, {
+        id: "probe-models",
+        timeoutMs: 8_000,
+      });
       this.discoveredModels = parsePiAvailableModels(modelsRes);
       const merged = mergePiModels(this.discoveredModels, this.provider.custom_models);
 
@@ -410,8 +409,7 @@ export class PiRpcBackend implements ProviderTelemetryBackend {
     const isReadOnly = isReadOnlyRole(runSpec.role) || runSpec.readOnly === true;
     const command = this.getBaseCommand();
     const env = buildProcessEnv(this.provider.env, runSpec.env);
-    const resolvedCmd =
-      resolveCliBinary(command, { env, ...(this.probeOptions ?? {}) }) ?? command;
+    const resolvedCmd = resolveCliBinary(command, { env, ...(this.probeOptions ?? {}) }) ?? command;
     const args = this.buildSessionArgs(runSpec, isReadOnly);
 
     const sessionId = `pi-${randomUUID()}`;
@@ -474,11 +472,10 @@ export class PiRpcBackend implements ProviderTelemetryBackend {
     this.sessions.set(sessionId, session);
 
     try {
-      const stateRes = (await proc.request(
-        { type: "get_state" },
-        undefined,
-        { id: `${sessionId}-state`, timeoutMs: this.rpcTimeoutMs },
-      )) as { sessionId?: string; sessionFile?: string } | null;
+      const stateRes = (await proc.request({ type: "get_state" }, undefined, {
+        id: `${sessionId}-state`,
+        timeoutMs: this.rpcTimeoutMs,
+      })) as { sessionId?: string; sessionFile?: string } | null;
 
       const providerSessionId = stateRes?.sessionId?.trim() || undefined;
       const providerSessionPath = stateRes?.sessionFile?.trim() || undefined;
@@ -503,11 +500,10 @@ export class PiRpcBackend implements ProviderTelemetryBackend {
       const initialPrompt = runSpec.systemPrompt
         ? `${runSpec.systemPrompt.trim()}\n\n${runSpec.prompt}`
         : runSpec.prompt;
-      await proc.request(
-        { type: "prompt", message: initialPrompt },
-        undefined,
-        { id: `${sessionId}-prompt-1`, timeoutMs: this.rpcTimeoutMs },
-      );
+      await proc.request({ type: "prompt", message: initialPrompt }, undefined, {
+        id: `${sessionId}-prompt-1`,
+        timeoutMs: this.rpcTimeoutMs,
+      });
     } catch (err) {
       this.sessions.delete(sessionId);
       await proc.close();
@@ -527,7 +523,11 @@ export class PiRpcBackend implements ProviderTelemetryBackend {
     if (session.status === "closed" || !session.proc.isAlive) {
       throw new Error(`Session "${sessionRef.sessionId}" is closed`);
     }
-    if (session.status === "running" && session.currentTurn && !session.currentTurn.queue.isFinished()) {
+    if (
+      session.status === "running" &&
+      session.currentTurn &&
+      !session.currentTurn.queue.isFinished()
+    ) {
       throw new Error(
         `Session "${sessionRef.sessionId}" already has an active turn "${session.currentTurn.turnId}"`,
       );
@@ -535,11 +535,10 @@ export class PiRpcBackend implements ProviderTelemetryBackend {
 
     const turn = this.beginTurn(session);
     try {
-      await session.proc.request(
-        { type: "prompt", message },
-        undefined,
-        { id: `${turn.turnId}-prompt`, timeoutMs: this.rpcTimeoutMs },
-      );
+      await session.proc.request({ type: "prompt", message }, undefined, {
+        id: `${turn.turnId}-prompt`,
+        timeoutMs: this.rpcTimeoutMs,
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.finishTurnWithFailure(session, turn, msg);
@@ -669,10 +668,12 @@ export class PiRpcBackend implements ProviderTelemetryBackend {
 
     switch (type) {
       case "message_update": {
-        const inner = msg.assistantMessageEvent as
-          | { type?: unknown; delta?: unknown }
-          | undefined;
-        if (inner?.type === "text_delta" && typeof inner.delta === "string" && inner.delta.length > 0) {
+        const inner = msg.assistantMessageEvent as { type?: unknown; delta?: unknown } | undefined;
+        if (
+          inner?.type === "text_delta" &&
+          typeof inner.delta === "string" &&
+          inner.delta.length > 0
+        ) {
           turn.queue.push({ kind: "message", at, text: inner.delta, delta: true });
         } else if (inner?.type === "thinking_delta" || inner?.type === "thinking_start") {
           turn.queue.push({ kind: "thinking", at });
@@ -681,9 +682,10 @@ export class PiRpcBackend implements ProviderTelemetryBackend {
       }
       case "tool_execution_start": {
         const toolName = typeof msg.toolName === "string" ? msg.toolName : "tool";
-        const args = (msg.args && typeof msg.args === "object"
-          ? msg.args
-          : {}) as Record<string, unknown>;
+        const args = (msg.args && typeof msg.args === "object" ? msg.args : {}) as Record<
+          string,
+          unknown
+        >;
         const target =
           typeof args.path === "string"
             ? args.path
@@ -765,11 +767,10 @@ export class PiRpcBackend implements ProviderTelemetryBackend {
 
     if (!turn.cancelling && session.proc.isAlive) {
       try {
-        const stats = (await session.proc.request(
-          { type: "get_session_stats" },
-          undefined,
-          { id: `${turn.turnId}-stats`, timeoutMs: 2_000 },
-        )) as {
+        const stats = (await session.proc.request({ type: "get_session_stats" }, undefined, {
+          id: `${turn.turnId}-stats`,
+          timeoutMs: 2_000,
+        })) as {
           contextUsage?: { tokens?: unknown; contextWindow?: unknown } | null;
         } | null;
         const cu = stats?.contextUsage;
@@ -831,11 +832,7 @@ export class PiRpcBackend implements ProviderTelemetryBackend {
     turn.queue.emitExit("completed");
   }
 
-  private finishTurnWithFailure(
-    session: PiSessionState,
-    turn: PiTurnState,
-    detail: string,
-  ): void {
+  private finishTurnWithFailure(session: PiSessionState, turn: PiTurnState, detail: string): void {
     const at = new Date().toISOString();
     if (isRateLimitMessage(detail)) {
       const retryAfterSec = extractRetryAfterSec(detail);

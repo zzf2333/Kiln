@@ -102,10 +102,7 @@ export class ProviderHealthTracker {
 
     if (!entry.enabled) {
       status = "unavailable";
-      detail =
-        avail && !avail.available && avail.detail
-          ? avail.detail
-          : "Provider is disabled";
+      detail = avail && !avail.available && avail.detail ? avail.detail : "Provider is disabled";
     } else if (cooldownUntil !== null) {
       status = "cooldown";
       detail = this.cooldowns.get(entry.id)?.detail ?? detail;

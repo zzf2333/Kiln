@@ -23,8 +23,10 @@ const MIME_TYPES: Readonly<Record<string, string>> = {
   ".map": "application/json; charset=utf-8",
 };
 
-const ASSET_EXTENSION_PATTERN = /\.(?:js|mjs|css|json|svg|png|jpe?g|webp|ico|woff2?|map|txt|webmanifest)$/i;
-const HASHED_ASSET_PATTERN = /^assets\/|[-.][a-zA-Z0-9_-]{6,}\.(?:js|mjs|css|svg|png|jpe?g|webp|woff2?|ico)$/;
+const ASSET_EXTENSION_PATTERN =
+  /\.(?:js|mjs|css|json|svg|png|jpe?g|webp|ico|woff2?|map|txt|webmanifest)$/i;
+const HASHED_ASSET_PATTERN =
+  /^assets\/|[-.][a-zA-Z0-9_-]{6,}\.(?:js|mjs|css|svg|png|jpe?g|webp|woff2?|ico)$/;
 
 /**
  * Resolves the default `packages/kernel/public` directory relative to both source (`src/server/`)
@@ -250,10 +252,7 @@ function serveFromEmbeddedAssets(
     }
 
     if (ASSET_EXTENSION_PATTERN.test(relPosix)) {
-      return c.json(
-        { error: "not_found", message: `Static asset "${c.req.path}" not found` },
-        404,
-      );
+      return c.json({ error: "not_found", message: `Static asset "${c.req.path}" not found` }, 404);
     }
   }
 
@@ -278,10 +277,7 @@ export function createStaticFilesHandler(
 
   return (c: Context): Response => {
     if (c.req.path === "/api" || c.req.path.startsWith("/api/")) {
-      return c.json(
-        { error: "not_found", message: `API endpoint "${c.req.path}" not found` },
-        404,
-      );
+      return c.json({ error: "not_found", message: `API endpoint "${c.req.path}" not found` }, 404);
     }
 
     const method = c.req.method.toUpperCase();
@@ -299,20 +295,14 @@ export function createStaticFilesHandler(
       if (embeddedAssets && embeddedAssets.size > 0) {
         return serveFromEmbeddedAssets(c, method, parsed.segments, embeddedAssets);
       }
-      return c.json(
-        { error: "not_found", message: "Web UI assets directory does not exist" },
-        404,
-      );
+      return c.json({ error: "not_found", message: "Web UI assets directory does not exist" }, 404);
     }
 
     if (!fs.existsSync(publicDir)) {
       if (embeddedAssets && embeddedAssets.size > 0) {
         return serveFromEmbeddedAssets(c, method, parsed.segments, embeddedAssets);
       }
-      return c.json(
-        { error: "not_found", message: "Web UI assets directory does not exist" },
-        404,
-      );
+      return c.json({ error: "not_found", message: "Web UI assets directory does not exist" }, 404);
     }
 
     let canonicalPublicDir: string;
@@ -331,10 +321,7 @@ export function createStaticFilesHandler(
       if (embeddedAssets && embeddedAssets.size > 0) {
         return serveFromEmbeddedAssets(c, method, parsed.segments, embeddedAssets);
       }
-      return c.json(
-        { error: "not_found", message: "Web UI assets directory unavailable" },
-        404,
-      );
+      return c.json({ error: "not_found", message: "Web UI assets directory unavailable" }, 404);
     }
 
     const relPosix = parsed.segments.join("/");
@@ -371,12 +358,7 @@ export function createStaticFilesHandler(
       } else if (existingStat?.isDirectory()) {
         const dirIndexPath = path.join(targetPath, "index.html");
         const dirRelPosix = relPosix ? `${relPosix}/index.html` : "index.html";
-        const served = serveVerifiedFile(
-          method,
-          canonicalPublicDir,
-          dirIndexPath,
-          dirRelPosix,
-        );
+        const served = serveVerifiedFile(method, canonicalPublicDir, dirIndexPath, dirRelPosix);
         if (served) {
           return served;
         }
@@ -391,12 +373,7 @@ export function createStaticFilesHandler(
     }
 
     const indexPath = path.join(canonicalPublicDir, "index.html");
-    const indexResponse = serveVerifiedFile(
-      method,
-      canonicalPublicDir,
-      indexPath,
-      "index.html",
-    );
+    const indexResponse = serveVerifiedFile(method, canonicalPublicDir, indexPath, "index.html");
     if (indexResponse) {
       return indexResponse;
     }

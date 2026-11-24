@@ -95,9 +95,7 @@ function joinUnder(parentDir: string, segment: string, label: string): string {
   const safe = assertSafeSegment(segment, label);
   const parentResolved = path.resolve(parentDir);
   const targetResolved = path.resolve(parentResolved, safe);
-  const prefix = parentResolved.endsWith(path.sep)
-    ? parentResolved
-    : parentResolved + path.sep;
+  const prefix = parentResolved.endsWith(path.sep) ? parentResolved : parentResolved + path.sep;
 
   if (!targetResolved.startsWith(prefix)) {
     throw new Error(`Path "${targetResolved}" escapes parent directory "${parentResolved}"`);

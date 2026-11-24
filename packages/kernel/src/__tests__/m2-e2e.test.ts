@@ -223,10 +223,13 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
   it("Scenario 1 & 9b/c/d: L2 full auto-delivery from intake chat -> implement -> gate -> review -> merge_main -> done with rate.tick & static UI", async () => {
     const kilnHome = makeTempDir("kiln-m2-s1-");
     const publicDir = makeTempDir("kiln-m2-pub-");
-    fs.writeFileSync(path.join(publicDir, "index.html"), "<!doctype html><html><body>Kiln Live</body></html>");
+    fs.writeFileSync(
+      path.join(publicDir, "index.html"),
+      "<!doctype html><html><body>Kiln Live</body></html>",
+    );
 
     const { repoPath, baseCommit } = initGitRepo("s1");
-    const acceptCmd = "node -e \"process.exit(0)\"";
+    const acceptCmd = 'node -e "process.exit(0)"';
     const snap = computeFrozenSnapshot(repoPath, ["tests/*.test.ts"], acceptCmd);
 
     const fakeBackend = new FakeBackend({
@@ -242,10 +245,8 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       tokenSecret: "m2-e2e-s1-secret-0123456789abcdef",
       approvalHandler: async (req, ctx) => {
         const token =
-          fakeBackend
-            .getRecordedSpecs()
-            .find((s) => s.runId === ctx.runId)
-            ?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+          fakeBackend.getRecordedSpecs().find((s) => s.runId === ctx.runId)?.mcpServers?.[0]?.env
+            ?.KILN_RUN_TOKEN ?? "";
 
         if (req.action === "s1_worker") {
           const wtPath = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
@@ -470,7 +471,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
   it("Scenario 2: Independent reviewer detects defect -> automatic rework implement round 2 -> review(approve) -> done", async () => {
     const kilnHome = makeTempDir("kiln-m2-s2-");
     const { repoPath, baseCommit } = initGitRepo("s2");
-    const acceptCmd = "node -e \"process.exit(0)\"";
+    const acceptCmd = 'node -e "process.exit(0)"';
     const snap = computeFrozenSnapshot(repoPath, [], acceptCmd);
     const fakeBackend = new FakeBackend();
 
@@ -555,11 +556,17 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     // Queue 2 worker scripts & 2 reviewer scripts
     for (let i = 0; i < 2; i++) {
       fakeBackend.enqueueScript(
-        [{ kind: "approval", action: "s2_worker", detail: "impl" }, { kind: "exit", reason: "completed" }],
+        [
+          { kind: "approval", action: "s2_worker", detail: "impl" },
+          { kind: "exit", reason: "completed" },
+        ],
         { role: "worker" },
       );
       fakeBackend.enqueueScript(
-        [{ kind: "approval", action: "s2_reviewer", detail: "rev" }, { kind: "exit", reason: "completed" }],
+        [
+          { kind: "approval", action: "s2_reviewer", detail: "rev" },
+          { kind: "exit", reason: "completed" },
+        ],
         { role: "reviewer" },
       );
     }
@@ -617,10 +624,8 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       tokenSecret: "m2-e2e-s3-secret-0123456789abcdef",
       approvalHandler: async (req, ctx) => {
         const token =
-          fakeBackend
-            .getRecordedSpecs()
-            .find((s) => s.runId === ctx.runId)
-            ?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+          fakeBackend.getRecordedSpecs().find((s) => s.runId === ctx.runId)?.mcpServers?.[0]?.env
+            ?.KILN_RUN_TOKEN ?? "";
 
         if (req.action === "s3_worker") {
           implAttempt += 1;
@@ -748,27 +753,45 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     server.store.writeConfig("limits", defaultLimits());
 
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "s3_worker", detail: "ask" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "s3_worker", detail: "ask" },
+        { kind: "exit", reason: "completed" },
+      ],
       { role: "worker", taskId: "t-s3" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "message", text: "建议将 scope 放宽到 docs/** 并升版契约。", delta: false }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "message", text: "建议将 scope 放宽到 docs/** 并升版契约。", delta: false },
+        { kind: "exit", reason: "completed" },
+      ],
       { role: "resolver", taskId: "t-s3" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "s3_worker", detail: "v2" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "s3_worker", detail: "v2" },
+        { kind: "exit", reason: "completed" },
+      ],
       { role: "worker", taskId: "t-s3" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "s3_review_worker", detail: "impl" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "s3_review_worker", detail: "impl" },
+        { kind: "exit", reason: "completed" },
+      ],
       { role: "worker", taskId: "t-s3-review" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "s3_review_ask", detail: "ask" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "s3_review_ask", detail: "ask" },
+        { kind: "exit", reason: "completed" },
+      ],
       { role: "reviewer", taskId: "t-s3-review" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "s3_review_pass", detail: "pass" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "s3_review_pass", detail: "pass" },
+        { kind: "exit", reason: "completed" },
+      ],
       { role: "reviewer", taskId: "t-s3-review" },
     );
 
@@ -789,7 +812,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Produce output",
           end: "Output verified",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:s3-v1",
           scope: ["out.txt"],
           deliver: { mode: "manual", cmd: null },
@@ -870,7 +893,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Initial review goal",
           end: "Done",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:s3-rev",
           scope: ["out.txt"],
           deliver: { mode: "manual", cmd: null },
@@ -906,7 +929,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       }),
     );
     expect(revDecideRes.status).toBe(200);
-    await waitUntil(() => server.store.getTaskIndex("t-s3-review")?.status === "done", "t-s3-review done");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-s3-review")?.status === "done",
+      "t-s3-review done",
+    );
     expect(
       fakeBackend
         .getRecordedSpecs()
@@ -969,11 +995,17 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       { taskId: "t-s4-pause", turnNumber: 1 },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "s4_finish", detail: "finish" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "s4_finish", detail: "finish" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-s4-other" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "s4_finish", detail: "finish" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "s4_finish", detail: "finish" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-s4-pause" },
     );
 
@@ -993,7 +1025,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       contract: {
         goal: "Write result",
         end: "Done",
-        accept_cmd: "node -e \"process.exit(0)\"",
+        accept_cmd: 'node -e "process.exit(0)"',
         accept_files_hash: "sha256:s4",
         scope: ["result.txt"],
         deliver: { mode: "manual", cmd: null },
@@ -1007,7 +1039,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
 
     server.stateMachine.createTask(makeScratchCard("t-s4-pause"), "# Pause");
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-s4-pause")?.status === "running", "t-s4-pause running");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-s4-pause")?.status === "running",
+      "t-s4-pause running",
+    );
 
     // Pause -> backend session cancelled, status = paused, NO decisions.md or ledger polluted
     const pauseRes = await server.app.request(
@@ -1022,14 +1057,20 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     // Even with max_waiting_wip = 1, a P2 task dispatches normally (paused did NOT consume waiting WIP)
     server.stateMachine.createTask(makeScratchCard("t-s4-other"), "# Other");
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-s4-other")?.status === "done", "t-s4-other done");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-s4-other")?.status === "done",
+      "t-s4-other done",
+    );
 
     // Resume t-s4-pause -> proceeds to done without polluting ledger
     const resumeRes = await server.app.request(
       new Request("http://127.0.0.1/api/tasks/t-s4-pause/resume", { method: "POST" }),
     );
     expect(resumeRes.status).toBe(200);
-    await waitUntil(() => server.store.getTaskIndex("t-s4-pause")?.status === "done", "t-s4-pause done");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-s4-pause")?.status === "done",
+      "t-s4-pause done",
+    );
     expect(server.store.readLedger("local")).toBeNull();
   });
 
@@ -1084,7 +1125,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     server.store.writeConfig("limits", defaultLimits());
 
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "s5_host", detail: "stage" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "s5_host", detail: "stage" },
+        { kind: "exit", reason: "completed" },
+      ],
       { role: "worker" },
     );
 
@@ -1105,7 +1149,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Update host app.conf",
           end: "Verified host config",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:s5",
           scope: [canonicalTarget],
           deliver: { mode: "manual", cmd: null },
@@ -1121,7 +1165,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     await server.orchestrator.wake();
 
     // Phase 1 staged -> waiting for host_scoped approval, host target STILL untouched!
-    await waitUntil(() => server.store.getTaskIndex("t-s5")?.status === "waiting", "t-s5 waiting approval");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-s5")?.status === "waiting",
+      "t-s5 waiting approval",
+    );
     expect(fs.readFileSync(canonicalTarget, "utf8")).toBe("PORT=3000\n");
 
     const pending = server.pendingDecisions.get("t-s5")!;
@@ -1158,7 +1205,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
   it("Scenario 6: L1 task tampering with frozen test file is caught by GATE.yaml and automatically escalated to L2 independent review", async () => {
     const kilnHome = makeTempDir("kiln-m2-s6-");
     const { repoPath, baseCommit } = initGitRepo("s6");
-    const acceptCmd = "node -e \"process.exit(0)\"";
+    const acceptCmd = 'node -e "process.exit(0)"';
     const snap = computeFrozenSnapshot(repoPath, ["tests/*.test.ts"], acceptCmd);
     const fakeBackend = new FakeBackend();
 
@@ -1172,7 +1219,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         const wtPath = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
         if (req.action === "s6_tamper") {
           fs.writeFileSync(path.join(wtPath, "src", "app.ts"), "export const v = 9;\n");
-          fs.writeFileSync(path.join(wtPath, "tests", "frozen.test.ts"), "export const ok = false;\n");
+          fs.writeFileSync(
+            path.join(wtPath, "tests", "frozen.test.ts"),
+            "export const ok = false;\n",
+          );
           const runDir = fs
             .readdirSync(server.store.paths.runsDir(ctx.taskId))
             .filter((d) => d.endsWith("-implement"))
@@ -1226,11 +1276,17 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     server.store.writeConfig("limits", defaultLimits());
 
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "s6_tamper", detail: "tamper" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "s6_tamper", detail: "tamper" },
+        { kind: "exit", reason: "completed" },
+      ],
       { role: "worker" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "s6_review", detail: "review" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "s6_review", detail: "review" },
+        { kind: "exit", reason: "completed" },
+      ],
       { role: "reviewer" },
     );
 
@@ -1266,14 +1322,20 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     );
     await server.orchestrator.wake();
 
-    await waitUntil(() => server.store.getTaskIndex("t-s6")?.status === "done", "t-s6 escalated & reviewed");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-s6")?.status === "done",
+      "t-s6 escalated & reviewed",
+    );
 
     const cardAfter = server.store.readTaskCard("t-s6");
     expect(cardAfter.track).toBe("L2");
     const detail = (await (
       await server.app.request(new Request("http://127.0.0.1/api/tasks/t-s6"))
     ).json()) as {
-      runs: Array<{ meta: { stage: string }; gate: { escalated_to_l2: boolean; frozen_files_changed: string[] } | null }>;
+      runs: Array<{
+        meta: { stage: string };
+        gate: { escalated_to_l2: boolean; frozen_files_changed: string[] } | null;
+      }>;
     };
     expect(detail.runs[0]?.gate?.escalated_to_l2).toBe(true);
     expect(detail.runs[0]?.gate?.frozen_files_changed).toContain("tests/frozen.test.ts");
@@ -1320,7 +1382,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       contract: {
         goal: "Recover after crash",
         end: "Done",
-        accept_cmd: "node -e \"process.exit(0)\"",
+        accept_cmd: 'node -e "process.exit(0)"',
         accept_files_hash: "sha256:s7",
         scope: ["out.txt"],
         deliver: { mode: "manual", cmd: null },
@@ -1393,7 +1455,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
 
     await server1.orchestrator.wake();
 
-    await waitUntil(() => server1.store.getTaskIndex("t-s7-orphan")?.status === "running", "t-s7-orphan running");
+    await waitUntil(
+      () => server1.store.getTaskIndex("t-s7-orphan")?.status === "running",
+      "t-s7-orphan running",
+    );
 
     // Stale competing run_id submission via real MCP RPC fails lease check & archives to history/
     const lease = server1.store.getStageLease("t-s7-orphan")!;
@@ -1463,7 +1528,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       tokenSecret: "m2-e2e-s7-secret-0123456789abcdef",
       approvalHandler: async (req, ctx) => {
         if (req.action === "s7_recover") {
-          writeFileAtomic(path.join(server2.store.paths.workspaceDir(ctx.taskId), "out.txt"), "recovered\n");
+          writeFileAtomic(
+            path.join(server2.store.paths.workspaceDir(ctx.taskId), "out.txt"),
+            "recovered\n",
+          );
           const runDir = fs
             .readdirSync(server2.store.paths.runsDir(ctx.taskId))
             .filter((d) => d.endsWith("-implement"))
@@ -1486,16 +1554,30 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     servers.push(server2);
     server2.backendRegistry.register(fakeBackend2);
     fakeBackend2.enqueueScript(
-      [{ kind: "approval", action: "s7_recover", detail: "recover" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "s7_recover", detail: "recover" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-s7-orphan" },
     );
 
     await server2.start();
-    await waitUntil(() => server2.store.getTaskIndex("t-s7-orphan")?.status === "done", "t-s7-orphan recovered to done");
-    await waitUntil(() => server2.store.getTaskIndex("t-s7-receipt-ready")?.status === "done", "t-s7-receipt-ready reconciled to done");
-    await waitUntil(() => server2.store.getTaskIndex("t-s7-deliver-crash")?.status === "done", "t-s7-deliver-crash recovered to done");
+    await waitUntil(
+      () => server2.store.getTaskIndex("t-s7-orphan")?.status === "done",
+      "t-s7-orphan recovered to done",
+    );
+    await waitUntil(
+      () => server2.store.getTaskIndex("t-s7-receipt-ready")?.status === "done",
+      "t-s7-receipt-ready reconciled to done",
+    );
+    await waitUntil(
+      () => server2.store.getTaskIndex("t-s7-deliver-crash")?.status === "done",
+      "t-s7-deliver-crash recovered to done",
+    );
     expect(server2.store.getTaskIndex("t-s7-paused")?.status).toBe("paused");
-    expect(fs.existsSync(server2.store.paths.receiptMd("t-s7-receipt-ready", "001-implement"))).toBe(true);
+    expect(
+      fs.existsSync(server2.store.paths.receiptMd("t-s7-receipt-ready", "001-implement")),
+    ).toBe(true);
   });
 
   it("Scenario 8 & 9a: Hot-swap reviewer model & pricing via PUT /api/settings/* and Pi file-protocol need_decision convergence", async () => {
@@ -1603,7 +1685,13 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     fakeBackend.enqueueScript(
       [
         { kind: "approval", action: "pi_need_decision", detail: "pi-ask" },
-        { kind: "usage", turnId: "t-pi-1", inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0 },
+        {
+          kind: "usage",
+          turnId: "t-pi-1",
+          inputTokens: 1_000_000,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+        },
         { kind: "exit", reason: "completed" },
       ],
       { role: "worker", turnNumber: 1 },
@@ -1640,7 +1728,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Write pi.txt",
           end: "Done",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:s8",
           scope: ["pi.txt"],
           deliver: { mode: "manual", cmd: null },
@@ -1879,7 +1967,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
 
     // Part 1: L1 host_scoped with accept_files_hash="pending" & non-empty freeze_patterns initializes hash cleanly (stays L1)
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r1a_l1_worker", detail: "l1" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r1a_l1_worker", detail: "l1" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r1a-l1", role: "worker" },
     );
     server.stateMachine.createTask(
@@ -1897,7 +1988,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Write ok.conf",
           end: "Applied",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "pending",
           scope: [canonicalOk],
           deliver: { mode: "manual", cmd: null },
@@ -1911,7 +2002,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       "# L1 host",
     );
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-r1a-l1")?.status === "waiting", "t-r1a-l1 waiting");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r1a-l1")?.status === "waiting",
+      "t-r1a-l1 waiting",
+    );
     const l1Card = server.store.readTaskCard("t-r1a-l1");
     expect(l1Card.track).toBe("L1");
     expect(l1Card.contract.accept_files_hash).toMatch(/^sha256:/);
@@ -1920,23 +2014,38 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
 
     // Part 2: L2 rework changes staged target app.conf -> (stray rejected) -> other.conf, refreshing manifest & locks
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r1a_rework_worker", detail: "w1" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r1a_rework_worker", detail: "w1" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r1a-rework", role: "worker" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r1a_rev_reject", detail: "r1" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r1a_rev_reject", detail: "r1" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r1a-rework", role: "reviewer" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r1a_rework_worker", detail: "w2-stray" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r1a_rework_worker", detail: "w2-stray" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r1a-rework", role: "worker" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r1a_rework_worker", detail: "w3-clean" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r1a_rework_worker", detail: "w3-clean" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r1a-rework", role: "worker" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r1a_rev_pass", detail: "r2" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r1a_rev_pass", detail: "r2" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r1a-rework", role: "reviewer" },
     );
 
@@ -1955,7 +2064,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Update host conf cleanly across rework",
           end: "Refreshed manifest applied",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "pending",
           scope: [canonicalApp, canonicalOther],
           deliver: { mode: "manual", cmd: null },
@@ -1969,7 +2078,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       "# Rework host",
     );
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-r1a-rework")?.status === "waiting", "t-r1a-rework waiting");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r1a-rework")?.status === "waiting",
+      "t-r1a-rework waiting",
+    );
 
     // Round 2 gate rejected stray.txt; Round 3 refreshed manifest & locks to canonicalOther only
     const locks = server.store.listHostPathLocks("t-r1a-rework").map((l) => l.canonical_path);
@@ -1988,7 +2100,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         }),
       }),
     );
-    await waitUntil(() => server.store.getTaskIndex("t-r1a-rework")?.status === "done", "t-r1a-rework done");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r1a-rework")?.status === "done",
+      "t-r1a-rework done",
+    );
     expect(fs.readFileSync(otherConf, "utf8")).toBe("MODE=final\n");
     expect(fs.readFileSync(appConf, "utf8")).toBe("PORT=1000\n");
 
@@ -2072,11 +2187,17 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     server.store.writeConfig("limits", defaultLimits());
 
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r1b_worker", detail: "clean impl" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r1b_worker", detail: "clean impl" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r1b", role: "worker" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r1b_reviewer", detail: "review+dirty" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r1b_reviewer", detail: "review+dirty" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r1b", role: "reviewer" },
     );
 
@@ -2096,7 +2217,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Commit app.ts",
           end: "Merged cleanly",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "pending",
           scope: ["src/app.ts"],
           deliver: { mode: "merge_main", cmd: null },
@@ -2112,7 +2233,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     await server.orchestrator.wake();
 
     // 1. Dirty worktree blocks merge_main -> waiting & preserves worktree
-    await waitUntil(() => server.store.getTaskIndex("t-r1b")?.status === "waiting", "t-r1b dirty wt");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r1b")?.status === "waiting",
+      "t-r1b dirty wt",
+    );
     expect(server.pendingDecisions.get("t-r1b")?.reason).toBe("worktree_dirty_before_merge");
     const wtPath = path.join(server.store.paths.workspaceDir("t-r1b"), "worktree");
     expect(fs.existsSync(wtPath)).toBe(true);
@@ -2182,7 +2306,9 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       }),
     );
     await waitUntil(() => server.store.getTaskIndex("t-r1b")?.status === "done", "t-r1b done");
-    expect(fs.readFileSync(path.join(repoPath, "src", "app.ts"), "utf8")).toBe("export const v = 77;\n");
+    expect(fs.readFileSync(path.join(repoPath, "src", "app.ts"), "utf8")).toBe(
+      "export const v = 77;\n",
+    );
   });
 
   it("Round 1 closure C: rate-limit cooldown runs are excluded from stageRetries, and triage -> advise -> implement skips redundant second triage", async () => {
@@ -2252,27 +2378,33 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       [{ kind: "exit", reason: "failed", detail: "429 Rate limit exceeded" }],
       { taskId: "t-r1c", role: "worker" },
     );
-    fakeBackend.enqueueScript(
-      [{ kind: "exit", reason: "failed", detail: "quota exceeded" }],
-      { taskId: "t-r1c", role: "worker" },
-    );
+    fakeBackend.enqueueScript([{ kind: "exit", reason: "failed", detail: "quota exceeded" }], {
+      taskId: "t-r1c",
+      role: "worker",
+    });
     // Worker 3: 1st real failure -> L0 self-retry -> Worker 4: 2nd real failure -> escalates to triage (stageRetries=1)
-    fakeBackend.enqueueScript(
-      [{ kind: "exit", reason: "failed", detail: "real failure 1" }],
-      { taskId: "t-r1c", role: "worker" },
-    );
-    fakeBackend.enqueueScript(
-      [{ kind: "exit", reason: "failed", detail: "real failure 2" }],
-      { taskId: "t-r1c", role: "worker" },
-    );
+    fakeBackend.enqueueScript([{ kind: "exit", reason: "failed", detail: "real failure 1" }], {
+      taskId: "t-r1c",
+      role: "worker",
+    });
+    fakeBackend.enqueueScript([{ kind: "exit", reason: "failed", detail: "real failure 2" }], {
+      taskId: "t-r1c",
+      role: "worker",
+    });
     // Triage -> Advisor -> Worker 5 fails -> post-advise fresh L0 retry (Worker 6) fails ->
     // triageAttempted=true skips redundant 2nd triage and goes directly to waiting
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r1c_triage", detail: "triage" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r1c_triage", detail: "triage" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r1c", role: "triage" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r1c_advisor", detail: "advise" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r1c_advisor", detail: "advise" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r1c", role: "advisor" },
     );
     fakeBackend.enqueueScript(
@@ -2300,7 +2432,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Test retry accounting",
           end: "Done",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:r1c",
           scope: ["out.txt"],
           deliver: { mode: "manual", cmd: null },
@@ -2314,7 +2446,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       "# Rate limit",
     );
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-r1c")?.status === "waiting", "t-r1c waiting");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r1c")?.status === "waiting",
+      "t-r1c waiting",
+    );
 
     const rolesRun = fakeBackend.getRecordedSpecs().map((s) => s.role);
     expect(rolesRun).toEqual([
@@ -2354,10 +2489,8 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         maxConcurrentWorkers = Math.max(maxConcurrentWorkers, activeWorkers);
         try {
           const token =
-            fakeBackend
-              .getRecordedSpecs()
-              .find((s) => s.runId === ctx.runId)
-              ?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+            fakeBackend.getRecordedSpecs().find((s) => s.runId === ctx.runId)?.mcpServers?.[0]?.env
+              ?.KILN_RUN_TOKEN ?? "";
           const wsDir = server.store.paths.workspaceDir(ctx.taskId);
 
           if (req.action === "r1d_empty_scratch") {
@@ -2447,11 +2580,17 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     // 1. Empty scratch_dir (0 artifacts, wildcard scope) fails gate artifacts_ok=false even if accept_cmd=0,
     //    then writing out.txt passes cleanly; pending accept_files_hash with freeze_patterns stays L1!
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r1d_empty_scratch", detail: "empty" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r1d_empty_scratch", detail: "empty" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r1d-scratch", role: "worker" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r1d_valid_scratch", detail: "filled" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r1d_valid_scratch", detail: "filled" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r1d-scratch", role: "worker" },
     );
     server.stateMachine.createTask(
@@ -2469,7 +2608,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Write non-empty artifact",
           end: "Verified",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "pending",
           scope: ["**/*"],
           deliver: { mode: "manual", cmd: null },
@@ -2483,8 +2622,13 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       "# Empty scratch test",
     );
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-r1d-scratch")?.status === "done", "t-r1d-scratch done");
-    const gate1 = await (await server.app.request(new Request("http://127.0.0.1/api/tasks/t-r1d-scratch"))).json() as {
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r1d-scratch")?.status === "done",
+      "t-r1d-scratch done",
+    );
+    const gate1 = (await (
+      await server.app.request(new Request("http://127.0.0.1/api/tasks/t-r1d-scratch"))
+    ).json()) as {
       card: TaskCard;
       runs: Array<{ gate: { artifacts_ok: boolean } | null }>;
     };
@@ -2525,7 +2669,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Finish after resume",
           end: "Done",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "pending",
           scope: ["out.txt"],
           deliver: { mode: "manual", cmd: null },
@@ -2539,7 +2683,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       "# Immediate decide",
     );
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-r1d-decide")?.status === "waiting", "t-r1d-decide waiting");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r1d-decide")?.status === "waiting",
+      "t-r1d-decide waiting",
+    );
     const dec = server.pendingDecisions.get("t-r1d-decide")!;
     const decRes = await server.app.request(
       new Request("http://127.0.0.1/api/tasks/t-r1d-decide/decide", {
@@ -2554,7 +2701,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       }),
     );
     expect(decRes.status).toBe(200);
-    await waitUntil(() => server.store.getTaskIndex("t-r1d-decide")?.status === "done", "t-r1d-decide done");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r1d-decide")?.status === "done",
+      "t-r1d-decide done",
+    );
     expect(maxConcurrentWorkers).toBe(1);
     expect(
       fakeBackend
@@ -2580,10 +2730,8 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       tokenSecret: "m2-e2e-r2a-secret-0123456789abcdef",
       approvalHandler: async (req, ctx) => {
         const token =
-          fakeBackend
-            .getRecordedSpecs()
-            .find((s) => s.runId === ctx.runId)
-            ?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+          fakeBackend.getRecordedSpecs().find((s) => s.runId === ctx.runId)?.mcpServers?.[0]?.env
+            ?.KILN_RUN_TOKEN ?? "";
 
         if (req.action === "r2a_complete") {
           writeFileAtomic(
@@ -2618,9 +2766,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
               category: "scope_ambiguity",
               reason: "Slot handoff ask",
               question: "Waiting to free slot",
-              options: [
-                { id: "opt-ok", label: "Continue", action: "resume", recommended: true },
-              ],
+              options: [{ id: "opt-ok", label: "Continue", action: "resume", recommended: true }],
             }),
           });
           expect(askRes.status).toBe(200);
@@ -2642,7 +2788,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       freeze_patterns: [],
     });
     server.store.writeConfig("roles", defaultRoles());
-    server.store.writeConfig("limits", defaultLimits({ max_concurrent_slots: 1, retries_per_stage: 0 }));
+    server.store.writeConfig(
+      "limits",
+      defaultLimits({ max_concurrent_slots: 1, retries_per_stage: 0 }),
+    );
     server.store.writeConfig("pricing", defaultPricing());
 
     await server.start();
@@ -2661,7 +2810,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       contract: {
         goal: "Complete scratch task",
         end: "out.txt written",
-        accept_cmd: "node -e \"process.exit(0)\"",
+        accept_cmd: 'node -e "process.exit(0)"',
         accept_files_hash: "sha256:r2a",
         scope: ["out.txt"],
         deliver: { mode: "manual" as const, cmd: null },
@@ -2675,11 +2824,17 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
 
     // 1. Downstream task depends_on upstream task -> auto-wakes after upstream becomes done
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r2a_complete", detail: "up" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r2a_complete", detail: "up" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r2a-up", role: "worker" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r2a_complete", detail: "down" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r2a_complete", detail: "down" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r2a-down", role: "worker" },
     );
     server.stateMachine.createTask(scratchCard("t-r2a-up", "P1", []), "# Up");
@@ -2687,19 +2842,24 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
 
     await server.orchestrator.wake();
     // No second manual wake(): t-r2a-down must auto-wake cleanly when t-r2a-up completes delivery
-    await waitUntil(() => server.store.getTaskIndex("t-r2a-down")?.status === "done", "t-r2a-down auto-woke to done");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r2a-down")?.status === "done",
+      "t-r2a-down auto-woke to done",
+    );
     expect(server.store.getTaskIndex("t-r2a-up")?.status).toBe("done");
 
     const upWorkerEnv = fakeBackend
       .getRecordedSpecs()
-      .find((s) => s.taskId === "t-r2a-up" && s.role === "worker")
-      ?.mcpServers?.[0]?.env;
+      .find((s) => s.taskId === "t-r2a-up" && s.role === "worker")?.mcpServers?.[0]?.env;
     expect(upWorkerEnv?.KILN_SOCK_PATH).toBe(customSocketPath);
     expect(upWorkerEnv?.KILN_SOCK).toBeUndefined();
 
     // 2. Intake chat also injects KILN_SOCK_PATH (not legacy KILN_SOCK)
     fakeBackend.enqueueScript(
-      [{ kind: "message", text: "intake ok" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "message", text: "intake ok" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "d-r2a-sock", role: "intake" },
     );
     const createDraftRes = await server.app.request(
@@ -2720,8 +2880,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     expect(intakeChatRes.status).toBe(200);
     const intakeEnv = fakeBackend
       .getRecordedSpecs()
-      .find((s) => s.taskId === "d-r2a-sock" && s.role === "intake")
-      ?.mcpServers?.[0]?.env;
+      .find((s) => s.taskId === "d-r2a-sock" && s.role === "intake")?.mcpServers?.[0]?.env;
     expect(intakeEnv?.KILN_SOCK_PATH).toBe(customSocketPath);
     expect(intakeEnv?.KILN_SOCK).toBeUndefined();
 
@@ -2731,13 +2890,19 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       { taskId: "t-r2a-pause1", role: "worker" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r2a_complete", detail: "after pause" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r2a_complete", detail: "after pause" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r2a-pause2", role: "worker" },
     );
     server.stateMachine.createTask(scratchCard("t-r2a-pause1", "P1", []), "# P1");
     server.stateMachine.createTask(scratchCard("t-r2a-pause2", "P2", []), "# P2");
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-r2a-pause1")?.status === "running", "pause1 running");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r2a-pause1")?.status === "running",
+      "pause1 running",
+    );
     expect(server.store.getTaskIndex("t-r2a-pause2")?.status).toBe("queued");
     const pauseRes = await server.app.request(
       new Request("http://127.0.0.1/api/tasks/t-r2a-pause1/pause", {
@@ -2747,7 +2912,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       }),
     );
     expect(pauseRes.status).toBe(200);
-    await waitUntil(() => server.store.getTaskIndex("t-r2a-pause2")?.status === "done", "pause2 auto-woke to done");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r2a-pause2")?.status === "done",
+      "pause2 auto-woke to done",
+    );
 
     // 4. Single slot freed by wb_ask_decision (waiting) auto-wakes queued task without manual wake()
     fakeBackend.enqueueScript(
@@ -2755,13 +2923,19 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       { taskId: "t-r2a-wait1", role: "worker" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r2a_complete", detail: "after ask" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r2a_complete", detail: "after ask" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r2a-wait2", role: "worker" },
     );
     server.stateMachine.createTask(scratchCard("t-r2a-wait1", "P1", []), "# W1");
     server.stateMachine.createTask(scratchCard("t-r2a-wait2", "P2", []), "# W2");
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-r2a-wait2")?.status === "done", "wait2 auto-woke to done");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r2a-wait2")?.status === "done",
+      "wait2 auto-woke to done",
+    );
     expect(server.store.getTaskIndex("t-r2a-wait1")?.status).toBe("waiting");
 
     // 5. Single slot freed by /cancel auto-wakes queued task without manual wake()
@@ -2770,13 +2944,19 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       { taskId: "t-r2a-cancel1", role: "worker" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r2a_complete", detail: "after cancel" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r2a_complete", detail: "after cancel" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r2a-cancel2", role: "worker" },
     );
     server.stateMachine.createTask(scratchCard("t-r2a-cancel1", "P1", []), "# C1");
     server.stateMachine.createTask(scratchCard("t-r2a-cancel2", "P2", []), "# C2");
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-r2a-cancel1")?.status === "running", "cancel1 running");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r2a-cancel1")?.status === "running",
+      "cancel1 running",
+    );
     const cancelRes = await server.app.request(
       new Request("http://127.0.0.1/api/tasks/t-r2a-cancel1/cancel", {
         method: "POST",
@@ -2785,7 +2965,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       }),
     );
     expect(cancelRes.status).toBe(200);
-    await waitUntil(() => server.store.getTaskIndex("t-r2a-cancel2")?.status === "done", "cancel2 auto-woke to done");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r2a-cancel2")?.status === "done",
+      "cancel2 auto-woke to done",
+    );
   });
 
   it("Round 2 closure B: fail-closed scratch traversal/duplicate host targets, finalizeActiveRun error guard, in-flight start cancel, and stale verifier/advisor receipts", async () => {
@@ -2832,10 +3015,8 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       tokenSecret: "m2-e2e-r2b-secret-0123456789abcdef",
       approvalHandler: async (req, ctx) => {
         const token =
-          fakeBackend
-            .getRecordedSpecs()
-            .find((s) => s.runId === ctx.runId)
-            ?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+          fakeBackend.getRecordedSpecs().find((s) => s.runId === ctx.runId)?.mcpServers?.[0]?.env
+            ?.KILN_RUN_TOKEN ?? "";
 
         if (req.action === "r2b_escape_scratch") {
           await server.invokeMcpRpc({
@@ -3044,7 +3225,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
 
     // 1. scratch_dir ../escape.md fails scope_ok cleanly in GATE.yaml without throwing
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r2b_escape_scratch", detail: "escape" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r2b_escape_scratch", detail: "escape" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r2b-escape", role: "worker" },
     );
     server.stateMachine.createTask(
@@ -3062,7 +3246,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Reject traversal path",
           end: "Done",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:r2b1",
           scope: ["**"],
           deliver: { mode: "manual", cmd: null },
@@ -3078,7 +3262,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
 
     // 2. Duplicate staged basename mapping to same literal host target fails scope_ok without throwing
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r2b_dup_host", detail: "dup host" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r2b_dup_host", detail: "dup host" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r2b-duphost", role: "worker" },
     );
     server.stateMachine.createTask(
@@ -3096,7 +3283,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Reject duplicate canonical target",
           end: "Done",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:r2b2",
           scope: [appConfPath],
           deliver: { mode: "manual", cmd: null },
@@ -3112,7 +3299,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
 
     // 3. finalizeActiveRun unexpected staging error (pre-existing host directory) converges via try/catch -> waiting
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r2b_dir_collision", detail: "dir collision" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r2b_dir_collision", detail: "dir collision" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r2b-direrr", role: "worker" },
     );
     server.stateMachine.createTask(
@@ -3130,7 +3320,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Survive unexpected staging error",
           end: "Done",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:r2b3",
           scope: [`${hostRoot}/**`],
           deliver: { mode: "manual", cmd: null },
@@ -3145,20 +3335,33 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     );
 
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-r2b-escape")?.status === "waiting", "escape waiting");
-    await waitUntil(() => server.store.getTaskIndex("t-r2b-duphost")?.status === "waiting", "duphost waiting");
-    await waitUntil(() => server.store.getTaskIndex("t-r2b-direrr")?.status === "waiting", "direrr waiting");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r2b-escape")?.status === "waiting",
+      "escape waiting",
+    );
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r2b-duphost")?.status === "waiting",
+      "duphost waiting",
+    );
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r2b-direrr")?.status === "waiting",
+      "direrr waiting",
+    );
 
     const escapeDetail = (await (
       await server.app.request(new Request("http://127.0.0.1/api/tasks/t-r2b-escape"))
-    ).json()) as { runs: Array<{ gate?: { scope_ok: boolean; out_of_scope_paths: string[] } | null }> };
+    ).json()) as {
+      runs: Array<{ gate?: { scope_ok: boolean; out_of_scope_paths: string[] } | null }>;
+    };
     const escapeGate = escapeDetail.runs[0]?.gate;
     expect(escapeGate?.scope_ok).toBe(false);
     expect(escapeGate?.out_of_scope_paths).toContain("../escape.md");
 
     const dupDetail = (await (
       await server.app.request(new Request("http://127.0.0.1/api/tasks/t-r2b-duphost"))
-    ).json()) as { runs: Array<{ gate?: { scope_ok: boolean; out_of_scope_paths: string[] } | null }> };
+    ).json()) as {
+      runs: Array<{ gate?: { scope_ok: boolean; out_of_scope_paths: string[] } | null }>;
+    };
     const dupGate = dupDetail.runs[0]?.gate;
     expect(dupGate?.scope_ok).toBe(false);
     expect(server.store.listHostPathLocks("t-r2b-duphost")).toHaveLength(0);
@@ -3166,15 +3369,24 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
 
     // 4. Stale run_id verifier receipt (file-protocol) is rejected instead of advancing to deliver
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r2b_ok_scratch", detail: "impl" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r2b_ok_scratch", detail: "impl" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r2b-verifier", role: "worker" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r2b_ok_review", detail: "review" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r2b_ok_review", detail: "review" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r2b-verifier", role: "reviewer" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r2b_stale_verifier", detail: "stale verifier" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r2b_stale_verifier", detail: "stale verifier" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r2b-verifier", role: "verifier" },
     );
     server.stateMachine.createTask(
@@ -3192,7 +3404,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Reject wrong run_id verifier receipt",
           end: "Done",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:r2b4",
           scope: ["ok.txt"],
           deliver: { mode: "manual", cmd: null },
@@ -3206,13 +3418,18 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       "# Verifier",
     );
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-r2b-verifier")?.status === "waiting", "verifier waiting");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r2b-verifier")?.status === "waiting",
+      "verifier waiting",
+    );
     expect(
       fakeBackend
         .getRecordedSpecs()
         .some((s) => s.taskId === "t-r2b-verifier" && s.role === "verifier"),
     ).toBe(true);
-    expect(server.pendingDecisions.get("t-r2b-verifier")?.category).toBe("stage_failure_escalation");
+    expect(server.pendingDecisions.get("t-r2b-verifier")?.category).toBe(
+      "stage_failure_escalation",
+    );
 
     // 5. Stale contract_version advisor receipt does NOT write decisions.md or loop back to implement
     server.store.writeConfig("roles", {
@@ -3224,16 +3441,22 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         advisor: { agent: "codex", model: "gpt-6-luna", allow_full_access_fallback: false },
       },
     });
+    fakeBackend.enqueueScript([{ kind: "exit", reason: "failed", detail: "trigger triage" }], {
+      taskId: "t-r2b-advisor",
+      role: "worker",
+    });
     fakeBackend.enqueueScript(
-      [{ kind: "exit", reason: "failed", detail: "trigger triage" }],
-      { taskId: "t-r2b-advisor", role: "worker" },
-    );
-    fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r2b_triage_escalate", detail: "triage" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r2b_triage_escalate", detail: "triage" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r2b-advisor", role: "triage" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r2b_stale_advisor", detail: "advisor" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r2b_stale_advisor", detail: "advisor" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r2b-advisor", role: "advisor" },
     );
     server.stateMachine.createTask(
@@ -3251,7 +3474,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Reject wrong contract_version advisor receipt",
           end: "Done",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:r2b5",
           scope: ["ok.txt"],
           deliver: { mode: "manual", cmd: null },
@@ -3265,7 +3488,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       "# Advisor",
     );
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-r2b-advisor")?.status === "waiting", "advisor waiting");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r2b-advisor")?.status === "waiting",
+      "advisor waiting",
+    );
     expect(
       fakeBackend
         .getRecordedSpecs()
@@ -3275,10 +3501,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     expect(fs.existsSync(server.store.paths.decisionsMd("t-r2b-advisor"))).toBe(false);
 
     // 6. Task paused while backend.start() is in flight cancels returned sessionRef immediately
-    fakeBackend.enqueueScript(
-      [{ kind: "wait_for_cancel" }],
-      { taskId: "t-r2b-inflight", role: "worker" },
-    );
+    fakeBackend.enqueueScript([{ kind: "wait_for_cancel" }], {
+      taskId: "t-r2b-inflight",
+      role: "worker",
+    });
     server.stateMachine.createTask(
       {
         schema_version: 1,
@@ -3294,7 +3520,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Cancel orphan session started during pause",
           end: "Paused cleanly",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:r2b6",
           scope: ["ok.txt"],
           deliver: { mode: "manual", cmd: null },
@@ -3380,10 +3606,8 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       tokenSecret: "m2-e2e-r3-secret-0123456789abcdef",
       approvalHandler: async (req, ctx) => {
         const token =
-          fakeBackend
-            .getRecordedSpecs()
-            .find((s) => s.runId === ctx.runId)
-            ?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+          fakeBackend.getRecordedSpecs().find((s) => s.runId === ctx.runId)?.mcpServers?.[0]?.env
+            ?.KILN_RUN_TOKEN ?? "";
 
         if (req.action === "r3_scratch_runcmd" || req.action === "r3_gate_slow") {
           writeFileAtomic(
@@ -3486,11 +3710,11 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     });
 
     server.stateMachine.createTask(
-      makeScratchCard("t-r3-start-429", "node -e \"process.exit(0)\"", { mode: "manual", cmd: null }),
+      makeScratchCard("t-r3-start-429", 'node -e "process.exit(0)"', { mode: "manual", cmd: null }),
       "# 429 race",
     );
     server.stateMachine.createTask(
-      makeScratchCard("t-r3-start-err", "node -e \"process.exit(0)\"", { mode: "manual", cmd: null }),
+      makeScratchCard("t-r3-start-err", 'node -e "process.exit(0)"', { mode: "manual", cmd: null }),
       "# err race",
     );
     void server.orchestrator.wake();
@@ -3531,7 +3755,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
 
     // 2. P1 #1b: /pause while finalizeWorkerRun awaits slow runVerificationGate aborts child tree & preserves paused
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r3_gate_slow", detail: "slow gate" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r3_gate_slow", detail: "slow gate" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r3-gate-race", role: "worker" },
     );
     server.stateMachine.createTask(
@@ -3543,7 +3770,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       "# Slow gate",
     );
     await server.orchestrator.wake();
-    const slowGateMarker = path.join(server.store.paths.workspaceDir("t-r3-gate-race"), "gate-started.tmp");
+    const slowGateMarker = path.join(
+      server.store.paths.workspaceDir("t-r3-gate-race"),
+      "gate-started.tmp",
+    );
     await waitUntil(() => fs.existsSync(slowGateMarker), "slow verification gate started");
 
     const pauseGateStartMs = Date.now();
@@ -3561,22 +3791,24 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
 
     // 3. P1 #2: scratch_dir with deliver.mode=run_cmd & external_actions=ask requires approval then executes cmd
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r3_scratch_runcmd", detail: "scratch runcmd" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r3_scratch_runcmd", detail: "scratch runcmd" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r3-scratch-cmd", role: "worker" },
     );
     server.stateMachine.createTask(
-      makeScratchCard(
-        "t-r3-scratch-cmd",
-        "node -e \"process.exit(0)\"",
-        {
-          mode: "run_cmd",
-          cmd: "node -e \"require('fs').writeFileSync('delivered.marker','executed')\"",
-        },
-      ),
+      makeScratchCard("t-r3-scratch-cmd", 'node -e "process.exit(0)"', {
+        mode: "run_cmd",
+        cmd: "node -e \"require('fs').writeFileSync('delivered.marker','executed')\"",
+      }),
       "# Scratch run_cmd",
     );
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-r3-scratch-cmd")?.status === "waiting", "scratch run_cmd waiting");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r3-scratch-cmd")?.status === "waiting",
+      "scratch run_cmd waiting",
+    );
     const cmdDec = server.pendingDecisions.get("t-r3-scratch-cmd")!;
     expect(cmdDec.reason).toBe("external_action_approval");
 
@@ -3593,7 +3825,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       }),
     );
     expect(approveCmdRes.status).toBe(200);
-    await waitUntil(() => server.store.getTaskIndex("t-r3-scratch-cmd")?.status === "done", "scratch run_cmd done");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r3-scratch-cmd")?.status === "done",
+      "scratch run_cmd done",
+    );
     const deliveredMarkerPath = path.join(
       server.store.paths.workspaceDir("t-r3-scratch-cmd"),
       "delivered.marker",
@@ -3602,7 +3837,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
 
     // 4. P2 #4: host_scoped existing directory in contract.scope without trailing slash maps file into directory
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r3_host_dir", detail: "host dir" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r3_host_dir", detail: "host dir" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r3-hostdir", role: "worker" },
     );
     server.stateMachine.createTask(
@@ -3620,7 +3858,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Map staged/config.ini into hostDir without trailing slash",
           end: "Updated config.ini",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:r3host",
           scope: [hostDir],
           deliver: { mode: "manual", cmd: null },
@@ -3634,7 +3872,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       "# Host dir",
     );
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-r3-hostdir")?.status === "waiting", "hostdir approval");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r3-hostdir")?.status === "waiting",
+      "hostdir approval",
+    );
     const hostDec = server.pendingDecisions.get("t-r3-hostdir")!;
     expect(hostDec.reason).toBe("host_scoped_approval");
     expect(
@@ -3653,7 +3894,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         )
       ).status,
     ).toBe(200);
-    await waitUntil(() => server.store.getTaskIndex("t-r3-hostdir")?.status === "done", "hostdir done");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r3-hostdir")?.status === "done",
+      "hostdir done",
+    );
     expect(fs.readFileSync(targetIni, "utf8")).toBe("new=2\n");
 
     // 5. P1 #1c: /pause while dispatchDeliverStage awaits async deliverHandler waits and keeps paused (separate server)
@@ -3680,10 +3924,8 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       },
       approvalHandler: async (req, ctx) => {
         const token =
-          deliverFakeBackend
-            .getRecordedSpecs()
-            .find((s) => s.runId === ctx.runId)
-            ?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+          deliverFakeBackend.getRecordedSpecs().find((s) => s.runId === ctx.runId)?.mcpServers?.[0]
+            ?.env?.KILN_RUN_TOKEN ?? "";
         if (req.action === "r3_deliv_impl") {
           writeFileAtomic(
             path.join(deliverServer.store.paths.workspaceDir(ctx.taskId), "out.txt"),
@@ -3724,11 +3966,17 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     await deliverServer.start();
 
     deliverFakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r3_deliv_impl", detail: "impl" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r3_deliv_impl", detail: "impl" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r3-deliver-race", role: "worker" },
     );
     deliverServer.stateMachine.createTask(
-      makeScratchCard("t-r3-deliver-race", "node -e \"process.exit(0)\"", { mode: "manual", cmd: null }),
+      makeScratchCard("t-r3-deliver-race", 'node -e "process.exit(0)"', {
+        mode: "manual",
+        cmd: null,
+      }),
       "# Deliver race",
     );
     await deliverServer.orchestrator.wake();
@@ -3795,10 +4043,8 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       tokenSecret: "m2-e2e-p0-2-secret-0123456789abcdef",
       approvalHandler: async (req, ctx) => {
         const token =
-          fakeBackend
-            .getRecordedSpecs()
-            .find((s) => s.runId === ctx.runId)
-            ?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+          fakeBackend.getRecordedSpecs().find((s) => s.runId === ctx.runId)?.mcpServers?.[0]?.env
+            ?.KILN_RUN_TOKEN ?? "";
 
         if (req.action === "p0_2_after_start") {
           // 3rd late submission AFTER backend.start() resolved MUST still be rejected
@@ -3886,7 +4132,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       contract: {
         goal: "Converge receipt submitted before backend.start() returns",
         end: "Done",
-        accept_cmd: "node -e \"process.exit(0)\"",
+        accept_cmd: 'node -e "process.exit(0)"',
         accept_files_hash: "sha256:p02",
         scope: ["out.txt"],
         deliver: { mode: "manual" as const, cmd: null },
@@ -3916,10 +4162,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     server.stateMachine.createTask(makeL2ScratchCard("t-p0-2-slow"), "# Slow start race");
 
     // Scenario B: backend.start() throws after early wb_submit_receipt committed RECEIPT.md
-    fakeBackend.enqueueScript(
-      [{ kind: "exit", reason: "completed" }],
-      { taskId: "t-p0-2-err", role: "worker" },
-    );
+    fakeBackend.enqueueScript([{ kind: "exit", reason: "completed" }], {
+      taskId: "t-p0-2-err",
+      role: "worker",
+    });
     fakeBackend.enqueueScript(
       [
         { kind: "approval", action: "p0_2_review", detail: "review err" },
@@ -3938,9 +4184,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       "early slow output\n",
     );
     const slowToken =
-      fakeBackend
-        .getRecordedSpecs()
-        .find((s) => s.taskId === "t-p0-2-slow" && s.role === "worker")
+      fakeBackend.getRecordedSpecs().find((s) => s.taskId === "t-p0-2-slow" && s.role === "worker")
         ?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
     const slowSpec = fakeBackend
       .getRecordedSpecs()
@@ -3999,9 +4243,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       "early err output\n",
     );
     const errToken =
-      fakeBackend
-        .getRecordedSpecs()
-        .find((s) => s.taskId === "t-p0-2-err" && s.role === "worker")
+      fakeBackend.getRecordedSpecs().find((s) => s.taskId === "t-p0-2-err" && s.role === "worker")
         ?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
     const errSpec = fakeBackend
       .getRecordedSpecs()
@@ -4028,8 +4270,14 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     releaseSlow();
     releaseErr();
 
-    await waitUntil(() => server.store.getTaskIndex("t-p0-2-slow")?.status === "done", "t-p0-2-slow done");
-    await waitUntil(() => server.store.getTaskIndex("t-p0-2-err")?.status === "done", "t-p0-2-err done");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-p0-2-slow")?.status === "done",
+      "t-p0-2-slow done",
+    );
+    await waitUntil(
+      () => server.store.getTaskIndex("t-p0-2-err")?.status === "done",
+      "t-p0-2-err done",
+    );
 
     expect(lateThirdReceiptRef.body).not.toBeNull();
     expect(lateThirdReceiptRef.body?.accepted).toBe(false);
@@ -4059,10 +4307,8 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       tokenSecret: "m2-e2e-p1-3-secret-0123456789abcdef",
       approvalHandler: async (req, ctx) => {
         const token =
-          fakeBackend
-            .getRecordedSpecs()
-            .find((s) => s.runId === ctx.runId)
-            ?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+          fakeBackend.getRecordedSpecs().find((s) => s.runId === ctx.runId)?.mcpServers?.[0]?.env
+            ?.KILN_RUN_TOKEN ?? "";
         const wtPath = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
 
         if (req.action === "p1_3_worker_no_git") {
@@ -4071,10 +4317,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
             .filter((d) => d.endsWith("-implement"))
             .sort()
             .at(-1)!;
-          const handoff = fs.readFileSync(
-            server.store.paths.handoffMd(ctx.taskId, runDir),
-            "utf8",
-          );
+          const handoff = fs.readFileSync(server.store.paths.handoffMd(ctx.taskId, runDir), "utf8");
           expect(handoff).toContain("严禁在受限沙箱里执行 git commit、git merge 或 git push");
           expect(handoff).toContain("## 阶段回执格式要求");
           const workerTpl = extractTemplateFromHandoff(handoff);
@@ -4117,10 +4360,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
             .filter((d) => d.endsWith("-review"))
             .sort()
             .at(-1)!;
-          const handoff = fs.readFileSync(
-            server.store.paths.handoffMd(ctx.taskId, runDir),
-            "utf8",
-          );
+          const handoff = fs.readFileSync(server.store.paths.handoffMd(ctx.taskId, runDir), "utf8");
           expect(handoff).toContain("绝不能写成数组 `[]`");
           const reviewerTpl = extractTemplateFromHandoff(handoff);
           const validatedTpl = parseAndValidateReceipt("reviewer", reviewerTpl);
@@ -4224,7 +4464,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Modify src/app.ts without running git commit in worker sandbox",
           end: "Merged into main",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "pending",
           scope: ["src/app.ts"],
           deliver: { mode: "merge_main", cmd: null },
@@ -4239,8 +4479,13 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     );
 
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-p1-3-auto")?.status === "done", "t-p1-3-auto done");
-    expect(fs.readFileSync(path.join(repoPath, "src", "app.ts"), "utf8")).toBe("export const v = 303;\n");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-p1-3-auto")?.status === "done",
+      "t-p1-3-auto done",
+    );
+    expect(fs.readFileSync(path.join(repoPath, "src", "app.ts"), "utf8")).toBe(
+      "export const v = 303;\n",
+    );
     expect(git(["log", "-1", "--pretty=%s"], repoPath).trim()).toContain(
       "kiln(t-p1-3-auto): Auto commit worktree (round 1)",
     );
@@ -4282,9 +4527,14 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       "# OOB dirty test",
     );
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-p1-3-oob")?.status === "waiting", "t-p1-3-oob waiting");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-p1-3-oob")?.status === "waiting",
+      "t-p1-3-oob waiting",
+    );
     expect(server.pendingDecisions.get("t-p1-3-oob")?.reason).toBe("worktree_dirty_before_merge");
-    expect(fs.readFileSync(path.join(repoPath, "src", "app.ts"), "utf8")).toBe("export const v = 303;\n");
+    expect(fs.readFileSync(path.join(repoPath, "src", "app.ts"), "utf8")).toBe(
+      "export const v = 303;\n",
+    );
   }, 20_000);
 
   it("P1 #6: HANDOFF.md embeds valid parseable receipt templates for verifier, triage, and advisor stages", async () => {
@@ -4309,10 +4559,8 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       tokenSecret: "m2-e2e-p1-6-roles-secret-0123456789abcdef",
       approvalHandler: async (req, ctx) => {
         const token =
-          fakeBackend
-            .getRecordedSpecs()
-            .find((s) => s.runId === ctx.runId)
-            ?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+          fakeBackend.getRecordedSpecs().find((s) => s.runId === ctx.runId)?.mcpServers?.[0]?.env
+            ?.KILN_RUN_TOKEN ?? "";
 
         const runDir = fs
           .readdirSync(server.store.paths.runsDir(ctx.taskId))
@@ -4325,10 +4573,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
           })
           .sort()
           .at(-1)!;
-        const handoff = fs.readFileSync(
-          server.store.paths.handoffMd(ctx.taskId, runDir),
-          "utf8",
-        );
+        const handoff = fs.readFileSync(server.store.paths.handoffMd(ctx.taskId, runDir), "utf8");
         const tpl = extractTemplateFromHandoff(handoff);
 
         if (req.action === "p1_6_triage") {
@@ -4460,28 +4705,43 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
 
     await server.start();
 
+    fakeBackend.enqueueScript([{ kind: "exit", reason: "failed", detail: "trigger triage" }], {
+      taskId: "t-p1-6-roles",
+      role: "worker",
+    });
     fakeBackend.enqueueScript(
-      [{ kind: "exit", reason: "failed", detail: "trigger triage" }],
-      { taskId: "t-p1-6-roles", role: "worker" },
-    );
-    fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "p1_6_triage", detail: "triage" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "p1_6_triage", detail: "triage" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-p1-6-roles", role: "triage" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "p1_6_advisor", detail: "advisor" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "p1_6_advisor", detail: "advisor" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-p1-6-roles", role: "advisor" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "p1_6_worker_ok", detail: "worker ok" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "p1_6_worker_ok", detail: "worker ok" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-p1-6-roles", role: "worker" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "p1_6_reviewer_ok", detail: "reviewer ok" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "p1_6_reviewer_ok", detail: "reviewer ok" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-p1-6-roles", role: "reviewer" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "p1_6_verifier", detail: "verifier" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "p1_6_verifier", detail: "verifier" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-p1-6-roles", role: "verifier" },
     );
 
@@ -4500,7 +4760,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Verify triage, advisor, verifier HANDOFF receipt templates",
           end: "Done",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:p16roles",
           scope: ["out.txt"],
           deliver: { mode: "manual", cmd: null },
@@ -4515,7 +4775,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     );
 
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-p1-6-roles")?.status === "done", "t-p1-6-roles done");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-p1-6-roles")?.status === "done",
+      "t-p1-6-roles done",
+    );
     expect(validatedRoles).toEqual(["triage", "advisor", "verifier"]);
   }, 20_000);
 
@@ -4613,7 +4876,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Write host file",
           end: "Applied",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:stripext",
           scope: [hostTargetDir],
           deliver: { mode: "manual", cmd: null },
@@ -4664,10 +4927,8 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       tokenSecret: "m2-e2e-wf-blueprints-secret-012345",
       approvalHandler: async (req, ctx) => {
         const token =
-          fakeBackend
-            .getRecordedSpecs()
-            .find((s) => s.runId === ctx.runId)
-            ?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+          fakeBackend.getRecordedSpecs().find((s) => s.runId === ctx.runId)?.mcpServers?.[0]?.env
+            ?.KILN_RUN_TOKEN ?? "";
 
         if (req.action === "wf_quick_worker") {
           const wtPath = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
@@ -4893,7 +5154,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Quick update",
           end: "Merged without review",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:quick",
           scope: ["src/**"],
           deliver: { mode: "merge_main", cmd: null },
@@ -5038,7 +5299,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Deliver with plan + review + verifier + approval",
           end: "v = 999 merged after full pipeline",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:full",
           scope: ["src/**"],
           deliver: { mode: "merge_main", cmd: null },
@@ -5114,7 +5375,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         });
         const runDir = fs
           .readdirSync(server.store.paths.runsDir(ctx.taskId))
-          .filter((d) => d.includes(ctx.runId) || fs.existsSync(server.store.paths.handoffMd(ctx.taskId, d)))
+          .filter(
+            (d) =>
+              d.includes(ctx.runId) || fs.existsSync(server.store.paths.handoffMd(ctx.taskId, d)),
+          )
           .filter((d) => {
             const rawYaml = server.store.paths.runYaml(ctx.taskId, d);
             return fs.existsSync(rawYaml) && fs.readFileSync(rawYaml, "utf8").includes(ctx.runId);
@@ -5227,7 +5491,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         // Scenario B: stuck_threshold=2 consecutive same accept failure short-circuits retries -> advisor
         if (req.action === "adv_b_worker_fail_1" || req.action === "adv_b_worker_fail_2") {
           stuckAttempt += 1;
-          fs.writeFileSync(path.join(wtPath, "src", "app.ts"), `export const v = ${stuckAttempt};\n`);
+          fs.writeFileSync(
+            path.join(wtPath, "src", "app.ts"),
+            `export const v = ${stuckAttempt};\n`,
+          );
           await server.invokeMcpRpc({
             method: "POST",
             url: "/rpc/mcp/wb_submit_receipt",
@@ -5318,7 +5585,9 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
               category: "architecture_choice",
               reason: "shared_types",
               question: "Need decision on modifying packages/shared vs local file",
-              options: [{ id: "opt-1", label: "Check shared", action: "resume", recommended: true }],
+              options: [
+                { id: "opt-1", label: "Check shared", action: "resume", recommended: true },
+              ],
             }),
           });
           return;
@@ -5451,25 +5720,40 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         advisor: { agent: "codex", model: "gpt-6-luna", allow_full_access_fallback: false },
       },
     });
-    server.store.writeConfig("limits", defaultLimits({ max_concurrent_slots: 1, retries_per_stage: 3 }));
+    server.store.writeConfig(
+      "limits",
+      defaultLimits({ max_concurrent_slots: 1, retries_per_stage: 3 }),
+    );
     server.store.writeConfig("pricing", defaultPricing());
     await server.start();
 
     // Run Scenario A
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "adv_a_worker_ask", detail: "ask technical ambiguity" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "adv_a_worker_ask", detail: "ask technical ambiguity" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-adv-a", role: "worker" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "adv_a_advisor_resolve", detail: "advisor decide" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "adv_a_advisor_resolve", detail: "advisor decide" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-adv-a", role: "advisor" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "adv_a_worker_done", detail: "worker finish" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "adv_a_worker_done", detail: "worker finish" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-adv-a", role: "worker" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "adv_a_reviewer_pass", detail: "review pass" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "adv_a_reviewer_pass", detail: "review pass" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-adv-a", role: "reviewer" },
     );
     server.stateMachine.createTask(
@@ -5488,7 +5772,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Resolve technical ambiguity cleanly",
           end: "Merged Map implementation",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:adva",
           scope: ["src/**"],
           deliver: { mode: "merge_main", cmd: null },
@@ -5507,30 +5791,47 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     expect(decisionsA).toContain("Use explicit Map with deterministic invalidation");
     expect(decisionsA).toContain("## 技术取舍");
     expect(decisionsA).toContain("Map 支持按 key 精准淘汰");
-    expect(capturedAdvisorHandoffs.get("t-adv-a")?.[0]).toContain("Should config cache use Map or WeakMap?");
+    expect(capturedAdvisorHandoffs.get("t-adv-a")?.[0]).toContain(
+      "Should config cache use Map or WeakMap?",
+    );
     expect(capturedWorkerHandoffs.get("t-adv-a")?.[1]).toContain("## 历史裁决 (decisions)");
     expect(fs.existsSync(server.store.paths.advisorRequestYaml("t-adv-a"))).toBe(false);
     expect(server.pendingDecisions.get("t-adv-a")).toBeNull();
 
     // Run Scenario B (stuck_threshold=2 short-circuits retries_per_stage=3)
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "adv_b_worker_fail_1", detail: "fail 1" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "adv_b_worker_fail_1", detail: "fail 1" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-adv-b", role: "worker" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "adv_b_worker_fail_2", detail: "fail 2" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "adv_b_worker_fail_2", detail: "fail 2" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-adv-b", role: "worker" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "adv_b_advisor_break", detail: "advisor break stuck" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "adv_b_advisor_break", detail: "advisor break stuck" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-adv-b", role: "advisor" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "adv_b_worker_fix", detail: "worker fix" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "adv_b_worker_fix", detail: "worker fix" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-adv-b", role: "worker" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "adv_b_reviewer_pass", detail: "review pass" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "adv_b_reviewer_pass", detail: "review pass" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-adv-b", role: "reviewer" },
     );
     server.stateMachine.createTask(
@@ -5564,18 +5865,29 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     );
     await server.orchestrator.wake();
     await waitUntil(() => server.store.getTaskIndex("t-adv-b")?.status === "done", "t-adv-b done");
-    const specsB = fakeBackend.getRecordedSpecs().filter((s) => s.taskId === "t-adv-b").map((s) => s.role);
+    const specsB = fakeBackend
+      .getRecordedSpecs()
+      .filter((s) => s.taskId === "t-adv-b")
+      .map((s) => s.role);
     expect(specsB).toEqual(["worker", "worker", "advisor", "worker", "reviewer"]);
     expect(capturedAdvisorHandoffs.get("t-adv-b")?.[0]).toContain("gate:accept:exit=2");
-    expect(fs.readFileSync(path.join(repoPath, "src", "app.ts"), "utf8")).toBe("export const v = 802;\n");
+    expect(fs.readFileSync(path.join(repoPath, "src", "app.ts"), "utf8")).toBe(
+      "export const v = 802;\n",
+    );
 
     // Run Scenario C1 (advisor requires_scope_expansion blocked -> waiting human)
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "adv_c1_worker_ask", detail: "ask arch choice" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "adv_c1_worker_ask", detail: "ask arch choice" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-adv-c1", role: "worker" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "adv_c1_advisor_overreach", detail: "overreach scope" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "adv_c1_advisor_overreach", detail: "overreach scope" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-adv-c1", role: "advisor" },
     );
     server.stateMachine.createTask(
@@ -5594,7 +5906,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Test scope guard",
           end: "Done",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:advc1",
           scope: ["src/**"],
           deliver: { mode: "merge_main", cmd: null },
@@ -5608,13 +5920,21 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       "# Scenario C1",
     );
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-adv-c1")?.status === "waiting", "t-adv-c1 waiting");
-    expect(server.pendingDecisions.get("t-adv-c1")?.reason).toBe("advisor_requires_scope_expansion");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-adv-c1")?.status === "waiting",
+      "t-adv-c1 waiting",
+    );
+    expect(server.pendingDecisions.get("t-adv-c1")?.reason).toBe(
+      "advisor_requires_scope_expansion",
+    );
     server.stateMachine.cancelTask("t-adv-c1", "cleanup", "2026-11-22T08:10:30.000Z");
 
     // Run Scenario C2 (plan advisor mutates worktree -> advisor_workspace_mutation)
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "adv_c2_plan_mutate", detail: "mutate repo during plan" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "adv_c2_plan_mutate", detail: "mutate repo during plan" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-adv-c2", role: "advisor" },
     );
     server.stateMachine.createTask(
@@ -5633,7 +5953,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Test workspace read-only guard",
           end: "Done",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:advc2",
           scope: ["src/**"],
           deliver: { mode: "merge_main", cmd: null },
@@ -5647,14 +5967,20 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       "# Scenario C2",
     );
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-adv-c2")?.status === "waiting", "t-adv-c2 waiting");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-adv-c2")?.status === "waiting",
+      "t-adv-c2 waiting",
+    );
     expect(server.pendingDecisions.get("t-adv-c2")?.reason).toBe("advisor_workspace_mutation");
     expect(fs.existsSync(server.store.paths.planMd("t-adv-c2"))).toBe(false);
     server.stateMachine.cancelTask("t-adv-c2", "cleanup", "2026-11-22T08:11:30.000Z");
 
     // Run Scenario D (scope_clarification goes straight to human waiting without waking advisor)
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "adv_d_worker_scope_human", detail: "ask scope" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "adv_d_worker_scope_human", detail: "ask scope" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-adv-d", role: "worker" },
     );
     server.stateMachine.createTask(
@@ -5673,7 +5999,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Bypass advisor for scope clarification",
           end: "Done",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:advd",
           scope: ["src/**"],
           deliver: { mode: "merge_main", cmd: null },
@@ -5687,18 +6013,29 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       "# Scenario D",
     );
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-adv-d")?.status === "waiting", "t-adv-d waiting");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-adv-d")?.status === "waiting",
+      "t-adv-d waiting",
+    );
     expect(server.pendingDecisions.get("t-adv-d")?.category).toBe("scope_clarification");
-    expect(fakeBackend.getRecordedSpecs().some((s) => s.taskId === "t-adv-d" && s.role === "advisor")).toBe(false);
+    expect(
+      fakeBackend.getRecordedSpecs().some((s) => s.taskId === "t-adv-d" && s.role === "advisor"),
+    ).toBe(false);
     server.stateMachine.cancelTask("t-adv-d", "cleanup", "2026-11-22T08:12:30.000Z");
 
     // Run Scenario E (clean plan stage persists PLAN.md and GET /api/tasks/:id returns plan)
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "adv_e_plan_ok", detail: "clean plan" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "adv_e_plan_ok", detail: "clean plan" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-adv-e", role: "advisor" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "adv_e_worker_ask_halt", detail: "hold for detail" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "adv_e_worker_ask_halt", detail: "hold for detail" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-adv-e", role: "worker" },
     );
     server.stateMachine.createTask(
@@ -5717,7 +6054,7 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
         contract: {
           goal: "Expose plan in detail API",
           end: "Done",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:adve",
           scope: ["src/**"],
           deliver: { mode: "merge_main", cmd: null },
@@ -5731,7 +6068,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       "# Scenario E",
     );
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-adv-e")?.status === "waiting", "t-adv-e waiting");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-adv-e")?.status === "waiting",
+      "t-adv-e waiting",
+    );
     const detailRes = await server.app.request(new Request("http://127.0.0.1/api/tasks/t-adv-e"));
     expect(detailRes.status).toBe(200);
     const detailBody = (await detailRes.json()) as { plan?: string };
@@ -5867,7 +6207,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     );
 
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-slice4-tui")?.status === "done", "t-slice4-tui done");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-slice4-tui")?.status === "done",
+      "t-slice4-tui done",
+    );
 
     const meta = readYamlOptional(
       server.store.paths.runYaml("t-slice4-tui", "001-implement"),
@@ -5877,7 +6220,9 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     expect(meta?.session_ref.meta?.providerSessionId).toBe("codex-e2e-9876543210");
     expect(meta?.session_ref.meta?.providerSessionPath).toBe("/tmp/codex-e2e.jsonl");
 
-    const detailRes = await server.app.request(new Request("http://127.0.0.1/api/tasks/t-slice4-tui"));
+    const detailRes = await server.app.request(
+      new Request("http://127.0.0.1/api/tasks/t-slice4-tui"),
+    );
     expect(detailRes.status).toBe(200);
     const detail = (await detailRes.json()) as {
       runs: Array<{
@@ -6156,15 +6501,24 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     // Case A (P0): Concurrent wake() during slow abortActiveRun must NOT launch advisor concurrently
     gateCancelForTask = "t-r1-race";
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r1_a_worker_ask", detail: "ask tech" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r1_a_worker_ask", detail: "ask tech" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r1-race", role: "worker" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r1_a_advisor_resolve", detail: "adv" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r1_a_advisor_resolve", detail: "adv" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r1-race", role: "advisor" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r1_a_worker_done", detail: "done" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r1_a_worker_done", detail: "done" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r1-race", role: "worker" },
     );
     server.stateMachine.createTask(
@@ -6205,18 +6559,27 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       fakeBackend.getRecordedSpecs().some((s) => s.taskId === "t-r1-race" && s.role === "advisor"),
     ).toBe(false);
     cancelGateResolve();
-    await waitUntil(() => server.store.getTaskIndex("t-r1-race")?.status === "done", "t-r1-race done");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r1-race")?.status === "done",
+      "t-r1-race done",
+    );
     expect(maxConcurrentPerTask).toBe(1);
     gateCancelForTask = null;
 
     // Case B (P1): finalizeAdvisorRun ignores expired lease without deleting advisor-request.yaml or advancing state
     expireNextAdvisorLease = true;
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r1_a_worker_ask", detail: "ask b" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r1_a_worker_ask", detail: "ask b" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r1-lease", role: "worker" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r1_b_expire_advisor", detail: "adv b" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r1_b_expire_advisor", detail: "adv b" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r1-lease", role: "advisor" },
     );
     server.stateMachine.createTask(
@@ -6250,7 +6613,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
     );
     await server.orchestrator.wake();
     await waitUntil(
-      () => fakeBackend.getRecordedSpecs().some((s) => s.taskId === "t-r1-lease" && s.role === "advisor"),
+      () =>
+        fakeBackend
+          .getRecordedSpecs()
+          .some((s) => s.taskId === "t-r1-lease" && s.role === "advisor"),
       "t-r1-lease advisor started",
     );
     const leaseAdviseDir = fs
@@ -6273,11 +6639,17 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
 
     // Case C (P1): target_stage outside quick workflow pipeline -> waiting(advisor_invalid_target_stage)
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r1_a_worker_ask", detail: "ask c" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r1_a_worker_ask", detail: "ask c" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r1-stage", role: "worker" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r1_c_invalid_stage", detail: "adv invalid target_stage" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r1_c_invalid_stage", detail: "adv invalid target_stage" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r1-stage", role: "advisor" },
     );
     server.stateMachine.createTask(
@@ -6310,13 +6682,19 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       "# Case C",
     );
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-r1-stage")?.status === "waiting", "t-r1-stage waiting");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r1-stage")?.status === "waiting",
+      "t-r1-stage waiting",
+    );
     expect(server.pendingDecisions.get("t-r1-stage")?.reason).toBe("advisor_invalid_target_stage");
     server.stateMachine.cancelTask("t-r1-stage", "cleanup", "2026-11-22T10:05:00.000Z");
 
     // Case D (P2): advisor git commit inside plan stage detected via HEAD hash
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r1_d_advisor_git_commit", detail: "advisor commits" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r1_d_advisor_git_commit", detail: "advisor commits" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r1-githead", role: "advisor" },
     );
     server.stateMachine.createTask(
@@ -6349,7 +6727,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       "# Case D",
     );
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-r1-githead")?.status === "waiting", "t-r1-githead waiting");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r1-githead")?.status === "waiting",
+      "t-r1-githead waiting",
+    );
     expect(advisorCommittedWt).toBeTruthy();
     expect(server.pendingDecisions.get("t-r1-githead")?.reason).toBe("advisor_workspace_mutation");
   }, 25_000);
@@ -6483,15 +6864,28 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
 
     // Case A: review-triggered advisor mutates worktree AND submits need_decision -> advisor_workspace_mutation & safe return to implement (NOT review)
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r2_worker_implement_ok", detail: "impl ok" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r2_worker_implement_ok", detail: "impl ok" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r2-rev-mut", role: "worker" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r2_reviewer_ask_tech", detail: "rev ask" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r2_reviewer_ask_tech", detail: "rev ask" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r2-rev-mut", role: "reviewer" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r2_advisor_mutate_need_decision", detail: "adv mutate + need_decision" }, { kind: "exit", reason: "completed" }],
+      [
+        {
+          kind: "approval",
+          action: "r2_advisor_mutate_need_decision",
+          detail: "adv mutate + need_decision",
+        },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r2-rev-mut", role: "advisor" },
     );
     server.stateMachine.createTask(
@@ -6524,7 +6918,10 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       "# Case A",
     );
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-r2-rev-mut")?.status === "waiting", "t-r2-rev-mut waiting");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r2-rev-mut")?.status === "waiting",
+      "t-r2-rev-mut waiting",
+    );
     const pendingA = server.pendingDecisions.get("t-r2-rev-mut");
     expect(pendingA?.reason).toBe("advisor_workspace_mutation");
     expect(pendingA?.category).toBe("advisor_guardrail_escalation");
@@ -6533,11 +6930,21 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
 
     // Case B: advise advisor mutates worktree AND exits without RECEIPT.md -> advisor_workspace_mutation
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r2_worker_ask_tech", detail: "worker ask" }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "approval", action: "r2_worker_ask_tech", detail: "worker ask" },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r2-adv-missing", role: "worker" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r2_advisor_mutate_no_receipt", detail: "adv mutate missing receipt" }, { kind: "exit", reason: "completed" }],
+      [
+        {
+          kind: "approval",
+          action: "r2_advisor_mutate_no_receipt",
+          detail: "adv mutate missing receipt",
+        },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r2-adv-missing", role: "advisor" },
     );
     server.stateMachine.createTask(
@@ -6570,13 +6977,25 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       "# Case B",
     );
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-r2-adv-missing")?.status === "waiting", "t-r2-adv-missing waiting");
-    expect(server.pendingDecisions.get("t-r2-adv-missing")?.reason).toBe("advisor_workspace_mutation");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r2-adv-missing")?.status === "waiting",
+      "t-r2-adv-missing waiting",
+    );
+    expect(server.pendingDecisions.get("t-r2-adv-missing")?.reason).toBe(
+      "advisor_workspace_mutation",
+    );
     server.stateMachine.cancelTask("t-r2-adv-missing", "cleanup", "2026-11-22T11:03:00.000Z");
 
     // Case C: plan advisor mutates worktree AND exits without RECEIPT.md -> advisor_workspace_mutation (no retry bypass)
     fakeBackend.enqueueScript(
-      [{ kind: "approval", action: "r2_advisor_mutate_no_receipt", detail: "plan mutate missing receipt" }, { kind: "exit", reason: "completed" }],
+      [
+        {
+          kind: "approval",
+          action: "r2_advisor_mutate_no_receipt",
+          detail: "plan mutate missing receipt",
+        },
+        { kind: "exit", reason: "completed" },
+      ],
       { taskId: "t-r2-plan-missing", role: "advisor" },
     );
     server.stateMachine.createTask(
@@ -6609,7 +7028,12 @@ describe("M2 full-stack MVP E2E scenarios (8+1 mandatory acceptance paths)", () 
       "# Case C",
     );
     await server.orchestrator.wake();
-    await waitUntil(() => server.store.getTaskIndex("t-r2-plan-missing")?.status === "waiting", "t-r2-plan-missing waiting");
-    expect(server.pendingDecisions.get("t-r2-plan-missing")?.reason).toBe("advisor_workspace_mutation");
+    await waitUntil(
+      () => server.store.getTaskIndex("t-r2-plan-missing")?.status === "waiting",
+      "t-r2-plan-missing waiting",
+    );
+    expect(server.pendingDecisions.get("t-r2-plan-missing")?.reason).toBe(
+      "advisor_workspace_mutation",
+    );
   }, 25_000);
 });

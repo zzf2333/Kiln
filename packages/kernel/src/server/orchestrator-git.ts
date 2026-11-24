@@ -164,13 +164,7 @@ export async function commitVerifiedWorktreeChanges(
   }
 
   if (parsed.pathsToStage.length > 0) {
-    await runGitCommand([
-      "-C",
-      worktreePath,
-      "add",
-      "--",
-      ...parsed.pathsToStage,
-    ]);
+    await runGitCommand(["-C", worktreePath, "add", "--", ...parsed.pathsToStage]);
   }
 
   const stagedRaw = await runGitCommand([
@@ -200,10 +194,6 @@ export async function commitVerifiedWorktreeChanges(
     commitArgs.push("-c", "user.email=kiln@local");
   }
   const cleanTitle = card.title.replace(/[\r\n]+/g, " ").trim();
-  commitArgs.push(
-    "commit",
-    "-m",
-    `kiln(${card.id}): ${cleanTitle} (round ${round})`,
-  );
+  commitArgs.push("commit", "-m", `kiln(${card.id}): ${cleanTitle} (round ${round})`);
   await runGitCommand(commitArgs);
 }

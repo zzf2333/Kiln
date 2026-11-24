@@ -53,10 +53,7 @@ function getFirstTextContent(result: Awaited<ReturnType<Client["callTool"]>>): s
   return first.text;
 }
 
-async function connectMcpPair(options: {
-  token: string;
-  transport: KilnRpcTransport;
-}): Promise<{
+async function connectMcpPair(options: { token: string; transport: KilnRpcTransport }): Promise<{
   mcpClient: Client;
   rpcClient: KilnSocketRpcClient;
   close: () => Promise<void>;
@@ -108,13 +105,16 @@ describe("@kiln/mcp server & client", () => {
     for (const filePath of sourceFiles) {
       const content = fs.readFileSync(filePath, "utf8");
       for (const pattern of forbiddenPatterns) {
-        expect(content, `${path.relative(PACKAGE_ROOT, filePath)} must not reference ${pattern}`).not.toContain(
-          pattern,
-        );
+        expect(
+          content,
+          `${path.relative(PACKAGE_ROOT, filePath)} must not reference ${pattern}`,
+        ).not.toContain(pattern);
       }
     }
 
-    const pkgJson = JSON.parse(fs.readFileSync(path.join(PACKAGE_ROOT, "package.json"), "utf8")) as {
+    const pkgJson = JSON.parse(
+      fs.readFileSync(path.join(PACKAGE_ROOT, "package.json"), "utf8"),
+    ) as {
       dependencies?: Record<string, string>;
       devDependencies?: Record<string, string>;
     };
@@ -144,9 +144,13 @@ describe("@kiln/mcp server & client", () => {
     ).toBe("/env/sock.sock");
 
     expect(
-      resolveKilnSocketPath(undefined, {
-        KILN_HOME: "/env/home",
-      }, "darwin"),
+      resolveKilnSocketPath(
+        undefined,
+        {
+          KILN_HOME: "/env/home",
+        },
+        "darwin",
+      ),
     ).toBe(path.join(path.resolve("/env/home"), "run", "kilnd.sock"));
 
     expect(resolveKilnSocketPath(undefined, {}, "linux")).toBe(
@@ -185,7 +189,14 @@ describe("@kiln/mcp server & client", () => {
     expect(toolNames).toEqual([...MCP_TOOL_NAMES]);
     expect(toolNames).toHaveLength(7);
 
-    for (const forbidden of ["merge", "push", "publish", "delete_branch", "close_task", "git_push"]) {
+    for (const forbidden of [
+      "merge",
+      "push",
+      "publish",
+      "delete_branch",
+      "close_task",
+      "git_push",
+    ]) {
       expect(toolNames).not.toContain(forbidden);
     }
 

@@ -106,9 +106,7 @@ export const UpsertSpaceRequestSchema = z.object({
   scripts: SpaceScriptsSchema.optional(),
   intake_checklist: z.array(z.string().trim().min(1)).optional(),
   accept_scenarios: z.array(z.string().trim().min(1)).optional(),
-  default_workflow_preset: z
-    .enum(["quick", "host_op", "standard_dev", "full_delivery"])
-    .optional(),
+  default_workflow_preset: z.enum(["quick", "host_op", "standard_dev", "full_delivery"]).optional(),
 });
 export type UpsertSpaceRequest = z.infer<typeof UpsertSpaceRequestSchema>;
 
@@ -131,9 +129,7 @@ export const RemotePairChallengeResponseSchema = z.object({
   expiresAt: z.string().min(1),
   pairUrl: z.string().min(1).nullable(),
 });
-export type RemotePairChallengeResponse = z.infer<
-  typeof RemotePairChallengeResponseSchema
->;
+export type RemotePairChallengeResponse = z.infer<typeof RemotePairChallengeResponseSchema>;
 
 export const RemoteAuthStatusResponseSchema = z.object({
   ok: z.literal(true),
@@ -141,9 +137,7 @@ export const RemoteAuthStatusResponseSchema = z.object({
   authenticated: z.boolean(),
   device: PublicPairedDeviceSchema.nullable(),
 });
-export type RemoteAuthStatusResponse = z.infer<
-  typeof RemoteAuthStatusResponseSchema
->;
+export type RemoteAuthStatusResponse = z.infer<typeof RemoteAuthStatusResponseSchema>;
 
 export const RemoteNotificationTestRequestSchema = z.object({
   channel: RemoteNotificationChannelSchema.optional(),
@@ -152,9 +146,7 @@ export const RemoteNotificationTestRequestSchema = z.object({
   title: z.string().trim().min(1).max(160).optional(),
   body: z.string().trim().min(1).max(1000).optional(),
 });
-export type RemoteNotificationTestRequest = z.infer<
-  typeof RemoteNotificationTestRequestSchema
->;
+export type RemoteNotificationTestRequest = z.infer<typeof RemoteNotificationTestRequestSchema>;
 
 export const TailscaleStatusResponseSchema = z.object({
   ok: z.literal(true),
@@ -170,9 +162,7 @@ export const TailscaleStatusResponseSchema = z.object({
   recommendedCommand: z.string().min(1),
   detail: z.string().optional(),
 });
-export type TailscaleStatusResponse = z.infer<
-  typeof TailscaleStatusResponseSchema
->;
+export type TailscaleStatusResponse = z.infer<typeof TailscaleStatusResponseSchema>;
 
 export const SyncPricingRequestSchema = z.object({
   force: z.boolean().optional(),
@@ -437,12 +427,7 @@ export function extractLocalPreviewUrls(text: string, maxCount = 6): string[] {
     if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
       continue;
     }
-    const host =
-      rawHost === "0.0.0.0"
-        ? "127.0.0.1"
-        : rawHost === "[::]"
-          ? "localhost"
-          : rawHost;
+    const host = rawHost === "0.0.0.0" ? "127.0.0.1" : rawHost === "[::]" ? "localhost" : rawHost;
     const rawSuffix = (match[4] ?? "").replace(/[.,;:)\]]+$/, "");
     const suffix = rawSuffix.length > 0 ? rawSuffix : "/";
     const normalized = `${scheme}://${host}:${portNum}${suffix}`;
@@ -460,14 +445,7 @@ export type ChecklistItemSource = (typeof CHECKLIST_ITEM_SOURCES)[number];
 export const CHECKLIST_DISPOSITIONS = ["rework", "waive"] as const;
 export type ChecklistDisposition = (typeof CHECKLIST_DISPOSITIONS)[number];
 
-export const ChecklistItemSeveritySchema = z.enum([
-  "P0",
-  "P1",
-  "P2",
-  "fail",
-  "skipped",
-  "pass",
-]);
+export const ChecklistItemSeveritySchema = z.enum(["P0", "P1", "P2", "fail", "skipped", "pass"]);
 export type ChecklistItemSeverity = z.infer<typeof ChecklistItemSeveritySchema>;
 
 export const ChecklistItemSchema = z.object({
@@ -496,9 +474,7 @@ export const ChecklistDispositionRecordSchema = z.object({
   decided_at: z.string().min(1),
   contract_version: z.number().int().positive(),
 });
-export type ChecklistDispositionRecord = z.infer<
-  typeof ChecklistDispositionRecordSchema
->;
+export type ChecklistDispositionRecord = z.infer<typeof ChecklistDispositionRecordSchema>;
 
 export const TaskChecklistDispositionsFileSchema = z.object({
   schema_version: z.literal(1).default(1),
@@ -506,9 +482,7 @@ export const TaskChecklistDispositionsFileSchema = z.object({
   updated_at: z.string().min(1),
   records: z.array(ChecklistDispositionRecordSchema),
 });
-export type TaskChecklistDispositionsFile = z.infer<
-  typeof TaskChecklistDispositionsFileSchema
->;
+export type TaskChecklistDispositionsFile = z.infer<typeof TaskChecklistDispositionsFileSchema>;
 
 export const ChecklistResolveActionItemSchema = z
   .object({
@@ -528,9 +502,7 @@ export const ChecklistResolveActionItemSchema = z
       });
     }
   });
-export type ChecklistResolveActionItem = z.infer<
-  typeof ChecklistResolveActionItemSchema
->;
+export type ChecklistResolveActionItem = z.infer<typeof ChecklistResolveActionItemSchema>;
 
 export const ResolveTaskChecklistRequestSchema = z.object({
   items: z.array(ChecklistResolveActionItemSchema).min(1).max(100),
@@ -538,6 +510,4 @@ export const ResolveTaskChecklistRequestSchema = z.object({
   interrupt: z.boolean().default(false),
   advance_after_waive: z.boolean().default(false),
 });
-export type ResolveTaskChecklistRequest = z.infer<
-  typeof ResolveTaskChecklistRequestSchema
->;
+export type ResolveTaskChecklistRequest = z.infer<typeof ResolveTaskChecklistRequestSchema>;

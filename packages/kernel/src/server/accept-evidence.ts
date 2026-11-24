@@ -16,9 +16,7 @@ const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
  * Verifies raw file header magic bytes for PNG, JPEG, or WebP images.
  * Rejects text files or dummy payloads masquerading with an image extension.
  */
-export function detectImageMagic(
-  buf: Buffer,
-): "image/png" | "image/jpeg" | "image/webp" | null {
+export function detectImageMagic(buf: Buffer): "image/png" | "image/jpeg" | "image/webp" | null {
   if (buf.length >= 8) {
     // PNG: 89 50 4E 47 0D 0A 1A 0A
     if (
@@ -133,8 +131,7 @@ export function validateVerifierEvidenceGate(
 
   if (
     receipt.verdict === "pass" &&
-    (receipt.failed_scenarios > 0 ||
-      receipt.scenarios?.some((s) => s.status === "fail"))
+    (receipt.failed_scenarios > 0 || receipt.scenarios?.some((s) => s.status === "fail"))
   ) {
     addReason("failed_scenarios_mismatch");
   }

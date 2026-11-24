@@ -37,19 +37,16 @@ export function Sidebar() {
     }
   }
 
-  const spaceIds = Array.from(
-    new Set([
-      ...Object.keys(spaces),
-      ...tasks.map((t) => t.space),
-    ]),
-  ).sort((a, b) => {
-    const pinA = Boolean(spaces[a]?.pinned);
-    const pinB = Boolean(spaces[b]?.pinned);
-    if (pinA !== pinB) return pinA ? -1 : 1;
-    if (a === "local" && b !== "local") return 1;
-    if (b === "local" && a !== "local") return -1;
-    return a.localeCompare(b);
-  });
+  const spaceIds = Array.from(new Set([...Object.keys(spaces), ...tasks.map((t) => t.space)])).sort(
+    (a, b) => {
+      const pinA = Boolean(spaces[a]?.pinned);
+      const pinB = Boolean(spaces[b]?.pinned);
+      if (pinA !== pinB) return pinA ? -1 : 1;
+      if (a === "local" && b !== "local") return 1;
+      if (b === "local" && a !== "local") return -1;
+      return a.localeCompare(b);
+    },
+  );
 
   return (
     <aside className="side-nav" aria-label="主导航">
@@ -101,11 +98,7 @@ export function Sidebar() {
           </div>
         </div>
 
-        <button
-          type="button"
-          className="new-btn"
-          onClick={() => store.go("intake")}
-        >
+        <button type="button" className="new-btn" onClick={() => store.go("intake")}>
           <span>
             新需求
             {state.intakeActiveOpen ? (
@@ -251,10 +244,7 @@ export function Sidebar() {
             onClick={() => store.go("board", { space: "all" })}
           >
             <span className="nav-l">
-              <span
-                className="dot"
-                style={{ background: "var(--t3)", margin: "0 5px" }}
-              />
+              <span className="dot" style={{ background: "var(--t3)", margin: "0 5px" }} />
               <span>全部</span>
             </span>
             <span className="nav-count" />
@@ -269,11 +259,7 @@ export function Sidebar() {
             const isActive = spaceFilter === spId && view === "board";
 
             return (
-              <div
-                key={spId}
-                className={`space-row ${isActive ? "on" : ""}`}
-                data-space-row={spId}
-              >
+              <div key={spId} className={`space-row ${isActive ? "on" : ""}`} data-space-row={spId}>
                 <button
                   type="button"
                   className="space-main"
@@ -284,9 +270,7 @@ export function Sidebar() {
                   </span>
                   <span>{label}</span>
                 </button>
-                {runCount > 0 ? (
-                  <span className="space-live">{runCount} 在跑</span>
-                ) : null}
+                {runCount > 0 ? <span className="space-live">{runCount} 在跑</span> : null}
                 {canPin ? (
                   <button
                     type="button"

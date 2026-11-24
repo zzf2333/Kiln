@@ -139,7 +139,11 @@ function normalizeCodexRateLimit(raw: unknown): ProviderNativeQuota | null {
     } | null;
   };
   const primary = obj.rateLimits?.primary;
-  if (!primary || typeof primary.usedPercent !== "number" || !Number.isFinite(primary.usedPercent)) {
+  if (
+    !primary ||
+    typeof primary.usedPercent !== "number" ||
+    !Number.isFinite(primary.usedPercent)
+  ) {
     return null;
   }
 
@@ -200,8 +204,8 @@ function mapCodexModelList(rawData: unknown): BackendModelDescriptor[] {
         typeof eff === "string"
           ? eff
           : eff && typeof eff === "object"
-            ? (eff as { reasoningEffort?: unknown; id?: unknown }).reasoningEffort ??
-              (eff as { id?: unknown }).id
+            ? ((eff as { reasoningEffort?: unknown; id?: unknown }).reasoningEffort ??
+              (eff as { id?: unknown }).id)
             : null;
       if (
         typeof val === "string" &&
@@ -486,8 +490,7 @@ export class CodexAppServerBackend implements ProviderTelemetryBackend {
 
     const { command, args } = this.getCommandAndArgs();
     const env = buildProcessEnv(this.provider.env, runSpec.env);
-    const resolvedCmd =
-      resolveCliBinary(command, { env, ...(this.probeOptions ?? {}) }) ?? command;
+    const resolvedCmd = resolveCliBinary(command, { env, ...(this.probeOptions ?? {}) }) ?? command;
 
     const sessionId = `codex-${randomUUID()}`;
     const sessionRef: SessionRef = {
@@ -658,7 +661,11 @@ export class CodexAppServerBackend implements ProviderTelemetryBackend {
     if (session.status === "closed" || !session.proc.isAlive) {
       throw new Error(`Session "${sessionRef.sessionId}" is closed`);
     }
-    if (session.status === "running" && session.currentTurn && !session.currentTurn.queue.isFinished()) {
+    if (
+      session.status === "running" &&
+      session.currentTurn &&
+      !session.currentTurn.queue.isFinished()
+    ) {
       throw new Error(
         `Session "${sessionRef.sessionId}" already has an active turn "${session.currentTurn.turnId}"`,
       );
@@ -829,9 +836,10 @@ export class CodexAppServerBackend implements ProviderTelemetryBackend {
       return;
     }
 
-    const params = (msg.params && typeof msg.params === "object"
-      ? msg.params
-      : {}) as Record<string, unknown>;
+    const params = (msg.params && typeof msg.params === "object" ? msg.params : {}) as Record<
+      string,
+      unknown
+    >;
     const at = new Date().toISOString();
 
     switch (method) {
@@ -861,9 +869,7 @@ export class CodexAppServerBackend implements ProviderTelemetryBackend {
       }
       case "thread/tokenUsage/updated": {
         const tokenUsage = (
-          params.tokenUsage && typeof params.tokenUsage === "object"
-            ? params.tokenUsage
-            : params
+          params.tokenUsage && typeof params.tokenUsage === "object" ? params.tokenUsage : params
         ) as Record<string, unknown>;
         const total = tokenUsage.total as Record<string, unknown> | undefined;
         if (total && typeof total === "object") {
@@ -899,12 +905,15 @@ export class CodexAppServerBackend implements ProviderTelemetryBackend {
           clearTimeout(turn.cancelTimer);
           turn.cancelTimer = null;
         }
-        const turnPayload = params.turn as {
-          id?: unknown;
-          status?: unknown;
-          error?: { message?: unknown } | null;
-        } | undefined;
-        const statusStr = typeof turnPayload?.status === "string" ? turnPayload.status : "completed";
+        const turnPayload = params.turn as
+          | {
+              id?: unknown;
+              status?: unknown;
+              error?: { message?: unknown } | null;
+            }
+          | undefined;
+        const statusStr =
+          typeof turnPayload?.status === "string" ? turnPayload.status : "completed";
         const providerTurnId =
           typeof turnPayload?.id === "string" ? turnPayload.id : turn.providerTurnId;
 
@@ -1019,9 +1028,10 @@ export class CodexAppServerBackend implements ProviderTelemetryBackend {
     method: string,
     rawParams: unknown,
   ): void {
-    const params = (rawParams && typeof rawParams === "object"
-      ? rawParams
-      : {}) as Record<string, unknown>;
+    const params = (rawParams && typeof rawParams === "object" ? rawParams : {}) as Record<
+      string,
+      unknown
+    >;
     const turn = session.currentTurn;
     const at = new Date().toISOString();
 
@@ -1120,11 +1130,7 @@ export class CodexAppServerBackend implements ProviderTelemetryBackend {
     }
   }
 
-  private finishTurnFailed(
-    session: CodexSessionState,
-    turn: CodexTurnState,
-    detail: string,
-  ): void {
+  private finishTurnFailed(session: CodexSessionState, turn: CodexTurnState, detail: string): void {
     const at = new Date().toISOString();
     if (isRateLimitMessage(detail)) {
       const retryAfterSec = extractRetryAfterSec(detail);

@@ -40,11 +40,7 @@ export const FORBIDDEN_LOCAL_PROXY_HEADERS = [
   "x-real-ip",
 ] as const;
 
-export const FORBIDDEN_LOCAL_PROXY_HEADER_PREFIXES = [
-  "x-forwarded-",
-  "cf-",
-  "tailscale-",
-] as const;
+export const FORBIDDEN_LOCAL_PROXY_HEADER_PREFIXES = ["x-forwarded-", "cf-", "tailscale-"] as const;
 
 const FORBIDDEN_LOCAL_PROXY_EXACT_HEADERS = new Set(["forwarded", "x-real-ip"]);
 
@@ -320,13 +316,7 @@ export function formatSessionCookieHeader(
 }
 
 export function formatClearSessionCookieHeader(options: { secure: boolean }): string {
-  const parts = [
-    `${KILN_SESSION_COOKIE_NAME}=`,
-    "HttpOnly",
-    "SameSite=Lax",
-    "Path=/",
-    "Max-Age=0",
-  ];
+  const parts = [`${KILN_SESSION_COOKIE_NAME}=`, "HttpOnly", "SameSite=Lax", "Path=/", "Max-Age=0"];
   if (options.secure) {
     parts.push("Secure");
   }
@@ -379,7 +369,9 @@ function buildExpectedOrigin(proto: string, host: string): string | null {
 export function verifyRemoteCsrf(
   c: Context,
   remoteConfig: RemoteConfig | null,
-): { ok: true } | { ok: false; error: "csrf_origin_mismatch" | "csrf_check_failed"; message: string } {
+):
+  | { ok: true }
+  | { ok: false; error: "csrf_origin_mismatch" | "csrf_check_failed"; message: string } {
   const originHeader = c.req.header("origin");
   if (originHeader !== undefined) {
     const normalizedOrigin = normalizeOrigin(originHeader);
@@ -623,7 +615,8 @@ export class RemoteAuthManager {
         throw new ServerHttpError(429, {
           error: "pairing_attempts_exceeded",
           attemptsRemaining: 0,
-          message: "Maximum failed pairing attempts exceeded; pairing challenge has been invalidated",
+          message:
+            "Maximum failed pairing attempts exceeded; pairing challenge has been invalidated",
         });
       }
       throw new ServerHttpError(401, {

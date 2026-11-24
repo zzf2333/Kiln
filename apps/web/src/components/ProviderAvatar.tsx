@@ -28,13 +28,9 @@ export function ProviderAvatar({
     cls: "",
   };
   const resolvedSize = size ?? (large ? "lg" : "sm");
-  const sizeCls =
-    resolvedSize === "lg" ? "av-lg" : resolvedSize === "xs" ? "av-xs" : "";
+  const sizeCls = resolvedSize === "lg" ? "av-lg" : resolvedSize === "xs" ? "av-xs" : "";
   return (
-    <span
-      className={`av ${meta.cls} ${sizeCls}`.trim()}
-      aria-hidden="true"
-    >
+    <span className={`av ${meta.cls} ${sizeCls}`.trim()} aria-hidden="true">
       {meta.label}
     </span>
   );

@@ -376,13 +376,7 @@ export class KilnScriptRunner {
     child.once("close", (code, signal) => {
       const finish = (): void => {
         const finalCode =
-          code !== null
-            ? code
-            : signal === "SIGKILL"
-              ? 137
-              : signal === "SIGTERM"
-                ? 143
-                : null;
+          code !== null ? code : signal === "SIGKILL" ? 137 : signal === "SIGTERM" ? 143 : null;
         finalize(finalCode);
       };
       if (killPromise !== null) {

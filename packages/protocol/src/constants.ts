@@ -53,12 +53,7 @@ export const WORKFLOW_PRESETS = [
 ] as const;
 export type WorkflowPreset = (typeof WORKFLOW_PRESETS)[number];
 
-export const DECISION_ACTIONS = [
-  "resume",
-  "return_external",
-  "finish",
-  "cancel",
-] as const;
+export const DECISION_ACTIONS = ["resume", "return_external", "finish", "cancel"] as const;
 export type DecisionAction = (typeof DECISION_ACTIONS)[number];
 
 export const ROLE_IDS = [
@@ -119,8 +114,7 @@ export const ADVISOR_ELIGIBLE_DECISION_CATEGORIES = [
   "implementation_choice",
   "architecture_choice",
 ] as const;
-export type AdvisorEligibleDecisionCategory =
-  (typeof ADVISOR_ELIGIBLE_DECISION_CATEGORIES)[number];
+export type AdvisorEligibleDecisionCategory = (typeof ADVISOR_ELIGIBLE_DECISION_CATEGORIES)[number];
 
 export function isAdvisorEligibleDecisionCategory(
   category: string,
@@ -149,11 +143,7 @@ export const PROVIDER_ADAPTER_KINDS = [
 ] as const;
 export type ProviderAdapterKind = (typeof PROVIDER_ADAPTER_KINDS)[number];
 
-export const PROVIDER_USAGE_SCOPES = [
-  "per_turn",
-  "per_message",
-  "cumulative_thread",
-] as const;
+export const PROVIDER_USAGE_SCOPES = ["per_turn", "per_message", "cumulative_thread"] as const;
 export type ProviderUsageScope = (typeof PROVIDER_USAGE_SCOPES)[number];
 
 export const COST_SOURCES = [
@@ -235,12 +225,7 @@ export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 export const SPACE_SCRIPT_KEYS = ["setup", "dev", "test", "lint", "deliver"] as const;
 export type SpaceScriptKey = (typeof SPACE_SCRIPT_KEYS)[number];
 
-export const ACCEPT_ENTRY_KINDS = [
-  "http_server",
-  "desktop_app",
-  "cli_binary",
-  "none",
-] as const;
+export const ACCEPT_ENTRY_KINDS = ["http_server", "desktop_app", "cli_binary", "none"] as const;
 export type AcceptEntryKind = (typeof ACCEPT_ENTRY_KINDS)[number];
 
 export const ACCEPT_PROBE_KINDS = ["http", "tcp", "stdout_regex", "delay"] as const;
@@ -249,12 +234,7 @@ export type AcceptProbeKind = (typeof ACCEPT_PROBE_KINDS)[number];
 export const VERIFIER_CAPABILITIES = ["cli", "browser", "desktop_gui"] as const;
 export type VerifierCapability = (typeof VERIFIER_CAPABILITIES)[number];
 
-export const VERIFIER_ENTRY_MODES = [
-  "browser",
-  "desktop_gui",
-  "cli",
-  "artifact",
-] as const;
+export const VERIFIER_ENTRY_MODES = ["browser", "desktop_gui", "cli", "artifact"] as const;
 export type VerifierEntryMode = (typeof VERIFIER_ENTRY_MODES)[number];
 
 export const RETRO_ATTRIBUTION_CATEGORIES = [
@@ -278,11 +258,7 @@ export const IMPROVEMENT_TARGET_KINDS = [
 ] as const;
 export type ImprovementTargetKind = (typeof IMPROVEMENT_TARGET_KINDS)[number];
 
-export const IMPROVEMENT_PROPOSAL_STATUSES = [
-  "pending",
-  "approved",
-  "dismissed",
-] as const;
+export const IMPROVEMENT_PROPOSAL_STATUSES = ["pending", "approved", "dismissed"] as const;
 export type ImprovementProposalStatus = (typeof IMPROVEMENT_PROPOSAL_STATUSES)[number];
 
 export const MAX_ACTIVE_LEDGER_INJECT = 20;

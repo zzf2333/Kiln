@@ -73,11 +73,9 @@ function makeReviewerReceiptMarkdown(fields: {
       p1: 0,
       p2: 0,
     },
-    [
-      "## 结论\n审查通过\n",
-      "## 缺陷清单\n无\n",
-      "## 测试真实性与复现核查\n真实执行通过\n",
-    ].join("\n"),
+    ["## 结论\n审查通过\n", "## 缺陷清单\n无\n", "## 测试真实性与复现核查\n真实执行通过\n"].join(
+      "\n",
+    ),
   );
 }
 
@@ -274,10 +272,8 @@ describe("Orchestrator enhancements: step_index, tester/deliverer agent modes, a
       approvalHandler: async (req, ctx) => {
         const wtPath = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
         const token =
-          fakeBackend
-            .getRecordedSpecs()
-            .find((s) => s.runId === ctx.runId)
-            ?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+          fakeBackend.getRecordedSpecs().find((s) => s.runId === ctx.runId)?.mcpServers?.[0]?.env
+            ?.KILN_RUN_TOKEN ?? "";
 
         if (req.action === "step_main_dev") {
           // Only modify backend file; ui.ts is NOT updated yet so full accept_cmd would fail if run prematurely!
@@ -520,10 +516,8 @@ describe("Orchestrator enhancements: step_index, tester/deliverer agent modes, a
       approvalHandler: async (req, ctx) => {
         const wtPath = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
         const token =
-          fakeBackend
-            .getRecordedSpecs()
-            .find((s) => s.runId === ctx.runId)
-            ?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+          fakeBackend.getRecordedSpecs().find((s) => s.runId === ctx.runId)?.mcpServers?.[0]?.env
+            ?.KILN_RUN_TOKEN ?? "";
 
         if (req.action === "td_impl") {
           fs.writeFileSync(path.join(wtPath, "src", "api.ts"), "export const api = 9;\n");
@@ -725,7 +719,7 @@ describe("Orchestrator enhancements: step_index, tester/deliverer agent modes, a
   it("supports mid-flight steerTask (interrupt=false/true), enforces 409 & :4311 auth, and survives rebuild()", async () => {
     const kilnHome = makeTempDir("kiln-steer-home-");
     const { repoPath, baseCommit } = initGitRepo("steer");
-    const acceptCmd = "node -e \"process.exit(0)\"";
+    const acceptCmd = 'node -e "process.exit(0)"';
     const snap = computeFrozenSnapshot(repoPath, [], acceptCmd);
     const fakeBackend = makeEnhancementBackend();
 
@@ -739,10 +733,8 @@ describe("Orchestrator enhancements: step_index, tester/deliverer agent modes, a
       approvalHandler: async (req, ctx) => {
         const wtPath = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
         const token =
-          fakeBackend
-            .getRecordedSpecs()
-            .find((s) => s.runId === ctx.runId)
-            ?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+          fakeBackend.getRecordedSpecs().find((s) => s.runId === ctx.runId)?.mcpServers?.[0]?.env
+            ?.KILN_RUN_TOKEN ?? "";
         if (req.action === "steer_run1_started") {
           startedFirst = true;
           await ctx.backend.answer(req.id, true);

@@ -71,10 +71,7 @@ import {
   type BackendRegistry,
   type TestProviderResult,
 } from "../backend/index.js";
-import {
-  listTaskCheckpoints,
-  rollbackGitWorktreeToCheckpoint,
-} from "../gate/checkpoints.js";
+import { listTaskCheckpoints, rollbackGitWorktreeToCheckpoint } from "../gate/checkpoints.js";
 import {
   HostBackupManifestSchema,
   buildHostStagedDiffs,
@@ -138,9 +135,7 @@ import {
   verifyRemoteCsrf,
 } from "./remote-auth.js";
 import { RemoteNotifier } from "./remote-notify.js";
-import {
-  inspectTailscaleStatus,
-} from "./remote-tailscale.js";
+import { inspectTailscaleStatus } from "./remote-tailscale.js";
 import type { AcceptEnvLiveSnapshot } from "./accept-env.js";
 import { detectImageMagic, normalizeDeclaredEvidenceRelPath } from "./accept-evidence.js";
 import {
@@ -159,11 +154,7 @@ import {
   computeTaskSpentUsd,
 } from "./budget.js";
 import { realpathCanonical } from "../store/fs-atomic.js";
-import {
-  buildPrDraft,
-  executeCommitPrAction,
-  type PrDeliverExecFn,
-} from "./pr-deliver.js";
+import { buildPrDraft, executeCommitPrAction, type PrDeliverExecFn } from "./pr-deliver.js";
 import {
   buildSanitizedPrFeedbackSteerMessage,
   fetchTaskPrFeedback,
@@ -484,7 +475,10 @@ function readActiveSoftStallSilentSec(store: KilnStore, taskId: string): number 
   if (!latestDir) {
     return undefined;
   }
-  const events = readNdjsonValidated(store.paths.runEventsNdjson(taskId, latestDir), RunEventSchema);
+  const events = readNdjsonValidated(
+    store.paths.runEventsNdjson(taskId, latestDir),
+    RunEventSchema,
+  );
   const lastEv = events[events.length - 1];
   if (lastEv?.kind === "stall_warning" && lastEv.phase === "soft_warning") {
     return lastEv.silentSec;
@@ -660,7 +654,9 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     );
   };
 
-  const requireExistingDraft = (rawId: string): { draftId: string; draft: NonNullable<ReturnType<KilnStore["readDraft"]>> } => {
+  const requireExistingDraft = (
+    rawId: string,
+  ): { draftId: string; draft: NonNullable<ReturnType<KilnStore["readDraft"]>> } => {
     const draftId = assertSafeSegment(rawId, "draftId");
     const draft = store.readDraft(draftId);
     if (!draft) {
@@ -686,17 +682,13 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     return taskId;
   };
 
-  const serializeDraftWithBrief = (
-    draft: NonNullable<ReturnType<KilnStore["readDraft"]>>,
-  ) => {
+  const serializeDraftWithBrief = (draft: NonNullable<ReturnType<KilnStore["readDraft"]>>) => {
     const brief = store.readDraftBrief(draft.id);
     const research = store.readDraftResearch(draft.id);
     return {
       ...draft,
       ...(brief !== null && brief.trim().length > 0 ? { brief_markdown: brief } : {}),
-      ...(research !== null && research.trim().length > 0
-        ? { research_markdown: research }
-        : {}),
+      ...(research !== null && research.trim().length > 0 ? { research_markdown: research } : {}),
     };
   };
 
@@ -781,8 +773,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
           {
             error: "local_only_endpoint",
             path: reqPath,
-            message:
-              "Remote administration endpoints are restricted to the local Kiln port",
+            message: "Remote administration endpoints are restricted to the local Kiln port",
           },
           403,
         );
@@ -921,10 +912,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       remoteAuth.revokeDevice(device.id);
       revokedDeviceId = device.id;
     }
-    c.header(
-      "Set-Cookie",
-      formatClearSessionCookieHeader({ secure: isSecureRequest(c) }),
-    );
+    c.header("Set-Cookie", formatClearSessionCookieHeader({ secure: isSecureRequest(c) }));
     return c.json({
       ok: true,
       loggedOut: true,
@@ -1377,9 +1365,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       const localResult = listLocalDirectoryFiles(
         query,
         safeLimit,
-        deps.extensionsHomeDir !== undefined
-          ? { rootDir: deps.extensionsHomeDir }
-          : {},
+        deps.extensionsHomeDir !== undefined ? { rootDir: deps.extensionsHomeDir } : {},
       );
       return c.json({
         ok: true,
@@ -1390,11 +1376,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         truncated: localResult.truncated,
       });
     }
-    const result = await listSpaceFiles(
-      spaceConfig.repo_path,
-      query,
-      safeLimit,
-    );
+    const result = await listSpaceFiles(spaceConfig.repo_path, query, safeLimit);
     return c.json({
       ok: true,
       spaceId,
@@ -1425,9 +1407,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         message: "Directory picker is restricted to the local Kiln port",
       });
     }
-    const result = deps.pickDirectory
-      ? await deps.pickDirectory()
-      : await pickLocalDirectory();
+    const result = deps.pickDirectory ? await deps.pickDirectory() : await pickLocalDirectory();
     return c.json(result);
   });
 
@@ -1483,15 +1463,9 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       ...(body.default_accept_cmd !== undefined
         ? { default_accept_cmd: body.default_accept_cmd }
         : {}),
-      ...(body.accept_entry !== undefined
-        ? { accept_entry: body.accept_entry }
-        : {}),
-      ...(body.intake_checklist !== undefined
-        ? { intake_checklist: body.intake_checklist }
-        : {}),
-      ...(body.accept_scenarios !== undefined
-        ? { accept_scenarios: body.accept_scenarios }
-        : {}),
+      ...(body.accept_entry !== undefined ? { accept_entry: body.accept_entry } : {}),
+      ...(body.intake_checklist !== undefined ? { intake_checklist: body.intake_checklist } : {}),
+      ...(body.accept_scenarios !== undefined ? { accept_scenarios: body.accept_scenarios } : {}),
       ...(body.default_workflow_preset !== undefined
         ? { default_workflow_preset: body.default_workflow_preset }
         : {}),
@@ -1568,23 +1542,16 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       const pending = row.status === "waiting" ? pendingDecisions.get(row.id) : null;
       const latestWaiting =
         row.status === "waiting"
-          ? [...stateEvents]
-              .reverse()
-              .find((ev) => ev.type === "waiting")
+          ? [...stateEvents].reverse().find((ev) => ev.type === "waiting")
           : undefined;
       const latestDone =
         row.status === "done"
-          ? [...stateEvents]
-              .reverse()
-              .find((ev) => ev.type === "done")
+          ? [...stateEvents].reverse().find((ev) => ev.type === "done")
           : undefined;
       const hasHostBackup =
-        card.workspace_mode === "host_scoped" &&
-        fs.existsSync(store.paths.backupManifest(row.id));
+        card.workspace_mode === "host_scoped" && fs.existsSync(store.paths.backupManifest(row.id));
       const stallSilentSec =
-        row.status === "running"
-          ? readActiveSoftStallSilentSec(store, row.id)
-          : undefined;
+        row.status === "running" ? readActiveSoftStallSilentSec(store, row.id) : undefined;
 
       return {
         id: row.id,
@@ -1622,9 +1589,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
                 pending?.question ??
                 pending?.reason ??
                 (latestWaiting?.type === "waiting" ? latestWaiting.reason : undefined),
-              ...(latestWaiting?.type === "waiting"
-                ? { waiting_since: latestWaiting.at }
-                : {}),
+              ...(latestWaiting?.type === "waiting" ? { waiting_since: latestWaiting.at } : {}),
             }
           : {}),
         ...(latestDone?.type === "done" && latestDone.deliver_ref !== undefined
@@ -1750,11 +1715,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     }
 
     let liveViewUrl: string | null = null;
-    if (
-      latestMeta &&
-      backendRegistry &&
-      backendRegistry.has(latestMeta.backend_id)
-    ) {
+    if (latestMeta && backendRegistry && backendRegistry.has(latestMeta.backend_id)) {
       try {
         liveViewUrl = await backendRegistry
           .get(latestMeta.backend_id)
@@ -1806,8 +1767,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       steers: extractActiveSteerNotes(stateEvents),
       chatMessages,
       reviewChecklist: buildTaskReviewChecklist(store, taskId),
-      mergeQueueEntry:
-        computeMergeQueueSnapshot(store).find((e) => e.task_id === taskId) ?? null,
+      mergeQueueEntry: computeMergeQueueSnapshot(store).find((e) => e.task_id === taskId) ?? null,
     });
   });
 
@@ -1857,8 +1817,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
           error: "waiting_requires_decision",
           taskId,
           reason: pending.reason,
-          message:
-            "当前任务正等待高风险或预算审批，请先在决策卡片中处理后再操作清单",
+          message: "当前任务正等待高风险或预算审批，请先在决策卡片中处理后再操作清单",
         });
       }
       if (!hasRework && body.advance_after_waive) {
@@ -1921,10 +1880,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
             ...(derived.stage !== null ? { stage: derived.stage } : {}),
           });
         }
-        const next = deriveTaskStatus(
-          store.readTaskCard(taskId),
-          store.readStateEvents(taskId),
-        );
+        const next = deriveTaskStatus(store.readTaskCard(taskId), store.readStateEvents(taskId));
         return c.json({
           ok: true,
           mode: "steered",
@@ -2010,8 +1966,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     }
 
     if (body.advance_after_waive && derived.status === "waiting") {
-      const nextStage =
-        nextTaskStageAfter(card, derived.stage!, derived.track) ?? "deliver";
+      const nextStage = nextTaskStageAfter(card, derived.stage!, derived.track) ?? "deliver";
       await Promise.resolve(onBeforeDecisionApply?.(taskId));
       const nextState = stateMachine.resolveWaitingToStage({
         taskId,
@@ -2068,9 +2023,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       ok: true,
       draft: serializeDraftWithBrief(draft),
       ...(brief !== null && brief.trim().length > 0 ? { brief_markdown: brief } : {}),
-      ...(research !== null && research.trim().length > 0
-        ? { research_markdown: research }
-        : {}),
+      ...(research !== null && research.trim().length > 0 ? { research_markdown: research } : {}),
       messages: readDraftChatFallback(draftId),
     });
   });
@@ -2114,9 +2067,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       reply: res.reply,
       draft: serializeDraftWithBrief(res.draft),
       ...(brief !== null && brief.trim().length > 0 ? { brief_markdown: brief } : {}),
-      ...(research !== null && research.trim().length > 0
-        ? { research_markdown: research }
-        : {}),
+      ...(research !== null && research.trim().length > 0 ? { research_markdown: research } : {}),
     });
   });
 
@@ -2149,10 +2100,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
   app.post("/api/drafts", async (c) => {
     const rawBody = await readJsonBodyStrict(c);
     const input = UpsertDraftRequestSchema.parse(rawBody);
-    const draftId = assertSafeSegment(
-      input.id ?? `d-${randomUUID().slice(0, 8)}`,
-      "draftId",
-    );
+    const draftId = assertSafeSegment(input.id ?? `d-${randomUUID().slice(0, 8)}`, "draftId");
     if (input.space !== undefined) {
       assertSafeSegment(input.space, "space");
     }
@@ -2180,9 +2128,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         ...(input.contract ?? {}),
       },
       session_ref:
-        input.session_ref !== undefined
-          ? input.session_ref
-          : (existing?.session_ref ?? null),
+        input.session_ref !== undefined ? input.session_ref : (existing?.session_ref ?? null),
       ...((input.intake_open ?? existing?.intake_open) !== undefined
         ? { intake_open: input.intake_open ?? existing?.intake_open }
         : {}),
@@ -2225,10 +2171,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       });
     }
 
-    const taskId = assertSafeSegment(
-      input.id ?? `t-${randomUUID().slice(0, 8)}`,
-      "taskId",
-    );
+    const taskId = assertSafeSegment(input.id ?? `t-${randomUUID().slice(0, 8)}`, "taskId");
     if (store.getTaskIndex(taskId) !== null || fs.existsSync(store.paths.cardYaml(taskId))) {
       throw new ServerHttpError(409, {
         error: "task_already_exists",
@@ -2916,8 +2859,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
           }),
         };
 
-    const affectedStages: StageId[] | undefined =
-      ext.affectedStages ?? ext.affected_stages;
+    const affectedStages: StageId[] | undefined = ext.affectedStages ?? ext.affected_stages;
 
     let contractUpdate: ContractUpdateInput | undefined;
     if (ext.contractUpdate !== undefined) {
@@ -2971,7 +2913,8 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         });
         writeYamlAtomic(store.paths.cardYaml(taskId), updatedCard, TaskCardSchema);
       } else if (selectedOption.id === "opt-raise-global-budget") {
-        const curLimits = store.readConfig("limits") ?? LimitsConfigSchema.parse({ schema_version: 1 });
+        const curLimits =
+          store.readConfig("limits") ?? LimitsConfigSchema.parse({ schema_version: 1 });
         const globalBudget = computeGlobalBudgetStatus(store);
         const nextLimitsPayload: Record<string, unknown> = { ...curLimits };
         if (globalBudget.daily.level === "exceeded" && globalBudget.daily.limit_usd !== null) {
@@ -3503,8 +3446,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     });
     if (result.action === "open_pr") {
       const card = store.readTaskCard(taskId);
-      const parsedRepo =
-        parseGithubRepoFromUrl(result.prUrl) ?? card.external_ref?.repo;
+      const parsedRepo = parseGithubRepoFromUrl(result.prUrl) ?? card.external_ref?.repo;
       if (parsedRepo) {
         const updated = TaskCardSchema.parse({
           ...card,
@@ -3533,16 +3475,12 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         : parseLastEventIdParam(queryVal);
 
     const authenticatedDevice =
-      listenerMode === "remote"
-        ? authenticatedDevicesByRequest.get(c.req.raw)
-        : undefined;
+      listenerMode === "remote" ? authenticatedDevicesByRequest.get(c.req.raw) : undefined;
 
     const stream = sseHub.createEventStream({
       lastEventId,
       signal: c.req.raw.signal,
-      ...(authenticatedDevice !== undefined
-        ? { deviceId: authenticatedDevice.id }
-        : {}),
+      ...(authenticatedDevice !== undefined ? { deviceId: authenticatedDevice.id } : {}),
     });
 
     return new Response(stream, {
@@ -3561,10 +3499,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
   });
 
   app.all("/api/*", (c) => {
-    return c.json(
-      { error: "not_found", message: `API endpoint "${c.req.path}" not found` },
-      404,
-    );
+    return c.json({ error: "not_found", message: `API endpoint "${c.req.path}" not found` }, 404);
   });
 
   if (deps.publicDir !== null) {

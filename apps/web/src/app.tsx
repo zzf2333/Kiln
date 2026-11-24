@@ -54,10 +54,7 @@ function AppShell() {
     const onFocusOut = (): void => {
       blurTimer = setTimeout(() => {
         const active = document.activeElement as HTMLElement | null;
-        if (
-          !active ||
-          (active.tagName !== "INPUT" && active.tagName !== "TEXTAREA")
-        ) {
+        if (!active || (active.tagName !== "INPUT" && active.tagName !== "TEXTAREA")) {
           document.body.classList.remove("kb-open");
         }
       }, 80);
@@ -136,10 +133,7 @@ function AppShell() {
         {renderView()}
         <Statusbar />
       </div>
-      <div
-        className="nav-mask"
-        onClick={() => store.setNavOpen(false)}
-      />
+      <div className="nav-mask" onClick={() => store.setNavOpen(false)} />
       <Tabbar />
       <IntakeDock />
       <CommandPalette />

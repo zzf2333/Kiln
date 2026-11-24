@@ -10,7 +10,12 @@ import {
   type SpaceConfig,
   type TaskCard,
 } from "@kiln/protocol";
-import { KilnStore, readYamlValidated, realpathCanonical, writeFileAtomic } from "../../store/index.js";
+import {
+  KilnStore,
+  readYamlValidated,
+  realpathCanonical,
+  writeFileAtomic,
+} from "../../store/index.js";
 import { evaluateWorkerStageOutcome } from "../../state/index.js";
 import {
   HostBackupManifestSchema,
@@ -112,7 +117,7 @@ function makeTaskCard(overrides: Partial<TaskCard> = {}): TaskCard {
     contract: {
       goal: "Verify gate safety invariants",
       end: "Gate passes deterministically",
-      accept_cmd: "node -e \"process.exit(0)\"",
+      accept_cmd: 'node -e "process.exit(0)"',
       accept_files_hash: "sha256:placeholder",
       scope: ["src/**"],
       deliver: { mode: "merge_main", cmd: null },
@@ -149,17 +154,19 @@ function makeRunMeta(overrides: Partial<RunMeta> = {}): RunMeta {
   };
 }
 
-function makeWorkerReceiptMarkdown(overrides: {
-  run_id?: string;
-  contract_version?: number;
-  outcome?: "completed" | "need_decision";
-  input_ref?: string;
-  output_ref?: string;
-  changed_paths?: string[];
-  accept_result?: "pass" | "fail" | "skipped";
-  is_bugfix?: boolean;
-  includeBugfixRepro?: boolean;
-} = {}): string {
+function makeWorkerReceiptMarkdown(
+  overrides: {
+    run_id?: string;
+    contract_version?: number;
+    outcome?: "completed" | "need_decision";
+    input_ref?: string;
+    output_ref?: string;
+    changed_paths?: string[];
+    accept_result?: "pass" | "fail" | "skipped";
+    is_bugfix?: boolean;
+    includeBugfixRepro?: boolean;
+  } = {},
+): string {
   const fm = {
     run_id: overrides.run_id ?? "run-201",
     contract_version: overrides.contract_version ?? 1,
@@ -173,9 +180,7 @@ function makeWorkerReceiptMarkdown(overrides: {
   };
 
   const sections = [
-    overrides.includeBugfixRepro
-      ? "## 修前复现证据\n复现命令返回 exit code 1\n"
-      : "",
+    overrides.includeBugfixRepro ? "## 修前复现证据\n复现命令返回 exit code 1\n" : "",
     "## 改动说明\n完成实现改动\n",
     "## 验证命令与真实输出\nexit code 0\n",
     "## 未完成或待决问题\n无\n",
@@ -260,10 +265,7 @@ describe("scope & frozen snapshot", () => {
     const baseline2 = computeFrozenSnapshot(repo, ["tests/*.test.ts"], "pnpm test");
     expect(baseline1.hash).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(baseline1.hash).toBe(baseline2.hash);
-    expect(baseline1.files.map((f) => f.path)).toEqual([
-      "tests/a.test.ts",
-      "tests/b.test.ts",
-    ]);
+    expect(baseline1.files.map((f) => f.path)).toEqual(["tests/a.test.ts", "tests/b.test.ts"]);
 
     // Different acceptCmd changes snapshot hash
     const diffCmd = computeFrozenSnapshot(repo, ["tests/*.test.ts"], "pnpm test --run");
@@ -343,9 +345,7 @@ describe("command-runner isolation & process group kill", () => {
     expect(sanitized.CUSTOM_API_KEY).toBeUndefined();
     expect(sanitized.MY_SERVICE_SECRET).toBeUndefined();
 
-    expect(() =>
-      buildSanitizedEnv(pollutedEnv, { EXTRA_TOKEN: "nope" }),
-    ).toThrow();
+    expect(() => buildSanitizedEnv(pollutedEnv, { EXTRA_TOKEN: "nope" })).toThrow();
 
     const probeScript = path.join(cwd, "env-probe.cjs");
     fs.writeFileSync(
@@ -501,7 +501,9 @@ describe("command-runner isolation & process group kill", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.truncated).toBe(true);
-    expect(Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr)).toBeLessThanOrEqual(512);
+    expect(Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr)).toBeLessThanOrEqual(
+      512,
+    );
   });
 
   it("terminates Windows process trees via hidden taskkill /PID <pid> /T /F and tolerates exit code 128", async () => {
@@ -525,7 +527,7 @@ describe("command-runner isolation & process group kill", () => {
         signals.push({ pid, sig });
       },
       execTaskkill: async () => {
-        const err = new Error("ERROR: The process \"9999\" not found.") as Error & { code: number };
+        const err = new Error('ERROR: The process "9999" not found.') as Error & { code: number };
         err.code = 128;
         throw err;
       },
@@ -633,10 +635,7 @@ describe("git_worktree isolation, pre-push hook, and safe cleanup", () => {
       "LOCAL_PORT=4310\n",
     );
     expect(
-      fs.readFileSync(
-        path.join(prep.worktreePath, "node_modules", "demo-pkg", "index.js"),
-        "utf8",
-      ),
+      fs.readFileSync(path.join(prep.worktreePath, "node_modules", "demo-pkg", "index.js"), "utf8"),
     ).toBe("module.exports = 42;\n");
 
     // Commit a change inside worktree and verify pre-push hook blocks push
@@ -644,9 +643,7 @@ describe("git_worktree isolation, pre-push hook, and safe cleanup", () => {
     git(["add", "src/app.ts"], prep.worktreePath);
     git(["commit", "-m", "worktree commit"], prep.worktreePath);
 
-    expect(() =>
-      git(["push", "origin", "kiln/t-201"], prep.worktreePath),
-    ).toThrow();
+    expect(() => git(["push", "origin", "kiln/t-201"], prep.worktreePath)).toThrow();
 
     // Main repo hooks remain unpolluted and main repo can still push
     let mainHooksPath = "";
@@ -663,10 +660,7 @@ describe("git_worktree isolation, pre-push hook, and safe cleanup", () => {
     expect(() => git(["push", "origin", "main"], repoPath)).not.toThrow();
 
     // Inspect changes relative to baseCommit
-    const changesCleanCommit = await inspectGitWorktreeChanges(
-      prep.worktreePath,
-      prep.baseCommit,
-    );
+    const changesCleanCommit = await inspectGitWorktreeChanges(prep.worktreePath, prep.baseCommit);
     expect(changesCleanCommit.changedPaths).toEqual(["src/app.ts"]);
     expect(changesCleanCommit.isDirty).toBe(false);
 
@@ -801,7 +795,7 @@ describe("host_scoped two-stage staging, locking, rollback, and 409 hash conflic
         contract: {
           goal: "Update host config",
           end: "Config applied",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:host",
           scope: [`${allowedDir}/**`],
           deliver: { mode: "manual", cmd: null },
@@ -823,14 +817,8 @@ describe("host_scoped two-stage staging, locking, rollback, and 409 hash conflic
         path.join(store.paths.stagedDir("t-host-a"), "app.conf"),
         "mode=updated\nport=4311\n",
       );
-      writeFileAtomic(
-        path.join(store.paths.stagedDir("t-host-a"), "extra.conf"),
-        "created=true\n",
-      );
-      writeFileAtomic(
-        path.join(store.paths.stagedDir("t-host-b"), "app.conf"),
-        "mode=competing\n",
-      );
+      writeFileAtomic(path.join(store.paths.stagedDir("t-host-a"), "extra.conf"), "created=true\n");
+      writeFileAtomic(path.join(store.paths.stagedDir("t-host-b"), "app.conf"), "mode=competing\n");
 
       // Symlink escape inside staged/ is rejected
       const outsideHostSecret = path.join(outsideDir, "host-secret.conf");
@@ -897,7 +885,7 @@ describe("host_scoped two-stage staging, locking, rollback, and 409 hash conflic
       const failedVerifyRes = await applyApprovedHostScopedChanges(store, {
         taskId: "t-host-a",
         approved: true,
-        verifyCmd: "node -e \"process.exit(2)\"",
+        verifyCmd: 'node -e "process.exit(2)"',
       });
       expect(failedVerifyRes.ok).toBe(false);
       if (failedVerifyRes.ok || failedVerifyRes.reason !== "verify_failed_rolled_back") {
@@ -922,7 +910,7 @@ describe("host_scoped two-stage staging, locking, rollback, and 409 hash conflic
       const appliedRes = await applyApprovedHostScopedChanges(store, {
         taskId: "t-host-a",
         approved: true,
-        verifyCmd: "node -e \"process.exit(0)\"",
+        verifyCmd: 'node -e "process.exit(0)"',
       });
       expect(appliedRes.ok).toBe(true);
       if (!appliedRes.ok) throw new Error("Expected apply success");
@@ -994,7 +982,7 @@ describe("host_scoped two-stage staging, locking, rollback, and 409 hash conflic
         contract: {
           goal: "Preview staged host diffs",
           end: "Diffs accurate and bounded",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:diffs",
           scope: [`${allowedDir}/**`],
           deliver: { mode: "manual", cmd: null },
@@ -1044,9 +1032,7 @@ describe("host_scoped two-stage staging, locking, rollback, and 409 hash conflic
       expect(modEntry.diff).toContain("-mode=before");
       expect(modEntry.diff).toContain("+mode=after");
 
-      const newEntry = diffs.find((d) =>
-        d.targetPath.replace(/\\/g, "/").endsWith("/new.conf"),
-      )!;
+      const newEntry = diffs.find((d) => d.targetPath.replace(/\\/g, "/").endsWith("/new.conf"))!;
       expect(newEntry.existedBefore).toBe(false);
       expect(newEntry.preSha256).toBeNull();
       expect(newEntry.truncated).toBe(false);
@@ -1057,11 +1043,15 @@ describe("host_scoped two-stage staging, locking, rollback, and 409 hash conflic
       expect(binEntry.diff).toBe("[binary file diff omitted]");
       expect(binEntry.truncated).toBe(false);
 
-      const manyLinesEntry = diffs.find((d) => d.targetPath === realpathCanonical(largeLinesTarget))!;
+      const manyLinesEntry = diffs.find(
+        (d) => d.targetPath === realpathCanonical(largeLinesTarget),
+      )!;
       expect(manyLinesEntry.truncated).toBe(true);
       expect(manyLinesEntry.diff.split("\n").length).toBeLessThanOrEqual(200);
 
-      const hugeBytesEntry = diffs.find((d) => d.targetPath === realpathCanonical(largeBytesTarget))!;
+      const hugeBytesEntry = diffs.find(
+        (d) => d.targetPath === realpathCanonical(largeBytesTarget),
+      )!;
       expect(hugeBytesEntry.truncated).toBe(true);
       expect(hugeBytesEntry.diff.split("\n").length).toBeLessThanOrEqual(200);
 
@@ -1121,7 +1111,7 @@ describe("scratch_dir workspace & verification", () => {
       const missingRes = await verifyScratchWorkspace({
         workspaceDir: wsDir,
         expectedArtifacts: ["report.md"],
-        acceptCmd: "node -e \"process.exit(0)\"",
+        acceptCmd: 'node -e "process.exit(0)"',
       });
       expect(missingRes.ok).toBe(false);
       expect(missingRes.missingArtifacts).toEqual(["report.md"]);
@@ -1132,7 +1122,7 @@ describe("scratch_dir workspace & verification", () => {
       const emptyRes = await verifyScratchWorkspace({
         workspaceDir: wsDir,
         expectedArtifacts: ["report.md"],
-        acceptCmd: "node -e \"process.exit(0)\"",
+        acceptCmd: 'node -e "process.exit(0)"',
       });
       expect(emptyRes.ok).toBe(false);
       expect(emptyRes.emptyArtifacts).toEqual(["report.md"]);
@@ -1142,7 +1132,8 @@ describe("scratch_dir workspace & verification", () => {
       const okRes = await verifyScratchWorkspace({
         workspaceDir: wsDir,
         expectedArtifacts: ["report.md"],
-        acceptCmd: "node -e \"const fs=require('fs'); process.exit(fs.readFileSync('report.md','utf8').length > 0 ? 0 : 1)\"",
+        acceptCmd:
+          "node -e \"const fs=require('fs'); process.exit(fs.readFileSync('report.md','utf8').length > 0 ? 0 : 1)\"",
       });
       expect(okRes.ok).toBe(true);
       expect(okRes.verifiedArtifacts).toEqual(["report.md"]);
@@ -1192,7 +1183,7 @@ describe("runVerificationGate end-to-end", () => {
       };
       store.writeSpace(space);
 
-      const acceptCmd = "node -e \"process.exit(1)\"";
+      const acceptCmd = 'node -e "process.exit(1)"';
       const snap = computeFrozenSnapshot(repoPath, ["tests/**"], acceptCmd);
 
       const card = makeTaskCard({
@@ -1279,7 +1270,7 @@ describe("runVerificationGate end-to-end", () => {
         freeze_patterns: ["tests/**"],
       });
 
-      const acceptCmd = "node -e \"process.exit(0)\"";
+      const acceptCmd = 'node -e "process.exit(0)"';
       const baseline = computeFrozenSnapshot(repoPath, ["tests/**"], acceptCmd);
 
       const card = makeTaskCard({
@@ -1418,7 +1409,7 @@ describe("runVerificationGate end-to-end", () => {
         freeze_patterns: ["tests/**"],
       });
 
-      const acceptCmd = "node -e \"process.exit(0)\"";
+      const acceptCmd = 'node -e "process.exit(0)"';
       const baseline = computeFrozenSnapshot(repoPath, ["tests/**"], acceptCmd);
 
       const card = makeTaskCard({
@@ -1514,7 +1505,7 @@ describe("runVerificationGate end-to-end", () => {
         contract: {
           goal: "Produce non-empty summary",
           end: "Artifact exists",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:scratch",
           scope: ["summary.md"],
           deliver: { mode: "manual", cmd: null },
@@ -1569,7 +1560,7 @@ describe("runVerificationGate end-to-end", () => {
         contract: {
           goal: "Update settings.json",
           end: "Updated",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:host",
           scope: [`${hostRoot}/**`],
           deliver: { mode: "manual", cmd: null },
@@ -1663,7 +1654,7 @@ describe("runVerificationGate end-to-end", () => {
         contract: {
           goal: "Test TOCTOU",
           end: "Safe",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:t",
           scope: [`${hostRoot}/**`],
           deliver: { mode: "manual", cmd: null },
@@ -1709,7 +1700,7 @@ describe("runVerificationGate end-to-end", () => {
         contract: {
           goal: "Produce artifact",
           end: "Non-empty artifact",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:s1",
           scope: [],
           deliver: { mode: "manual", cmd: null },
@@ -1834,7 +1825,7 @@ describe("runVerificationGate end-to-end", () => {
         contract: {
           goal: "Keep mode 0600",
           end: "Mode preserved",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:hm",
           scope: [canonicalSecret],
           deliver: { mode: "manual", cmd: null },
@@ -1843,7 +1834,10 @@ describe("runVerificationGate end-to-end", () => {
         },
       });
       store.createTask(hostModeCard, "# Host mode");
-      writeFileAtomic(path.join(store.paths.stagedDir(hostModeCard.id), "secret.conf"), "secret=2\n");
+      writeFileAtomic(
+        path.join(store.paths.stagedDir(hostModeCard.id), "secret.conf"),
+        "secret=2\n",
+      );
 
       store.persistRunBeforeDispatch(
         makeRunMeta({ task_id: hostModeCard.id, run_id: "run-hm-1" }),
@@ -1904,7 +1898,10 @@ describe("runVerificationGate end-to-end", () => {
       expect(mismatchApply.ok).toBe(false);
       expect(store.listHostPathLocks(hostModeCard.id)).toHaveLength(1);
 
-      writeFileAtomic(path.join(store.paths.stagedDir(hostCompeteCard.id), "secret.conf"), "secret=3\n");
+      writeFileAtomic(
+        path.join(store.paths.stagedDir(hostCompeteCard.id), "secret.conf"),
+        "secret=3\n",
+      );
       const competeStage = stageHostScopedChanges(store, {
         taskId: hostCompeteCard.id,
         contractScope: [canonicalSecret],
@@ -1960,7 +1957,7 @@ describe("runVerificationGate end-to-end", () => {
         contract: {
           goal: "Fail closed when staged/ is empty",
           end: "Self-reported paths rejected",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:neg1",
           scope: [canonicalTarget],
           deliver: { mode: "manual", cmd: null },
@@ -2008,7 +2005,7 @@ describe("runVerificationGate end-to-end", () => {
         contract: {
           goal: "Catch bad host scope",
           end: "GATE.yaml persisted",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:neg2",
           scope: ["relative/foo.conf"],
           deliver: { mode: "manual", cmd: null },
@@ -2064,7 +2061,7 @@ describe("runVerificationGate end-to-end", () => {
         contract: {
           goal: "Reject stray staged file even when manifest exists",
           end: "scope_ok false",
-          accept_cmd: "node -e \"process.exit(0)\"",
+          accept_cmd: 'node -e "process.exit(0)"',
           accept_files_hash: "sha256:neg3",
           scope: [canonicalMapped],
           deliver: { mode: "manual", cmd: null },
@@ -2211,7 +2208,7 @@ describe("runVerificationGate end-to-end", () => {
       const badCmdRes = await applyApprovedHostScopedChanges(store, {
         taskId: card.id,
         approved: true,
-        postApplyCmd: "node -e \"process.exit(3)\"",
+        postApplyCmd: 'node -e "process.exit(3)"',
         verifyCmd: card.contract.accept_cmd,
       });
       expect(badCmdRes.ok).toBe(false);

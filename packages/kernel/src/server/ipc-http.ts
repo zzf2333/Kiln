@@ -194,8 +194,7 @@ class IncrementalChunkedDecoder {
 
   feed(data: Buffer): Buffer | null {
     if (data.length > 0) {
-      this.pending =
-        this.pending.length === 0 ? data : Buffer.concat([this.pending, data]);
+      this.pending = this.pending.length === 0 ? data : Buffer.concat([this.pending, data]);
     }
 
     while (true) {
@@ -241,10 +240,7 @@ class IncrementalChunkedDecoder {
           this.phase = "trailers";
           continue;
         }
-        if (
-          this.maxBodyBytes !== null &&
-          this.totalBytes + chunkSize > this.maxBodyBytes
-        ) {
+        if (this.maxBodyBytes !== null && this.totalBytes + chunkSize > this.maxBodyBytes) {
           throw new ServerHttpError(413, {
             error: "payload_too_large",
             message: `Request body exceeds ${this.maxBodyBytes} bytes`,
@@ -346,9 +342,7 @@ function parseHttpRequestLine(startLine: string): { method: string; url: string 
  * where `http.createServer().listen("\\\\.\\pipe\\...")` throws `ENOENT` while
  * `net.createServer().listen(...)` binds and serves cleanly.
  */
-export function createNetHttpServer(
-  options: CreateNetHttpServerOptions,
-): NetHttpServerHandle {
+export function createNetHttpServer(options: CreateNetHttpServerOptions): NetHttpServerHandle {
   const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IPC_IDLE_TIMEOUT_MS;
   const activeSockets = new Set<net.Socket>();
 
@@ -453,10 +447,7 @@ export function createNetHttpServer(
         }
       }
       if (fixedBodyBytes >= expected) {
-        const combined = Buffer.concat(fixedBodyChunks, fixedBodyBytes).subarray(
-          0,
-          expected,
-        );
+        const combined = Buffer.concat(fixedBodyChunks, fixedBodyBytes).subarray(0, expected);
         void completeRequest(combined);
       }
     };
@@ -468,8 +459,7 @@ export function createNetHttpServer(
       const chunkBuf = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
       try {
         if (!parsedMeta) {
-          headBuf =
-            headBuf.length === 0 ? chunkBuf : Buffer.concat([headBuf, chunkBuf]);
+          headBuf = headBuf.length === 0 ? chunkBuf : Buffer.concat([headBuf, chunkBuf]);
           const headerEnd = headBuf.indexOf("\r\n\r\n");
           if (headerEnd === -1) {
             if (headBuf.length > MAX_HEADER_BYTES) {
@@ -564,8 +554,7 @@ export async function sendNetHttpRequest(
   }
   requestLines.push("", "");
   const wireHead = Buffer.from(requestLines.join("\r\n"), "latin1");
-  const wirePayload =
-    bodyBuf.length > 0 ? Buffer.concat([wireHead, bodyBuf]) : wireHead;
+  const wirePayload = bodyBuf.length > 0 ? Buffer.concat([wireHead, bodyBuf]) : wireHead;
 
   return await new Promise<NetHttpClientResponse>((resolve, reject) => {
     const socket = net.createConnection(options.socketPath);
@@ -626,9 +615,7 @@ export async function sendNetHttpRequest(
           const parsedHead = parseHeadersBlock(headText, {
             rejectDuplicateDifferingContentLength: true,
           });
-          const statusMatch = /^HTTP\/1\.[01]\s+(\d{3})(?:\s.*)?$/i.exec(
-            parsedHead.startLine,
-          );
+          const statusMatch = /^HTTP\/1\.[01]\s+(\d{3})(?:\s.*)?$/i.exec(parsedHead.startLine);
           if (!statusMatch || !statusMatch[1]) {
             finishError(new Error(`Invalid IPC HTTP status line: "${parsedHead.startLine}"`));
             return;

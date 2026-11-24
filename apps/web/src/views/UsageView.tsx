@@ -64,9 +64,7 @@ export function UsageView() {
   const totalCacheWrite = usage.cacheWriteTokens ?? 0;
   const totalUncachedIn = Math.max(0, usage.inputTokens - usage.cachedInputTokens);
   const cacheHitRate =
-    usage.inputTokens > 0
-      ? Math.round((usage.cachedInputTokens / usage.inputTokens) * 100)
-      : 0;
+    usage.inputTokens > 0 ? Math.round((usage.cachedInputTokens / usage.inputTokens) * 100) : 0;
 
   const runningLeaves = tasks.filter(
     (t) => t.status === "running" && !parentIds.has(t.id) && t.kind !== "epic",
@@ -87,13 +85,9 @@ export function UsageView() {
     }
   }
 
-  const statusByProvider = new Map(
-    providerStatuses.map((p) => [p.provider_id, p]),
-  );
+  const statusByProvider = new Map(providerStatuses.map((p) => [p.provider_id, p]));
   const quotas = extractEffectiveQuotas(providerStatuses, providerUsage);
-  const agentNames = Array.from(
-    new Set([...Object.keys(usage.byAgent), ...Object.keys(quotas)]),
-  );
+  const agentNames = Array.from(new Set([...Object.keys(usage.byAgent), ...Object.keys(quotas)]));
 
   const rankedTasks = tasks
     .filter(
@@ -111,18 +105,14 @@ export function UsageView() {
     .sort((a, b) => b.cost - a.cost)
     .slice(0, 10);
 
-  const maxRankedCost = rankedTasks.length
-    ? Math.max(rankedTasks[0]!.cost, 0.01)
-    : 1;
+  const maxRankedCost = rankedTasks.length ? Math.max(rankedTasks[0]!.cost, 0.01) : 1;
 
   return (
     <ViewFrame
       left={
         <>
           <h1 className="tb-title">用量与费用</h1>
-          <span className="tb-sub">
-            按 API 标价折算（入·读·写·出）· 不伪造官方余额
-          </span>
+          <span className="tb-sub">按 API 标价折算（入·读·写·出）· 不伪造官方余额</span>
         </>
       }
       right={
@@ -162,8 +152,8 @@ export function UsageView() {
             <dt>Token 合计</dt>
             <dd>{fmtTokens(usage.totalTokens)}</dd>
             <p>
-              新 {fmtTokens(totalUncachedIn)} · 读 {fmtTokens(usage.cachedInputTokens)} ·
-              写 {fmtTokens(totalCacheWrite)} · 出 {fmtTokens(usage.outputTokens)}
+              新 {fmtTokens(totalUncachedIn)} · 读 {fmtTokens(usage.cachedInputTokens)} · 写{" "}
+              {fmtTokens(totalCacheWrite)} · 出 {fmtTokens(usage.outputTokens)}
             </p>
           </div>
           <div className="stat">
@@ -174,10 +164,7 @@ export function UsageView() {
           <div className="stat">
             <dt>当前输出</dt>
             <dd>
-              {totalRate}{" "}
-              <span style={{ fontSize: "13px", color: "var(--t3)" }}>
-                tok/s
-              </span>
+              {totalRate} <span style={{ fontSize: "13px", color: "var(--t3)" }}>tok/s</span>
             </dd>
             <p>{runningLeaves.length} 个任务在跑</p>
           </div>
@@ -203,22 +190,11 @@ export function UsageView() {
                 { key: "daily", label: "当日预算", item: budget.daily },
                 { key: "monthly", label: "当月预算", item: budget.monthly },
               ].map(({ key, label, item }) => {
-                const pct =
-                  item.ratio !== null
-                    ? Math.min(100, Math.round(item.ratio * 100))
-                    : 0;
+                const pct = item.ratio !== null ? Math.min(100, Math.round(item.ratio * 100)) : 0;
                 const badgeText =
-                  item.level === "exceeded"
-                    ? "已熔断"
-                    : item.level === "warning"
-                      ? "预警"
-                      : "正常";
+                  item.level === "exceeded" ? "已熔断" : item.level === "warning" ? "预警" : "正常";
                 const meterClass =
-                  item.level === "exceeded"
-                    ? "bad"
-                    : item.level === "warning"
-                      ? "warn"
-                      : "ok";
+                  item.level === "exceeded" ? "bad" : item.level === "warning" ? "warn" : "ok";
                 return (
                   <div key={key} className="budget-item">
                     <div className="budget-item-row">
@@ -246,7 +222,8 @@ export function UsageView() {
             </div>
           ) : (
             <p className="muted" style={{ fontSize: "12.5px" }}>
-              尚未配置全局每日或每月 USD 上限；可在「系统设置 → 限额与熔断」开启金额级软预警与硬熔断。
+              尚未配置全局每日或每月 USD 上限；可在「系统设置 →
+              限额与熔断」开启金额级软预警与硬熔断。
             </p>
           )}
         </section>
@@ -297,7 +274,9 @@ export function UsageView() {
                     <Fragment key={`agent-group-${agent}`}>
                       <tr key={`agent-${agent}`} className="agent">
                         <td>
-                          <span style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
+                          <span
+                            style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}
+                          >
                             <ProviderAvatar providerId={agent} />
                             <span>{agent}</span>
                             {quota?.note ? (
@@ -365,9 +344,7 @@ export function UsageView() {
                             <td>{fmtTokens(mBucket.cachedInputTokens)}</td>
                             <td>{fmtTokens(mWrite)}</td>
                             <td>{fmtTokens(mBucket.outputTokens)}</td>
-                            <td>
-                              {mSaved !== null ? `${mHit} · ${fmtUsd(mSaved)}` : mHit}
-                            </td>
+                            <td>{mSaved !== null ? `${mHit} · ${fmtUsd(mSaved)}` : mHit}</td>
                             <td>{fmtUsd(computeBucketCostUsd(mName, mBucket, pricing))}</td>
                             <td className="muted" style={{ fontSize: "11.5px" }}>
                               {p ? (
@@ -376,9 +353,7 @@ export function UsageView() {
                                 <button
                                   type="button"
                                   className="link"
-                                  onClick={() =>
-                                    store.go("settings", { settingsTab: "pricing" })
-                                  }
+                                  onClick={() => store.go("settings", { settingsTab: "pricing" })}
                                 >
                                   未配置单价 · 补录
                                 </button>
@@ -394,10 +369,7 @@ export function UsageView() {
                 {!usage.byAgentModel &&
                   Object.entries(usage.byModel).map(([mName, mBucket]) => {
                     const p = pricing.models[mName];
-                    const mUncached = Math.max(
-                      0,
-                      mBucket.inputTokens - mBucket.cachedInputTokens,
-                    );
+                    const mUncached = Math.max(0, mBucket.inputTokens - mBucket.cachedInputTokens);
                     const mWrite = mBucket.cacheWriteTokens ?? 0;
                     const mHit =
                       mBucket.inputTokens > 0
@@ -421,9 +393,7 @@ export function UsageView() {
                             <button
                               type="button"
                               className="link"
-                              onClick={() =>
-                                store.go("settings", { settingsTab: "pricing" })
-                              }
+                              onClick={() => store.go("settings", { settingsTab: "pricing" })}
                             >
                               未配置单价 · 补录
                             </button>
@@ -493,11 +463,7 @@ export function UsageView() {
           <h3>按任务（本卡真实累计消耗，与任务详情一致）</h3>
           {rankedTasks.length > 0 ? (
             rankedTasks.map(({ task, cost }) => (
-              <div
-                key={task.id}
-                className="rank-row"
-                onClick={() => store.openTask(task.id)}
-              >
+              <div key={task.id} className="rank-row" onClick={() => store.openTask(task.id)}>
                 <span>
                   {task.title}{" "}
                   <span className="muted mono" style={{ fontSize: "11.5px" }}>
@@ -525,9 +491,7 @@ export function UsageView() {
             <button
               type="button"
               className="link"
-              onClick={() =>
-                store.go("settings", { settingsTab: "pricing" })
-              }
+              onClick={() => store.go("settings", { settingsTab: "pricing" })}
             >
               设置 → 模型单价
             </button>{" "}
@@ -536,8 +500,9 @@ export function UsageView() {
         </section>
 
         <p className="footnote">
-          所有费用一律按 API 标价折算：新输入 × 输入单价 + 缓存读 × 缓存单价 +
-          缓存写 × 写缓存单价（Claude 默认 1.25×） + 输出 × 输出单价。若后端未提供订阅额度窗口数据，仅显示 API 折算费用。
+          所有费用一律按 API 标价折算：新输入 × 输入单价 + 缓存读 × 缓存单价 + 缓存写 ×
+          写缓存单价（Claude 默认 1.25×） + 输出 × 输出单价。若后端未提供订阅额度窗口数据，仅显示
+          API 折算费用。
         </p>
       </div>
     </ViewFrame>

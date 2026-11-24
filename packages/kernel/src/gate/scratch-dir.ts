@@ -127,11 +127,8 @@ export async function verifyScratchWorkspace(
   }
 
   const artifactsOk =
-    missingArtifacts.length === 0 &&
-    emptyArtifacts.length === 0 &&
-    invalidArtifacts.length === 0;
-  const acceptOk =
-    acceptResult === null || (acceptResult.exitCode === 0 && !acceptResult.timedOut);
+    missingArtifacts.length === 0 && emptyArtifacts.length === 0 && invalidArtifacts.length === 0;
+  const acceptOk = acceptResult === null || (acceptResult.exitCode === 0 && !acceptResult.timedOut);
 
   return {
     ok: artifactsOk && acceptOk,

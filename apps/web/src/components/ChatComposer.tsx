@@ -17,10 +17,7 @@ export interface ComposerTrigger {
   query: string;
 }
 
-export function detectComposerTrigger(
-  text: string,
-  rawCaret: number,
-): ComposerTrigger | null {
+export function detectComposerTrigger(text: string, rawCaret: number): ComposerTrigger | null {
   const caret = Math.max(0, Math.min(text.length, rawCaret));
   let tokenStart = caret;
   while (tokenStart > 0 && !/\s/.test(text[tokenStart - 1]!)) {
@@ -213,9 +210,7 @@ export function ChatComposer({
   const activeAgent = activeRoleAssignment?.agent ?? "";
   const activeModel = activeRoleAssignment?.model ?? "";
 
-  const [commands, setCommands] = useState<ChatCommandItem[]>(
-    () => FALLBACK_KILN_COMMANDS[role],
-  );
+  const [commands, setCommands] = useState<ChatCommandItem[]>(() => FALLBACK_KILN_COMMANDS[role]);
   const [mcpServers, setMcpServers] = useState<ChatMcpServerItem[]>([]);
   const [commandsLoading, setCommandsLoading] = useState(false);
 
@@ -271,13 +266,9 @@ export function ChatComposer({
     };
   }, [commandCacheKey, role, effectiveSpaceId, draftId, taskId]);
 
-  const rawTrigger = useMemo(
-    () => detectComposerTrigger(value, caretPos),
-    [value, caretPos],
-  );
+  const rawTrigger = useMemo(() => detectComposerTrigger(value, caretPos), [value, caretPos]);
   const currentAnchor = rawTrigger ? `${rawTrigger.kind}:${rawTrigger.start}` : null;
-  const trigger =
-    rawTrigger && currentAnchor !== dismissedAnchor ? rawTrigger : null;
+  const trigger = rawTrigger && currentAnchor !== dismissedAnchor ? rawTrigger : null;
 
   useEffect(() => {
     if (!rawTrigger || currentAnchor !== dismissedAnchor) {
@@ -338,12 +329,7 @@ export function ChatComposer({
     for (const cmd of commands) {
       const nameScore = scoreFuzzyMatch(cmd.name, q);
       const descScore = scoreFuzzyMatch(cmd.description, q);
-      const best =
-        nameScore !== null
-          ? nameScore
-          : descScore !== null
-            ? descScore + 200
-            : null;
+      const best = nameScore !== null ? nameScore : descScore !== null ? descScore + 200 : null;
       if (best !== null) {
         scored.push({ score: best, cmd });
       }
@@ -417,8 +403,7 @@ export function ChatComposer({
     for (const item of [...mcpEntries, ...taskEntries, ...ledgerEntries]) {
       const s1 = scoreFuzzyMatch(item.insertValue, q);
       const s2 = scoreFuzzyMatch(item.meta, q);
-      const best =
-        s1 !== null ? s1 : s2 !== null ? s2 + 120 : null;
+      const best = s1 !== null ? s1 : s2 !== null ? s2 + 120 : null;
       if (best !== null) {
         scoredNonFile.push({ score: best, item });
       }
@@ -456,9 +441,7 @@ export function ChatComposer({
   useEffect(() => {
     const listEl = popupListRef.current;
     if (!listEl) return;
-    const activeEl = listEl.querySelector<HTMLElement>(
-      `[data-popup-idx="${activeIndex}"]`,
-    );
+    const activeEl = listEl.querySelector<HTMLElement>(`[data-popup-idx="${activeIndex}"]`);
     activeEl?.scrollIntoView({ block: "nearest" });
   }, [activeIndex]);
 
@@ -466,10 +449,7 @@ export function ChatComposer({
     setCaretPos(el.selectionStart ?? el.value.length);
   };
 
-  const applySelection = (
-    entry: PopupEntry,
-    options?: { drillDir?: boolean },
-  ): void => {
+  const applySelection = (entry: PopupEntry, options?: { drillDir?: boolean }): void => {
     if (!trigger) return;
     if (entry.type === "command" && entry.item.action === "new_draft") {
       if (disabled || attachmentBusy) {
@@ -484,9 +464,7 @@ export function ChatComposer({
     }
 
     const isDirDrill =
-      Boolean(options?.drillDir) &&
-      entry.type === "mention" &&
-      entry.item.category === "dir";
+      Boolean(options?.drillDir) && entry.type === "mention" && entry.item.category === "dir";
 
     const insertText =
       entry.type === "command"
@@ -545,8 +523,7 @@ export function ChatComposer({
         .map((e, idx) => ({ e, idx }))
         .filter(
           (x) =>
-            x.e.type === "mention" &&
-            (x.e.item.category === "dir" || x.e.item.category === "file"),
+            x.e.type === "mention" && (x.e.item.category === "dir" || x.e.item.category === "file"),
         ),
     [entries],
   );
@@ -575,11 +552,7 @@ export function ChatComposer({
   const renderCommandRow = (entry: PopupEntry & { type: "command" }, idx: number) => {
     const isSelected = idx === activeIndex;
     const badgeLabel =
-      entry.item.source === "kiln"
-        ? "Kiln"
-        : entry.item.scope === "project"
-          ? "项目技能"
-          : "技能";
+      entry.item.source === "kiln" ? "Kiln" : entry.item.scope === "project" ? "项目技能" : "技能";
     const badgeClass = entry.item.source === "kiln" ? "is-kiln" : "is-skill";
     return (
       <button
@@ -693,9 +666,7 @@ export function ChatComposer({
             <div
               className="composer-popup"
               role="listbox"
-              aria-label={
-                trigger?.kind === "/" ? "指令与技能补全" : "选择文件、MCP、任务或账本"
-              }
+              aria-label={trigger?.kind === "/" ? "指令与技能补全" : "选择文件、MCP、任务或账本"}
             >
               <div className="composer-popup-head">
                 <span>
@@ -723,10 +694,7 @@ export function ChatComposer({
                           <>
                             <div className="composer-popup-group">Kiln 快捷指令</div>
                             {kilnCommandEntries.map(({ e, idx }) =>
-                              renderCommandRow(
-                                e as PopupEntry & { type: "command" },
-                                idx,
-                              ),
+                              renderCommandRow(e as PopupEntry & { type: "command" }, idx),
                             )}
                           </>
                         ) : null}
@@ -734,10 +702,7 @@ export function ChatComposer({
                           <>
                             <div className="composer-popup-group">Skills 技能</div>
                             {skillCommandEntries.map(({ e, idx }) =>
-                              renderCommandRow(
-                                e as PopupEntry & { type: "command" },
-                                idx,
-                              ),
+                              renderCommandRow(e as PopupEntry & { type: "command" }, idx),
                             )}
                           </>
                         ) : null}
@@ -759,10 +724,7 @@ export function ChatComposer({
                             {filesRootLabel ? `当前目录（${filesRootLabel}）` : "当前目录文件"}
                           </div>
                           {fileMentionEntries.map(({ e, idx }) =>
-                            renderMentionRow(
-                              e as PopupEntry & { type: "mention" },
-                              idx,
-                            ),
+                            renderMentionRow(e as PopupEntry & { type: "mention" }, idx),
                           )}
                         </>
                       ) : null}
@@ -770,10 +732,7 @@ export function ChatComposer({
                         <>
                           <div className="composer-popup-group">MCP 服务</div>
                           {mcpMentionEntries.map(({ e, idx }) =>
-                            renderMentionRow(
-                              e as PopupEntry & { type: "mention" },
-                              idx,
-                            ),
+                            renderMentionRow(e as PopupEntry & { type: "mention" }, idx),
                           )}
                         </>
                       ) : null}
@@ -781,10 +740,7 @@ export function ChatComposer({
                         <>
                           <div className="composer-popup-group">在途任务</div>
                           {taskMentionEntries.map(({ e, idx }) =>
-                            renderMentionRow(
-                              e as PopupEntry & { type: "mention" },
-                              idx,
-                            ),
+                            renderMentionRow(e as PopupEntry & { type: "mention" }, idx),
                           )}
                         </>
                       ) : null}
@@ -792,10 +748,7 @@ export function ChatComposer({
                         <>
                           <div className="composer-popup-group">决策账本</div>
                           {ledgerMentionEntries.map(({ e, idx }) =>
-                            renderMentionRow(
-                              e as PopupEntry & { type: "mention" },
-                              idx,
-                            ),
+                            renderMentionRow(e as PopupEntry & { type: "mention" }, idx),
                           )}
                         </>
                       ) : null}
@@ -958,8 +911,8 @@ export function ChatComposer({
           </button>
         </div>
         <div className="composer-hint">
-          输入 <span className="mono">/</span> 调用指令或技能 ·{" "}
-          <span className="mono">@</span> 选择当前目录文件、MCP 或任务 · Enter 发送，Shift+Enter 换行
+          输入 <span className="mono">/</span> 调用指令或技能 · <span className="mono">@</span>{" "}
+          选择当前目录文件、MCP 或任务 · Enter 发送，Shift+Enter 换行
         </div>
       </div>
     </div>

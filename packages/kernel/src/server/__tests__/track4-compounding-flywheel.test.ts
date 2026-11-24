@@ -88,11 +88,7 @@ function makeSpace(
   });
 }
 
-function makeTaskCard(
-  id: string,
-  space = "proj-a",
-  overrides: Partial<TaskCard> = {},
-): TaskCard {
+function makeTaskCard(id: string, space = "proj-a", overrides: Partial<TaskCard> = {}): TaskCard {
   return TaskCardSchema.parse({
     schema_version: 1,
     id,
@@ -425,9 +421,7 @@ describe("Track 4 compounding flywheel (B13 + B14 + B15)", () => {
     expect(recordedSpecs[0]?.readOnly).toBe(true);
     expect(recordedSpecs[0]?.freshContext).toBe(true);
     expect(
-      readImprovementProposals(store).some(
-        (p) => p.title === "补充 Safari 390px 弹窗验收场景",
-      ),
+      readImprovementProposals(store).some((p) => p.title === "补充 Safari 390px 弹窗验收场景"),
     ).toBe(true);
   });
 
@@ -631,7 +625,8 @@ describe("Track 4 compounding flywheel (B13 + B14 + B15)", () => {
       },
     ]);
 
-    const originalFastExec = store.readEffectiveRosterConfig().pm_orchestration.plan_prefers_fast_exec;
+    const originalFastExec =
+      store.readEffectiveRosterConfig().pm_orchestration.plan_prefers_fast_exec;
     const approved = approveImprovementProposal(store, policyProp!.id);
     expect(approved.updatedRoster).toBe(true);
     expect(store.readEffectiveRosterConfig().pm_orchestration.plan_prefers_fast_exec).toBe(false);
@@ -643,7 +638,7 @@ describe("Track 4 compounding flywheel (B13 + B14 + B15)", () => {
       preset: "standard_dev",
       finishedAt: new Date(afterBase + 10_000).toISOString(),
       rework: true,
-      costUsd: 0.30,
+      costUsd: 0.3,
     });
     seedFinishedTask(store, {
       id: "t-after-2",
@@ -657,7 +652,7 @@ describe("Track 4 compounding flywheel (B13 + B14 + B15)", () => {
       preset: "standard_dev",
       finishedAt: new Date(afterBase + 30_000).toISOString(),
       rework: true,
-      costUsd: 0.40,
+      costUsd: 0.4,
     });
 
     const analytics = computeOrchestrationAnalytics(store);
@@ -778,10 +773,11 @@ describe("Track 4 compounding flywheel (B13 + B14 + B15)", () => {
     expect(analyzeJson.proposals.some((p) => p.status === "pending")).toBe(true);
 
     const firstPending = analyzeJson.proposals.find((p) => p.status === "pending")!;
-    const approveRes = await app.request(
-      `/api/improvements/proposals/${firstPending.id}/approve`,
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
-    );
+    const approveRes = await app.request(`/api/improvements/proposals/${firstPending.id}/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
     expect(approveRes.status).toBe(200);
     const approveJson = (await approveRes.json()) as {
       ok: true;
@@ -824,10 +820,11 @@ describe("Track 4 compounding flywheel (B13 + B14 + B15)", () => {
       }),
       ImprovementProposalsFileSchema,
     );
-    const cheatApprove = await app.request(
-      `/api/improvements/proposals/${cheatProp.id}/approve`,
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
-    );
+    const cheatApprove = await app.request(`/api/improvements/proposals/${cheatProp.id}/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
     expect(cheatApprove.status).toBe(400);
 
     const [validProp] = upsertImprovementProposals(store, [
@@ -842,10 +839,11 @@ describe("Track 4 compounding flywheel (B13 + B14 + B15)", () => {
         payload: { rule: "改动完成后运行全量 pnpm build && pnpm test" },
       },
     ]);
-    const dismissRes = await app.request(
-      `/api/improvements/proposals/${validProp!.id}/dismiss`,
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
-    );
+    const dismissRes = await app.request(`/api/improvements/proposals/${validProp!.id}/dismiss`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
     expect(dismissRes.status).toBe(200);
     const dismissJson = (await dismissRes.json()) as {
       ok: true;

@@ -13,17 +13,10 @@ export interface DeliverPrModalProps {
   onOpenChange: (open: boolean) => void;
 }
 
-export function DeliverPrModal({
-  taskId,
-  taskStatus,
-  open,
-  onOpenChange,
-}: DeliverPrModalProps) {
+export function DeliverPrModal({ taskId, taskStatus, open, onOpenChange }: DeliverPrModalProps) {
   const { store } = useKilnStore();
   const [loadingDraft, setLoadingDraft] = useState(false);
-  const [busyAction, setBusyAction] = useState<"commit" | "push" | "open_pr" | null>(
-    null,
-  );
+  const [busyAction, setBusyAction] = useState<"commit" | "push" | "open_pr" | null>(null);
   const actionLockRef = useRef(false);
   const [branch, setBranch] = useState(`kiln/${taskId}`);
   const [baseBranch, setBaseBranch] = useState("main");
@@ -31,15 +24,18 @@ export function DeliverPrModal({
   const [prTitle, setPrTitle] = useState(`[${taskId}]`);
   const [prBody, setPrBody] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [commitResult, setCommitResult] = useState<
-    Extract<DeliverGitResponse, { action: "commit" }> | null
-  >(null);
-  const [pushResult, setPushResult] = useState<
-    Extract<DeliverGitResponse, { action: "push" }> | null
-  >(null);
-  const [prResult, setPrResult] = useState<
-    Extract<DeliverGitResponse, { action: "open_pr" }> | null
-  >(null);
+  const [commitResult, setCommitResult] = useState<Extract<
+    DeliverGitResponse,
+    { action: "commit" }
+  > | null>(null);
+  const [pushResult, setPushResult] = useState<Extract<
+    DeliverGitResponse,
+    { action: "push" }
+  > | null>(null);
+  const [prResult, setPrResult] = useState<Extract<
+    DeliverGitResponse,
+    { action: "open_pr" }
+  > | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -152,7 +148,8 @@ export function DeliverPrModal({
 
             <div className="modal-body">
               <p className="muted" style={{ fontSize: "12.5px", lineHeight: 1.55 }}>
-                每一步均需显式点击确认后才执行，绝不自动推送。推送与建 PR 前会先执行只读探测，避免重复创建。
+                每一步均需显式点击确认后才执行，绝不自动推送。推送与建 PR
+                前会先执行只读探测，避免重复创建。
               </p>
 
               {isTaskRunning ? (
@@ -304,11 +301,7 @@ export function DeliverPrModal({
             </div>
 
             <div className="modal-foot">
-              <button
-                type="button"
-                className="btn"
-                onClick={() => onOpenChange(false)}
-              >
+              <button type="button" className="btn" onClick={() => onOpenChange(false)}>
                 关闭
               </button>
             </div>

@@ -67,10 +67,7 @@ function renderRetroMarkdown(report: TaskRetroReport): string {
  * runs, gates, acceptance reports, steering events, and usage turns.
  * Writes `RETRO.yaml` + `RETRO.md` atomically and enqueues high-signal improvement proposals.
  */
-export function extractDeterministicTaskRetro(
-  store: KilnStore,
-  taskId: string,
-): TaskRetroReport {
+export function extractDeterministicTaskRetro(store: KilnStore, taskId: string): TaskRetroReport {
   const card = store.readTaskCard(taskId);
   const events = store.readStateEvents(taskId);
   const derived = deriveTaskStatus(card, events);
@@ -151,8 +148,7 @@ export function extractDeterministicTaskRetro(
   const pricing = store.readConfig("pricing");
   const usageSnap = computeUsageSnapshot(usageTurns, pricing);
   const totalIn = usageSnap.inputTokens + usageSnap.cachedInputTokens;
-  const cacheHitRate =
-    totalIn > 0 ? Number((usageSnap.cachedInputTokens / totalIn).toFixed(4)) : 0;
+  const cacheHitRate = totalIn > 0 ? Number((usageSnap.cachedInputTokens / totalIn).toFixed(4)) : 0;
 
   const reworkRounds = Math.max(0, implCount - 1) + reviewRejections;
   const firstPass =
@@ -299,9 +295,7 @@ export function extractDeterministicTaskRetro(
   };
 
   const savedProposals: ImprovementProposal[] =
-    candidateProposals.length > 0
-      ? upsertImprovementProposals(store, candidateProposals)
-      : [];
+    candidateProposals.length > 0 ? upsertImprovementProposals(store, candidateProposals) : [];
 
   const existingRetro = readYamlOptional(store.paths.retroYaml(taskId), TaskRetroReportSchema);
   const summary = highSignal
@@ -321,8 +315,7 @@ export function extractDeterministicTaskRetro(
       existingRetro?.mode === "ai_enriched" && existingRetro.attributions.length > 0
         ? existingRetro.attributions
         : attributions,
-    summary:
-      existingRetro?.mode === "ai_enriched" ? existingRetro.summary : summary,
+    summary: existingRetro?.mode === "ai_enriched" ? existingRetro.summary : summary,
     proposal_ids: Array.from(
       new Set([...(existingRetro?.proposal_ids ?? []), ...savedProposals.map((p) => p.id)]),
     ),
@@ -335,9 +328,7 @@ export function extractDeterministicTaskRetro(
   return report;
 }
 
-function parseRetroJsonBlock(
-  replyText: string,
-): {
+function parseRetroJsonBlock(replyText: string): {
   summary?: string;
   attributions?: RetroAttribution[];
   proposals?: CandidateProposalInput[];
@@ -421,8 +412,8 @@ export async function runAiTaskRetro(input: {
   try {
     effectiveAssignment = roster.roster.retro?.enabled
       ? resolveRosterStageAssignment(roster, "advise", "advisor", { rosterRoleId: "retro" })
-      : resolveRosterStageAssignment(roster, "advise", "advisor") ??
-        resolveRosterStageAssignment(roster, "intake", "intake");
+      : (resolveRosterStageAssignment(roster, "advise", "advisor") ??
+        resolveRosterStageAssignment(roster, "intake", "intake"));
   } catch {
     effectiveAssignment = null;
   }
@@ -497,8 +488,7 @@ export async function runAiTaskRetro(input: {
     const normalized = parsedBlock.proposals.map((p) => ({
       ...p,
       space: p.space ?? card.space,
-      evidence_task_ids:
-        p.evidence_task_ids.length > 0 ? p.evidence_task_ids : [card.id],
+      evidence_task_ids: p.evidence_task_ids.length > 0 ? p.evidence_task_ids : [card.id],
     }));
     extraProposals = upsertImprovementProposals(store, normalized);
   }
@@ -509,7 +499,12 @@ export async function runAiTaskRetro(input: {
     retro_run_id: retroRunId,
     summary:
       parsedBlock?.summary ??
-      (replyText.length > 0 ? replyText.replace(/```kiln-retro-json[\s\S]*?```/gi, "").trim().slice(0, 1200) : baseReport.summary),
+      (replyText.length > 0
+        ? replyText
+            .replace(/```kiln-retro-json[\s\S]*?```/gi, "")
+            .trim()
+            .slice(0, 1200)
+        : baseReport.summary),
     attributions:
       parsedBlock?.attributions && parsedBlock.attributions.length > 0
         ? parsedBlock.attributions

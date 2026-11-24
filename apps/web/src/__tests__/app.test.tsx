@@ -8,10 +8,7 @@ import { ChatTimeline } from "../components/ChatTimeline";
 import { MarkdownContent } from "../components/MarkdownContent";
 import { fmtTime } from "../state/format";
 
-type MockFetchHandler = (
-  url: string,
-  init?: RequestInit,
-) => Promise<Response> | Response;
+type MockFetchHandler = (url: string, init?: RequestInit) => Promise<Response> | Response;
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -20,9 +17,7 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-function makeBaseBootstrap(
-  overrides: Partial<BootstrapResponse> = {},
-): BootstrapResponse {
+function makeBaseBootstrap(overrides: Partial<BootstrapResponse> = {}): BootstrapResponse {
   return {
     tasks: [],
     pendingDecisions: [],
@@ -246,9 +241,7 @@ beforeEach(() => {
   document.documentElement.removeAttribute("data-theme-pref");
   document.documentElement.style.colorScheme = "";
   (window as unknown as { EventSource?: unknown }).EventSource = MockEventSource;
-  fetchMock = vi.fn<MockFetchHandler>(async () =>
-    jsonResponse(makeBaseBootstrap()),
-  );
+  fetchMock = vi.fn<MockFetchHandler>(async () => jsonResponse(makeBaseBootstrap()));
   vi.stubGlobal("fetch", fetchMock);
 });
 
@@ -300,7 +293,12 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
           depends_on: [],
           created_at: now,
           updated_at: now,
-          tokens: { input_tokens: 1000, cached_input_tokens: 0, output_tokens: 200, total_tokens: 1200 },
+          tokens: {
+            input_tokens: 1000,
+            cached_input_tokens: 0,
+            output_tokens: 200,
+            total_tokens: 1200,
+          },
           cost_usd: 0.01,
         },
         {
@@ -320,7 +318,12 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
           depends_on: [],
           created_at: now,
           updated_at: now,
-          tokens: { input_tokens: 1000, cached_input_tokens: 0, output_tokens: 200, total_tokens: 1200 },
+          tokens: {
+            input_tokens: 1000,
+            cached_input_tokens: 0,
+            output_tokens: 200,
+            total_tokens: 1200,
+          },
           cost_usd: 0.01,
         },
         {
@@ -380,7 +383,12 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
           depends_on: [],
           created_at: now,
           updated_at: now,
-          tokens: { input_tokens: 500, cached_input_tokens: 0, output_tokens: 100, total_tokens: 600 },
+          tokens: {
+            input_tokens: 500,
+            cached_input_tokens: 0,
+            output_tokens: 100,
+            total_tokens: 600,
+          },
           cost_usd: 0.005,
         },
         {
@@ -920,9 +928,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     const intakeSelect = screen.getByLabelText("立项对话 Agent") as HTMLSelectElement;
     fireEvent.change(intakeSelect, { target: { value: "pi" } });
     await waitFor(() => {
-      expect(
-        screen.getByText(/无 MCP 模式：自动通过结构化补丁同步草稿\/契约/),
-      ).toBeTruthy();
+      expect(screen.getByText(/无 MCP 模式：自动通过结构化补丁同步草稿\/契约/)).toBeTruthy();
     });
 
     // Switching intake to Antigravity triggers full-access-only warning until fallback opt-in is confirmed
@@ -933,9 +939,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       ).toBeTruthy();
     });
 
-    const intakeFallbackToggle = screen.getByLabelText(
-      "立项对话 允许全权兜底",
-    ) as HTMLInputElement;
+    const intakeFallbackToggle = screen.getByLabelText("立项对话 允许全权兜底") as HTMLInputElement;
     expect(intakeFallbackToggle.checked).toBe(false);
     fireEvent.click(intakeFallbackToggle);
     const intakeConfirmDialog = await screen.findByRole("alertdialog", {
@@ -967,14 +971,10 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     fireEvent.click(screen.getByRole("tab", { name: "角色与模型" }));
 
     // heterogeneous_review collision warning
-    expect(
-      screen.getByText(/独立审查与实施主模型和备选均撞车/),
-    ).toBeTruthy();
+    expect(screen.getByText(/独立审查与实施主模型和备选均撞车/)).toBeTruthy();
 
     // worker allow_full_access_fallback requires explicit secondary confirmation
-    const fallbackToggle = screen.getByLabelText(
-      "实施 允许全权兜底",
-    ) as HTMLInputElement;
+    const fallbackToggle = screen.getByLabelText("实施 允许全权兜底") as HTMLInputElement;
     expect(fallbackToggle.checked).toBe(false);
     fireEvent.click(fallbackToggle);
     const confirmDialog = await screen.findByRole("alertdialog", {
@@ -1036,9 +1036,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
           reason: "ambiguous",
           category: "product",
           question: "如何处理空输入？",
-          options: [
-            { id: "opt-a", label: "返回空数组", action: "resume", recommended: true },
-          ],
+          options: [{ id: "opt-a", label: "返回空数组", action: "resume", recommended: true }],
           created_at: now,
         },
       ],
@@ -1098,9 +1096,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     const trackGroup = screen.getByRole("radiogroup", { name: "轨道" });
     const trackRadios = within(trackGroup).getAllByRole("radio");
     expect(trackRadios.map((el) => el.getAttribute("data-track"))).toEqual(["L1", "L2"]);
-    expect(
-      screen.getByLabelText("空间与工作区摘要").textContent,
-    ).toContain("git_worktree");
+    expect(screen.getByLabelText("空间与工作区摘要").textContent).toContain("git_worktree");
 
     // Switch to 本机 / 临时任务 -> workspace tabs are only scratch_dir and host_scoped (no L3/external_only)
     fireEvent.click(screen.getByRole("button", { name: "本机 / 临时任务" }));
@@ -1240,12 +1236,8 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     await waitFor(() => {
       expect(second.container.querySelectorAll(".quota")).toHaveLength(2);
     });
-    expect(
-      second.container.querySelector('[data-up-bar="codex"]')?.className,
-    ).toBe("warn");
-    expect(
-      second.container.querySelector('[data-up-bar="pi"]')?.className,
-    ).toBe("bad");
+    expect(second.container.querySelector('[data-up-bar="codex"]')?.className).toBe("warn");
+    expect(second.container.querySelector('[data-up-bar="pi"]')?.className).toBe("bad");
   });
 
   it("passes static dependency and security scan (no kernel, paseo, node builtins, UI libs, or dangerouslySetInnerHTML)", () => {
@@ -1275,9 +1267,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       expect(code, `${filePath} must not import packages/kernel`).not.toMatch(
         /packages\/kernel|@kiln\/kernel/,
       );
-      expect(code, `${filePath} must not import node: builtins`).not.toMatch(
-        /from\s+["']node:/,
-      );
+      expect(code, `${filePath} must not import node: builtins`).not.toMatch(/from\s+["']node:/);
       // Must import from @kiln/protocol/web, never root @kiln/protocol
       expect(code, `${filePath} must not import @kiln/protocol root`).not.toMatch(
         /from\s+["']@kiln\/protocol["']/,
@@ -1376,7 +1366,12 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
           depends_on: [],
           created_at: now,
           updated_at: now,
-          tokens: { input_tokens: 1000, cached_input_tokens: 0, output_tokens: 500, total_tokens: 1500 },
+          tokens: {
+            input_tokens: 1000,
+            cached_input_tokens: 0,
+            output_tokens: 500,
+            total_tokens: 1500,
+          },
           cost_usd: 0.01,
         },
         {
@@ -1454,9 +1449,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     // Navigate to Ledger via tabbar
     fireEvent.click(tabButtons[3]!);
     await waitFor(() => {
-      expect(
-        screen.getByText("回执写入与租约比对必须在同一 SQLite 事务内完成"),
-      ).toBeTruthy();
+      expect(screen.getByText("回执写入与租约比对必须在同一 SQLite 事务内完成")).toBeTruthy();
     });
 
     // Navigate to Usage via tabbar -> no quota bars because providerUsage absent
@@ -1513,15 +1506,13 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
   it("FlameCanvas respects prefers-reduced-motion and cleans up rAF + canvas dimensions on unmount", async () => {
     const scheduledTimers = new Map<number, ReturnType<typeof setTimeout>>();
     let nextRafId = 100;
-    const cancelSpy = vi
-      .spyOn(window, "cancelAnimationFrame")
-      .mockImplementation((id: number) => {
-        const timer = scheduledTimers.get(id);
-        if (timer) {
-          clearTimeout(timer);
-          scheduledTimers.delete(id);
-        }
-      });
+    const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id: number) => {
+      const timer = scheduledTimers.get(id);
+      if (timer) {
+        clearTimeout(timer);
+        scheduledTimers.delete(id);
+      }
+    });
     const rafSpy = vi
       .spyOn(window, "requestAnimationFrame")
       .mockImplementation((cb: FrameRequestCallback) => {
@@ -1539,8 +1530,8 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       HTMLCanvasElement.prototype,
       "getContext",
     );
-    const originalGetContext = originalGetContextDesc?.value as
-      typeof HTMLCanvasElement.prototype.getContext;
+    const originalGetContext =
+      originalGetContextDesc?.value as typeof HTMLCanvasElement.prototype.getContext;
     let drawCount = 0;
     const mockCtx = {
       createRadialGradient: () => ({ addColorStop: () => {} }),
@@ -1554,7 +1545,8 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       globalCompositeOperation: "",
       globalAlpha: 1,
     } as unknown as CanvasRenderingContext2D;
-    HTMLCanvasElement.prototype.getContext = (() => mockCtx) as unknown as typeof originalGetContext;
+    HTMLCanvasElement.prototype.getContext = (() =>
+      mockCtx) as unknown as typeof originalGetContext;
 
     try {
       const now = new Date().toISOString();
@@ -1773,9 +1765,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
         byAgent: {},
         byModel: {},
       },
-      stateEvents: opts.includeDoneEvent
-        ? [{ type: "done", at: doneAt, deliver_ref: "main" }]
-        : [],
+      stateEvents: opts.includeDoneEvent ? [{ type: "done", at: doneAt, deliver_ref: "main" }] : [],
     });
 
     const detailsById: Record<string, TaskDetailResponse> = {
@@ -1956,7 +1946,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
   it("ResolveView and DetailView render hostStagedDiffs with plain-text XSS escaping when staged_awaiting_approval", async () => {
     const now = new Date().toISOString();
     const xssDiff =
-      "--- a/.zshrc\n+++ b/.zshrc\n@@ -1,1 +1,2 @@\n-<script>window.__xss_diff=1</script>\n+<img src=x onerror=\"window.__xss_diff=2\">";
+      '--- a/.zshrc\n+++ b/.zshrc\n@@ -1,1 +1,2 @@\n-<script>window.__xss_diff=1</script>\n+<img src=x onerror="window.__xss_diff=2">';
     const newFileDiff = "+++ b/new.conf\n@@ -0,0 +1,2 @@\n+line1\n+line2";
 
     const detail: TaskDetailResponse = {
@@ -2120,9 +2110,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     expect(screen.getByText("新增")).toBeTruthy();
     expect(screen.getByText("内容已截断")).toBeTruthy();
 
-    const preElsResolve = Array.from(
-      rResolve.container.querySelectorAll("pre.staged-diff-pre"),
-    );
+    const preElsResolve = Array.from(rResolve.container.querySelectorAll("pre.staged-diff-pre"));
     expect(preElsResolve).toHaveLength(2);
     expect(preElsResolve[0]?.textContent).toBe(xssDiff);
     expect(preElsResolve[1]?.textContent).toBe(newFileDiff);
@@ -2137,9 +2125,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     await waitFor(() => {
       expect(screen.getByText("待落盘暂存 Diff")).toBeTruthy();
     });
-    const preElsDetail = Array.from(
-      rDetail.container.querySelectorAll("pre.staged-diff-pre"),
-    );
+    const preElsDetail = Array.from(rDetail.container.querySelectorAll("pre.staged-diff-pre"));
     expect(preElsDetail).toHaveLength(2);
     expect(preElsDetail[0]?.textContent).toBe(xssDiff);
     expect(rDetail.container.querySelectorAll("script")).toHaveLength(0);
@@ -2185,9 +2171,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       calls.push({ url, method, ...(parsedBody ? { body: parsedBody } : {}) });
 
       if (url === "/api/bootstrap") {
-        return jsonResponse(
-          makeBaseBootstrap({ spaces: spacesState, drafts: draftsState }),
-        );
+        return jsonResponse(makeBaseBootstrap({ spaces: spacesState, drafts: draftsState }));
       }
       if (url === "/api/spaces/inspect" && method === "POST") {
         return jsonResponse({
@@ -2309,9 +2293,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     // 3. Delete old draft via × button
     fireEvent.click(screen.getByRole("button", { name: "删除草稿 旧草稿" }));
     await waitFor(() => {
-      expect(calls.some((c) => c.url === "/api/drafts/d-old" && c.method === "DELETE")).toBe(
-        true,
-      );
+      expect(calls.some((c) => c.url === "/api/drafts/d-old" && c.method === "DELETE")).toBe(true);
     });
 
     // 4. Add second space beta, test switching space/mode syncs POST /api/drafts before POST /chat
@@ -2391,9 +2373,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     const confirmDelAlpha = await screen.findByRole("alertdialog", { name: "确认删除项目空间" });
     fireEvent.click(within(confirmDelAlpha).getByRole("button", { name: "确认删除" }));
     await waitFor(() => {
-      expect(calls.some((c) => c.url === "/api/spaces/alpha" && c.method === "DELETE")).toBe(
-        true,
-      );
+      expect(calls.some((c) => c.url === "/api/spaces/alpha" && c.method === "DELETE")).toBe(true);
     });
   });
 
@@ -2430,9 +2410,10 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     fireEvent.click(screen.getByRole("button", { name: "新需求 N" }));
 
     await waitFor(() => {
-      const betaRadio = within(
-        screen.getByRole("radiogroup", { name: "目标项目空间" }),
-      ).getByRole("radio", { name: "Beta" });
+      const betaRadio = within(screen.getByRole("radiogroup", { name: "目标项目空间" })).getByRole(
+        "radio",
+        { name: "Beta" },
+      );
       expect(betaRadio.getAttribute("aria-checked")).toBe("true");
     });
     fireEvent.click(screen.getByRole("tab", { name: /立项设置/ }));
@@ -2630,7 +2611,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
           return jsonResponse(
             {
               error: "invalid_repo_path",
-              message: "目录 \"/tmp/plain-folder\" 不是 Git 仓库",
+              message: '目录 "/tmp/plain-folder" 不是 Git 仓库',
             },
             400,
           );
@@ -2704,9 +2685,9 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     fireEvent.click(await screen.findByRole("button", { name: "从文件目录选择" }));
     const prefilledModal = await screen.findByRole("dialog", { name: "添加项目空间" });
     await waitFor(() => {
-      expect(
-        (within(prefilledModal).getByLabelText("空间标识") as HTMLInputElement).value,
-      ).toBe("gamma");
+      expect((within(prefilledModal).getByLabelText("空间标识") as HTMLInputElement).value).toBe(
+        "gamma",
+      );
     });
     fireEvent.click(within(prefilledModal).getByRole("button", { name: "保存空间" }));
     await waitFor(() => {
@@ -2812,9 +2793,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
                 reason: "confirm",
                 category: "arch",
                 question: "请确认 **方案 A**（含 `<script>xss</script>`）",
-                options: [
-                  { id: "opt-1", label: "采纳", action: "resume", recommended: true },
-                ],
+                options: [{ id: "opt-1", label: "采纳", action: "resume", recommended: true }],
                 created_at: now,
               },
             ],
@@ -3425,9 +3404,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       "```",
     ].join("\n");
 
-    const { rerender } = render(
-      <MarkdownContent text={richMarkdown} allowReveal={true} />,
-    );
+    const { rerender } = render(<MarkdownContent text={richMarkdown} allowReveal={true} />);
 
     // No raw file:// link syntax leaks into visible text and no dangerous <a href="file://">
     expect(document.body.textContent).not.toContain("file:///");
@@ -3436,9 +3413,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     // Renders file pills with copy + local reveal button
     const tmpPill = screen.getByRole("button", { name: "/private/tmp" });
     expect(tmpPill.getAttribute("title")).toBe("点击复制路径：/private/tmp");
-    expect(
-      screen.getByRole("button", { name: "在文件管理器中定位 /private/tmp" }),
-    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "在文件管理器中定位 /private/tmp" })).toBeTruthy();
     expect(screen.getByText("~/.pnpm-store:12")).toBeTruthy();
 
     // Compact vs wide table columns prevent single-character vertical wrapping
@@ -3463,21 +3438,32 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
 
     // Remote mode hides local reveal buttons while preserving copy pills
     rerender(<MarkdownContent text={richMarkdown} allowReveal={false} />);
-    expect(
-      screen.queryByRole("button", { name: "在文件管理器中定位 /private/tmp" }),
-    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "在文件管理器中定位 /private/tmp" })).toBeNull();
     expect(screen.getByRole("button", { name: "/private/tmp" })).toBeTruthy();
   });
 
   it("groups tool steps into a collapsible Work Log timeline with coalesced repeats and agent copy button", () => {
     const messages = [
       { who: "me" as const, text: "帮我巡检临时目录", at: "2026-11-21T10:20:29.000Z" },
-      { who: "tool" as const, toolName: "run_command", text: "run_command · ls -la /Users/saonian && df -h /" },
+      {
+        who: "tool" as const,
+        toolName: "run_command",
+        text: "run_command · ls -la /Users/saonian && df -h /",
+      },
       { who: "tool" as const, toolName: "manage_task", text: "manage_task" },
       { who: "tool" as const, toolName: "manage_task", text: "manage_task" },
       { who: "tool" as const, toolName: "manage_task", text: "manage_task" },
-      { who: "tool" as const, toolName: "draft_patch", text: "draft_patch · 自动回填格式校验失败，请核对" },
-      { who: "agent" as const, name: "intake", text: "## 分析结论\n已完成扫描。", at: "2026-11-21T10:24:34.000Z" },
+      {
+        who: "tool" as const,
+        toolName: "draft_patch",
+        text: "draft_patch · 自动回填格式校验失败，请核对",
+      },
+      {
+        who: "agent" as const,
+        name: "intake",
+        text: "## 分析结论\n已完成扫描。",
+        at: "2026-11-21T10:24:34.000Z",
+      },
     ];
 
     render(
@@ -3602,10 +3588,9 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
 
       // Switch back to system (currently OS dark)
       fireEvent.click(
-        within(screen.getByRole("radiogroup", { name: "外观主题" })).getByRole(
-          "radio",
-          { name: "跟随系统" },
-        ),
+        within(screen.getByRole("radiogroup", { name: "外观主题" })).getByRole("radio", {
+          name: "跟随系统",
+        }),
       );
       expect(window.localStorage.getItem("kiln.theme")).toBe("system");
       expect(document.documentElement.dataset.themePref).toBe("system");
@@ -3678,9 +3663,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
 
     const liveCard = document.querySelector(".worklog.is-live");
     expect(liveCard).toBeTruthy();
-    expect(liveCard?.querySelector(".worklog-live-head")?.textContent).toContain(
-      "2 步",
-    );
+    expect(liveCard?.querySelector(".worklog-live-head")?.textContent).toContain("2 步");
 
     const list = screen.getByRole("list", { name: "立项探索进度" });
     const rows = list.querySelectorAll(".worklog-item .worklog-row > .worklog-detail");
@@ -4280,7 +4263,10 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       }
       if (typeof url === "string" && url.endsWith("/commit") && init?.method === "POST") {
         commitPayload = JSON.parse(String(init.body ?? "{}")) as Record<string, unknown>;
-        return jsonResponse({ ok: true, card: { id: "t-wf-sw", ...commitPayload }, state: {} }, 201);
+        return jsonResponse(
+          { ok: true, card: { id: "t-wf-sw", ...commitPayload }, state: {} },
+          201,
+        );
       }
       return jsonResponse({});
     });
@@ -4340,7 +4326,10 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       expect(commitPayload).not.toBeNull();
     });
     expect(commitPayload!.workspace_mode).toBe("git_worktree");
-    const wf = commitPayload!.workflow as { preset: string; steps: Array<{ kind: string; check?: string; apply_staged?: boolean }> };
+    const wf = commitPayload!.workflow as {
+      preset: string;
+      steps: Array<{ kind: string; check?: string; apply_staged?: boolean }>;
+    };
     expect(wf.preset).not.toBe("host_op");
     expect(wf.steps.some((s) => s.check === "staged_only" || s.apply_staged === true)).toBe(false);
   });
@@ -4741,7 +4730,10 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       }
       if (typeof url === "string" && url.endsWith("/commit") && init?.method === "POST") {
         commitPayload = JSON.parse(String(init.body ?? "{}")) as Record<string, unknown>;
-        return jsonResponse({ ok: true, card: { id: "t-wf-scratch", ...commitPayload }, state: {} }, 201);
+        return jsonResponse(
+          { ok: true, card: { id: "t-wf-scratch", ...commitPayload }, state: {} },
+          201,
+        );
       }
       return jsonResponse({});
     });

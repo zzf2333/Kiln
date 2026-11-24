@@ -23,7 +23,10 @@ let acpScript = "";
 let acpFullAccessOnlyScript = "";
 let claudeScript = "";
 
-async function collectAllEvents(backend: ExecutionBackend, sessionRef: Awaited<ReturnType<ExecutionBackend["start"]>>) {
+async function collectAllEvents(
+  backend: ExecutionBackend,
+  sessionRef: Awaited<ReturnType<ExecutionBackend["start"]>>,
+) {
   const out: RunEvent[] = [];
   for await (const ev of backend.events(sessionRef)) {
     out.push(ev);
@@ -824,7 +827,14 @@ function makeProvidersConfig(): ProvidersConfig {
           return {
             ...p,
             command: process.execPath,
-            args: [claudeScript, "-p", "--output-format", "stream-json", "--input-format", "stream-json"],
+            args: [
+              claudeScript,
+              "-p",
+              "--output-format",
+              "stream-json",
+              "--input-format",
+              "stream-json",
+            ],
           };
         }
         return { ...p, enabled: false };
@@ -1079,11 +1089,20 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
         ],
       });
       const ev1 = await collectAllEvents(backend, ref1);
-      expect(ev1.some((e) => e.kind === "session_bound" && e.providerSessionId === "thread-codex-1")).toBe(true);
+      expect(
+        ev1.some((e) => e.kind === "session_bound" && e.providerSessionId === "thread-codex-1"),
+      ).toBe(true);
       expect(ev1.some((e) => e.kind === "context_window" && e.usedTokens === 340)).toBe(true);
-      expect(ev1.some((e) => e.kind === "message" && e.text.includes("mcp elicitation:accept"))).toBe(true);
+      expect(
+        ev1.some((e) => e.kind === "message" && e.text.includes("mcp elicitation:accept")),
+      ).toBe(true);
       const u1 = ev1.find((e): e is Extract<RunEvent, { kind: "usage" }> => e.kind === "usage");
-      expect(u1).toMatchObject({ uncachedInputTokens: 200, cacheReadTokens: 100, outputTokens: 40, reasoningTokens: 10 });
+      expect(u1).toMatchObject({
+        uncachedInputTokens: 200,
+        cacheReadTokens: 100,
+        outputTokens: 40,
+        reasoningTokens: 10,
+      });
 
       // Second turn checks cumulative delta & rate-limit cooldown
       await backend.send(ref1, "TRIGGER_RATE_LIMIT");
@@ -1102,10 +1121,15 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
         KILN_RUN_TOKEN: null,
         GIT_TERMINAL_PROMPT: "0",
       });
-      const threadLog = logs.find((l) => l.type === "thread_start") as { params: Record<string, unknown> };
+      const threadLog = logs.find((l) => l.type === "thread_start") as {
+        params: Record<string, unknown>;
+      };
       expect(threadLog.params.ephemeral).toBe(false);
       expect(threadLog.params.sandbox).toBe("read-only");
-      expect((threadLog.params.approvalPolicy as { granular?: { mcp_elicitations?: boolean } }).granular?.mcp_elicitations).toBe(true);
+      expect(
+        (threadLog.params.approvalPolicy as { granular?: { mcp_elicitations?: boolean } }).granular
+          ?.mcp_elicitations,
+      ).toBe(true);
     } finally {
       await backend.dispose();
       fs.rmSync(cwd, { recursive: true, force: true });
@@ -1150,14 +1174,20 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
       });
 
       const events = await collectAllEvents(backend, ref);
-      const bound = events.find((e): e is Extract<RunEvent, { kind: "session_bound" }> => e.kind === "session_bound");
+      const bound = events.find(
+        (e): e is Extract<RunEvent, { kind: "session_bound" }> => e.kind === "session_bound",
+      );
       expect(bound?.providerSessionId).toBe("pi-sess-42");
       expect(bound?.providerSessionPath).toBe(path.join(fs.realpathSync(cwd), "pi-session.jsonl"));
 
-      const ctxEv = events.find((e): e is Extract<RunEvent, { kind: "context_window" }> => e.kind === "context_window");
+      const ctxEv = events.find(
+        (e): e is Extract<RunEvent, { kind: "context_window" }> => e.kind === "context_window",
+      );
       expect(ctxEv).toMatchObject({ usedTokens: 12000, contextWindowTokens: 200000, percent: 6 });
 
-      const usage = events.find((e): e is Extract<RunEvent, { kind: "usage" }> => e.kind === "usage");
+      const usage = events.find(
+        (e): e is Extract<RunEvent, { kind: "usage" }> => e.kind === "usage",
+      );
       expect(usage).toMatchObject({
         uncachedInputTokens: 140,
         cacheReadTokens: 500,
@@ -1198,7 +1228,17 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
         .map((l) => JSON.parse(l) as { argv: string[] });
       // argvLogs[0] was probe (--no-session), argvLogs[1] is researcher read-only session
       expect(argvLogs[1]!.argv).toEqual(
-        expect.arrayContaining(["--provider", "magpie", "--model", "group/fast", "--thinking", "low", "--tools", "read,grep,find,ls", "--no-mcp"]),
+        expect.arrayContaining([
+          "--provider",
+          "magpie",
+          "--model",
+          "group/fast",
+          "--thinking",
+          "low",
+          "--tools",
+          "read,grep,find,ls",
+          "--no-mcp",
+        ]),
       );
     } finally {
       await backend.dispose();
@@ -1296,7 +1336,9 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
       });
       const roEvents = await collectAllEvents(backend, refRo);
       allowAllUnsub();
-      expect(roEvents.some((e) => e.kind === "message" && e.text.includes("write denied"))).toBe(true);
+      expect(roEvents.some((e) => e.kind === "message" && e.text.includes("write denied"))).toBe(
+        true,
+      );
 
       // 4. FullAccessOnlyProviderError thrown on full-access-only non-readonly start
       await expect(
@@ -1319,7 +1361,9 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
         .map((l) => JSON.parse(l) as Record<string, unknown>);
       const readLog = logs.find((l) => l.type === "read_file_test");
       expect(readLog).toMatchObject({ insideContent: "INSIDE_OK", traversalRejected: true });
-      const modeLogs = logs.filter((l) => l.type === "set_mode") as Array<{ params: { modeId: string } }>;
+      const modeLogs = logs.filter((l) => l.type === "set_mode") as Array<{
+        params: { modeId: string };
+      }>;
       expect(modeLogs[0]?.params.modeId).toBe("plan");
     } finally {
       await backend.dispose();
@@ -1338,7 +1382,14 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
         adapter: "claude_direct",
         enabled: true,
         command: process.execPath,
-        args: [claudeScript, "-p", "--output-format", "stream-json", "--input-format", "stream-json"],
+        args: [
+          claudeScript,
+          "-p",
+          "--output-format",
+          "stream-json",
+          "--input-format",
+          "stream-json",
+        ],
         env: { TEST_CLAUDE_LOG: logFile },
         custom_models: [],
       },
@@ -1356,12 +1407,19 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
         prompt: "advise me",
         freshContext: true,
         mcpServers: [
-          { name: "kiln", command: process.execPath, args: ["mcp.js"], env: { KILN_RUN_TOKEN: "tok-1" } },
+          {
+            name: "kiln",
+            command: process.execPath,
+            args: ["mcp.js"],
+            env: { KILN_RUN_TOKEN: "tok-1" },
+          },
         ],
       });
 
       const ev1 = await collectAllEvents(backend, ref);
-      expect(ev1.some((e) => e.kind === "session_bound" && e.providerSessionId === "claude-native-77")).toBe(true);
+      expect(
+        ev1.some((e) => e.kind === "session_bound" && e.providerSessionId === "claude-native-77"),
+      ).toBe(true);
       expect(ev1.find((e) => e.kind === "usage")).toMatchObject({
         uncachedInputTokens: 500,
         cacheReadTokens: 2000,
@@ -1535,7 +1593,9 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
       const roEvents = await collectAllEvents(backend, roRef);
       const roAppr = roEvents.find((e) => e.kind === "approval");
       expect(roAppr).toMatchObject({ action: "file_write" });
-      expect(roEvents.some((e) => e.kind === "message" && e.text.includes("snake:reject"))).toBe(true);
+      expect(roEvents.some((e) => e.kind === "message" && e.text.includes("snake:reject"))).toBe(
+        true,
+      );
 
       const roCamelRef = await backend.start({
         runId: "r-acp-camel",
@@ -1548,8 +1608,12 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
         freshContext: true,
       });
       const roCamelEvents = await collectAllEvents(backend, roCamelRef);
-      expect(roCamelEvents.find((e) => e.kind === "approval")).toMatchObject({ action: "file_write" });
-      expect(roCamelEvents.some((e) => e.kind === "message" && e.text.includes("camel:reject"))).toBe(true);
+      expect(roCamelEvents.find((e) => e.kind === "approval")).toMatchObject({
+        action: "file_write",
+      });
+      expect(
+        roCamelEvents.some((e) => e.kind === "message" && e.text.includes("camel:reject")),
+      ).toBe(true);
 
       const roKindRef = await backend.start({
         runId: "r-acp-kind-write",
@@ -1562,8 +1626,12 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
         freshContext: true,
       });
       const roKindEvents = await collectAllEvents(backend, roKindRef);
-      expect(roKindEvents.find((e) => e.kind === "approval")).toMatchObject({ action: "file_write" });
-      expect(roKindEvents.some((e) => e.kind === "message" && e.text.includes("kindwrite:reject"))).toBe(true);
+      expect(roKindEvents.find((e) => e.kind === "approval")).toMatchObject({
+        action: "file_write",
+      });
+      expect(
+        roKindEvents.some((e) => e.kind === "message" && e.text.includes("kindwrite:reject")),
+      ).toBe(true);
 
       const wrRef = await backend.start({
         runId: "r-acp-symlink",
@@ -1576,9 +1644,13 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
         freshContext: false,
       });
       const wrEvents = await collectAllEvents(backend, wrRef);
-      expect(wrEvents.find((e) => e.kind === "approval")).toMatchObject({ action: "outside_scope" });
+      expect(wrEvents.find((e) => e.kind === "approval")).toMatchObject({
+        action: "outside_scope",
+      });
       expect(seenActions).toContain("outside_scope");
-      expect(wrEvents.some((e) => e.kind === "message" && e.text.includes("symlink:reject"))).toBe(true);
+      expect(wrEvents.some((e) => e.kind === "message" && e.text.includes("symlink:reject"))).toBe(
+        true,
+      );
     } finally {
       await backend.dispose();
       fs.rmSync(outer, { recursive: true, force: true });
@@ -1595,7 +1667,14 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
         adapter: "claude_direct",
         enabled: true,
         command: process.execPath,
-        args: [claudeScript, "-p", "--output-format", "stream-json", "--input-format", "stream-json"],
+        args: [
+          claudeScript,
+          "-p",
+          "--output-format",
+          "stream-json",
+          "--input-format",
+          "stream-json",
+        ],
         env: { TEST_CLAUDE_LOG: logFile },
         custom_models: [],
       },
@@ -1613,7 +1692,12 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
         prompt: "HANG_FOR_CANCEL",
         freshContext: false,
         mcpServers: [
-          { name: "kiln", command: process.execPath, args: ["mcp.js"], env: { KILN_RUN_TOKEN: "tok-cancel" } },
+          {
+            name: "kiln",
+            command: process.execPath,
+            args: ["mcp.js"],
+            env: { KILN_RUN_TOKEN: "tok-cancel" },
+          },
         ],
       });
 

@@ -26,7 +26,12 @@ import {
 import { KilnScheduler, type DispatchPlan } from "../scheduler/index.js";
 import { KilndServer } from "../server/index.js";
 import { evaluateWorkerStageOutcome } from "../state/index.js";
-import { deriveTaskStatus, isWindowsNamedPipe, realpathCanonical, writeFileAtomic } from "../store/index.js";
+import {
+  deriveTaskStatus,
+  isWindowsNamedPipe,
+  realpathCanonical,
+  writeFileAtomic,
+} from "../store/index.js";
 
 function git(args: readonly string[], cwd?: string): string {
   return execFileSync("git", [...args], {
@@ -43,7 +48,7 @@ function makeContract(overrides: Partial<TaskCard["contract"]> = {}): TaskCard["
   return {
     goal: "Deliver verified slice",
     end: "Gate and review pass cleanly",
-    accept_cmd: "node -e \"process.exit(0)\"",
+    accept_cmd: 'node -e "process.exit(0)"',
     accept_files_hash: "sha256:baseline-v1",
     scope: ["src/**"],
     deliver: { mode: "merge_main", cmd: null },
@@ -249,7 +254,7 @@ describe("M1 zero-token full-stack headless kernel E2E", () => {
     }
 
     // ── Criterion 3 + FakeBackend + pre-push hook + L1 -> L2 escalation + heterogeneous fallback ──
-    const acceptCmd = "node -e \"process.exit(0)\"";
+    const acceptCmd = 'node -e "process.exit(0)"';
     const baselineSnap = computeFrozenSnapshot(repoPath, ["tests/*.test.ts"], acceptCmd);
     const cardL1 = makeCard("t-l1-freeze", {
       track: "L1",
@@ -414,9 +419,7 @@ describe("M1 zero-token full-stack headless kernel E2E", () => {
       });
       expect(submitLoser.status).toBe(200);
       expect((submitLoser.body as { accepted: boolean }).accepted).toBe(false);
-      expect(
-        fs.existsSync((submitLoser.body as { archivedPath: string }).archivedPath),
-      ).toBe(true);
+      expect(fs.existsSync((submitLoser.body as { archivedPath: string }).archivedPath)).toBe(true);
 
       // Gate detects tampered frozen test outside scope -> escalated_to_l2: true
       const gateResult = await runVerificationGate(server1.store, {
@@ -646,7 +649,7 @@ describe("M1 zero-token full-stack headless kernel E2E", () => {
       const failedApply = await applyApprovedHostScopedChanges(server1.store, {
         taskId: "t-host-applied",
         approved: true,
-        verifyCmd: "node -e \"process.exit(1)\"",
+        verifyCmd: 'node -e "process.exit(1)"',
       });
       expect(failedApply.ok).toBe(false);
       if (failedApply.ok) throw new Error("Expected verify_failed_rolled_back");
@@ -666,7 +669,7 @@ describe("M1 zero-token full-stack headless kernel E2E", () => {
           await applyApprovedHostScopedChanges(server1.store, {
             taskId: "t-host-applied",
             approved: true,
-            verifyCmd: "node -e \"process.exit(0)\"",
+            verifyCmd: 'node -e "process.exit(0)"',
           })
         ).ok,
       ).toBe(true);

@@ -92,11 +92,7 @@ describe("Track 4 compounding flywheel contracts", () => {
       "space_rule",
     ]);
     expect(IMPROVEMENT_TARGET_KINDS).toContain("space_accept_scenario");
-    expect(IMPROVEMENT_PROPOSAL_STATUSES).toEqual([
-      "pending",
-      "approved",
-      "dismissed",
-    ]);
+    expect(IMPROVEMENT_PROPOSAL_STATUSES).toEqual(["pending", "approved", "dismissed"]);
     expect(webExports.MAX_ACTIVE_LEDGER_INJECT).toBe(20);
 
     const retro = TaskRetroReportSchema.parse({

@@ -1,11 +1,5 @@
 import { useKilnStore } from "../state/store";
-import {
-  BoardIcon,
-  InboxIcon,
-  LedgerIcon,
-  PlusIcon,
-  UsageIcon,
-} from "./Icons";
+import { BoardIcon, InboxIcon, LedgerIcon, PlusIcon, UsageIcon } from "./Icons";
 
 export function Tabbar() {
   const { store, state } = useKilnStore();

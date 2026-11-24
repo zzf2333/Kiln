@@ -130,10 +130,7 @@ export function computeEffectivePriorities(
     effective.set(taskId, node.priority);
   }
 
-  const propagatePriority = (
-    startId: string,
-    sourcePriority: Priority,
-  ): void => {
+  const propagatePriority = (startId: string, sourcePriority: Priority): void => {
     const startRank = PRIORITY_RANK[sourcePriority];
     const visited = new Set<string>([startId]);
     const stack: string[] = [startId];

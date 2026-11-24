@@ -27,10 +27,7 @@ import { ViewFrame } from "../components/ViewFrame";
 import { fmtTime } from "../state/format";
 import { isProjectSpace, useKilnStore, type SettingsTab } from "../state/store";
 
-const ROLE_INFO: Record<
-  RoleId,
-  { label: string; desc: string; interactive: boolean }
-> = {
+const ROLE_INFO: Record<RoleId, { label: string; desc: string; interactive: boolean }> = {
   intake: {
     label: "立项对话",
     desc: "查在途任务与账本，把想法聊成立项单",
@@ -71,8 +68,7 @@ const ROLE_INFO: Record<
 function isFullAccessOnlyAgent(agent: AgentDescriptorInfo | undefined): boolean {
   if (!agent?.modes || agent.modes.length === 0) return false;
   return agent.modes.every(
-    (m: AgentModeInfo) =>
-      m.isFullAccess === true || /full[-_\s]?access|bypass/i.test(m.id),
+    (m: AgentModeInfo) => m.isFullAccess === true || /full[-_\s]?access|bypass/i.test(m.id),
   );
 }
 
@@ -223,12 +219,8 @@ export function SettingsView() {
   const [limitsDraft, setLimitsDraft] = useState<LimitsConfig>(() => ({
     ...limits,
   }));
-  const [pendingConfirmRole, setPendingConfirmRole] = useState<RoleId | null>(
-    null,
-  );
-  const [pendingDeleteSpaceId, setPendingDeleteSpaceId] = useState<string | null>(
-    null,
-  );
+  const [pendingConfirmRole, setPendingConfirmRole] = useState<RoleId | null>(null);
+  const [pendingDeleteSpaceId, setPendingDeleteSpaceId] = useState<string | null>(null);
   const [newModelName, setNewModelName] = useState("");
   const [showExtraPricingModels, setShowExtraPricingModels] = useState(false);
   const [refreshBusy, setRefreshBusy] = useState(false);
@@ -245,9 +237,7 @@ export function SettingsView() {
     if (providersDirtyRef.current) return;
     const cloned = cloneProvidersConfig(providersConfig);
     setProvidersDraft(cloned);
-    setArgsRawByProvider(
-      Object.fromEntries(cloned.providers.map((p) => [p.id, p.args.join(" ")])),
-    );
+    setArgsRawByProvider(Object.fromEntries(cloned.providers.map((p) => [p.id, p.args.join(" ")])));
     setEnvRawByProvider(
       Object.fromEntries(cloned.providers.map((p) => [p.id, formatEnvLines(p.env)])),
     );
@@ -297,10 +287,7 @@ export function SettingsView() {
     }
     if (
       r?.fallback &&
-      !allFallbackCombos.some(
-        (c) =>
-          c.agent === r.fallback!.agent && c.model === r.fallback!.model,
-      )
+      !allFallbackCombos.some((c) => c.agent === r.fallback!.agent && c.model === r.fallback!.model)
     ) {
       allFallbackCombos.push({
         agent: r.fallback.agent,
@@ -328,15 +315,10 @@ export function SettingsView() {
     });
   };
 
-  const updateProviderDraft = (
-    providerId: string,
-    patch: Partial<ProviderEntry>,
-  ): void => {
+  const updateProviderDraft = (providerId: string, patch: Partial<ProviderEntry>): void => {
     setProvidersDraft((prev) => ({
       ...prev,
-      providers: prev.providers.map((p) =>
-        p.id === providerId ? { ...p, ...patch } : p,
-      ),
+      providers: prev.providers.map((p) => (p.id === providerId ? { ...p, ...patch } : p)),
     }));
     setProvidersDirty(true);
   };
@@ -354,7 +336,8 @@ export function SettingsView() {
           </div>
           <p className="muted" style={{ fontSize: "12.5px", lineHeight: 1.6 }}>
             订阅 CLI 的可执行路径、启动参数与环境变量涉及宿主机进程安全，仅允许在本机{" "}
-            <span className="mono">127.0.0.1:4310</span> 查看、编辑与连通性测试。下方为脱敏后的运行状态快照：
+            <span className="mono">127.0.0.1:4310</span>{" "}
+            查看、编辑与连通性测试。下方为脱敏后的运行状态快照：
           </p>
           <div style={{ marginTop: "14px", display: "flex", flexDirection: "column", gap: "8px" }}>
             {providerStatuses.length === 0 ? (
@@ -462,9 +445,7 @@ export function SettingsView() {
         const parsedEnv =
           rawEnv !== undefined
             ? parseEnvLines(rawEnv)
-            : Object.fromEntries(
-                Object.entries(p.env ?? {}).filter(([k]) => k.trim().length > 0),
-              );
+            : Object.fromEntries(Object.entries(p.env ?? {}).filter(([k]) => k.trim().length > 0));
         const rawQuota = quotaRawByProvider[p.id];
         let nextQuota = p.quota ? { ...p.quota } : undefined;
         if (rawQuota !== undefined) {
@@ -482,9 +463,7 @@ export function SettingsView() {
         }
         const hasQuota = Boolean(
           nextQuota &&
-            (nextQuota.soft_daily_usd ||
-              nextQuota.soft_weekly_usd ||
-              nextQuota.soft_monthly_usd),
+          (nextQuota.soft_daily_usd || nextQuota.soft_weekly_usd || nextQuota.soft_monthly_usd),
         );
         const entry: ProviderEntry = {
           id: p.id,
@@ -495,9 +474,7 @@ export function SettingsView() {
           env: parsedEnv,
           custom_models: p.custom_models.map((m) => m.trim()).filter(Boolean),
           ...(p.billing_mode ? { billing_mode: p.billing_mode } : {}),
-          ...(p.command && p.command.trim().length > 0
-            ? { command: p.command.trim() }
-            : {}),
+          ...(p.command && p.command.trim().length > 0 ? { command: p.command.trim() } : {}),
           ...(p.usage_rule ? { usage_rule: p.usage_rule } : {}),
           ...(hasQuota && nextQuota ? { quota: nextQuota } : {}),
           ...(p.paseo_url && p.paseo_url.trim().length > 0
@@ -512,7 +489,8 @@ export function SettingsView() {
       <>
         <div className="sync-line">
           <span>
-            自动检测本机已安装 CLI 并开关对应订阅底座（无则关闭）；点击项标题可折叠或展开详细参数与 `custom_models`。
+            自动检测本机已安装 CLI 并开关对应订阅底座（无则关闭）；点击项标题可折叠或展开详细参数与
+            `custom_models`。
           </span>
           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
             <button
@@ -570,9 +548,7 @@ export function SettingsView() {
         </div>
 
         {providersDraft.providers.length === 0 ? (
-          <div className="empty">
-            正在读取 `config/providers.yaml`，或点击上方「重新探测」。
-          </div>
+          <div className="empty">正在读取 `config/providers.yaml`，或点击上方「重新探测」。</div>
         ) : (
           <Accordion.Root
             type="single"
@@ -589,23 +565,20 @@ export function SettingsView() {
               );
               const totalModelsCount = discoveredModels.length + p.custom_models.length;
               const isTesting = providerTestBusyId === p.id;
-              const statusChip =
-                !p.enabled
-                  ? { cls: "", label: "已关闭" }
-                  : st?.status === "ready"
-                    ? { cls: "chip-ok", label: "已就绪" }
-                    : st?.status === "cooldown"
-                      ? { cls: "chip-ask", label: "429 冷却中" }
-                      : st?.status === "auth_required"
-                        ? { cls: "chip-bad", label: "需登录认证" }
-                        : st?.status === "unavailable"
-                          ? { cls: "chip-bad", label: "不可用" }
-                          : { cls: "", label: "待检测" };
+              const statusChip = !p.enabled
+                ? { cls: "", label: "已关闭" }
+                : st?.status === "ready"
+                  ? { cls: "chip-ok", label: "已就绪" }
+                  : st?.status === "cooldown"
+                    ? { cls: "chip-ask", label: "429 冷却中" }
+                    : st?.status === "auth_required"
+                      ? { cls: "chip-bad", label: "需登录认证" }
+                      : st?.status === "unavailable"
+                        ? { cls: "chip-bad", label: "不可用" }
+                        : { cls: "", label: "待检测" };
 
               const cap = (ok: boolean | undefined, yesText: string, noText: string) => (
-                <span className={`cap ${ok ? "ok" : ""}`}>
-                  {ok ? yesText : noText}
-                </span>
+                <span className={`cap ${ok ? "ok" : ""}`}>{ok ? yesText : noText}</span>
               );
 
               const collapsedSummary = !p.enabled
@@ -705,12 +678,26 @@ export function SettingsView() {
                       <div className="g-stack">
                         <div className="cap-badges">
                           {cap(agentDesc.capabilities.mcpInjection, "MCP 注入", "补丁回执协议")}
-                          {cap(agentDesc.capabilities.readOnlySandbox, "只读硬拦截", "沙盒 + 门禁兜底")}
+                          {cap(
+                            agentDesc.capabilities.readOnlySandbox,
+                            "只读硬拦截",
+                            "沙盒 + 门禁兜底",
+                          )}
                           {cap(agentDesc.capabilities.imageInput, "多模态图片", "纯文本输入")}
-                          {cap(agentDesc.capabilities.cacheWriteTelemetry, "上报缓存写入", "仅上报缓存读取")}
-                          {cap(agentDesc.capabilities.contextWindowTelemetry, "上下文水位", "无实时水位")}
+                          {cap(
+                            agentDesc.capabilities.cacheWriteTelemetry,
+                            "上报缓存写入",
+                            "仅上报缓存读取",
+                          )}
+                          {cap(
+                            agentDesc.capabilities.contextWindowTelemetry,
+                            "上下文水位",
+                            "无实时水位",
+                          )}
                           <span className="cap">
-                            {agentDesc.capabilities.nativeQuotaWindow ? "官方额度窗口" : "本机统计 + 软预算"}
+                            {agentDesc.capabilities.nativeQuotaWindow
+                              ? "官方额度窗口"
+                              : "本机统计 + 软预算"}
                           </span>
                         </div>
                       </div>
@@ -900,7 +887,14 @@ export function SettingsView() {
                     </div>
 
                     <div className="g-stack">
-                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", color: "var(--t3)" }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          fontSize: "12px",
+                          color: "var(--t3)",
+                        }}
+                      >
                         <span>可用与自定义模型</span>
                         <span className="mono">
                           发现 {discoveredModels.length} + 自定义 {p.custom_models.length}
@@ -990,9 +984,7 @@ export function SettingsView() {
                         className="input mono"
                         placeholder="如 cursor"
                         value={newAcpId}
-                        onChange={(e) =>
-                          setNewAcpId((e.currentTarget as HTMLInputElement).value)
-                        }
+                        onChange={(e) => setNewAcpId((e.currentTarget as HTMLInputElement).value)}
                       />
                     </label>
                     <label className="modal-field">
@@ -1016,9 +1008,7 @@ export function SettingsView() {
                         className="input mono"
                         placeholder="如 cursor-agent"
                         value={newAcpCmd}
-                        onChange={(e) =>
-                          setNewAcpCmd((e.currentTarget as HTMLInputElement).value)
-                        }
+                        onChange={(e) => setNewAcpCmd((e.currentTarget as HTMLInputElement).value)}
                       />
                     </label>
                     <label className="modal-field">
@@ -1028,9 +1018,7 @@ export function SettingsView() {
                         className="input mono"
                         placeholder="acp --stdio"
                         value={newAcpArgs}
-                        onChange={(e) =>
-                          setNewAcpArgs((e.currentTarget as HTMLInputElement).value)
-                        }
+                        onChange={(e) => setNewAcpArgs((e.currentTarget as HTMLInputElement).value)}
                       />
                     </label>
                   </div>
@@ -1041,9 +1029,7 @@ export function SettingsView() {
                       className="input mono"
                       placeholder="如 claude-sonnet-4-6, gpt-5.4"
                       value={newAcpModels}
-                      onChange={(e) =>
-                        setNewAcpModels((e.currentTarget as HTMLInputElement).value)
-                      }
+                      onChange={(e) => setNewAcpModels((e.currentTarget as HTMLInputElement).value)}
                     />
                   </label>
                   {newAcpError ? (
@@ -1053,18 +1039,10 @@ export function SettingsView() {
                   ) : null}
                 </div>
                 <div className="modal-foot">
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() => setNewAcpOpen(false)}
-                  >
+                  <button type="button" className="btn" onClick={() => setNewAcpOpen(false)}>
                     取消
                   </button>
-                  <button
-                    type="button"
-                    className="btn btn-light"
-                    onClick={handleCreateCustomAcp}
-                  >
+                  <button type="button" className="btn btn-light" onClick={handleCreateCustomAcp}>
                     确认添加
                   </button>
                 </div>
@@ -1088,20 +1066,16 @@ export function SettingsView() {
     const fbClash =
       samePrimaryModel &&
       (!reviewer?.fallback ||
-        (reviewer.fallback.agent === worker?.agent &&
-          reviewer.fallback.model === worker?.model));
+        (reviewer.fallback.agent === worker?.agent && reviewer.fallback.model === worker?.model));
 
-    const totalModels = agents.reduce(
-      (sum, agent) => sum + (agent.models?.length ?? 0),
-      0,
-    );
+    const totalModels = agents.reduce((sum, agent) => sum + (agent.models?.length ?? 0), 0);
 
     return (
       <>
         <div className="sync-line">
           <span>
-            可选项来自 ExecutionBackend.listAgents()（当前已发现 {agents.length}{" "}
-            个 Agent，共 {totalModels} 个模型）
+            可选项来自 ExecutionBackend.listAgents()（当前已发现 {agents.length} 个 Agent，共{" "}
+            {totalModels} 个模型）
           </span>
           <button
             type="button"
@@ -1145,11 +1119,8 @@ export function SettingsView() {
 
               const selectedAgentObj = agentById.get(currentAgentId);
               const modelOpts = modelsForAgent(selectedAgentObj, currentModel);
-              const selectedModelObj = modelOpts.find(
-                (m) => m.id === currentModel,
-              );
-              const effortOpts =
-                selectedModelObj?.efforts ?? [...REASONING_EFFORTS];
+              const selectedModelObj = modelOpts.find((m) => m.id === currentModel);
+              const effortOpts = selectedModelObj?.efforts ?? [...REASONING_EFFORTS];
 
               const fallbackKey = assignment?.fallback
                 ? `${assignment.fallback.agent} / ${assignment.fallback.model}`
@@ -1185,8 +1156,7 @@ export function SettingsView() {
                         无 MCP 模式：自动通过结构化补丁同步草稿/契约
                       </div>
                     ) : null}
-                    {fullAccessOnly &&
-                    !assignment?.allow_full_access_fallback ? (
+                    {fullAccessOnly && !assignment?.allow_full_access_fallback ? (
                       <div className="warn-line" style={{ marginTop: "4px", fontSize: "11.5px" }}>
                         仅暴露 full-access，默认拦截派发，需先开启右侧「允许全权兜底」
                       </div>
@@ -1199,23 +1169,19 @@ export function SettingsView() {
                       aria-label={`${info.label} Agent`}
                       value={currentAgentId}
                       onChange={(e) => {
-                        const nextAgentId = (e.currentTarget as HTMLSelectElement)
-                          .value;
+                        const nextAgentId = (e.currentTarget as HTMLSelectElement).value;
                         const nextAgent = agentById.get(nextAgentId);
                         const nextModels = modelsForAgent(nextAgent, "");
                         const firstModel = nextModels[0]?.id ?? "";
                         updateRole(roleId, {
                           agent: nextAgentId,
                           model: firstModel,
-                          ...(nextAgent?.backendId
-                            ? { backend_id: nextAgent.backendId }
-                            : {}),
+                          ...(nextAgent?.backendId ? { backend_id: nextAgent.backendId } : {}),
                         });
                       }}
                     >
                       {!currentAgentId ? <option value="">选择 Agent</option> : null}
-                      {currentAgentId &&
-                      !candidateAgents.some((a) => a.id === currentAgentId) ? (
+                      {currentAgentId && !candidateAgents.some((a) => a.id === currentAgentId) ? (
                         <option value={currentAgentId}>
                           {currentAgentId}
                           {currentIneligible ? "（不兼容）" : ""}
@@ -1257,9 +1223,8 @@ export function SettingsView() {
                       value={assignment?.reasoning_effort ?? "medium"}
                       onChange={(e) =>
                         updateRole(roleId, {
-                          reasoning_effort: (
-                            e.currentTarget as HTMLSelectElement
-                          ).value as ReasoningEffort,
+                          reasoning_effort: (e.currentTarget as HTMLSelectElement)
+                            .value as ReasoningEffort,
                         })
                       }
                     >
@@ -1283,8 +1248,7 @@ export function SettingsView() {
                         style={{ fontSize: "11.5px" }}
                         value={fallbackKey}
                         onChange={(e) => {
-                          const val = (e.currentTarget as HTMLSelectElement)
-                            .value;
+                          const val = (e.currentTarget as HTMLSelectElement).value;
                           if (!val) {
                             const next = { ...rolesDraft.roles[roleId]! };
                             delete next.fallback;
@@ -1320,13 +1284,9 @@ export function SettingsView() {
                       <input
                         type="checkbox"
                         aria-label={`${info.label} 允许全权兜底`}
-                        checked={Boolean(
-                          assignment?.allow_full_access_fallback,
-                        )}
+                        checked={Boolean(assignment?.allow_full_access_fallback)}
                         onChange={(e) => {
-                          const checked = (
-                            e.currentTarget as HTMLInputElement
-                          ).checked;
+                          const checked = (e.currentTarget as HTMLInputElement).checked;
                           if (checked) {
                             setPendingConfirmRole(roleId);
                           } else {
@@ -1352,8 +1312,8 @@ export function SettingsView() {
           <div className="confirm-bar" role="alertdialog" aria-label="确认开启全权兜底">
             <p>
               高风险确认：仅为「{ROLE_INFO[pendingConfirmRole].label}」显式启用{" "}
-              <span className="mono">allow_full_access_fallback</span>？当所选
-              Provider 仅暴露 full-access 模式时，守护进程将放行无人值守派发。
+              <span className="mono">allow_full_access_fallback</span>？当所选 Provider 仅暴露
+              full-access 模式时，守护进程将放行无人值守派发。
             </p>
             <div style={{ display: "flex", gap: "8px" }}>
               <button
@@ -1399,8 +1359,7 @@ export function SettingsView() {
               onChange={(e) =>
                 setRolesDraft({
                   ...rolesDraft,
-                  heterogeneous_review: (e.currentTarget as HTMLInputElement)
-                    .checked,
+                  heterogeneous_review: (e.currentTarget as HTMLInputElement).checked,
                 })
               }
             />
@@ -1423,9 +1382,7 @@ export function SettingsView() {
           >
             保存
           </button>
-          <span className="muted">
-            修改写入 config/roles.yaml，只影响之后派发的执行
-          </span>
+          <span className="muted">修改写入 config/roles.yaml，只影响之后派发的执行</span>
         </div>
       </>
     );
@@ -1445,7 +1402,8 @@ export function SettingsView() {
       <>
         <div className="sync-line">
           <span>
-            项目空间决定代码任务的仓库路径、工作树基准分支、默认验收命令与结构化脚本（setup 在新建工作树时自动运行），立项对话将直接进入对应仓库目录探索。
+            项目空间决定代码任务的仓库路径、工作树基准分支、默认验收命令与结构化脚本（setup
+            在新建工作树时自动运行），立项对话将直接进入对应仓库目录探索。
           </span>
           <button
             type="button"
@@ -1495,10 +1453,21 @@ export function SettingsView() {
                 return (
                   <tr key={sp.id}>
                     <td>
-                      <div className="role-name" style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                      <div
+                        className="role-name"
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "6px",
+                          flexWrap: "wrap",
+                        }}
+                      >
                         <span>{sp.name}</span>
                         {sp.pinned ? (
-                          <span className="chip chip-live" style={{ height: "18px", fontSize: "10.5px" }}>
+                          <span
+                            className="chip chip-live"
+                            style={{ height: "18px", fontSize: "10.5px" }}
+                          >
                             置顶
                           </span>
                         ) : null}
@@ -1563,7 +1532,8 @@ export function SettingsView() {
           <div className="confirm-bar" role="alertdialog" aria-label="确认删除项目空间">
             <p>
               确认删除项目空间 <span className="mono">{pendingDeleteSpaceId}</span>
-              ？仅删除 <span className="mono">space.yaml</span> 配置，不会删除磁盘代码仓库或历史任务记录。
+              ？仅删除 <span className="mono">space.yaml</span>{" "}
+              配置，不会删除磁盘代码仓库或历史任务记录。
             </p>
             <div style={{ display: "flex", gap: "8px" }}>
               <button
@@ -1699,7 +1669,8 @@ export function SettingsView() {
           <div>
             <span>高信号终态自动 AI 归因复盘</span>
             <p>
-              默认关闭；0-Token 确定性复盘始终自动落盘。开启后仅对失败、取消或发生返工/升级/验收打回的高信号任务自动唤起冷只读复盘分析
+              默认关闭；0-Token
+              确定性复盘始终自动落盘。开启后仅对失败、取消或发生返工/升级/验收打回的高信号任务自动唤起冷只读复盘分析
             </p>
           </div>
           <label className="switch" style={{ justifySelf: "end" }}>
@@ -1710,8 +1681,7 @@ export function SettingsView() {
               onChange={(e) =>
                 setLimitsDraft({
                   ...limitsDraft,
-                  auto_retro_high_signal: (e.currentTarget as HTMLInputElement)
-                    .checked,
+                  auto_retro_high_signal: (e.currentTarget as HTMLInputElement).checked,
                 })
               }
             />
@@ -1719,9 +1689,7 @@ export function SettingsView() {
           </label>
         </div>
 
-        <h3 style={{ fontSize: "13.5px", margin: "22px 0 8px" }}>
-          USD 金额级预算熔断
-        </h3>
+        <h3 style={{ fontSize: "13.5px", margin: "22px 0 8px" }}>USD 金额级预算熔断</h3>
 
         {(
           [
@@ -1811,9 +1779,8 @@ export function SettingsView() {
               onChange={(e) =>
                 setLimitsDraft({
                   ...limitsDraft,
-                  budget_exclude_subscription_providers: (
-                    e.currentTarget as HTMLInputElement
-                  ).checked,
+                  budget_exclude_subscription_providers: (e.currentTarget as HTMLInputElement)
+                    .checked,
                 })
               }
             />
@@ -1821,15 +1788,14 @@ export function SettingsView() {
           </label>
         </div>
 
-        <h3 style={{ fontSize: "13.5px", margin: "22px 0 8px" }}>
-          无人值守看门狗（Witness）
-        </h3>
+        <h3 style={{ fontSize: "13.5px", margin: "22px 0 8px" }}>无人值守看门狗（Witness）</h3>
 
         <div className="setting-row">
           <div>
             <span>Run 心跳停滞静默阈值（秒）</span>
             <p>
-              当运行中任务超过阈值无新事件时触发一次软告警与探活；若进程已退出或静默达 2 倍阈值，将自动中止并按阶段重入/转顾问；设为 0 可关闭巡检（默认 600 秒）
+              当运行中任务超过阈值无新事件时触发一次软告警与探活；若进程已退出或静默达 2
+              倍阈值，将自动中止并按阶段重入/转顾问；设为 0 可关闭巡检（默认 600 秒）
             </p>
           </div>
           <input
@@ -1861,9 +1827,7 @@ export function SettingsView() {
           <button
             type="button"
             className="btn btn-light"
-            onClick={() =>
-              void store.saveSettingsSection("limits", limitsDraft)
-            }
+            onClick={() => void store.saveSettingsSection("limits", limitsDraft)}
           >
             保存
           </button>
@@ -1873,11 +1837,7 @@ export function SettingsView() {
   };
 
   const formatPricingSource = (source: PricingSyncSource): string =>
-    source === "models.dev"
-      ? "models.dev"
-      : source === "litellm"
-        ? "LiteLLM"
-        : "内置离线基线";
+    source === "models.dev" ? "models.dev" : source === "litellm" ? "LiteLLM" : "内置离线基线";
 
   const renderPricingTab = () => {
     const roleUsageByModel = new Map<string, string[]>();
@@ -1895,10 +1855,7 @@ export function SettingsView() {
       if (!assignment) continue;
       recordRoleModel(assignment.model, ROLE_INFO[roleId].label);
       if (assignment.fallback?.model) {
-        recordRoleModel(
-          assignment.fallback.model,
-          `${ROLE_INFO[roleId].label}·备选`,
-        );
+        recordRoleModel(assignment.fallback.model, `${ROLE_INFO[roleId].label}·备选`);
       }
     }
     for (const rKey of Object.keys(roster.roster)) {
@@ -1961,11 +1918,14 @@ export function SettingsView() {
       <>
         <div className="sync-line">
           <span>
-            仅展示当前角色已配置使用的模型单价（按 models.dev / LiteLLM / 本机模型目录与离线基线自动同步，支持手动覆盖微调，美元 / 百万 Token）。
+            仅展示当前角色已配置使用的模型单价（按 models.dev / LiteLLM /
+            本机模型目录与离线基线自动同步，支持手动覆盖微调，美元 / 百万 Token）。
             {pricing.sync ? (
               <>
                 {" "}
-                最近同步：<span className="mono">{formatPricingSource(pricing.sync.source)}</span> ·{" "}
+                最近同步：<span className="mono">
+                  {formatPricingSource(pricing.sync.source)}
+                </span> ·{" "}
                 <span className="mono">{fmtTime(pricing.sync.synced_at)}</span>
               </>
             ) : (
@@ -1997,11 +1957,7 @@ export function SettingsView() {
               const p = pricing.models[m];
               const isCustom = customModels.has(m);
               const roleTags = roleUsageByModel.get(m) ?? [];
-              const writePlaceholder = p
-                ? /claude/i.test(m)
-                  ? "默认 1.25×"
-                  : "同输入"
-                : "可选";
+              const writePlaceholder = p ? (/claude/i.test(m) ? "默认 1.25×" : "同输入") : "可选";
               return (
                 <tr key={m}>
                   <td>
@@ -2045,11 +2001,7 @@ export function SettingsView() {
                       placeholder={p ? undefined : "待填"}
                       value={p ? p.in : ""}
                       onChange={(e) =>
-                        handlePriceInput(
-                          m,
-                          "in",
-                          (e.currentTarget as HTMLInputElement).value,
-                        )
+                        handlePriceInput(m, "in", (e.currentTarget as HTMLInputElement).value)
                       }
                     />
                   </td>
@@ -2063,11 +2015,7 @@ export function SettingsView() {
                       placeholder={p ? undefined : "待填"}
                       value={p ? p.cached : ""}
                       onChange={(e) =>
-                        handlePriceInput(
-                          m,
-                          "cached",
-                          (e.currentTarget as HTMLInputElement).value,
-                        )
+                        handlePriceInput(m, "cached", (e.currentTarget as HTMLInputElement).value)
                       }
                     />
                   </td>
@@ -2099,11 +2047,7 @@ export function SettingsView() {
                       placeholder={p ? undefined : "待填"}
                       value={p ? p.out : ""}
                       onChange={(e) =>
-                        handlePriceInput(
-                          m,
-                          "out",
-                          (e.currentTarget as HTMLInputElement).value,
-                        )
+                        handlePriceInput(m, "out", (e.currentTarget as HTMLInputElement).value)
                       }
                     />
                   </td>
@@ -2141,9 +2085,7 @@ export function SettingsView() {
             className="input mono"
             placeholder="新增模型标识（如 gpt-5.4）"
             value={newModelName}
-            onChange={(e) =>
-              setNewModelName((e.currentTarget as HTMLInputElement).value)
-            }
+            onChange={(e) => setNewModelName((e.currentTarget as HTMLInputElement).value)}
           />
           <button type="button" className="btn" onClick={addModel}>
             添加模型
@@ -2170,7 +2112,8 @@ export function SettingsView() {
           <span>Kiln 版本与运行模式</span>
           <p>
             当前接入：
-            {state.authMode === "remote" ? "远程认证访问" : "本机回环 / 桌面端"} · 与运行中 kilnd 实时同步
+            {state.authMode === "remote" ? "远程认证访问" : "本机回环 / 桌面端"} · 与运行中 kilnd
+            实时同步
           </p>
         </div>
         <span className="chip mono" style={{ justifySelf: "end" }}>
@@ -2233,7 +2176,7 @@ export function SettingsView() {
               className={`chip ${b.connected ? "chip-ok" : "chip-bad"}`}
               style={{ justifySelf: "end" }}
             >
-              {b.connected ? "已连接" : b.status ?? "未连接"}
+              {b.connected ? "已连接" : (b.status ?? "未连接")}
             </span>
           </div>
         ))
@@ -2241,9 +2184,7 @@ export function SettingsView() {
         <div className="setting-row">
           <div>
             <span>Paseo daemon（V1 自动执行底座）</span>
-            <p>
-              当前未上报独立底座健康快照；所有派发经自有 ExecutionBackend 接口隔离
-            </p>
+            <p>当前未上报独立底座健康快照；所有派发经自有 ExecutionBackend 接口隔离</p>
           </div>
           <span className="chip" style={{ justifySelf: "end" }}>
             待检测
@@ -2271,7 +2212,10 @@ export function SettingsView() {
       <div className="setting-row">
         <div>
           <span>外部只读巡检 / Passkey</span>
-          <p>external_only 巡检与 Passkey / Web Push 属于后续版本；远程访问与 Bark/ntfy/Webhook 推送请在「远程访问」标签页管理</p>
+          <p>
+            external_only 巡检与 Passkey / Web Push 属于后续版本；远程访问与 Bark/ntfy/Webhook
+            推送请在「远程访问」标签页管理
+          </p>
         </div>
         <span className="chip" style={{ justifySelf: "end" }}>
           后续规划
@@ -2298,19 +2242,21 @@ export function SettingsView() {
               </button>
             ))}
           </div>
-          {settingsTab === "roles"
-            ? renderRolesTab()
-            : settingsTab === "providers"
-              ? renderProvidersTab()
-              : settingsTab === "spaces"
-                ? renderSpacesTab()
-                : settingsTab === "limits"
-                  ? renderLimitsTab()
-                  : settingsTab === "pricing"
-                    ? renderPricingTab()
-                    : settingsTab === "remote"
-                      ? <RemoteSettingsPanel />
-                      : renderConnTab()}
+          {settingsTab === "roles" ? (
+            renderRolesTab()
+          ) : settingsTab === "providers" ? (
+            renderProvidersTab()
+          ) : settingsTab === "spaces" ? (
+            renderSpacesTab()
+          ) : settingsTab === "limits" ? (
+            renderLimitsTab()
+          ) : settingsTab === "pricing" ? (
+            renderPricingTab()
+          ) : settingsTab === "remote" ? (
+            <RemoteSettingsPanel />
+          ) : (
+            renderConnTab()
+          )}
         </div>
       </div>
     </ViewFrame>

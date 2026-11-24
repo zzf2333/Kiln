@@ -317,9 +317,7 @@ describe("KilndServer OS socket smoke suite (requires unsandboxed connect)", () 
       headers: { "X-Forwarded-For": "198.51.100.7" },
     });
     expect(proxyOnLocal.status).toBe(403);
-    expect(((await proxyOnLocal.json()) as { error: string }).error).toBe(
-      "remote_port_required",
-    );
+    expect(((await proxyOnLocal.json()) as { error: string }).error).toBe("remote_port_required");
 
     // Local port rejects DNS-rebinding Host header over real TCP
     const rebindStatus = await new Promise<number>((resolve, reject) => {
@@ -397,10 +395,9 @@ describe("KilndServer OS socket smoke suite (requires unsandboxed connect)", () 
         (res) => {
           expect(res.statusCode).toBe(200);
           res.once("data", () => {
-            void fetch(
-              `${addr.baseUrl}/api/remote/devices/${pairedBody.device.id}`,
-              { method: "DELETE" },
-            );
+            void fetch(`${addr.baseUrl}/api/remote/devices/${pairedBody.device.id}`, {
+              method: "DELETE",
+            });
           });
           res.on("end", () => resolve(true));
         },

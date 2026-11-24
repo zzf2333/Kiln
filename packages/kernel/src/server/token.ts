@@ -79,7 +79,10 @@ export function verifyRunToken(
     throw new RunTokenAuthError("malformed", "Run token must be a non-empty string");
   }
   if (!Number.isFinite(nowMs) || nowMs < 0) {
-    throw new RunTokenAuthError("malformed", "Verification timestamp must be a finite non-negative number");
+    throw new RunTokenAuthError(
+      "malformed",
+      "Verification timestamp must be a finite non-negative number",
+    );
   }
 
   const parts = token.split(".");

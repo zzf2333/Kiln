@@ -112,9 +112,7 @@ function spawnFlame(
     y: up + H / 2 + (Math.random() - 0.5) * H * 0.8,
     vx: -(6 + Math.random() * 18) * k,
     vy: -(spark ? 50 + Math.random() * 60 : 12 + Math.random() * 26) * k,
-    life: spark
-      ? 0.8 + Math.random() * 0.9
-      : (0.4 + Math.random() * 0.55) * (sm ? 0.75 : 1),
+    life: spark ? 0.8 + Math.random() * 0.9 : (0.4 + Math.random() * 0.55) * (sm ? 0.75 : 1),
     s: spark
       ? 0.7 + Math.random() * 0.8
       : ((sm ? 2.6 : 5) + Math.random() * (sm ? 2.4 : 6)) *
@@ -164,8 +162,7 @@ export function FlameCanvas({ size = "default", heat }: FlameCanvasProps) {
       if (!host) return;
 
       const isLight =
-        typeof document !== "undefined" &&
-        document.documentElement.dataset.theme === "light";
+        typeof document !== "undefined" && document.documentElement.dataset.theme === "light";
       const spr = isLight ? lightSprites : darkSprites;
       const activeStops = isLight ? LIGHT_FIRE_STOPS : FIRE_STOPS;
 
@@ -193,11 +190,7 @@ export function FlameCanvas({ size = "default", heat }: FlameCanvasProps) {
 
         const dt = Math.min(0.05, Math.max(0, (ts - lastTs) / 1000));
         lastTs = ts;
-        acc +=
-          (sm ? 55 : 115) *
-          currentHeat *
-          Math.max(0.6, Math.min(3.5, W / 80)) *
-          dt;
+        acc += (sm ? 55 : 115) * currentHeat * Math.max(0.6, Math.min(3.5, W / 80)) * dt;
         while (acc >= 1) {
           acc -= 1;
           spawnFlame(ps, W, H, up, pad, sm, currentHeat);
@@ -224,9 +217,7 @@ export function FlameCanvas({ size = "default", heat }: FlameCanvasProps) {
             const [r, g, b, a] = fireColor(Math.min(0.6, t * 0.6), activeStops);
             ctx.globalAlpha = 1;
             const alpha =
-              a *
-              Math.max(0, Math.min(1, p.y / (up * 0.5))) *
-              (0.5 + Math.random() * 0.5);
+              a * Math.max(0, Math.min(1, p.y / (up * 0.5))) * (0.5 + Math.random() * 0.5);
             ctx.fillStyle = `rgba(${r | 0}, ${g | 0}, ${b | 0}, ${alpha})`;
             ctx.fillRect(p.x, p.y, p.s, p.s);
             continue;

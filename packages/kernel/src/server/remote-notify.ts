@@ -53,8 +53,7 @@ function isValidHttpUrl(raw: string): boolean {
   try {
     const parsed = new URL(raw);
     return (
-      (parsed.protocol === "https:" || parsed.protocol === "http:") &&
-      parsed.hostname.length > 0
+      (parsed.protocol === "https:" || parsed.protocol === "http:") && parsed.hostname.length > 0
     );
   } catch {
     return false;
@@ -63,7 +62,10 @@ function isValidHttpUrl(raw: string): boolean {
 
 function toAsciiHeaderValue(value: string): string {
   // HTTP headers in Fetch API must contain only ISO-8859-1 / safe printable ASCII bytes.
-  const cleaned = value.replace(/[^\x20-\x7e]/g, " ").replace(/\s+/g, " ").trim();
+  const cleaned = value
+    .replace(/[^\x20-\x7e]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   return cleaned.length > 0 ? cleaned.slice(0, 180) : "Kiln Notification";
 }
 
@@ -220,8 +222,7 @@ export class RemoteNotifier {
     const remoteConfig = this.store.readConfig("remote");
     const saved = remoteConfig?.notifications;
 
-    const channel: RemoteNotificationChannel =
-      override.channel ?? saved?.channel ?? "webhook";
+    const channel: RemoteNotificationChannel = override.channel ?? saved?.channel ?? "webhook";
     const url = (override.url ?? saved?.url ?? "").trim();
     const secret = override.secret ?? saved?.secret;
 
@@ -256,9 +257,7 @@ export class RemoteNotifier {
    * Dispatches a non-blocking run heartbeat stall alert (soft warning or recovery abort)
    * over the configured remote notification channel.
    */
-  async notifyRunStalled(
-    input: StallAlertNotificationInput,
-  ): Promise<NotificationDeliveryResult> {
+  async notifyRunStalled(input: StallAlertNotificationInput): Promise<NotificationDeliveryResult> {
     try {
       const remoteConfig = this.store.readConfig("remote");
       if (

@@ -113,7 +113,9 @@ export function resolveProviderUsageRule(
   );
 }
 
-export function hasRawUsageCounters(raw: RawProviderUsage | null | undefined): raw is RawProviderUsage {
+export function hasRawUsageCounters(
+  raw: RawProviderUsage | null | undefined,
+): raw is RawProviderUsage {
   if (!raw) {
     return false;
   }
@@ -180,8 +182,14 @@ export function normalizeProviderTurnUsage(
 
   const curr: CumulativeCountersSnapshot = {
     inputTokens: assertNonNegativeIntOrZero(input.raw.inputTokens, "raw.inputTokens"),
-    cachedReadTokens: assertNonNegativeIntOrZero(input.raw.cachedReadTokens, "raw.cachedReadTokens"),
-    cacheWriteTokens: assertNonNegativeIntOrZero(input.raw.cacheWriteTokens, "raw.cacheWriteTokens"),
+    cachedReadTokens: assertNonNegativeIntOrZero(
+      input.raw.cachedReadTokens,
+      "raw.cachedReadTokens",
+    ),
+    cacheWriteTokens: assertNonNegativeIntOrZero(
+      input.raw.cacheWriteTokens,
+      "raw.cacheWriteTokens",
+    ),
     outputTokens: assertNonNegativeIntOrZero(input.raw.outputTokens, "raw.outputTokens"),
     reasoningTokens: assertNonNegativeIntOrZero(input.raw.reasoningTokens, "raw.reasoningTokens"),
   };
@@ -199,7 +207,9 @@ export function normalizeProviderTurnUsage(
         curr.outputTokens < prev.outputTokens ||
         curr.reasoningTokens < prev.reasoningTokens
       ) {
-        throw new RangeError("Cumulative thread usage counters decreased compared to previous snapshot");
+        throw new RangeError(
+          "Cumulative thread usage counters decreased compared to previous snapshot",
+        );
       }
       delta = {
         inputTokens: curr.inputTokens - prev.inputTokens,
@@ -308,9 +318,7 @@ export function flushAccumulatedTurnUsage(
     ...(state.turnAccum.providerCostUsd !== undefined
       ? { providerCostUsd: state.turnAccum.providerCostUsd }
       : {}),
-    ...(state.turnAccum.costSource !== undefined
-      ? { costSource: state.turnAccum.costSource }
-      : {}),
+    ...(state.turnAccum.costSource !== undefined ? { costSource: state.turnAccum.costSource } : {}),
   };
   state.turnAccum = createEmptyTurnAccum();
   return normalizeProviderTurnUsage({

@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  calculateTurnCostUsd,
-  diffCumulativeUsage,
-  normalizeUncachedUsage,
-} from "../pricing.js";
+import { calculateTurnCostUsd, diffCumulativeUsage, normalizeUncachedUsage } from "../pricing.js";
 
 describe("pricing and usage normalization", () => {
   const price = { in: 3.0, cached: 0.3, out: 15.0 };
@@ -20,10 +16,7 @@ describe("pricing and usage normalization", () => {
     // (200k * 3.0 + 800k * 0.3 + 100k * 15.0) / 1e6 = 0.6 + 0.24 + 1.5 = 2.34
     expect(cost).toBeCloseTo(2.34, 8);
 
-    const zeroCache = calculateTurnCostUsd(
-      { inputTokens: 500_000, outputTokens: 50_000 },
-      price,
-    );
+    const zeroCache = calculateTurnCostUsd({ inputTokens: 500_000, outputTokens: 50_000 }, price);
     expect(zeroCache).toBeCloseTo(1.5 + 0.75, 8);
   });
 
@@ -36,10 +29,7 @@ describe("pricing and usage normalization", () => {
     ).toThrow(RangeError);
 
     expect(() =>
-      calculateTurnCostUsd(
-        { inputTokens: -1, cachedInputTokens: 0, outputTokens: 10 },
-        price,
-      ),
+      calculateTurnCostUsd({ inputTokens: -1, cachedInputTokens: 0, outputTokens: 10 }, price),
     ).toThrow(RangeError);
   });
 

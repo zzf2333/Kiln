@@ -40,7 +40,9 @@ async function collectTurnEvents(
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
       await iterator.return?.();
-      throw new Error(`Timed out after ${timeoutMs}ms waiting for session ${sessionRef.sessionId} events`);
+      throw new Error(
+        `Timed out after ${timeoutMs}ms waiting for session ${sessionRef.sessionId} events`,
+      );
     }
 
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -173,9 +175,7 @@ export function verifyBackendContract(
       const deniedReq = denyRequests[0]!;
       expect(deniedReq.sessionRef.sessionId).toBe(denySession.sessionId);
       expect(
-        denyEvents.some(
-          (event) => event.kind === "approval" && event.id === deniedReq.id,
-        ),
+        denyEvents.some((event) => event.kind === "approval" && event.id === deniedReq.id),
       ).toBe(true);
 
       const denyApprovalIndex = denyEvents.findIndex(
@@ -204,9 +204,7 @@ export function verifyBackendContract(
       const allowedReq = allowRequests[0]!;
       expect(allowedReq.sessionRef.sessionId).toBe(allowSession.sessionId);
       expect(
-        allowEvents.some(
-          (event) => event.kind === "approval" && event.id === allowedReq.id,
-        ),
+        allowEvents.some((event) => event.kind === "approval" && event.id === allowedReq.id),
       ).toBe(true);
 
       const allowApprovalIndex = allowEvents.findIndex(
@@ -215,7 +213,10 @@ export function verifyBackendContract(
       expect(
         allowEvents
           .slice(allowApprovalIndex + 1)
-          .some((event) => event.kind === "file_write" || event.kind === "tool" || event.kind === "message"),
+          .some(
+            (event) =>
+              event.kind === "file_write" || event.kind === "tool" || event.kind === "message",
+          ),
       ).toBe(true);
       assertSingleExitAtEnd(allowEvents, "completed");
     });

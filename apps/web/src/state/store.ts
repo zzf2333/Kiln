@@ -208,7 +208,8 @@ function hasResearchStep(workflow: WorkflowBlueprint): boolean {
   return workflow.steps.some(
     (s) =>
       (s.kind === "agent" && s.stage === "research") ||
-      (s.kind === "loop" && s.steps.some((inner) => inner.kind === "agent" && inner.stage === "research")),
+      (s.kind === "loop" &&
+        s.steps.some((inner) => inner.kind === "agent" && inner.stage === "research")),
   );
 }
 
@@ -226,8 +227,7 @@ function preserveWorkflowAssignments(
   const mapAgentNode = (node: WorkflowAgentNode): WorkflowAgentNode => {
     const old = prevByStage.get(node.stage);
     const mergedRole = node.roster_role ?? old?.roster_role;
-    const effectiveRole =
-      mergedRole && dropSet?.has(mergedRole) ? undefined : mergedRole;
+    const effectiveRole = mergedRole && dropSet?.has(mergedRole) ? undefined : mergedRole;
     const effectiveRationale = node.rationale ?? old?.rationale;
     return {
       ...node,
@@ -243,9 +243,7 @@ function preserveWorkflowAssignments(
     if (step.kind === "loop") {
       return {
         ...step,
-        steps: step.steps.map((inner) =>
-          inner.kind === "agent" ? mapAgentNode(inner) : inner,
-        ),
+        steps: step.steps.map((inner) => (inner.kind === "agent" ? mapAgentNode(inner) : inner)),
       };
     }
     return step;
@@ -256,16 +254,10 @@ function preserveWorkflowAssignments(
     if (prevResearch) {
       const researchNode = mapAgentNode(prevResearch);
       const implIdx = steps.findIndex(
-        (s) =>
-          (s.kind === "agent" && s.stage === "implement") ||
-          s.kind === "loop",
+        (s) => (s.kind === "agent" && s.stage === "implement") || s.kind === "loop",
       );
       const insertAt = implIdx >= 0 ? implIdx : steps.length;
-      steps = [
-        ...steps.slice(0, insertAt),
-        researchNode,
-        ...steps.slice(insertAt),
-      ];
+      steps = [...steps.slice(0, insertAt), researchNode, ...steps.slice(insertAt)];
     }
   }
 
@@ -484,10 +476,7 @@ const EMPTY_USAGE: UsageSnapshot = {
 
 export function isProjectSpace(sp: SpaceConfig | undefined): sp is SpaceConfig {
   return Boolean(
-    sp &&
-      sp.id !== "local" &&
-      typeof sp.repo_path === "string" &&
-      sp.repo_path.trim().length > 0,
+    sp && sp.id !== "local" && typeof sp.repo_path === "string" && sp.repo_path.trim().length > 0,
   );
 }
 
@@ -525,9 +514,7 @@ export function createDefaultIntakeForm(
   }
   const projects = getProjectSpaces(spaces);
   const preferred =
-    preferredSpace && isProjectSpace(spaces[preferredSpace])
-      ? spaces[preferredSpace]
-      : undefined;
+    preferredSpace && isProjectSpace(spaces[preferredSpace]) ? spaces[preferredSpace] : undefined;
   const chosen = preferred ?? projects[0];
   return {
     mode: "project",
@@ -610,8 +597,7 @@ function normalizeIntakeForm(form: IntakeFormState): IntakeFormState {
     split_cards: Array.isArray(form.split_cards) ? form.split_cards : [],
     open_questions: Array.isArray(form.open_questions) ? form.open_questions : [],
     brief_markdown: typeof form.brief_markdown === "string" ? form.brief_markdown : "",
-    research_markdown:
-      typeof form.research_markdown === "string" ? form.research_markdown : "",
+    research_markdown: typeof form.research_markdown === "string" ? form.research_markdown : "",
   };
 }
 
@@ -658,24 +644,22 @@ function draftToIntakeForm(draft: DraftCardWithBrief): IntakeFormState {
     space: draft.space,
     track: draft.track === "L3" ? "L2" : draft.track,
     workspace_mode: isLocal
-      ? (draft.workspace_mode === "host_scoped" ? "host_scoped" : "scratch_dir")
+      ? draft.workspace_mode === "host_scoped"
+        ? "host_scoped"
+        : "scratch_dir"
       : "git_worktree",
     ...(draft.workflow !== undefined ? { workflow: draft.workflow } : {}),
     end: draft.contract.end ?? "",
     accept_cmd: draft.contract.accept_cmd ?? "",
-    deliver_cmd:
-      draft.contract.deliver?.mode === "run_cmd" ? draft.contract.deliver.cmd : "",
+    deliver_cmd: draft.contract.deliver?.mode === "run_cmd" ? draft.contract.deliver.cmd : "",
     scope: (draft.contract.scope ?? []).join("\n"),
-    non_goals: Array.isArray(draft.contract.non_goals)
-      ? [...draft.contract.non_goals]
-      : [],
+    non_goals: Array.isArray(draft.contract.non_goals) ? [...draft.contract.non_goals] : [],
     attachments: Array.isArray(draft.attachments) ? [...draft.attachments] : [],
     split_cards: [],
     depends_on: draft.depends_on.join(", "),
     open_questions: Array.isArray(draft.open_questions) ? draft.open_questions : [],
     brief_markdown: typeof draft.brief_markdown === "string" ? draft.brief_markdown : "",
-    research_markdown:
-      typeof draft.research_markdown === "string" ? draft.research_markdown : "",
+    research_markdown: typeof draft.research_markdown === "string" ? draft.research_markdown : "",
   };
 }
 
@@ -702,36 +686,30 @@ async function fileToBase64(file: File): Promise<string> {
   });
 }
 
-function extractRawSplitCardsFromReply(
-  text: string,
-): Array<Record<string, unknown>> | null {
+function extractRawSplitCardsFromReply(text: string): Array<Record<string, unknown>> | null {
   const match = text.match(/```kiln-split-cards[ \t]*\r?\n([\s\S]*?)\r?\n```/i);
   if (!match?.[1]) return null;
   try {
     const parsed = JSON.parse(match[1]) as unknown;
     const rawCards = Array.isArray(parsed)
       ? parsed
-      : parsed &&
-          typeof parsed === "object" &&
-          Array.isArray((parsed as { cards?: unknown }).cards)
+      : parsed && typeof parsed === "object" && Array.isArray((parsed as { cards?: unknown }).cards)
         ? (parsed as { cards: unknown[] }).cards
         : null;
     if (!rawCards || rawCards.length < 2 || rawCards.length > 12) return null;
-    const valid = rawCards.filter(
-      (item): item is Record<string, unknown> => {
-        if (!item || typeof item !== "object") return false;
-        const rec = item as Record<string, unknown>;
-        if (typeof rec.temp_id !== "string" || !rec.temp_id.trim()) return false;
-        if (typeof rec.title !== "string" || !rec.title.trim()) return false;
-        if (
-          rec.contract !== undefined &&
-          (rec.contract === null || typeof rec.contract !== "object")
-        ) {
-          return false;
-        }
-        return true;
-      },
-    );
+    const valid = rawCards.filter((item): item is Record<string, unknown> => {
+      if (!item || typeof item !== "object") return false;
+      const rec = item as Record<string, unknown>;
+      if (typeof rec.temp_id !== "string" || !rec.temp_id.trim()) return false;
+      if (typeof rec.title !== "string" || !rec.title.trim()) return false;
+      if (
+        rec.contract !== undefined &&
+        (rec.contract === null || typeof rec.contract !== "object")
+      ) {
+        return false;
+      }
+      return true;
+    });
     return valid.length === rawCards.length ? valid : null;
   } catch {
     return null;
@@ -742,9 +720,7 @@ function findSpaceByRepoPath(
   repoPath: string,
   spaces: Record<string, SpaceConfig>,
 ): SpaceConfig | undefined {
-  return Object.values(spaces).find(
-    (sp) => isProjectSpace(sp) && sp.repo_path === repoPath,
-  );
+  return Object.values(spaces).find((sp) => isProjectSpace(sp) && sp.repo_path === repoPath);
 }
 
 function parseLocationHash(): {
@@ -803,9 +779,7 @@ function parseLocationHash(): {
   }
   const rawTab = params.get("tab");
   const settingsTab: SettingsTab =
-    rawTab && VALID_SETTINGS_TABS.has(rawTab as SettingsTab)
-      ? (rawTab as SettingsTab)
-      : "roles";
+    rawTab && VALID_SETTINGS_TABS.has(rawTab as SettingsTab) ? (rawTab as SettingsTab) : "roles";
 
   const taskParam = params.get("task");
   if (taskParam) {
@@ -1051,8 +1025,7 @@ export class KilnWebStore {
   private replaceHash(nextHash: string): void {
     if (typeof window === "undefined") return;
     try {
-      const target =
-        nextHash || window.location.pathname + window.location.search;
+      const target = nextHash || window.location.pathname + window.location.search;
       if (window.location.hash !== nextHash) {
         window.history.replaceState(null, "", target);
       }
@@ -1117,9 +1090,7 @@ export class KilnWebStore {
       try {
         const status = await apiFetchAuthStatus();
         if (status.mode === "remote" && !status.authenticated) {
-          this.handleRemoteUnauthorized(
-            "当前设备会话已失效或已被桌面端吊销，请重新配对登录。",
-          );
+          this.handleRemoteUnauthorized("当前设备会话已失效或已被桌面端吊销，请重新配对登录。");
         } else {
           this.setState({ lastConnectedAt: new Date().toISOString() });
         }
@@ -1221,8 +1192,7 @@ export class KilnWebStore {
         authChecked: true,
         bootstrapping: false,
         networkOffline: true,
-        bootstrapError:
-          err instanceof Error ? err.message : "主机离线或无法连接 Kiln 服务",
+        bootstrapError: err instanceof Error ? err.message : "主机离线或无法连接 Kiln 服务",
       });
     }
   }
@@ -1319,9 +1289,7 @@ export class KilnWebStore {
 
     const onUnauthorized = (_url: string, err: ApiError): void => {
       if (this.state.authMode === "remote" || err.code === "unauthorized") {
-        this.handleRemoteUnauthorized(
-          "当前设备会话已失效或已被桌面端吊销，请重新配对登录。",
-        );
+        this.handleRemoteUnauthorized("当前设备会话已失效或已被桌面端吊销，请重新配对登录。");
       }
     };
     setUnauthorizedHandler(onUnauthorized);
@@ -1346,10 +1314,7 @@ export class KilnWebStore {
         restoreResult: null,
       });
       this.enforceRouteGuard();
-      if (
-        this.state.view === "detail" ||
-        this.state.view === "resolve"
-      ) {
+      if (this.state.view === "detail" || this.state.view === "resolve") {
         if (this.state.taskId) {
           void this.loadTaskDetail(this.state.taskId);
         }
@@ -1380,8 +1345,7 @@ export class KilnWebStore {
 
     if (this.state.view === "detail") {
       const exists =
-        this.state.taskId !== null &&
-        this.state.tasks.some((t) => t.id === this.state.taskId);
+        this.state.taskId !== null && this.state.tasks.some((t) => t.id === this.state.taskId);
       if (!exists) {
         this.setState({ view: "board", taskId: null, selectedRunIdx: null });
         this.syncHashFromState();
@@ -1389,8 +1353,7 @@ export class KilnWebStore {
       }
     } else if (this.state.view === "resolve") {
       const hasTask =
-        this.state.taskId !== null &&
-        this.state.tasks.some((t) => t.id === this.state.taskId);
+        this.state.taskId !== null && this.state.tasks.some((t) => t.id === this.state.taskId);
       const hasDecision =
         this.state.taskId !== null &&
         this.state.pendingDecisions.some((d) => d.task_id === this.state.taskId);
@@ -1423,11 +1386,10 @@ export class KilnWebStore {
             : this.state.roster;
         const providersConfig = data.settings?.providers ?? this.state.providersConfig;
         const providersConfigLoaded =
-          data.settings?.providers !== undefined
-            ? true
-            : this.state.providersConfigLoaded;
+          data.settings?.providers !== undefined ? true : this.state.providersConfigLoaded;
         const limits = data.settings?.limits ?? data.limits ?? { ...DEFAULT_LIMITS };
-        const pricing = data.settings?.pricing ?? data.pricing ?? { ...DEFAULT_PRICING, models: {} };
+        const pricing = data.settings?.pricing ??
+          data.pricing ?? { ...DEFAULT_PRICING, models: {} };
         const nextRates = data.liveRates?.rates
           ? { ...this.state.ratesByTask, ...data.liveRates.rates }
           : this.state.ratesByTask;
@@ -1476,8 +1438,7 @@ export class KilnWebStore {
           nextIntakeForm.mode === "project" &&
           !isProjectSpace(nextSpaces[nextIntakeForm.space])
         ) {
-          const preferred =
-            this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
+          const preferred = this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
           const projects = getProjectSpaces(nextSpaces);
           const chosen =
             (preferred && isProjectSpace(nextSpaces[preferred])
@@ -1506,9 +1467,7 @@ export class KilnWebStore {
           bootstrapError: null,
           daemonVersion: data.version ?? null,
           lastConnectedAt: new Date().toISOString(),
-          ...(this.state.sseStatus !== "reconnecting"
-            ? { networkOffline: false }
-            : {}),
+          ...(this.state.sseStatus !== "reconnecting" ? { networkOffline: false } : {}),
           tasks: data.tasks ?? [],
           pendingDecisions: data.pendingDecisions ?? [],
           drafts: nextDrafts,
@@ -1529,18 +1488,12 @@ export class KilnWebStore {
           budget: data.budget ?? null,
           runningCount: data.runningCount ?? 0,
           mergeQueue: data.mergeQueue ?? [],
-          ...(data.ledgers !== undefined
-            ? { ledgers: normalizeLedgers(data.ledgers) }
-            : {}),
+          ...(data.ledgers !== undefined ? { ledgers: normalizeLedgers(data.ledgers) } : {}),
           ...(data.agents !== undefined ? { agents: data.agents } : {}),
           ...(data.backends !== undefined ? { backends: data.backends } : {}),
-          ...(data.providerUsage !== undefined
-            ? { providerUsage: data.providerUsage }
-            : {}),
+          ...(data.providerUsage !== undefined ? { providerUsage: data.providerUsage } : {}),
           ratesByTask: nextRates,
-          ...(data.liveRates?.totals !== undefined
-            ? { liveTotals: data.liveRates.totals }
-            : {}),
+          ...(data.liveRates?.totals !== undefined ? { liveTotals: data.liveRates.totals } : {}),
         });
 
         this.enforceRouteGuard();
@@ -1549,10 +1502,7 @@ export class KilnWebStore {
           void this.hydrateRestoredDraftChat(restoredDraftIdForChat);
         }
 
-        if (
-          (this.state.view === "detail" || this.state.view === "resolve") &&
-          this.state.taskId
-        ) {
+        if ((this.state.view === "detail" || this.state.view === "resolve") && this.state.taskId) {
           void this.loadTaskDetail(this.state.taskId);
           if (this.state.view === "resolve") {
             void this.loadResolveChat(this.state.taskId);
@@ -1585,8 +1535,7 @@ export class KilnWebStore {
           ...(isOfflineError ? { networkOffline: true } : {}),
           ...(!this.state.bootstrapLoaded
             ? {
-                bootstrapError:
-                  err instanceof Error ? err.message : "加载工作台失败",
+                bootstrapError: err instanceof Error ? err.message : "加载工作台失败",
               }
             : {}),
         });
@@ -1644,7 +1593,10 @@ export class KilnWebStore {
       ) {
         void this.bootstrap();
       }
-      if (this.state.taskId === event.taskId && (this.state.view === "detail" || this.state.view === "resolve")) {
+      if (
+        this.state.taskId === event.taskId &&
+        (this.state.view === "detail" || this.state.view === "resolve")
+      ) {
         void this.loadTaskDetail(event.taskId);
       }
       return;
@@ -1678,9 +1630,7 @@ export class KilnWebStore {
     }
 
     if (event.type === "provider.status") {
-      const idx = this.state.providerStatuses.findIndex(
-        (p) => p.provider_id === event.providerId,
-      );
+      const idx = this.state.providerStatuses.findIndex((p) => p.provider_id === event.providerId);
       if (idx >= 0) {
         const nextStatuses = this.state.providerStatuses.map((p, i) =>
           i === idx
@@ -1771,7 +1721,8 @@ export class KilnWebStore {
               ? {
                   ...p,
                   status: "cooldown" as const,
-                  cooldown_until: event.event.kind === "rate_limited" ? (event.event.until ?? null) : null,
+                  cooldown_until:
+                    event.event.kind === "rate_limited" ? (event.event.until ?? null) : null,
                   ...(event.event.kind === "rate_limited" && event.event.detail
                     ? { detail: event.event.detail }
                     : {}),
@@ -1815,8 +1766,7 @@ export class KilnWebStore {
       !this.state.intakeForm.title.trim() &&
       this.state.intakeMessages.length <= 1;
 
-    const preferredSpace =
-      this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
+    const preferredSpace = this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
 
     const patch: Partial<KilnStoreState> = {
       view,
@@ -1837,10 +1787,7 @@ export class KilnWebStore {
     this.syncHashFromState();
     if (view === "ledger" && Object.keys(this.state.ledgers).length === 0) {
       void this.refreshLedgers();
-    } else if (
-      (view === "settings" || view === "lineup") &&
-      this.state.agents.length === 0
-    ) {
+    } else if ((view === "settings" || view === "lineup") && this.state.agents.length === 0) {
       void this.refreshAgents();
     }
     if (view === "intake" && Object.keys(this.state.roster.roster).length === 0) {
@@ -2031,10 +1978,7 @@ export class KilnWebStore {
             scriptKey: res.script,
             command: res.command,
             cwd: res.cwd,
-            lines:
-              existing && existing.lines.length > 0
-                ? existing.lines
-                : [`$ ${res.command}`],
+            lines: existing && existing.lines.length > 0 ? existing.lines : [`$ ${res.command}`],
             detectedUrls: existing?.detectedUrls ?? [],
             done: existing?.done ?? false,
             exitCode: existing?.exitCode ?? null,
@@ -2110,10 +2054,7 @@ export class KilnWebStore {
     }
   }
 
-  async rollbackTaskCheckpoint(
-    taskId: string,
-    checkpointRef: string,
-  ): Promise<boolean> {
+  async rollbackTaskCheckpoint(taskId: string, checkpointRef: string): Promise<boolean> {
     try {
       const res = await apiRollbackTaskCheckpoint(taskId, {
         checkpoint_ref: checkpointRef,
@@ -2155,9 +2096,7 @@ export class KilnWebStore {
         );
       } else if (res.action === "push") {
         this.showToast(
-          res.alreadyUpToDate
-            ? `远端 ${res.branch} 已是最新`
-            : `已推送到 origin/${res.branch}`,
+          res.alreadyUpToDate ? `远端 ${res.branch} 已是最新` : `已推送到 origin/${res.branch}`,
         );
       } else {
         this.showToast(
@@ -2231,11 +2170,7 @@ export class KilnWebStore {
     }
   }
 
-  async steerTask(
-    taskId: string,
-    message: string,
-    interrupt = false,
-  ): Promise<boolean> {
+  async steerTask(taskId: string, message: string, interrupt = false): Promise<boolean> {
     const trimmed = message.trim();
     if (!trimmed) {
       return false;
@@ -2243,9 +2178,7 @@ export class KilnWebStore {
     try {
       const res = await apiSteerTask(taskId, { message: trimmed, interrupt });
       this.showToast(
-        res.interrupted
-          ? "已中断当前棒并携新指令重跑"
-          : "已记录补充纠偏指令，下一棒生效",
+        res.interrupted ? "已中断当前棒并携新指令重跑" : "已记录补充纠偏指令，下一棒生效",
       );
       await this.bootstrap();
       if (this.state.taskId === taskId) {
@@ -2307,17 +2240,10 @@ export class KilnWebStore {
     }
   }
 
-  async submitDecision(
-    taskId: string,
-    payload: SubmitDecisionPayload,
-  ): Promise<boolean> {
+  async submitDecision(taskId: string, payload: SubmitDecisionPayload): Promise<boolean> {
     try {
       await apiSubmitDecision(taskId, payload);
-      this.showToast(
-        payload.apply_ledger_rule
-          ? "已提交决定并写入长期决策账本"
-          : "已记录决定",
-      );
+      this.showToast(payload.apply_ledger_rule ? "已提交决定并写入长期决策账本" : "已记录决定");
       await this.bootstrap();
       if (this.state.view === "resolve" && this.state.taskId === taskId) {
         this.openTask(taskId);
@@ -2378,18 +2304,16 @@ export class KilnWebStore {
     if (mode === "project") {
       const projects = getProjectSpaces(this.state.spaces);
       const preferred =
-        this.state.spaceFilter !== "all" && isProjectSpace(this.state.spaces[this.state.spaceFilter])
+        this.state.spaceFilter !== "all" &&
+        isProjectSpace(this.state.spaces[this.state.spaceFilter])
           ? this.state.spaces[this.state.spaceFilter]
           : undefined;
       const chosen =
-        (isProjectSpace(this.state.spaces[cur.space])
-          ? this.state.spaces[cur.space]
-          : undefined) ??
+        (isProjectSpace(this.state.spaces[cur.space]) ? this.state.spaces[cur.space] : undefined) ??
         preferred ??
         projects[0];
       const prevDefault = this.state.spaces[cur.space]?.default_accept_cmd ?? "";
-      const shouldFillAccept =
-        cur.accept_cmd.trim() === "" || cur.accept_cmd === prevDefault;
+      const shouldFillAccept = cur.accept_cmd.trim() === "" || cur.accept_cmd === prevDefault;
       const hasDeliverCmd = cur.deliver_cmd.trim().length > 0;
       const nextTrack = cur.track || "L2";
       const currentWorkflow = resolveFormEffectiveWorkflow(cur);
@@ -2424,8 +2348,7 @@ export class KilnWebStore {
     }
 
     const prevDefault = this.state.spaces[cur.space]?.default_accept_cmd ?? "";
-    const nextWs =
-      cur.workspace_mode === "host_scoped" ? "host_scoped" : "scratch_dir";
+    const nextWs = cur.workspace_mode === "host_scoped" ? "host_scoped" : "scratch_dir";
     const hasDeliverCmd = cur.deliver_cmd.trim().length > 0;
     const currentWorkflow = resolveFormEffectiveWorkflow(cur);
     const curToggles = extractWorkflowToggles(currentWorkflow);
@@ -2441,11 +2364,7 @@ export class KilnWebStore {
               }),
               { preserveResearch: true },
             )
-        : stripHostTwoPhaseWorkflow(
-            currentWorkflow,
-            hasDeliverCmd,
-            this.getHostStagedRoleIds(),
-          );
+        : stripHostTwoPhaseWorkflow(currentWorkflow, hasDeliverCmd, this.getHostStagedRoleIds());
     const nextForm: IntakeFormState = {
       ...cur,
       mode: "local",
@@ -2489,8 +2408,7 @@ export class KilnWebStore {
                     : "standard_dev",
             includeReview: true,
             hostTwoPhase: cur.workspace_mode === "host_scoped",
-            deliverApproval:
-              cur.workspace_mode === "host_scoped" ? true : toggles.deliverApproval,
+            deliverApproval: cur.workspace_mode === "host_scoped" ? true : toggles.deliverApproval,
             hasDeliverCmd,
           });
     const nextWorkflow = preserveWorkflowAssignments(cur.workflow, built, {
@@ -2532,11 +2450,7 @@ export class KilnWebStore {
                   }),
               { preserveResearch: true },
             )
-        : stripHostTwoPhaseWorkflow(
-            currentWorkflow,
-            hasDeliverCmd,
-            this.getHostStagedRoleIds(),
-          );
+        : stripHostTwoPhaseWorkflow(currentWorkflow, hasDeliverCmd, this.getHostStagedRoleIds());
     const nextForm: IntakeFormState = {
       ...cur,
       workspace_mode: ws,
@@ -2604,11 +2518,9 @@ export class KilnWebStore {
     if (merged.hostTwoPhase) {
       merged.deliverApproval = true;
     }
-    const nextWorkflow = preserveWorkflowAssignments(
-      cur.workflow,
-      buildCustomWorkflow(merged),
-      { preserveResearch: true },
-    );
+    const nextWorkflow = preserveWorkflowAssignments(cur.workflow, buildCustomWorkflow(merged), {
+      preserveResearch: true,
+    });
     const nextForm: IntakeFormState = {
       ...cur,
       track: merged.includeReview ? "L2" : "L1",
@@ -2624,8 +2536,7 @@ export class KilnWebStore {
     const cur = this.state.intakeForm;
     const prevDefault = this.state.spaces[cur.space]?.default_accept_cmd ?? "";
     const nextSpace = this.state.spaces[spaceId];
-    const shouldUpdateAccept =
-      cur.accept_cmd.trim() === "" || cur.accept_cmd === prevDefault;
+    const shouldUpdateAccept = cur.accept_cmd.trim() === "" || cur.accept_cmd === prevDefault;
     const currentWorkflow = resolveFormEffectiveWorkflow(cur);
     const toggles = extractWorkflowToggles(currentWorkflow);
     const nextWorkflow = stripHostTwoPhaseWorkflow(
@@ -2644,9 +2555,7 @@ export class KilnWebStore {
             workflow: nextWorkflow,
           }
         : {}),
-      accept_cmd: shouldUpdateAccept
-        ? (nextSpace?.default_accept_cmd ?? "")
-        : cur.accept_cmd,
+      accept_cmd: shouldUpdateAccept ? (nextSpace?.default_accept_cmd ?? "") : cur.accept_cmd,
     };
     this.setState({ intakeForm: nextForm });
     if (this.state.intakeActiveOpen) {
@@ -2654,10 +2563,7 @@ export class KilnWebStore {
     }
   }
 
-  setIntakeStepRosterRole(
-    stage: WorkflowAgentStage,
-    rosterRoleId: string | undefined,
-  ): void {
+  setIntakeStepRosterRole(stage: WorkflowAgentStage, rosterRoleId: string | undefined): void {
     const cur = this.state.intakeForm;
     const baseWorkflow = resolveFormEffectiveWorkflow(cur);
     const updateAgent = (node: WorkflowAgentNode): WorkflowAgentNode => {
@@ -2675,9 +2581,7 @@ export class KilnWebStore {
         if (step.kind === "loop") {
           return {
             ...step,
-            steps: step.steps.map((inner) =>
-              inner.kind === "agent" ? updateAgent(inner) : inner,
-            ),
+            steps: step.steps.map((inner) => (inner.kind === "agent" ? updateAgent(inner) : inner)),
           };
         }
         return step;
@@ -2754,11 +2658,7 @@ export class KilnWebStore {
   }
 
   async uploadIntakeAttachments(files: readonly File[]): Promise<void> {
-    if (
-      files.length === 0 ||
-      this.state.attachmentUploadBusy ||
-      this.state.intakeBusy
-    ) {
+    if (files.length === 0 || this.state.attachmentUploadBusy || this.state.intakeBusy) {
       return;
     }
     const f = this.state.intakeForm;
@@ -2849,9 +2749,7 @@ export class KilnWebStore {
     if (!draftId) {
       const nextForm: IntakeFormState = {
         ...this.state.intakeForm,
-        attachments: this.state.intakeForm.attachments.filter(
-          (a) => a.id !== attachmentId,
-        ),
+        attachments: this.state.intakeForm.attachments.filter((a) => a.id !== attachmentId),
       };
       this.setState({ intakeForm: nextForm });
       return true;
@@ -2924,8 +2822,7 @@ export class KilnWebStore {
         scope: scopeList.length > 0 ? scopeList : ["src/**"],
         ...(f.non_goals.length > 0 ? { non_goals: [...f.non_goals] } : {}),
         deliver,
-        human_accept:
-          toggles.includeAccept && toggles.acceptMode === "approval",
+        human_accept: toggles.includeAccept && toggles.acceptMode === "approval",
         external_actions: "ask",
       },
       brief_markdown: `# ${title}\n\n- 交付终点：${f.end.trim() || "合入 main"}\n- 验收命令：\`${f.accept_cmd.trim() || "pnpm test"}\``,
@@ -2996,9 +2893,7 @@ export class KilnWebStore {
 
       return {
         ...skeleton,
-        ...(typeof raw.space === "string" && raw.space.trim()
-          ? { space: raw.space.trim() }
-          : {}),
+        ...(typeof raw.space === "string" && raw.space.trim() ? { space: raw.space.trim() } : {}),
         ...(raw.priority === "P0" ||
         raw.priority === "P1" ||
         raw.priority === "P2" ||
@@ -3026,8 +2921,7 @@ export class KilnWebStore {
           ...(typeof rawContract?.end === "string" && rawContract.end.trim()
             ? { end: rawContract.end.trim() }
             : {}),
-          ...(typeof rawContract?.accept_cmd === "string" &&
-          rawContract.accept_cmd.trim()
+          ...(typeof rawContract?.accept_cmd === "string" && rawContract.accept_cmd.trim()
             ? { accept_cmd: rawContract.accept_cmd.trim() }
             : {}),
           ...(typeof rawContract?.accept_files_hash === "string" &&
@@ -3035,9 +2929,7 @@ export class KilnWebStore {
             ? { accept_files_hash: rawContract.accept_files_hash.trim() }
             : {}),
           ...(scopeArr.length > 0 ? { scope: scopeArr } : {}),
-          ...(Array.isArray(rawContract?.non_goals)
-            ? { non_goals: nonGoalsArr }
-            : {}),
+          ...(Array.isArray(rawContract?.non_goals) ? { non_goals: nonGoalsArr } : {}),
           ...(normalizedDeliver ? { deliver: normalizedDeliver } : {}),
           ...(typeof rawContract?.human_accept === "boolean"
             ? { human_accept: rawContract.human_accept }
@@ -3097,9 +2989,7 @@ export class KilnWebStore {
       .filter((_, i) => i !== index)
       .map((c) => ({
         ...c,
-        depends_on_temp_ids: c.depends_on_temp_ids.filter(
-          (tid) => tid.trim() !== removedId,
-        ),
+        depends_on_temp_ids: c.depends_on_temp_ids.filter((tid) => tid.trim() !== removedId),
       }));
     this.updateIntakeForm({ split_cards: next });
   }
@@ -3135,8 +3025,7 @@ export class KilnWebStore {
       }
       const res = await apiCommitSplitDraft(draftId, cards);
       clearActiveIntakePersistence();
-      const preferred =
-        this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
+      const preferred = this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
       this.setState({
         intakeBusy: false,
         intakeDraftId: null,
@@ -3176,8 +3065,7 @@ export class KilnWebStore {
   private async resetIntakeSessionState(markClosedOnServer: boolean): Promise<void> {
     const prevDraftId = this.state.intakeDraftId;
     clearActiveIntakePersistence();
-    const preferred =
-      this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
+    const preferred = this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
     this.setState({
       intakeDraftId: null,
       intakeForm: createDefaultIntakeForm(this.state.spaces, preferred),
@@ -3236,8 +3124,7 @@ export class KilnWebStore {
       intakeHasUnreadReply: false,
     });
     const msgs = await apiFetchDraftChat(draft.id).catch(() => null);
-    const nextMessages =
-      msgs && msgs.length > 0 ? msgs : defaultWelcomeIntakeMessages();
+    const nextMessages = msgs && msgs.length > 0 ? msgs : defaultWelcomeIntakeMessages();
     this.setState({ intakeMessages: nextMessages });
     writeLocalIntakeSnapshot(nextForm, nextMessages);
   }
@@ -3271,12 +3158,13 @@ export class KilnWebStore {
     const effectiveWorkspaceMode: Exclude<WorkspaceMode, "external_only"> =
       f.mode === "project"
         ? "git_worktree"
-        : (f.workspace_mode === "host_scoped" ? "host_scoped" : "scratch_dir");
+        : f.workspace_mode === "host_scoped"
+          ? "host_scoped"
+          : "scratch_dir";
 
     this.setState({ intakeBusy: true });
     try {
-      const keepActiveOpen =
-        this.state.intakeActiveOpen || this.state.intakeMessages.length > 1;
+      const keepActiveOpen = this.state.intakeActiveOpen || this.state.intakeMessages.length > 1;
       const effectiveWorkflow = resolveFormEffectiveWorkflow(f);
       const res = await apiUpsertDraft({
         ...(this.state.intakeDraftId ? { id: this.state.intakeDraftId } : {}),
@@ -3295,9 +3183,7 @@ export class KilnWebStore {
           ...(f.end.trim() ? { end: f.end.trim() } : {}),
           ...(f.accept_cmd.trim() ? { accept_cmd: f.accept_cmd.trim() } : {}),
           ...(scopeList.length > 0 ? { scope: scopeList } : {}),
-          ...(this.state.intakeDraftId || f.non_goals.length > 0
-            ? { non_goals: f.non_goals }
-            : {}),
+          ...(this.state.intakeDraftId || f.non_goals.length > 0 ? { non_goals: f.non_goals } : {}),
           ...(f.deliver_cmd.trim()
             ? { deliver: { mode: "run_cmd" as const, cmd: f.deliver_cmd.trim() } }
             : {}),
@@ -3350,7 +3236,9 @@ export class KilnWebStore {
     const effectiveWorkspaceMode: Exclude<WorkspaceMode, "external_only"> =
       f.mode === "project"
         ? "git_worktree"
-        : (f.workspace_mode === "host_scoped" ? "host_scoped" : "scratch_dir");
+        : f.workspace_mode === "host_scoped"
+          ? "host_scoped"
+          : "scratch_dir";
 
     if (f.mode === "project" && !isProjectSpace(this.state.spaces[effectiveSpace])) {
       this.showToast("请先选择或添加一个项目空间");
@@ -3425,9 +3313,9 @@ export class KilnWebStore {
       const deliverConfig = deliverCmdTrimmed
         ? { mode: "run_cmd" as const, cmd: deliverCmdTrimmed }
         : {
-            mode: (effectiveWorkspaceMode === "git_worktree"
-              ? "merge_main"
-              : "manual") as "merge_main" | "manual",
+            mode: (effectiveWorkspaceMode === "git_worktree" ? "merge_main" : "manual") as
+              | "merge_main"
+              | "manual",
             cmd: null,
           };
 
@@ -3451,8 +3339,7 @@ export class KilnWebStore {
           scope: scopeList,
           ...(f.non_goals.length > 0 ? { non_goals: f.non_goals } : {}),
           deliver: deliverConfig,
-          human_accept:
-            workflowToggles.includeAccept && workflowToggles.acceptMode === "approval",
+          human_accept: workflowToggles.includeAccept && workflowToggles.acceptMode === "approval",
           external_actions: "ask",
         },
         brief_markdown: customBrief.length > 0 ? f.brief_markdown : fallbackBrief,
@@ -3460,8 +3347,7 @@ export class KilnWebStore {
 
       const committed = await apiCommitDraft(draftId, payload);
       clearActiveIntakePersistence();
-      const preferred =
-        this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
+      const preferred = this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
       this.setState({
         intakeBusy: false,
         intakeDraftId: null,
@@ -3540,7 +3426,9 @@ export class KilnWebStore {
     const effectiveWorkspaceMode: Exclude<WorkspaceMode, "external_only"> =
       f.mode === "project"
         ? "git_worktree"
-        : (f.workspace_mode === "host_scoped" ? "host_scoped" : "scratch_dir");
+        : f.workspace_mode === "host_scoped"
+          ? "host_scoped"
+          : "scratch_dir";
 
     if (f.mode === "project" && !isProjectSpace(this.state.spaces[effectiveSpace])) {
       this.showToast("请先添加或选择目标项目空间，再开始项目立项对话");
@@ -3578,7 +3466,9 @@ export class KilnWebStore {
       const synced = await apiUpsertDraft({
         ...(this.state.intakeDraftId ? { id: this.state.intakeDraftId } : {}),
         ...(this.state.intakeDraftId
-          ? (f.title.trim() ? { title: f.title.trim() } : {})
+          ? f.title.trim()
+            ? { title: f.title.trim() }
+            : {}
           : { title: f.title.trim() || trimmed.slice(0, 32) }),
         space: effectiveSpace,
         priority: (f.priority || "P2") as Priority,
@@ -3650,7 +3540,7 @@ export class KilnWebStore {
       const latestAgentText =
         typeof res.reply === "string"
           ? res.reply
-          : res.reply?.text ?? nextMsgs[nextMsgs.length - 1]?.text ?? "";
+          : (res.reply?.text ?? nextMsgs[nextMsgs.length - 1]?.text ?? "");
       const extractedSplit = latestAgentText
         ? this.normalizeSplitCardsFromReply(latestAgentText, nextForm)
         : null;
@@ -3794,9 +3684,7 @@ export class KilnWebStore {
       nextPrice[field] = val;
     }
     const prevCustom = this.state.pricing.custom_models ?? [];
-    const nextCustom = prevCustom.includes(modelName)
-      ? prevCustom
-      : [...prevCustom, modelName];
+    const nextCustom = prevCustom.includes(modelName) ? prevCustom : [...prevCustom, modelName];
     this.setState({
       pricing: {
         ...this.state.pricing,
@@ -3948,13 +3836,9 @@ export class KilnWebStore {
     try {
       const res = await apiTestProvider(providerId);
       const next = res.status;
-      const exists = this.state.providerStatuses.some(
-        (p) => p.provider_id === next.provider_id,
-      );
+      const exists = this.state.providerStatuses.some((p) => p.provider_id === next.provider_id);
       const nextStatuses = exists
-        ? this.state.providerStatuses.map((p) =>
-            p.provider_id === next.provider_id ? next : p,
-          )
+        ? this.state.providerStatuses.map((p) => (p.provider_id === next.provider_id ? next : p))
         : [...this.state.providerStatuses, next];
       this.setState({
         providerStatuses: nextStatuses,
@@ -4005,10 +3889,7 @@ export class KilnWebStore {
     try {
       const res = await apiFetchAgents({ refresh });
       if (!res) return;
-      const totalModels = res.agents.reduce(
-        (sum, agent) => sum + (agent.models?.length ?? 0),
-        0,
-      );
+      const totalModels = res.agents.reduce((sum, agent) => sum + (agent.models?.length ?? 0), 0);
       this.setState({
         agents: res.agents,
         ...(res.backends.length > 0 || refresh ? { backends: res.backends } : {}),
@@ -4039,10 +3920,7 @@ export class KilnWebStore {
     }
   }
 
-  openAddSpaceModal(
-    selectInIntake = false,
-    prefillPath: string | null = null,
-  ): void {
+  openAddSpaceModal(selectInIntake = false, prefillPath: string | null = null): void {
     this.setState({
       spaceModalOpen: true,
       editingSpaceId: null,
@@ -4099,8 +3977,7 @@ export class KilnWebStore {
     } catch (err) {
       this.setState({
         discoverBusy: false,
-        discoverError:
-          err instanceof Error ? err.message : "扫描本机 Git 项目失败",
+        discoverError: err instanceof Error ? err.message : "扫描本机 Git 项目失败",
       });
     }
   }
@@ -4115,9 +3992,7 @@ export class KilnWebStore {
       }
       return res.path;
     } catch (err) {
-      this.showToast(
-        err instanceof Error ? err.message : "打开系统文件夹选择器失败",
-      );
+      this.showToast(err instanceof Error ? err.message : "打开系统文件夹选择器失败");
       return null;
     } finally {
       this.setState({ pickDirBusy: false });
@@ -4129,9 +4004,7 @@ export class KilnWebStore {
       await apiRevealLocalPath(targetPath);
       this.showToast("已在文件管理器中定位");
     } catch (err) {
-      this.showToast(
-        err instanceof Error ? err.message : "在文件管理器中定位路径失败",
-      );
+      this.showToast(err instanceof Error ? err.message : "在文件管理器中定位路径失败");
     }
   }
 
@@ -4155,9 +4028,7 @@ export class KilnWebStore {
       }
       this.openAddSpaceModal(selectInIntake, info.repo_path);
     } catch (err) {
-      this.showToast(
-        err instanceof Error ? err.message : "所选目录不是有效的 Git 仓库",
-      );
+      this.showToast(err instanceof Error ? err.message : "所选目录不是有效的 Git 仓库");
     }
   }
 
@@ -4183,17 +4054,12 @@ export class KilnWebStore {
       default_branch: info.default_branch,
       copy_untracked: info.copy_untracked,
       clone_deps: info.clone_deps,
-      ...(info.default_accept_cmd
-        ? { default_accept_cmd: info.default_accept_cmd }
-        : {}),
+      ...(info.default_accept_cmd ? { default_accept_cmd: info.default_accept_cmd } : {}),
       freeze_patterns: [],
     });
   }
 
-  async saveSpace(
-    spaceId: string,
-    payload: UpsertSpacePayload,
-  ): Promise<SpaceConfig> {
+  async saveSpace(spaceId: string, payload: UpsertSpacePayload): Promise<SpaceConfig> {
     const shouldSelectInIntake =
       this.state.spaceModalSelectInIntake ||
       (this.state.view === "intake" &&
@@ -4220,10 +4086,7 @@ export class KilnWebStore {
       if (this.state.spaceFilter === spaceId) {
         patch.spaceFilter = "all";
       }
-      if (
-        this.state.intakeForm.mode === "project" &&
-        this.state.intakeForm.space === spaceId
-      ) {
+      if (this.state.intakeForm.mode === "project" && this.state.intakeForm.space === spaceId) {
         patch.intakeForm = {
           ...this.state.intakeForm,
           space: remainingProjects[0]?.id ?? "",

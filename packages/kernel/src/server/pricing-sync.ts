@@ -203,9 +203,7 @@ export function parseModelsDevCatalog(raw: unknown): Record<string, ModelPricing
           ? { cache_write: roundPricePerMillion(c.cache_write) }
           : {}),
         out: roundPricePerMillion(c.output),
-        ...(isPositiveFiniteInt(contextRaw)
-          ? { context_window: Math.trunc(contextRaw) }
-          : {}),
+        ...(isPositiveFiniteInt(contextRaw) ? { context_window: Math.trunc(contextRaw) } : {}),
       };
 
       const explicitId =
@@ -215,7 +213,12 @@ export function parseModelsDevCatalog(raw: unknown): Record<string, ModelPricing
 
       if (explicitId) {
         storeCatalogEntry(catalog, `${providerId}/${explicitId}`, pricing, true);
-        storeCatalogEntry(catalog, explicitId, pricing, isOfficial && catalog[explicitId.toLowerCase()] === undefined);
+        storeCatalogEntry(
+          catalog,
+          explicitId,
+          pricing,
+          isOfficial && catalog[explicitId.toLowerCase()] === undefined,
+        );
       }
       storeCatalogEntry(catalog, `${providerId}/${modelKey}`, pricing, true);
       storeCatalogEntry(catalog, modelKey, pricing, false);
@@ -245,7 +248,10 @@ export function parseLiteLlmCatalog(raw: unknown): Record<string, ModelPricing> 
   for (const [rawKey, entryVal] of entries) {
     if (rawKey === "sample_spec" || !entryVal || typeof entryVal !== "object") continue;
     const entry = entryVal as Record<string, unknown>;
-    if (!isNonNegativeFinite(entry.input_cost_per_token) || !isNonNegativeFinite(entry.output_cost_per_token)) {
+    if (
+      !isNonNegativeFinite(entry.input_cost_per_token) ||
+      !isNonNegativeFinite(entry.output_cost_per_token)
+    ) {
       continue;
     }
     const rawCache = isNonNegativeFinite(entry.cache_read_input_token_cost)
@@ -579,10 +585,7 @@ export async function syncModelPricing(
         fetched_at_ms: nowMs,
         catalog,
       });
-      writeFileAtomic(
-        options.store.paths.pricingCacheFile,
-        `${JSON.stringify(cachePayload)}\n`,
-      );
+      writeFileAtomic(options.store.paths.pricingCacheFile, `${JSON.stringify(cachePayload)}\n`);
     } else {
       catalog = { ...BUILTIN_MODEL_PRICING };
       warning = `远程单价源不可用，已使用内置离线基线（${errors.join("; ")}）`;

@@ -15,11 +15,12 @@ import {
   type SessionRef,
   type SseEvent,
 } from "@kiln/protocol";
-import { BackendRegistry, type BackendRunSpec, type ExecutionBackend } from "../../backend/index.js";
 import {
-  KilndServer,
-  resolveNativeTuiCommand,
-} from "../index.js";
+  BackendRegistry,
+  type BackendRunSpec,
+  type ExecutionBackend,
+} from "../../backend/index.js";
+import { KilndServer, resolveNativeTuiCommand } from "../index.js";
 import { ensureDir, writeFileAtomic } from "../../store/index.js";
 
 function makeTempDir(prefix = "kiln-prov-api-"): string {
@@ -31,7 +32,9 @@ function createFakeGitRepo(repoPath: string): void {
   fs.writeFileSync(path.join(repoPath, "README.md"), "# repo\n", "utf8");
   execFileSync("git", ["init", "-b", "main", repoPath], { stdio: "pipe" });
   execFileSync("git", ["-C", repoPath, "config", "user.name", "Kiln Test"], { stdio: "pipe" });
-  execFileSync("git", ["-C", repoPath, "config", "user.email", "test@kiln.local"], { stdio: "pipe" });
+  execFileSync("git", ["-C", repoPath, "config", "user.email", "test@kiln.local"], {
+    stdio: "pipe",
+  });
   execFileSync("git", ["-C", repoPath, "add", "."], { stdio: "pipe" });
   execFileSync("git", ["-C", repoPath, "commit", "-m", "init"], { stdio: "pipe" });
 }
@@ -95,7 +98,9 @@ describe("Providers/Roster HTTP API, :4311 security isolation, SSE provider.stat
     expect(JSON.stringify(provJson)).not.toContain("super-secret-env-key");
 
     // 2. Local GET /api/settings/providers and PUT /api/settings/roster (syncs roles.yaml)
-    const getProvSettings = await server.app.request(new Request("http://127.0.0.1/api/settings/providers"));
+    const getProvSettings = await server.app.request(
+      new Request("http://127.0.0.1/api/settings/providers"),
+    );
     expect(getProvSettings.status).toBe(200);
     const getRoster = await server.app.request(new Request("http://127.0.0.1/api/settings/roster"));
     expect(getRoster.status).toBe(200);
@@ -135,13 +140,18 @@ describe("Providers/Roster HTTP API, :4311 security isolation, SSE provider.stat
     );
     unsub();
     expect(testRes.status).toBe(200);
-    const testJson = (await testRes.json()) as { ok: boolean; status: { provider_id: string; status: string } };
+    const testJson = (await testRes.json()) as {
+      ok: boolean;
+      status: { provider_id: string; status: string };
+    };
     expect(testJson.status.provider_id).toBe("codex");
     expect(testJson.status.status).toBe("ready");
     expect(sseEvents.filter((e) => e.type === "provider.status")).toHaveLength(1);
 
     // 4. Local vs Remote /api/bootstrap and :4311 local_only_endpoint isolation
-    const localBoot = await (await server.app.request(new Request("http://127.0.0.1/api/bootstrap"))).json() as {
+    const localBoot = (await (
+      await server.app.request(new Request("http://127.0.0.1/api/bootstrap"))
+    ).json()) as {
       providers?: unknown[];
       roster?: unknown;
       settings?: { providers?: unknown; roster?: unknown };
@@ -177,11 +187,11 @@ describe("Providers/Roster HTTP API, :4311 security isolation, SSE provider.stat
     expect(remProv.status).toBe(200);
     expect(JSON.stringify(await remProv.json())).not.toContain("super-secret-env-key");
 
-    const remBoot = await (
+    const remBoot = (await (
       await server.remoteApp.request(
         new Request("http://127.0.0.1/api/bootstrap", { headers: { Cookie: cookie } }),
       )
-    ).json() as { providers?: unknown[]; settings?: { providers?: unknown } };
+    ).json()) as { providers?: unknown[]; settings?: { providers?: unknown } };
     expect(Array.isArray(remBoot.providers)).toBe(true);
     expect(remBoot.settings?.providers).toBeUndefined();
     expect(JSON.stringify(remBoot)).not.toContain("super-secret-env-key");
@@ -246,7 +256,9 @@ describe("Providers/Roster HTTP API, :4311 security isolation, SSE provider.stat
     expect(detectJson.data.providers.find((p) => p.id === "gemini")?.enabled).toBe(false);
     expect(detectJson.data.providers.find((p) => p.id === "paseo")?.enabled).toBe(false);
     expect(detectJson.providers.find((p) => p.provider_id === "codex")?.status).toBe("ready");
-    expect(detectJson.providers.find((p) => p.provider_id === "gemini")?.status).toBe("unavailable");
+    expect(detectJson.providers.find((p) => p.provider_id === "gemini")?.status).toBe(
+      "unavailable",
+    );
     expect(detectJson.providers.find((p) => p.provider_id === "paseo")?.status).toBe("unavailable");
     const persisted = server.store.readEffectiveProvidersConfig();
     expect(persisted.providers.find((p) => p.id === "codex")?.enabled).toBe(true);
@@ -376,8 +388,18 @@ describe("Providers/Roster HTTP API, :4311 security isolation, SSE provider.stat
       schema_version: 1,
       heterogeneous_review: false,
       roles: {
-        worker: { agent: "claude", model: "claude-sonnet-4-6", backend_id: "fake", allow_full_access_fallback: false },
-        reviewer: { agent: "claude", model: "claude-sonnet-4-6", backend_id: "fake", allow_full_access_fallback: false },
+        worker: {
+          agent: "claude",
+          model: "claude-sonnet-4-6",
+          backend_id: "fake",
+          allow_full_access_fallback: false,
+        },
+        reviewer: {
+          agent: "claude",
+          model: "claude-sonnet-4-6",
+          backend_id: "fake",
+          allow_full_access_fallback: false,
+        },
       },
     });
     await server.start();
@@ -404,7 +426,13 @@ describe("Providers/Roster HTTP API, :4311 security isolation, SSE provider.stat
         human_accept: false,
         external_actions: "ask",
       },
-      limits: { retries_per_stage: 0, review_rounds: 1, advisor_calls: 0, max_tokens: 100000, max_card_tokens: 100000 },
+      limits: {
+        retries_per_stage: 0,
+        review_rounds: 1,
+        advisor_calls: 0,
+        max_tokens: 100000,
+        max_card_tokens: 100000,
+      },
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     });
@@ -416,9 +444,13 @@ describe("Providers/Roster HTTP API, :4311 security isolation, SSE provider.stat
     // Manually advance task to queued review so orchestrator runs review directly
     const worktreeDir = path.join(server.store.paths.workspaceDir("t-ro-guard"), "worktree");
     ensureDir(path.dirname(worktreeDir));
-    execFileSync("git", ["-C", repoPath, "worktree", "add", "-B", "kiln/t-ro-guard", worktreeDir, "main"], {
-      stdio: "pipe",
-    });
+    execFileSync(
+      "git",
+      ["-C", repoPath, "worktree", "add", "-B", "kiln/t-ro-guard", worktreeDir, "main"],
+      {
+        stdio: "pipe",
+      },
+    );
     server.store.appendStateEvent("t-ro-guard", {
       type: "running",
       stage: "review",
@@ -448,7 +480,11 @@ describe("Providers/Roster HTTP API, :4311 security isolation, SSE provider.stat
     expect(finalIdx?.status).toBe("waiting");
     const pending = server.pendingDecisions.get("t-ro-guard");
     expect(pending?.question).toContain("read_only_workspace_mutation");
-    expect(sseEvents.some((e) => e.type === "provider.status" && e.providerId === "claude" && e.status === "cooldown")).toBe(true);
+    expect(
+      sseEvents.some(
+        (e) => e.type === "provider.status" && e.providerId === "claude" && e.status === "cooldown",
+      ),
+    ).toBe(true);
     expect(server.providerHealth.isInCooldown("claude")).toBe(true);
   });
 
@@ -463,7 +499,9 @@ describe("Providers/Roster HTTP API, :4311 security isolation, SSE provider.stat
       binary: "gemini",
       args: ["--resume", "gem-9"],
     });
-    expect(resolveNativeTuiCommand({ agent: "antigravity", providerSessionId: "legacy" })).toMatchObject({
+    expect(
+      resolveNativeTuiCommand({ agent: "antigravity", providerSessionId: "legacy" }),
+    ).toMatchObject({
       ok: false,
       status: 400,
       code: "unsupported_tui_agent",

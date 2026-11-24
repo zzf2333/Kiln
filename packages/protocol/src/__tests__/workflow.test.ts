@@ -311,17 +311,47 @@ describe("workflow composable blueprint schemas & helpers", () => {
       preset: "custom",
       pm_rationale: "先后端再前端视觉精修",
       steps: [
-        { kind: "agent", stage: "plan", role: "advisor", fresh_context: true, roster_role: "architect" },
-        { kind: "agent", stage: "implement", role: "worker", fresh_context: false, roster_role: "main_dev" },
-        { kind: "agent", stage: "implement", role: "worker", fresh_context: false, roster_role: "frontend_ui" },
+        {
+          kind: "agent",
+          stage: "plan",
+          role: "advisor",
+          fresh_context: true,
+          roster_role: "architect",
+        },
+        {
+          kind: "agent",
+          stage: "implement",
+          role: "worker",
+          fresh_context: false,
+          roster_role: "main_dev",
+        },
+        {
+          kind: "agent",
+          stage: "implement",
+          role: "worker",
+          fresh_context: false,
+          roster_role: "frontend_ui",
+        },
         { kind: "gate", stage: "verify", check: "full" },
         {
           kind: "loop",
           max_rounds: 2,
           stuck_threshold: 2,
           steps: [
-            { kind: "agent", stage: "review", role: "reviewer", fresh_context: true, roster_role: "reviewer" },
-            { kind: "agent", stage: "implement", role: "worker", fresh_context: false, roster_role: "main_dev" },
+            {
+              kind: "agent",
+              stage: "review",
+              role: "reviewer",
+              fresh_context: true,
+              roster_role: "reviewer",
+            },
+            {
+              kind: "agent",
+              stage: "implement",
+              role: "worker",
+              fresh_context: false,
+              roster_role: "main_dev",
+            },
             { kind: "gate", stage: "verify", check: "full" },
           ],
         },
@@ -360,9 +390,17 @@ describe("workflow composable blueprint schemas & helpers", () => {
       node: { stage: "plan", roster_role: "architect" },
     });
     const s1 = nextWorkflowStepAfter(card, 0, "plan");
-    expect(s1).toMatchObject({ stepIndex: 1, stage: "implement", node: { roster_role: "main_dev" } });
+    expect(s1).toMatchObject({
+      stepIndex: 1,
+      stage: "implement",
+      node: { roster_role: "main_dev" },
+    });
     const s2 = nextWorkflowStepAfter(card, s1!.stepIndex, "implement");
-    expect(s2).toMatchObject({ stepIndex: 2, stage: "implement", node: { roster_role: "frontend_ui" } });
+    expect(s2).toMatchObject({
+      stepIndex: 2,
+      stage: "implement",
+      node: { roster_role: "frontend_ui" },
+    });
     const s3 = nextWorkflowStepAfter(card, s2!.stepIndex, "implement");
     expect(s3).toMatchObject({ stepIndex: 3, stage: "verify", node: { kind: "gate" } });
 

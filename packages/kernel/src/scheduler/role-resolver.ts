@@ -61,13 +61,7 @@ export class HeterogeneousReviewConflictError extends Error {
   readonly agent: string;
   readonly model: string;
 
-  constructor(
-    role: RoleId,
-    peerRole: RoleId,
-    agent: string,
-    model: string,
-    detail: string,
-  ) {
+  constructor(role: RoleId, peerRole: RoleId, agent: string, model: string, detail: string) {
     super(
       `Heterogeneous review conflict for role "${role}" vs "${peerRole}" on (${agent}, ${model}): ${detail}`,
     );
@@ -157,9 +151,7 @@ function filterCandidatesAvoidingPeers(
   candidates: readonly RosterModelBinding[],
   peers: ReadonlyArray<{ agent: string; model: string }>,
 ): RosterModelBinding[] {
-  const diffProvider = candidates.filter(
-    (cand) => !peers.some((p) => p.agent === cand.provider),
-  );
+  const diffProvider = candidates.filter((cand) => !peers.some((p) => p.agent === cand.provider));
   if (diffProvider.length > 0) {
     return diffProvider;
   }
@@ -232,8 +224,7 @@ export function resolveRoleAssignment(
     }
   }
 
-  const caps =
-    options?.capabilities ?? options?.agentCapabilitiesMap?.get(selectedAgent);
+  const caps = options?.capabilities ?? options?.agentCapabilitiesMap?.get(selectedAgent);
 
   if (INTERACTIVE_CHAT_ROLES.has(role) && caps !== undefined && !caps.interactiveChat) {
     throw new CapabilityMismatchError(role, selectedAgent, ["interactiveChat"]);
@@ -244,9 +235,7 @@ export function resolveRoleAssignment(
     ...(selectedBackendId !== undefined ? { backendId: selectedBackendId } : {}),
     agent: selectedAgent,
     model: selectedModel,
-    ...(selectedReasoningEffort !== undefined
-      ? { reasoningEffort: selectedReasoningEffort }
-      : {}),
+    ...(selectedReasoningEffort !== undefined ? { reasoningEffort: selectedReasoningEffort } : {}),
     freshContext: FRESH_CONTEXT_ROLES.has(role),
     allowFullAccessFallback: assignment.allow_full_access_fallback ?? false,
     usedFallback,
@@ -299,9 +288,7 @@ export function resolveRosterStageAssignment(
               perm: entry?.perm ?? (role === "resolver" ? "read_only_draft" : "read_only"),
               stage,
               secondary_stages: [],
-              ...(entry?.avoid_same_as !== undefined
-                ? { avoid_same_as: entry.avoid_same_as }
-                : {}),
+              ...(entry?.avoid_same_as !== undefined ? { avoid_same_as: entry.avoid_same_as } : {}),
               ...(entry?.custom_instructions !== undefined
                 ? { custom_instructions: entry.custom_instructions }
                 : {}),
@@ -343,11 +330,7 @@ export function resolveRosterStageAssignment(
   if (heterogeneousEnabled && (role === "reviewer" || entry.avoid_same_as !== undefined)) {
     const rawAvoid = entry.avoid_same_as;
     const avoidStages: StageId[] =
-      rawAvoid !== undefined
-        ? Array.isArray(rawAvoid)
-          ? rawAvoid
-          : [rawAvoid]
-        : ["implement"];
+      rawAvoid !== undefined ? (Array.isArray(rawAvoid) ? rawAvoid : [rawAvoid]) : ["implement"];
     const peers: Array<{ stage: StageId; agent: string; model: string }> = [];
     for (const peerStage of avoidStages) {
       if (peerStage === stage) continue;
@@ -457,9 +440,7 @@ export function resolveRosterStageAssignment(
     role,
     rosterRoleId,
     ...(inheritedFrom !== undefined ? { inheritedFrom } : {}),
-    ...(options?.escalateFromRole !== undefined
-      ? { escalatedFrom: options.escalateFromRole }
-      : {}),
+    ...(options?.escalateFromRole !== undefined ? { escalatedFrom: options.escalateFromRole } : {}),
     ...(heterogeneityLevel !== undefined ? { heterogeneityLevel } : {}),
     ...(entry.custom_instructions !== undefined
       ? { customInstructions: entry.custom_instructions }
@@ -470,8 +451,7 @@ export function resolveRosterStageAssignment(
     agent: selected.provider,
     model: selected.model,
     ...(selected.effort !== undefined ? { reasoningEffort: selected.effort } : {}),
-    freshContext:
-      FRESH_CONTEXT_ROLES.has(role) || options?.escalateFromRole !== undefined,
+    freshContext: FRESH_CONTEXT_ROLES.has(role) || options?.escalateFromRole !== undefined,
     allowFullAccessFallback: entry.allow_full_access_fallback ?? false,
     usedFallback,
   };

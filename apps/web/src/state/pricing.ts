@@ -28,9 +28,7 @@ function sanitizeCounters(
 } {
   const safeIn = Number.isFinite(inputTokens) && inputTokens > 0 ? inputTokens : 0;
   const safeCachedRaw =
-    Number.isFinite(cachedInputTokens) && cachedInputTokens > 0
-      ? cachedInputTokens
-      : 0;
+    Number.isFinite(cachedInputTokens) && cachedInputTokens > 0 ? cachedInputTokens : 0;
   const safeCached = Math.min(safeIn, safeCachedRaw);
   const safeWrite =
     Number.isFinite(cacheWriteTokens) && cacheWriteTokens > 0 ? cacheWriteTokens : 0;
@@ -126,10 +124,7 @@ export function computeGrandTotalCostUsd(
   );
 }
 
-export function computeGrandSavedUsd(
-  usage: UsageSnapshot,
-  pricing: PricingConfig | null,
-): number {
+export function computeGrandSavedUsd(usage: UsageSnapshot, pricing: PricingConfig | null): number {
   return Object.entries(usage.byModel).reduce(
     (sum, [modelName, bucket]) => sum + computeBucketSavedUsd(modelName, bucket, pricing),
     0,
@@ -149,7 +144,11 @@ export function computeAgentCostUsd(
     );
   }
   const agentKeys = Object.keys(usage.byAgent);
-  if (agentKeys.length === 1 && agentKeys[0] === agentName && Object.keys(usage.byModel).length > 0) {
+  if (
+    agentKeys.length === 1 &&
+    agentKeys[0] === agentName &&
+    Object.keys(usage.byModel).length > 0
+  ) {
     return computeGrandTotalCostUsd(usage, pricing);
   }
   return usage.byAgent[agentName]?.costUsd ?? 0;
@@ -195,10 +194,7 @@ export function computeTurnsCostUsd(
   return sum > 0 || pricing ? sum : fallbackCostUsd;
 }
 
-export function computeTaskCostUsd(
-  task: BootstrapTask,
-  pricing: PricingConfig | null,
-): number {
+export function computeTaskCostUsd(task: BootstrapTask, pricing: PricingConfig | null): number {
   const byModel = task.tokens_by_model ? Object.entries(task.tokens_by_model) : [];
   if (byModel.length > 0) {
     return byModel.reduce(

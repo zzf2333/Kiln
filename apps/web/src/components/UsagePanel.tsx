@@ -40,9 +40,7 @@ export function UsagePanel() {
 
   const hasModelBuckets = Object.keys(usage.byModel).length > 0;
   const computedCost = computeGrandTotalCostUsd(usage, pricing);
-  const displayCostUsd = hasModelBuckets
-    ? computedCost
-    : (liveTotals?.costUsd ?? computedCost);
+  const displayCostUsd = hasModelBuckets ? computedCost : (liveTotals?.costUsd ?? computedCost);
 
   const liveRateByAgent: Record<string, number> = {};
   for (const t of runningLeafTasks) {
@@ -53,13 +51,9 @@ export function UsagePanel() {
   }
 
   const quotas = extractEffectiveQuotas(providerStatuses, providerUsage);
-  const agentNames = Array.from(
-    new Set([...Object.keys(usage.byAgent), ...Object.keys(quotas)]),
-  );
+  const agentNames = Array.from(new Set([...Object.keys(usage.byAgent), ...Object.keys(quotas)]));
 
-  const readyProvidersCount = providerStatuses.filter(
-    (p) => p.status === "ready",
-  ).length;
+  const readyProvidersCount = providerStatuses.filter((p) => p.status === "ready").length;
   const paseoConnected = backends.some(
     (b) => (b.backendId ?? b.id ?? "").toLowerCase().includes("paseo") && b.connected,
   );

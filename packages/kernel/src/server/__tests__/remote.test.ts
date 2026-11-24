@@ -25,9 +25,7 @@ function makeFakeChild(): CaffeinateChildProcess & {
   killCalls: Array<NodeJS.Signals | number | undefined>;
   emitExit: () => void;
 } {
-  const exitListeners: Array<
-    (code: number | null, signal: NodeJS.Signals | null) => void
-  > = [];
+  const exitListeners: Array<(code: number | null, signal: NodeJS.Signals | null) => void> = [];
   const killCalls: Array<NodeJS.Signals | number | undefined> = [];
   return {
     killCalls,
@@ -61,9 +59,7 @@ function extractKilnSessionCookie(setCookieHeader: string | null): string {
   return match![1]!;
 }
 
-function parseSseFrames(
-  chunkText: string,
-): Array<{ id: number; event: string; data: SseEvent }> {
+function parseSseFrames(chunkText: string): Array<{ id: number; event: string; data: SseEvent }> {
   const frames: Array<{ id: number; event: string; data: SseEvent }> = [];
   for (const block of chunkText.split("\n\n").filter((b) => b.trim().length > 0)) {
     let id = -1;
@@ -92,9 +88,10 @@ describe("Tunnel-Agnostic Remote Access: Fail-Closed Dual-Port Security & Auth",
     }
   });
 
-  function createServer(
-    overrides: ConstructorParameters<typeof KilndServer>[0] = {},
-  ): { server: KilndServer; kilnHome: string } {
+  function createServer(overrides: ConstructorParameters<typeof KilndServer>[0] = {}): {
+    server: KilndServer;
+    kilnHome: string;
+  } {
     const kilnHome = makeTempDir();
     tempDirs.push(kilnHome);
     const server = new KilndServer({
@@ -326,22 +323,15 @@ describe("Tunnel-Agnostic Remote Access: Fail-Closed Dual-Port Security & Auth",
     });
 
     // Static frontend shell assets are accessible unauthenticated on :4311
+    expect((await server.remoteApp.request(new Request("http://127.0.0.1:4311/"))).status).toBe(
+      200,
+    );
     expect(
-      (await server.remoteApp.request(new Request("http://127.0.0.1:4311/"))).status,
+      (await server.remoteApp.request(new Request("http://127.0.0.1:4311/manifest.webmanifest")))
+        .status,
     ).toBe(200);
     expect(
-      (
-        await server.remoteApp.request(
-          new Request("http://127.0.0.1:4311/manifest.webmanifest"),
-        )
-      ).status,
-    ).toBe(200);
-    expect(
-      (
-        await server.remoteApp.request(
-          new Request("http://127.0.0.1:4311/assets/app.js"),
-        )
-      ).status,
+      (await server.remoteApp.request(new Request("http://127.0.0.1:4311/assets/app.js"))).status,
     ).toBe(200);
 
     // Every protected API & SSE route returns 401 EVEN over 127.0.0.1 loopback!
@@ -420,9 +410,7 @@ describe("Tunnel-Agnostic Remote Access: Fail-Closed Dual-Port Security & Auth",
       }),
     );
     expect(expiredRes.status).toBe(401);
-    expect(((await expiredRes.json()) as { error: string }).error).toBe(
-      "pairing_expired",
-    );
+    expect(((await expiredRes.json()) as { error: string }).error).toBe("pairing_expired");
 
     // 2. Test max 5 failed attempts invalidating active challenge
     const ch2Res = await server.app.request(
@@ -549,9 +537,7 @@ describe("Tunnel-Agnostic Remote Access: Fail-Closed Dual-Port Security & Auth",
     // Constant-time helper & strict cookie parser sanity checks
     expect(timingSafeStringEqual("abc", "abc")).toBe(true);
     expect(timingSafeStringEqual("abc", "abcd")).toBe(false);
-    expect(parseSessionCookie("other_kiln_session=bad; kiln_session=real123; x=1")).toBe(
-      "real123",
-    );
+    expect(parseSessionCookie("other_kiln_session=bad; kiln_session=real123; x=1")).toBe("real123");
     expect(parseSessionCookie("other_kiln_session=bad")).toBeNull();
   });
 
@@ -592,9 +578,7 @@ describe("Tunnel-Agnostic Remote Access: Fail-Closed Dual-Port Security & Auth",
       }),
     );
     expect(noCsrfRes.status).toBe(403);
-    expect(((await noCsrfRes.json()) as { error: string }).error).toBe(
-      "csrf_check_failed",
-    );
+    expect(((await noCsrfRes.json()) as { error: string }).error).toBe("csrf_check_failed");
 
     // CSRF: mismatched Origin -> 403 EVEN IF X-Kiln-Client: web is present
     const badOriginRes = await server.remoteApp.request(
@@ -610,9 +594,7 @@ describe("Tunnel-Agnostic Remote Access: Fail-Closed Dual-Port Security & Auth",
       }),
     );
     expect(badOriginRes.status).toBe(403);
-    expect(((await badOriginRes.json()) as { error: string }).error).toBe(
-      "csrf_origin_mismatch",
-    );
+    expect(((await badOriginRes.json()) as { error: string }).error).toBe("csrf_origin_mismatch");
 
     // CSRF: Origin: null -> 403
     const nullOriginRes = await server.remoteApp.request(
@@ -726,9 +708,7 @@ describe("Tunnel-Agnostic Remote Access: Fail-Closed Dual-Port Security & Auth",
     for (const req of adminRequests) {
       const res = await server.remoteApp.request(req);
       expect(res.status, `${req.method} ${req.url} must return 403`).toBe(403);
-      expect(((await res.json()) as { error: string }).error).toBe(
-        "local_only_endpoint",
-      );
+      expect(((await res.json()) as { error: string }).error).toBe("local_only_endpoint");
     }
   });
 
@@ -737,9 +717,7 @@ describe("Tunnel-Agnostic Remote Access: Fail-Closed Dual-Port Security & Auth",
     const devA = await pairDevice(server, { label: "iPhone A" });
     const devB = await pairDevice(server, { label: "iPad B" });
 
-    const localSseRes = await server.app.request(
-      new Request("http://127.0.0.1:4310/api/events"),
-    );
+    const localSseRes = await server.app.request(new Request("http://127.0.0.1:4310/api/events"));
     expect(localSseRes.status).toBe(200);
     const localReader = localSseRes.body!.getReader();
 
@@ -772,9 +750,7 @@ describe("Tunnel-Agnostic Remote Access: Fail-Closed Dual-Port Security & Auth",
       devAReader.read(),
       devBReader.read(),
     ]);
-    expect(parseSseFrames(decoder.decode(cLocal.value))[0]?.data.type).toBe(
-      "task.updated",
-    );
+    expect(parseSseFrames(decoder.decode(cLocal.value))[0]?.data.type).toBe("task.updated");
     expect(parseSseFrames(decoder.decode(cA.value))[0]?.data.type).toBe("task.updated");
     expect(parseSseFrames(decoder.decode(cB.value))[0]?.data.type).toBe("task.updated");
 
@@ -894,9 +870,7 @@ describe("Tunnel-Agnostic Remote Access: Fail-Closed Dual-Port Security & Auth",
     controller.setRemoteKeepAwakeOnAc(true);
     expect(controller.mode).toBe("remote_ac_standby");
     expect(controller.isActive).toBe(true);
-    expect(spawns).toEqual([
-      { command: "/usr/bin/caffeinate", args: ["-s", "-w", "7777"] },
-    ]);
+    expect(spawns).toEqual([{ command: "/usr/bin/caffeinate", args: ["-s", "-w", "7777"] }]);
 
     // Idempotent repeat call does not respawn
     controller.setRemoteKeepAwakeOnAc(true);
@@ -1047,10 +1021,7 @@ describe("Tunnel-Agnostic Remote Access: Fail-Closed Dual-Port Security & Auth",
     expect(whReq.headers.Authorization).toBe("Bearer wh-secret-key");
     const expectedHmac =
       "sha256=" +
-      crypto
-        .createHmac("sha256", "wh-secret-key")
-        .update(whReq.body, "utf8")
-        .digest("hex");
+      crypto.createHmac("sha256", "wh-secret-key").update(whReq.body, "utf8").digest("hex");
     expect(whReq.headers["X-Kiln-Signature-256"]).toBe(expectedHmac);
     const whBody = JSON.parse(whReq.body) as {
       event: string;
@@ -1188,9 +1159,7 @@ describe("Tunnel-Agnostic Remote Access: Fail-Closed Dual-Port Security & Auth",
       }),
     );
     expect(conflictRes.status).toBe(400);
-    expect(((await conflictRes.json()) as { error: string }).error).toBe(
-      "remote_port_conflict",
-    );
+    expect(((await conflictRes.json()) as { error: string }).error).toBe("remote_port_conflict");
   });
 
   it("inspects Tailscale status read-only with graceful fallback when absent", async () => {
@@ -1302,9 +1271,7 @@ describe("Tunnel-Agnostic Remote Access: Fail-Closed Dual-Port Security & Auth",
       }),
     );
     expect(unauthPick.status).toBe(403);
-    expect(((await unauthPick.json()) as { error: string }).error).toBe(
-      "local_only_endpoint",
-    );
+    expect(((await unauthPick.json()) as { error: string }).error).toBe("local_only_endpoint");
 
     // Pair a remote device and verify authenticated /api/spaces/discover -> 200 while pick-directory -> 403
     const chRes = await server.app.request(
@@ -1343,8 +1310,6 @@ describe("Tunnel-Agnostic Remote Access: Fail-Closed Dual-Port Security & Auth",
       }),
     );
     expect(authPick.status).toBe(403);
-    expect(((await authPick.json()) as { error: string }).error).toBe(
-      "local_only_endpoint",
-    );
+    expect(((await authPick.json()) as { error: string }).error).toBe("local_only_endpoint");
   });
 });

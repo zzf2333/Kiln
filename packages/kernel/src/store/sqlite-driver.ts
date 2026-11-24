@@ -71,10 +71,7 @@ function normalizeRow(row: unknown): Record<string, unknown> {
   return {};
 }
 
-function wrapStatement(
-  rawStmt: RawSqliteStatement,
-  onFinalize?: () => void,
-): SqliteStatement {
+function wrapStatement(rawStmt: RawSqliteStatement, onFinalize?: () => void): SqliteStatement {
   // Belt-and-suspenders for Node 22.13-22.14 statement-level toggle alongside constructor option.
   if (typeof rawStmt.setAllowUnknownNamedParameters === "function") {
     rawStmt.setAllowUnknownNamedParameters(true);

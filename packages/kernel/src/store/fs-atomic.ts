@@ -65,9 +65,7 @@ export function writeFileAtomic(
   let fd: number | null = null;
   try {
     fd =
-      posixMode !== undefined
-        ? fs.openSync(tmpPath, "wx", posixMode)
-        : fs.openSync(tmpPath, "wx");
+      posixMode !== undefined ? fs.openSync(tmpPath, "wx", posixMode) : fs.openSync(tmpPath, "wx");
     if (posixMode !== undefined) {
       fs.fchmodSync(fd, posixMode);
     }

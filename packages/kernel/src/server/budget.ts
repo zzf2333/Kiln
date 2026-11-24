@@ -110,21 +110,14 @@ export function computeTaskSpentUsd(store: KilnStore, taskId: string): number {
   const excludeSub = Boolean(limits?.budget_exclude_subscription_providers);
   const providersCfg = store.readEffectiveProvidersConfig();
   const pricing = store.readConfig("pricing");
-  const turns = filterBudgetUsageTurns(
-    store.listUsageTurns({ taskId }),
-    providersCfg,
-    excludeSub,
-  );
+  const turns = filterBudgetUsageTurns(store.listUsageTurns({ taskId }), providersCfg, excludeSub);
   return computeUsageSnapshot(turns, pricing).costUsd;
 }
 
 /**
  * Evaluates a single task card's USD budget status against `card.limits.max_cost_usd`.
  */
-export function computeTaskBudgetStatus(
-  store: KilnStore,
-  card: TaskCard,
-): BudgetScopeStatus {
+export function computeTaskBudgetStatus(store: KilnStore, card: TaskCard): BudgetScopeStatus {
   const limits = store.readConfig("limits");
   const softRatio = limits?.budget_soft_warning_ratio ?? DEFAULT_SOFT_WARNING_RATIO;
   const spent = computeTaskSpentUsd(store, card.id);
@@ -136,20 +129,13 @@ export function computeTaskBudgetStatus(
  * Computes global natural-day and natural-month USD budget consumption from persisted `usage_turns`,
  * ensuring exact consistency after `rebuildIndexFromDisk()`.
  */
-export function computeGlobalBudgetStatus(
-  store: KilnStore,
-  now = new Date(),
-): GlobalBudgetStatus {
+export function computeGlobalBudgetStatus(store: KilnStore, now = new Date()): GlobalBudgetStatus {
   const limits = store.readConfig("limits");
   const softRatio = limits?.budget_soft_warning_ratio ?? DEFAULT_SOFT_WARNING_RATIO;
   const excludeSub = Boolean(limits?.budget_exclude_subscription_providers);
   const providersCfg = store.readEffectiveProvidersConfig();
   const pricing = store.readConfig("pricing");
-  const allTurns = filterBudgetUsageTurns(
-    store.listUsageTurns(),
-    providersCfg,
-    excludeSub,
-  );
+  const allTurns = filterBudgetUsageTurns(store.listUsageTurns(), providersCfg, excludeSub);
 
   const dayStartMs = Date.parse(startOfLocalDayIso(now));
   const monthStartMs = Date.parse(startOfLocalMonthIso(now));
@@ -171,12 +157,7 @@ export function computeGlobalBudgetStatus(
   const monthlySpent = computeUsageSnapshot(monthlyTurns, pricing).costUsd;
 
   return {
-    daily: buildScopeStatus(
-      "daily",
-      dailySpent,
-      limits?.daily_budget_usd ?? null,
-      softRatio,
-    ),
+    daily: buildScopeStatus("daily", dailySpent, limits?.daily_budget_usd ?? null, softRatio),
     monthly: buildScopeStatus(
       "monthly",
       monthlySpent,

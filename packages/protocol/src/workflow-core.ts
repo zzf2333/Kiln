@@ -7,13 +7,7 @@ import type {
 } from "./constants.js";
 import { isReadOnlyRosterPermission } from "./constants.js";
 
-export const WORKFLOW_AGENT_STAGES = [
-  "plan",
-  "research",
-  "implement",
-  "review",
-  "accept",
-] as const;
+export const WORKFLOW_AGENT_STAGES = ["plan", "research", "implement", "review", "accept"] as const;
 export type WorkflowAgentStage = (typeof WORKFLOW_AGENT_STAGES)[number];
 
 export const WORKFLOW_AGENT_ROLES = ["advisor", "worker", "reviewer", "verifier"] as const;
@@ -812,15 +806,12 @@ export function getDeliverCommandPolicy(card: WorkflowCardLike): {
 
   const flat = flattenWorkflowSteps(card.workflow!);
   const cmdNode = flat.find((n): n is WorkflowCommandNode => n.kind === "command");
-  const hasDeliverApproval = flat.some(
-    (n) => n.kind === "approval" && n.stage === "deliver",
-  );
+  const hasDeliverApproval = flat.some((n) => n.kind === "approval" && n.stage === "deliver");
 
   return {
     hasCommandNode: Boolean(cmdNode),
     applyStaged: Boolean(cmdNode?.apply_staged),
-    runDeliverCmd:
-      Boolean(cmdNode?.run_deliver_cmd) || card.contract.deliver?.mode === "run_cmd",
+    runDeliverCmd: Boolean(cmdNode?.run_deliver_cmd) || card.contract.deliver?.mode === "run_cmd",
     verifySha256: Boolean(cmdNode?.verify_sha256),
     finalAcceptGate: Boolean(cmdNode?.final_accept_gate),
     requiresDeliverApproval: hasDeliverApproval,

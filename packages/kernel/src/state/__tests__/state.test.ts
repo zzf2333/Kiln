@@ -276,19 +276,10 @@ describe("DAG validation, effective priority inheritance, and queued downstream 
   it("propagates effective priorities across incomplete nodes and isolates terminal nodes", () => {
     const nodes = new Map([
       ["t-root", { priority: "P3" as const, status: "queued" as const, dependsOn: [] }],
-      [
-        "t-mid",
-        { priority: "P2" as const, status: "waiting" as const, dependsOn: ["t-root"] },
-      ],
-      [
-        "t-leaf",
-        { priority: "P0" as const, status: "running" as const, dependsOn: ["t-mid"] },
-      ],
+      ["t-mid", { priority: "P2" as const, status: "waiting" as const, dependsOn: ["t-root"] }],
+      ["t-leaf", { priority: "P0" as const, status: "running" as const, dependsOn: ["t-mid"] }],
       // Terminal done/cancelled nodes must neither receive nor propagate boosts
-      [
-        "t-done-parent",
-        { priority: "P3" as const, status: "done" as const, dependsOn: [] },
-      ],
+      ["t-done-parent", { priority: "P3" as const, status: "done" as const, dependsOn: [] }],
       [
         "t-blocked-by-done",
         {
@@ -305,10 +296,7 @@ describe("DAG validation, effective priority inheritance, and queued downstream 
           dependsOn: ["t-root-2"],
         },
       ],
-      [
-        "t-root-2",
-        { priority: "P3" as const, status: "queued" as const, dependsOn: [] },
-      ],
+      ["t-root-2", { priority: "P3" as const, status: "queued" as const, dependsOn: [] }],
       [
         "t-below-cancelled",
         {
@@ -371,9 +359,7 @@ describe("6+1 state transitions, track stages, and external side-effect idempote
     expect(() => assertValidTransition("paused", "waiting")).toThrowError(
       InvalidStateTransitionError,
     );
-    expect(() => assertValidTransition("done", "queued")).toThrowError(
-      InvalidStateTransitionError,
-    );
+    expect(() => assertValidTransition("done", "queued")).toThrowError(InvalidStateTransitionError);
     expect(() => assertValidTransition("cancelled", "queued")).toThrowError(
       InvalidStateTransitionError,
     );
@@ -404,18 +390,8 @@ describe("6+1 state transitions, track stages, and external side-effect idempote
 
   it("resolves L1/L2 stage pipelines and throws UnsupportedTrackError for L3", () => {
     expect(getTrackStages("L1", false)).toEqual(["implement", "verify", "deliver"]);
-    expect(getTrackStages("L1", true)).toEqual([
-      "implement",
-      "verify",
-      "accept",
-      "deliver",
-    ]);
-    expect(getTrackStages("L2", false)).toEqual([
-      "implement",
-      "verify",
-      "review",
-      "deliver",
-    ]);
+    expect(getTrackStages("L1", true)).toEqual(["implement", "verify", "accept", "deliver"]);
+    expect(getTrackStages("L2", false)).toEqual(["implement", "verify", "review", "deliver"]);
     expect(getTrackStages("L2", true)).toEqual([
       "implement",
       "verify",
@@ -433,9 +409,7 @@ describe("6+1 state transitions, track stages, and external side-effect idempote
     expect(nextStageAfter("L2", "review", true)).toBe("accept");
 
     expect(() => getTrackStages("L3", false)).toThrowError(UnsupportedTrackError);
-    expect(() => nextStageAfter("L3", "implement", false)).toThrowError(
-      UnsupportedTrackError,
-    );
+    expect(() => nextStageAfter("L3", "implement", false)).toThrowError(UnsupportedTrackError);
     expect(() => nextStageAfter("L1", "review", false)).toThrow();
   });
 
@@ -498,9 +472,7 @@ describe("Escalation chain, circuit breaker, advisor authorization, and gate ver
     const forbidden: Array<"worker" | "reviewer" | "verifier" | "intake" | "resolver" | "advisor"> =
       ["worker", "reviewer", "verifier", "intake", "resolver", "advisor"];
     for (const role of forbidden) {
-      expect(() => assertCanInvokeAdvisor(role)).toThrowError(
-        UnauthorizedAdvisorCallError,
-      );
+      expect(() => assertCanInvokeAdvisor(role)).toThrowError(UnauthorizedAdvisorCallError);
     }
   });
 
@@ -777,35 +749,23 @@ describe("TaskStateMachine integration with real KilnStore and SQLite disk rebui
 
   it("rejects DAG cycles, unknown prerequisites, and L3 tasks on creation while syncing effective priorities across disk rebuild", () => {
     // Reject L3 Post-MVP task
-    expect(() =>
-      sm.createTask(makeTaskCard({ id: "t-l3", track: "L3" }), "# L3"),
-    ).toThrowError(UnsupportedTrackError);
+    expect(() => sm.createTask(makeTaskCard({ id: "t-l3", track: "L3" }), "# L3")).toThrowError(
+      UnsupportedTrackError,
+    );
 
     // Reject self-loop on createTask
     expect(() =>
-      sm.createTask(
-        makeTaskCard({ id: "t-self", depends_on: ["t-self"] }),
-        "# Self loop",
-      ),
+      sm.createTask(makeTaskCard({ id: "t-self", depends_on: ["t-self"] }), "# Self loop"),
     ).toThrowError(DependencyCycleError);
 
     // Reject missing dependency
     expect(() =>
-      sm.createTask(
-        makeTaskCard({ id: "t-bad", depends_on: ["t-nonexistent"] }),
-        "# Bad",
-      ),
+      sm.createTask(makeTaskCard({ id: "t-bad", depends_on: ["t-nonexistent"] }), "# Bad"),
     ).toThrowError(MissingDependencyError);
 
     sm.createTask(makeTaskCard({ id: "t-1", priority: "P3" }), "# Task 1");
-    sm.createTask(
-      makeTaskCard({ id: "t-2", priority: "P2", depends_on: ["t-1"] }),
-      "# Task 2",
-    );
-    sm.createTask(
-      makeTaskCard({ id: "t-3", priority: "P0", depends_on: ["t-2"] }),
-      "# Task 3",
-    );
+    sm.createTask(makeTaskCard({ id: "t-2", priority: "P2", depends_on: ["t-1"] }), "# Task 2");
+    sm.createTask(makeTaskCard({ id: "t-3", priority: "P0", depends_on: ["t-2"] }), "# Task 3");
 
     expect(store.getTaskIndex("t-1")?.effective_priority).toBe("P0");
     expect(store.getTaskIndex("t-2")?.effective_priority).toBe("P0");
@@ -836,11 +796,7 @@ describe("TaskStateMachine integration with real KilnStore and SQLite disk rebui
     expect(lease).toEqual({ acquired: true });
     expect(store.listActiveStageLeases()).toHaveLength(1);
 
-    const pausedState = sm.pauseTask(
-      "t-pause",
-      "用户临时叫停检查",
-      "2026-11-19T10:03:00.000Z",
-    );
+    const pausedState = sm.pauseTask("t-pause", "用户临时叫停检查", "2026-11-19T10:03:00.000Z");
     expect(pausedState.status).toBe("paused");
     expect(pausedState.stage).toBe("review");
     expect(store.listActiveStageLeases()).toHaveLength(0);
@@ -905,16 +861,12 @@ describe("TaskStateMachine integration with real KilnStore and SQLite disk rebui
     expect(store.getTaskIndex("t-up")?.effective_priority).toBe("P0");
 
     // Cannot unbind before upstream is cancelled
-    expect(() =>
-      sm.unbindCancelledDependency("t-down-q", "t-up"),
-    ).toThrowError(/expected "cancelled"/);
+    expect(() => sm.unbindCancelledDependency("t-down-q", "t-up")).toThrowError(
+      /expected "cancelled"/,
+    );
 
     // Cancel t-up -> t-down-q enters waiting(upstream_cancelled); t-leaf-q remains queued; t-up relaxes to P3
-    const cancelRes = sm.cancelTask(
-      "t-up",
-      "需求作废",
-      "2026-11-19T10:05:00.000Z",
-    );
+    const cancelRes = sm.cancelTask("t-up", "需求作废", "2026-11-19T10:05:00.000Z");
     expect(cancelRes.state.status).toBe("cancelled");
     expect(cancelRes.waitingDownstreamTaskIds).toEqual(["t-down-q"]);
 
@@ -928,11 +880,7 @@ describe("TaskStateMachine integration with real KilnStore and SQLite disk rebui
     });
 
     // Unbind cancelled dependency and resume via decision
-    const unbindRes = sm.unbindCancelledDependency(
-      "t-down-q",
-      "t-up",
-      "2026-11-19T10:06:00.000Z",
-    );
+    const unbindRes = sm.unbindCancelledDependency("t-down-q", "t-up", "2026-11-19T10:06:00.000Z");
     expect(unbindRes.dependsOn).toEqual([]);
     expect(store.readTaskCard("t-down-q").depends_on).toEqual([]);
 
@@ -985,11 +933,7 @@ describe("TaskStateMachine integration with real KilnStore and SQLite disk rebui
     expect(store.getTaskIndex("t-dec")?.track).toBe("L2");
 
     const eventCountAfterEscalate = store.readStateEvents("t-dec").length;
-    const escalatedAgain = sm.escalateTrackToL2(
-      "t-dec",
-      "duplicate",
-      "2026-11-19T10:03:10.000Z",
-    );
+    const escalatedAgain = sm.escalateTrackToL2("t-dec", "duplicate", "2026-11-19T10:03:10.000Z");
     expect(escalatedAgain.track).toBe("L2");
     expect(store.readStateEvents("t-dec")).toHaveLength(eventCountAfterEscalate);
 
@@ -1097,10 +1041,7 @@ describe("TaskStateMachine integration with real KilnStore and SQLite disk rebui
 
     // 4. Cancel action inside applyDecision cascades upstream_cancelled to queued downstream
     sm.createTask(makeTaskCard({ id: "t-parent" }), "# Parent");
-    sm.createTask(
-      makeTaskCard({ id: "t-child", depends_on: ["t-parent"] }),
-      "# Child",
-    );
+    sm.createTask(makeTaskCard({ id: "t-child", depends_on: ["t-parent"] }), "# Child");
     const cancelDecision = makePendingDecision({
       id: "dec-cancel",
       task_id: "t-parent",
@@ -1255,10 +1196,7 @@ describe("TaskStateMachine integration with real KilnStore and SQLite disk rebui
 
   it("moves paused downstream to waiting(upstream_cancelled) on resumeTask and checks cancelled deps on createTask", () => {
     sm.createTask(makeTaskCard({ id: "t-up" }), "# Up");
-    sm.createTask(
-      makeTaskCard({ id: "t-down-p", depends_on: ["t-up"] }),
-      "# Paused downstream",
-    );
+    sm.createTask(makeTaskCard({ id: "t-down-p", depends_on: ["t-up"] }), "# Paused downstream");
 
     sm.pauseTask("t-down-p", "manual_pause", "2026-11-19T10:01:00.000Z");
     sm.cancelTask("t-up", "cancelled upstream", "2026-11-19T10:02:00.000Z");
@@ -1453,10 +1391,7 @@ describe("TaskStateMachine integration with real KilnStore and SQLite disk rebui
 
   it("supports resuming external tasks back to queued (with optional targetStage and upstream_cancelled check) and completing external tasks to done", () => {
     sm.createTask(makeTaskCard({ id: "t-ext-up" }), "# Up");
-    sm.createTask(
-      makeTaskCard({ id: "t-ext-resume", track: "L2" }),
-      "# External resume",
-    );
+    sm.createTask(makeTaskCard({ id: "t-ext-resume", track: "L2" }), "# External resume");
     const dec = makePendingDecision({
       id: "dec-ext-1",
       task_id: "t-ext-resume",
@@ -1523,9 +1458,7 @@ describe("TaskStateMachine integration with real KilnStore and SQLite disk rebui
       deliver_ref: "pr#42-merged",
     });
 
-    expect(() => sm.completeExternalTask("t-ext-resume")).toThrow(
-      InvalidStateTransitionError,
-    );
+    expect(() => sm.completeExternalTask("t-ext-resume")).toThrow(InvalidStateTransitionError);
   });
 
   it("drives task pipeline stages via composable workflow blueprints, honors loop max_rounds, and injects review on L1->L2 escalation", () => {

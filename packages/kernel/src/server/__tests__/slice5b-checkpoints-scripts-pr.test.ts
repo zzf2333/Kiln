@@ -325,7 +325,9 @@ describe("Slice 5b: Implicit Git Checkpoints, Streaming Scripts, Commit->Push->P
 
     // Verify setup script streamed script.output events
     expect(
-      sseEvents.some((e) => e.type === "script.output" && e.scriptKey === "setup" && e.done === true),
+      sseEvents.some(
+        (e) => e.type === "script.output" && e.scriptKey === "setup" && e.done === true,
+      ),
     ).toBe(true);
 
     const detailRes = await server.app.request(new Request("http://127.0.0.1/api/tasks/t-ckpt-1"));
@@ -492,7 +494,9 @@ describe("Slice 5b: Implicit Git Checkpoints, Streaming Scripts, Commit->Push->P
         }),
       );
       expect(unconfigured.status).toBe(400);
-      expect(((await unconfigured.json()) as { error: string }).error).toBe("script_not_configured");
+      expect(((await unconfigured.json()) as { error: string }).error).toBe(
+        "script_not_configured",
+      );
 
       // Run test & lint scripts and wait for done SSE events
       const runTest = await server.app.request(
@@ -551,7 +555,9 @@ describe("Slice 5b: Implicit Git Checkpoints, Streaming Scripts, Commit->Push->P
         ),
       );
 
-      const listRes = await server.app.request(new Request("http://127.0.0.1/api/scripts?spaceId=proj"));
+      const listRes = await server.app.request(
+        new Request("http://127.0.0.1/api/scripts?spaceId=proj"),
+      );
       expect(listRes.status).toBe(200);
       const listJson = (await listRes.json()) as {
         runs: Array<{ scriptRunId: string; running: boolean }>;
@@ -799,7 +805,11 @@ describe("Slice 5b: Implicit Git Checkpoints, Streaming Scripts, Commit->Push->P
       }),
     );
     expect(pr1.status).toBe(200);
-    const pr1Json = (await pr1.json()) as { alreadyExists: boolean; prUrl: string; prNumber: number };
+    const pr1Json = (await pr1.json()) as {
+      alreadyExists: boolean;
+      prUrl: string;
+      prNumber: number;
+    };
     expect(pr1Json.alreadyExists).toBe(false);
     expect(pr1Json.prUrl).toBe("https://github.com/zzf2333/Kiln/pull/42");
     expect(pr1Json.prNumber).toBe(42);

@@ -214,10 +214,7 @@ function compileScopePattern(rawPattern: string): CompiledScopePattern {
   };
 }
 
-function matchGlobSegments(
-  patternSegs: readonly string[],
-  targetSegs: readonly string[],
-): boolean {
+function matchGlobSegments(patternSegs: readonly string[], targetSegs: readonly string[]): boolean {
   const memo = new Map<number, boolean>();
   const stride = targetSegs.length + 1;
 
@@ -296,9 +293,7 @@ export function matchesAnyGlobPattern(
   const normalizedTarget = normalizeRepoRelativePath(repoRelativePath);
   const targetSegs = normalizedTarget.split("/");
   const compiled = patterns.map(compileScopePattern);
-  return compiled.some((pattern) =>
-    matchesCompiledPattern(normalizedTarget, targetSegs, pattern),
-  );
+  return compiled.some((pattern) => matchesCompiledPattern(normalizedTarget, targetSegs, pattern));
 }
 
 /**
@@ -335,9 +330,7 @@ export function checkScope(
 
   for (const target of normalizedChanged) {
     const targetSegs = target.split("/");
-    const matched = compiled.some((pattern) =>
-      matchesCompiledPattern(target, targetSegs, pattern),
-    );
+    const matched = compiled.some((pattern) => matchesCompiledPattern(target, targetSegs, pattern));
     if (!matched) {
       outOfScopePaths.push(target);
     }
@@ -358,10 +351,7 @@ function isInsideCanonicalRoot(canonicalTarget: string, canonicalRoot: string): 
   return canonicalTarget === canonicalRoot || canonicalTarget.startsWith(prefix);
 }
 
-function collectRepoFiles(
-  canonicalRoot: string,
-  includeNodeModules: boolean,
-): string[] {
+function collectRepoFiles(canonicalRoot: string, includeNodeModules: boolean): string[] {
   const collected: string[] = [];
 
   const walk = (absDir: string, relPrefix: string): void => {
@@ -473,9 +463,7 @@ export function computeFrozenSnapshot(
     }
   }
 
-  const files = Array.from(entryMap.values()).sort((a, b) =>
-    compareCodepoints(a.path, b.path),
-  );
+  const files = Array.from(entryMap.values()).sort((a, b) => compareCodepoints(a.path, b.path));
 
   const digest = crypto
     .createHash("sha256")
@@ -531,17 +519,12 @@ export function detectFrozenFilesChanged(
     const baselineByPath = new Map(
       input.baselineSnapshot.files.map((entry) => [entry.path, entry]),
     );
-    const currentByPath = new Map(
-      currentSnapshot.files.map((entry) => [entry.path, entry]),
-    );
+    const currentByPath = new Map(currentSnapshot.files.map((entry) => [entry.path, entry]));
     const allPaths = new Set([...baselineByPath.keys(), ...currentByPath.keys()]);
     for (const filePath of allPaths) {
       const before = baselineByPath.get(filePath);
       const after = currentByPath.get(filePath);
-      if (
-        before?.exists !== after?.exists ||
-        before?.sha256 !== after?.sha256
-      ) {
+      if (before?.exists !== after?.exists || before?.sha256 !== after?.sha256) {
         changedSet.add(filePath);
       }
     }

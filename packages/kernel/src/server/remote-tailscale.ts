@@ -82,16 +82,15 @@ function targetMatchesRemotePort(target: string, remotePort: number): boolean {
     const parsed = new URL(normalized);
     const hostname = parsed.hostname.toLowerCase();
     const isLoopback =
-      hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1" || hostname === "[::1]";
+      hostname === "127.0.0.1" ||
+      hostname === "localhost" ||
+      hostname === "::1" ||
+      hostname === "[::1]";
     if (!isLoopback) {
       return false;
     }
     const effectivePort =
-      parsed.port.length > 0
-        ? Number(parsed.port)
-        : parsed.protocol === "https:"
-          ? 443
-          : 80;
+      parsed.port.length > 0 ? Number(parsed.port) : parsed.protocol === "https:" ? 443 : 80;
     return effectivePort === remotePort;
   } catch {
     return false;
@@ -139,8 +138,7 @@ export async function inspectTailscaleStatus(
           serveTargets: [],
           remotePort,
           recommendedCommand,
-          detail:
-            fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr),
+          detail: fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr),
         });
       }
     } else if (isCommandNotFoundError(err)) {
@@ -220,9 +218,7 @@ export async function inspectTailscaleStatus(
   }
 
   const serveActive = serveTargets.length > 0;
-  const serveConfiguredForPort = serveTargets.some((t) =>
-    targetMatchesRemotePort(t, remotePort),
-  );
+  const serveConfiguredForPort = serveTargets.some((t) => targetMatchesRemotePort(t, remotePort));
 
   return TailscaleStatusResponseSchema.parse({
     ok: true,

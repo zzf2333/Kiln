@@ -110,9 +110,7 @@ export function BoardView() {
       return b.updated_at.localeCompare(a.updated_at);
     });
 
-  const visibleParentIds = new Set(
-    visibleAll.filter((t) => parentIds.has(t.id)).map((t) => t.id),
-  );
+  const visibleParentIds = new Set(visibleAll.filter((t) => parentIds.has(t.id)).map((t) => t.id));
 
   // Parent collapse rule: hide child slices under visible parent by default, EXCEPT waiting child slices always float out
   const boardItems = visibleAll.filter(
@@ -178,16 +176,10 @@ export function BoardView() {
     const p0Class = t.effective_priority === "P0" ? " is-p0" : "";
 
     if (isParent) {
-      const children = tasks.filter(
-        (c) => c.parent_id === t.id && c.status !== "cancelled",
-      );
+      const children = tasks.filter((c) => c.parent_id === t.id && c.status !== "cancelled");
       const cnt = (st: string) => children.filter((c) => c.status === st).length;
       return (
-        <article
-          key={t.id}
-          className={`card${p0Class}`}
-          onClick={() => store.openTask(t.id)}
-        >
+        <article key={t.id} className={`card${p0Class}`} onClick={() => store.openTask(t.id)}>
           <div className="card-meta">
             <span>
               <PrioritySelect
@@ -222,18 +214,13 @@ export function BoardView() {
 
     if (t.status === "waiting") {
       const dec = decisionByTask.get(t.id);
-      const recOpt =
-        dec?.options.find((o) => o.recommended) ?? dec?.options[0];
+      const recOpt = dec?.options.find((o) => o.recommended) ?? dec?.options[0];
       const waitAnchorIso = dec?.created_at ?? t.waiting_since ?? t.updated_at;
       const waitMs = Date.now() - Date.parse(waitAnchorIso);
       const isOverdue = Number.isFinite(waitMs) && waitMs >= 30 * 60_000;
       const categoryText = waitingCategoryLabel(dec?.category ?? t.waiting_reason);
       return (
-        <article
-          key={t.id}
-          className={`card${p0Class}`}
-          onClick={() => store.openTask(t.id)}
-        >
+        <article key={t.id} className={`card${p0Class}`} onClick={() => store.openTask(t.id)}>
           <div className="card-meta">
             <span>
               <PrioritySelect
@@ -305,18 +292,12 @@ export function BoardView() {
     if (t.status === "running") {
       const rate = Math.round(ratesByTask[t.id] ?? 0);
       const stMeta = stageMeta(t.stage ?? "implement");
-      const stageTitle =
-        stMeta.label + (t.round && t.round > 1 ? ` · 第 ${t.round} 轮` : "");
+      const stageTitle = stMeta.label + (t.round && t.round > 1 ? ` · 第 ${t.round} 轮` : "");
       const execLabel =
-        t.executor ??
-        (t.agent && t.model ? `${t.agent} · ${t.model}` : t.agent ?? "");
+        t.executor ?? (t.agent && t.model ? `${t.agent} · ${t.model}` : (t.agent ?? ""));
 
       return (
-        <article
-          key={t.id}
-          className={`card${p0Class}`}
-          onClick={() => store.openTask(t.id)}
-        >
+        <article key={t.id} className={`card${p0Class}`} onClick={() => store.openTask(t.id)}>
           <div className="card-meta">
             <span>
               <PrioritySelect
@@ -334,9 +315,7 @@ export function BoardView() {
           {t.summary ? <p className="card-desc">{t.summary}</p> : null}
           {t.stall_silent_sec !== undefined ? (
             <div style={{ marginBottom: "6px" }}>
-              <span className="chip chip-warn">
-                停滞告警 · {t.stall_silent_sec}s
-              </span>
+              <span className="chip chip-warn">停滞告警 · {t.stall_silent_sec}s</span>
             </div>
           ) : null}
           <div className="live-row">
@@ -357,9 +336,7 @@ export function BoardView() {
           />
           <div className="card-foot">
             <span className="card-exec">
-              {execLabel ? (
-                <ProviderAvatar providerId={t.agent ?? execLabel} size="xs" />
-              ) : null}
+              {execLabel ? <ProviderAvatar providerId={t.agent ?? execLabel} size="xs" /> : null}
               <span>{execLabel}</span>
             </span>
             <span className="mono">{fmtTokens(t.tokens.total_tokens)}</span>
@@ -371,11 +348,7 @@ export function BoardView() {
     if (t.status === "paused") {
       const stMeta = stageMeta(t.stage);
       return (
-        <article
-          key={t.id}
-          className={`card${p0Class}`}
-          onClick={() => store.openTask(t.id)}
-        >
+        <article key={t.id} className={`card${p0Class}`} onClick={() => store.openTask(t.id)}>
           <div className="card-meta">
             <span>
               <PrioritySelect
@@ -417,9 +390,7 @@ export function BoardView() {
     }
 
     if (t.status === "queued") {
-      const unfinishedDeps = t.depends_on.filter(
-        (depId) => taskStatusById.get(depId) !== "done",
-      );
+      const unfinishedDeps = t.depends_on.filter((depId) => taskStatusById.get(depId) !== "done");
       const mqEntry = mergeQueueByTaskId.get(t.id);
       const attentionBlocked =
         globalWaitingCount >= limits.max_waiting_wip &&
@@ -434,11 +405,7 @@ export function BoardView() {
               : "等执行槽位";
 
       return (
-        <article
-          key={t.id}
-          className={`card${p0Class}`}
-          onClick={() => store.openTask(t.id)}
-        >
+        <article key={t.id} className={`card${p0Class}`} onClick={() => store.openTask(t.id)}>
           <div className="card-meta">
             <span>
               <PrioritySelect
@@ -466,11 +433,7 @@ export function BoardView() {
 
     if (t.status === "external") {
       return (
-        <article
-          key={t.id}
-          className={`card${p0Class}`}
-          onClick={() => store.openTask(t.id)}
-        >
+        <article key={t.id} className={`card${p0Class}`} onClick={() => store.openTask(t.id)}>
           <div className="card-meta">
             <span>
               <PrioritySelect
@@ -494,11 +457,7 @@ export function BoardView() {
 
     const taskCost = computeTaskCostUsd(t, pricing);
     return (
-      <article
-        key={t.id}
-        className="card card-done"
-        onClick={() => store.openTask(t.id)}
-      >
+      <article key={t.id} className="card card-done" onClick={() => store.openTask(t.id)}>
         <h3 className="card-title">{t.title}</h3>
         <div className="card-foot">
           <span className="mono">
@@ -602,9 +561,7 @@ export function BoardView() {
                 >
                   <span className="mono">{mq.space}</span>
                   <span>·</span>
-                  <span>
-                    {mq.state === "merging" ? "正在合入" : `排队 #${mq.position}`}
-                  </span>
+                  <span>{mq.state === "merging" ? "正在合入" : `排队 #${mq.position}`}</span>
                   <span>·</span>
                   <span>{mq.title}</span>
                 </button>

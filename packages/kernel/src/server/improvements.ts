@@ -112,16 +112,10 @@ export function assertProposalNotCheating(
       patch.pm_orchestration_patch && typeof patch.pm_orchestration_patch === "object"
         ? (patch.pm_orchestration_patch as Record<string, unknown>)
         : null;
-    if (
-      patch.heterogeneous_review === false ||
-      pmPatch?.heterogeneous_review === false
-    ) {
+    if (patch.heterogeneous_review === false || pmPatch?.heterogeneous_review === false) {
       throw new Error("Rejected proposal: disabling heterogeneous_review is forbidden");
     }
-    if (
-      patch.allow_full_access_fallback === true ||
-      pmPatch?.allow_full_access_fallback === true
-    ) {
+    if (patch.allow_full_access_fallback === true || pmPatch?.allow_full_access_fallback === true) {
       throw new Error("Rejected proposal: enabling allow_full_access_fallback is forbidden");
     }
   }
@@ -153,12 +147,9 @@ function proposalDedupeKey(p: {
   roster_role?: string;
   title: string;
 }): string {
-  return [
-    p.target_kind,
-    p.space ?? "",
-    p.roster_role ?? "",
-    p.title.trim().toLowerCase(),
-  ].join("|");
+  return [p.target_kind, p.space ?? "", p.roster_role ?? "", p.title.trim().toLowerCase()].join(
+    "|",
+  );
 }
 
 /**
@@ -571,16 +562,14 @@ export function computeOrchestrationAnalytics(store: KilnStore): OrchestrationAn
     }),
   );
 
-  const by_workflow_preset: WorkflowPresetEfficiencyStat[] = Array.from(
-    byPresetMap.entries(),
-  ).map(([preset, recs]) => ({
-    preset,
-    metrics: summarizeMetricWindow(recs),
-  }));
+  const by_workflow_preset: WorkflowPresetEfficiencyStat[] = Array.from(byPresetMap.entries()).map(
+    ([preset, recs]) => ({
+      preset,
+      metrics: summarizeMetricWindow(recs),
+    }),
+  );
 
-  const by_role_model: RoleModelEfficiencyStat[] = Array.from(
-    roleModelBuckets.values(),
-  )
+  const by_role_model: RoleModelEfficiencyStat[] = Array.from(roleModelBuckets.values())
     .map((b) => ({
       roster_role: b.roster_role,
       agent: b.agent,
@@ -590,9 +579,7 @@ export function computeOrchestrationAnalytics(store: KilnStore): OrchestrationAn
       escalation_rate: Number((b.escalations / b.runs).toFixed(4)),
       cache_hit_rate:
         b.cacheRates.length > 0
-          ? Number(
-              (b.cacheRates.reduce((a, v) => a + v, 0) / b.cacheRates.length).toFixed(4),
-            )
+          ? Number((b.cacheRates.reduce((a, v) => a + v, 0) / b.cacheRates.length).toFixed(4))
           : 0,
       avg_cost_usd:
         b.costs.length > 0
@@ -651,14 +638,9 @@ export function generateAnalyticsProposals(store: KilnStore): ImprovementProposa
   for (const [spaceId, recs] of bySpace.entries()) {
     const quickRecs = recs.filter((r) => r.preset === "quick");
     if (quickRecs.length >= 3) {
-      const avgRework =
-        quickRecs.reduce((acc, r) => acc + r.reworkRounds, 0) / quickRecs.length;
+      const avgRework = quickRecs.reduce((acc, r) => acc + r.reworkRounds, 0) / quickRecs.length;
       const spaceCfg = store.readSpace(spaceId);
-      if (
-        spaceCfg &&
-        avgRework >= 1.5 &&
-        spaceCfg.default_workflow_preset !== "standard_dev"
-      ) {
+      if (spaceCfg && avgRework >= 1.5 && spaceCfg.default_workflow_preset !== "standard_dev") {
         candidates.push({
           source: "analytics",
           target_kind: "space_default_workflow",
@@ -687,10 +669,7 @@ function appendPolicyChangeRecord(store: KilnStore, record: PolicyChangeRecord):
   const existing = fs.existsSync(store.paths.policyHistoryNdjson)
     ? fs.readFileSync(store.paths.policyHistoryNdjson, "utf8")
     : "";
-  writeFileAtomic(
-    store.paths.policyHistoryNdjson,
-    `${existing}${JSON.stringify(parsed)}\n`,
-  );
+  writeFileAtomic(store.paths.policyHistoryNdjson, `${existing}${JSON.stringify(parsed)}\n`);
 }
 
 export function readPolicyHistory(store: KilnStore): PolicyChangeRecord[] {
@@ -701,9 +680,7 @@ export function readPolicyHistory(store: KilnStore): PolicyChangeRecord[] {
  * Evaluates Before / After metric windows for every applied policy change and flags
  * negative optimizations (`regression_alert: true`) for one-click rollback.
  */
-export function listPolicyHistoryWithEvaluation(
-  store: KilnStore,
-): PolicyChangeEvaluation[] {
+export function listPolicyHistoryWithEvaluation(store: KilnStore): PolicyChangeEvaluation[] {
   const history = readPolicyHistory(store);
   return history
     .map((rec) => {
@@ -713,7 +690,11 @@ export function listPolicyHistoryWithEvaluation(
       });
       const afterMetrics = summarizeMetricWindow(taskStats);
       const reasons: string[] = [];
-      if (!rec.rolled_back_at && afterMetrics.task_count >= 3 && rec.before_metrics.task_count > 0) {
+      if (
+        !rec.rolled_back_at &&
+        afterMetrics.task_count >= 3 &&
+        rec.before_metrics.task_count > 0
+      ) {
         if (afterMetrics.first_pass_rate < rec.before_metrics.first_pass_rate - 0.15) {
           reasons.push(
             `一次通过率从 ${(rec.before_metrics.first_pass_rate * 100).toFixed(0)}% 降至 ${(afterMetrics.first_pass_rate * 100).toFixed(0)}%`,
@@ -849,7 +830,8 @@ export function approveImprovementProposal(
         id: `led-${randomUUID().slice(0, 8)}`,
         space: spaceId,
         rule: mergedRule,
-        source_task_id: mergedFromEntries[0]?.source_task_id ?? proposal.evidence_task_ids[0] ?? "retro",
+        source_task_id:
+          mergedFromEntries[0]?.source_task_id ?? proposal.evidence_task_ids[0] ?? "retro",
         created_at: now,
         merged_from: sourceIds,
         evidence_task_ids: proposal.evidence_task_ids,
@@ -873,9 +855,7 @@ export function approveImprovementProposal(
       beforeSnapshot = cur;
       targetRef = spaceId;
       const entryIds = new Set(
-        Array.isArray(proposal.payload.entry_ids)
-          ? proposal.payload.entry_ids.map(String)
-          : [],
+        Array.isArray(proposal.payload.entry_ids) ? proposal.payload.entry_ids.map(String) : [],
       );
       const next = LedgerFileSchema.parse({
         schema_version: 1,

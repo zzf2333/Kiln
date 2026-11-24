@@ -4,11 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { TaskCardSchema, buildWorkflowPreset } from "@kiln/protocol";
-import {
-  BackendRegistry,
-  FakeBackend,
-  type BackendAgentDescriptor,
-} from "../../backend/index.js";
+import { BackendRegistry, FakeBackend, type BackendAgentDescriptor } from "../../backend/index.js";
 import { KilnScheduler } from "../../scheduler/index.js";
 import { KilnStore } from "../../store/index.js";
 import {
@@ -35,7 +31,9 @@ function initTempGitRepo(repoPath: string, initialFiles: Record<string, string>)
   }
   execFileSync("git", ["init", "-b", "main", repoPath], { stdio: "pipe" });
   execFileSync("git", ["-C", repoPath, "config", "user.name", "Kiln Test"], { stdio: "pipe" });
-  execFileSync("git", ["-C", repoPath, "config", "user.email", "test@kiln.local"], { stdio: "pipe" });
+  execFileSync("git", ["-C", repoPath, "config", "user.email", "test@kiln.local"], {
+    stdio: "pipe",
+  });
   execFileSync("git", ["-C", repoPath, "add", "."], { stdio: "pipe" });
   execFileSync("git", ["-C", repoPath, "commit", "-m", "init"], { stdio: "pipe" });
   return execFileSync("git", ["-C", repoPath, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
@@ -379,7 +377,8 @@ describe("Track 5 [B12.2] Multi-slice serial merge queue (Refinery)", () => {
       title: "Slice A",
       priority: "P0",
       scope: ["a.txt"],
-      acceptCmd: "node -e \"if(!require('fs').readFileSync('a.txt','utf8').includes('from-a')) process.exit(1)\"",
+      acceptCmd:
+        "node -e \"if(!require('fs').readFileSync('a.txt','utf8').includes('from-a')) process.exit(1)\"",
     });
     const cardB = makeDeliverCard({
       id: "t-b",
@@ -570,13 +569,13 @@ describe("Track 5 [B12.2] Multi-slice serial merge queue (Refinery)", () => {
 
     await waitUntil(
       () =>
-        store.readStateEvents("t-reg1").some(
-          (ev) => ev.type === "steered" && ev.steer_id.startsWith("refinery-accept-"),
-        ) &&
+        store
+          .readStateEvents("t-reg1")
+          .some((ev) => ev.type === "steered" && ev.steer_id.startsWith("refinery-accept-")) &&
         store.getTaskIndex("t-reg2")?.status === "waiting" &&
-        store.readStateEvents("t-conf").some(
-          (ev) => ev.type === "steered" && ev.steer_id.startsWith("refinery-conflict-"),
-        ),
+        store
+          .readStateEvents("t-conf")
+          .some((ev) => ev.type === "steered" && ev.steer_id.startsWith("refinery-conflict-")),
       "rework and waiting verdicts recorded",
     );
 

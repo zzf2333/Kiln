@@ -18,15 +18,9 @@ export interface DecisionBoxProps {
   onOpenResolve?: () => void;
 }
 
-export function DecisionBox({
-  decision,
-  onSubmit,
-  onOpenResolve,
-}: DecisionBoxProps) {
+export function DecisionBox({ decision, onSubmit, onOpenResolve }: DecisionBoxProps) {
   const defaultOptId =
-    decision.options.find((o) => o.recommended)?.id ??
-    decision.options[0]?.id ??
-    "";
+    decision.options.find((o) => o.recommended)?.id ?? decision.options[0]?.id ?? "";
 
   const [selectedOptionId, setSelectedOptionId] = useState<string>(defaultOptId);
   const [applyLedgerRule, setApplyLedgerRule] = useState<boolean>(false);
@@ -35,9 +29,7 @@ export function DecisionBox({
 
   useEffect(() => {
     setSelectedOptionId(
-      decision.options.find((o) => o.recommended)?.id ??
-        decision.options[0]?.id ??
-        "",
+      decision.options.find((o) => o.recommended)?.id ?? decision.options[0]?.id ?? "",
     );
     setApplyLedgerRule(false);
     setRationale("");
@@ -110,21 +102,15 @@ export function DecisionBox({
                   </span>
                   <span
                     className={
-                      opt.action === "return_external"
-                        ? "opt-act-desc is-warn"
-                        : "opt-act-desc"
+                      opt.action === "return_external" ? "opt-act-desc is-warn" : "opt-act-desc"
                     }
                   >
                     {ACTION_DESC[opt.action]}
                   </span>
                 </div>
-                {opt.cost_note ? (
-                  <div className="opt-effect">{opt.cost_note}</div>
-                ) : null}
+                {opt.cost_note ? <div className="opt-effect">{opt.cost_note}</div> : null}
                 {opt.ledger_rule ? (
-                  <div className="opt-effect muted">
-                    可选账本规则：{opt.ledger_rule}
-                  </div>
+                  <div className="opt-effect muted">可选账本规则：{opt.ledger_rule}</div>
                 ) : null}
               </div>
             </label>
@@ -137,9 +123,7 @@ export function DecisionBox({
           <input
             type="checkbox"
             checked={applyLedgerRule}
-            onChange={(e) =>
-              setApplyLedgerRule((e.currentTarget as HTMLInputElement).checked)
-            }
+            onChange={(e) => setApplyLedgerRule((e.currentTarget as HTMLInputElement).checked)}
           />
           <span>同时将长期规则「{ledgerRuleText}」写入决策账本（ledger）</span>
         </label>
@@ -152,9 +136,7 @@ export function DecisionBox({
           aria-label="补充说明（可选）"
           placeholder="补充拍板理由（选填）"
           value={rationale}
-          onChange={(e) =>
-            setRationale((e.currentTarget as HTMLInputElement).value)
-          }
+          onChange={(e) => setRationale((e.currentTarget as HTMLInputElement).value)}
         />
       </div>
 

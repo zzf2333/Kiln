@@ -153,8 +153,7 @@ function formatDecisionEntryMarkdown(
     return `- ${marker} \`${opt.id}\`${rec} (${opt.action}): ${opt.label}${cost}`;
   });
 
-  const stagesText =
-    record.affected_stages.length > 0 ? record.affected_stages.join(", ") : "无";
+  const stagesText = record.affected_stages.length > 0 ? record.affected_stages.join(", ") : "无";
 
   const bodyLines = [
     `## 待决问题 (${decision.id})`,
@@ -183,13 +182,9 @@ function formatDecisionEntryMarkdown(
     category: record.category,
     decider: record.decider,
     action: record.action,
-    ...(record.chosen_option_id !== undefined
-      ? { chosen_option_id: record.chosen_option_id }
-      : {}),
+    ...(record.chosen_option_id !== undefined ? { chosen_option_id: record.chosen_option_id } : {}),
     affected_stages: record.affected_stages,
-    ...(record.ledger_proposal !== undefined
-      ? { ledger_proposal: record.ledger_proposal }
-      : {}),
+    ...(record.ledger_proposal !== undefined ? { ledger_proposal: record.ledger_proposal } : {}),
     rationale: record.rationale,
     decided_at: record.decided_at,
   };
@@ -233,10 +228,7 @@ export class TaskStateMachine {
     return deps;
   }
 
-  private cascadeUpstreamCancelled(
-    cancelledTaskId: string,
-    timestamp: string,
-  ): string[] {
+  private cascadeUpstreamCancelled(cancelledTaskId: string, timestamp: string): string[] {
     const nodes = new Map<string, DownstreamGraphNode>();
     for (const row of this.store.listTasks()) {
       const card = this.store.readTaskCard(row.id);
@@ -293,9 +285,7 @@ export class TaskStateMachine {
   }
 
   private getCancelledDependencies(dependsOn: readonly string[]): string[] {
-    return dependsOn.filter(
-      (depId) => this.store.getTaskIndex(depId)?.status === "cancelled",
-    );
+    return dependsOn.filter((depId) => this.store.getTaskIndex(depId)?.status === "cancelled");
   }
 
   /**
@@ -368,9 +358,7 @@ export class TaskStateMachine {
 
     const stages = getTaskPipelineStages(card, derived.track);
     const stageToResume =
-      targetStage !== undefined
-        ? StageIdSchema.parse(targetStage)
-        : (derived.stage ?? stages[0]);
+      targetStage !== undefined ? StageIdSchema.parse(targetStage) : (derived.stage ?? stages[0]);
     if (!stageToResume) {
       throw new Error(`No stage available to resume task "${taskId}"`);
     }
@@ -398,11 +386,7 @@ export class TaskStateMachine {
   /**
    * Marks an `external` task as manually completed (`done`).
    */
-  completeExternalTask(
-    taskId: string,
-    deliverRef?: string,
-    now?: string,
-  ): DerivedTaskState {
+  completeExternalTask(taskId: string, deliverRef?: string, now?: string): DerivedTaskState {
     const { derived } = this.requireTaskState(taskId);
     if (derived.status !== "external") {
       throw new InvalidStateTransitionError(derived.status, "done");
@@ -446,9 +430,7 @@ export class TaskStateMachine {
       taskId: input.taskId,
       contractPatch: input.contractPatch,
       affectedStages: input.affectedStages,
-      ...(input.acceptFilesHash !== undefined
-        ? { acceptFilesHash: input.acceptFilesHash }
-        : {}),
+      ...(input.acceptFilesHash !== undefined ? { acceptFilesHash: input.acceptFilesHash } : {}),
       now: timestamp,
     });
 
@@ -501,11 +483,7 @@ export class TaskStateMachine {
   /**
    * Updates priority for any non-terminal task and propagates effective priorities across the DAG.
    */
-  changePriority(
-    taskId: string,
-    newPriority: Priority,
-    now?: string,
-  ): ChangePriorityResult {
+  changePriority(taskId: string, newPriority: Priority, now?: string): ChangePriorityResult {
     const parsedPriority = PrioritySchema.parse(newPriority);
     const { derived } = this.requireTaskState(taskId);
 
@@ -533,11 +511,7 @@ export class TaskStateMachine {
   /**
    * Transitions a task into `waiting` for a validated `PendingDecision`.
    */
-  requestDecision(
-    taskId: string,
-    decision: PendingDecision,
-    now?: string,
-  ): DerivedTaskState {
+  requestDecision(taskId: string, decision: PendingDecision, now?: string): DerivedTaskState {
     const parsedDecision = PendingDecisionSchema.parse(decision);
     if (parsedDecision.task_id !== taskId) {
       throw new Error(
@@ -584,10 +558,7 @@ export class TaskStateMachine {
 
     const { card, events, derived } = this.requireTaskState(input.taskId);
     if (derived.status !== "waiting") {
-      throw new InvalidStateTransitionError(
-        derived.status,
-        ACTION_TO_STATUS.resume,
-      );
+      throw new InvalidStateTransitionError(derived.status, ACTION_TO_STATUS.resume);
     }
 
     if (parsedDecision.contract_version !== derived.contractVersion) {
@@ -608,9 +579,7 @@ export class TaskStateMachine {
       );
     }
 
-    const selectedOption = parsedDecision.options.find(
-      (opt) => opt.id === input.optionId,
-    );
+    const selectedOption = parsedDecision.options.find((opt) => opt.id === input.optionId);
     if (!selectedOption) {
       throw new Error(
         `Decision option "${input.optionId}" does not exist in decision "${parsedDecision.id}"`,
@@ -660,9 +629,7 @@ export class TaskStateMachine {
           : []);
 
     const prospectiveVersion =
-      input.contractUpdate !== undefined
-        ? card.contract_version + 1
-        : derived.contractVersion;
+      input.contractUpdate !== undefined ? card.contract_version + 1 : derived.contractVersion;
     const decisionRecord = DecisionRecordSchema.parse({
       schema_version: 1,
       id: parsedDecision.id,
@@ -738,7 +705,7 @@ export class TaskStateMachine {
         input.affectedStages !== undefined ||
         input.contractUpdate !== undefined)
         ? ([...affectedStages].sort((a, b) => STAGE_ORDER[a] - STAGE_ORDER[b])[0] ??
-            selectedOption.target_stage)
+          selectedOption.target_stage)
         : undefined;
 
     let nextState = this.store.appendStateEvent(input.taskId, {
@@ -762,9 +729,7 @@ export class TaskStateMachine {
     }
 
     const waitingDownstreamTaskIds =
-      action === "cancel"
-        ? this.cascadeUpstreamCancelled(input.taskId, timestamp)
-        : [];
+      action === "cancel" ? this.cascadeUpstreamCancelled(input.taskId, timestamp) : [];
 
     this.syncAllEffectivePriorities();
 
@@ -788,11 +753,7 @@ export class TaskStateMachine {
    * Escalates an `L1` task to `L2` (adding independent review), atomically updating
    * `card.yaml` and appending a `track_escalated` state event.
    */
-  escalateTrackToL2(
-    taskId: string,
-    reason: string,
-    now?: string,
-  ): DerivedTaskState {
+  escalateTrackToL2(taskId: string, reason: string, now?: string): DerivedTaskState {
     if (reason.trim().length === 0) {
       throw new Error("Track escalation reason must be a non-empty string");
     }
@@ -874,8 +835,7 @@ export class TaskStateMachine {
     });
     writeYamlAtomic(this.store.paths.cardYaml(taskId), updatedCard, TaskCardSchema);
 
-    const effectiveUpdatedAt =
-      timestamp > derived.updatedAt ? timestamp : derived.updatedAt;
+    const effectiveUpdatedAt = timestamp > derived.updatedAt ? timestamp : derived.updatedAt;
     this.store.sqlite.updateTaskStatusAndPriority(taskId, {
       updated_at: effectiveUpdatedAt,
     });

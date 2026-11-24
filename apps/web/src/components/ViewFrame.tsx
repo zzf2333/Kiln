@@ -13,9 +13,7 @@ export interface ViewFrameProps {
 export function ViewFrame({ left, right, isBoard, children }: ViewFrameProps) {
   const { store, state } = useKilnStore();
   const isOffline = state.sseStatus === "reconnecting" || state.networkOffline;
-  const lastOnlineText = state.lastConnectedAt
-    ? fmtTime(state.lastConnectedAt)
-    : "尚未连接";
+  const lastOnlineText = state.lastConnectedAt ? fmtTime(state.lastConnectedAt) : "尚未连接";
 
   return (
     <section className="main">
@@ -38,17 +36,10 @@ export function ViewFrame({ left, right, isBoard, children }: ViewFrameProps) {
       ) : null}
 
       {isOffline ? (
-        <div
-          className="offline-banner"
-          role="status"
-          aria-live="polite"
-          data-offline-banner="true"
-        >
+        <div className="offline-banner" role="status" aria-live="polite" data-offline-banner="true">
           <span className="offline-banner-text">
             <span className="dot offline-dot" />
-            <span>
-              主机离线或连接已断开（最后在线 {lastOnlineText}）— 正在自动重连…
-            </span>
+            <span>主机离线或连接已断开（最后在线 {lastOnlineText}）— 正在自动重连…</span>
           </span>
           <button
             type="button"

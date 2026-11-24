@@ -4,10 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BootstrapResponse, ProvidersConfig, RosterConfig } from "../api/types";
 import { App } from "../app";
 
-type MockFetchHandler = (
-  url: string,
-  init?: RequestInit,
-) => Promise<Response> | Response;
+type MockFetchHandler = (url: string, init?: RequestInit) => Promise<Response> | Response;
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -174,9 +171,7 @@ function makeSampleRoster(): RosterConfig {
   };
 }
 
-function makeV3Bootstrap(
-  overrides: Partial<BootstrapResponse> = {},
-): BootstrapResponse {
+function makeV3Bootstrap(overrides: Partial<BootstrapResponse> = {}): BootstrapResponse {
   const providersCfg = makeSampleProviders();
   const rosterCfg = makeSampleRoster();
   return {
@@ -580,9 +575,7 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
     fireEvent.click(within(dialog).getByRole("button", { name: "添加角色" }));
 
     await waitFor(() => {
-      expect(
-        container.querySelector('[data-role-perm="read_only"]')?.textContent,
-      ).toBe("只读");
+      expect(container.querySelector('[data-role-perm="read_only"]')?.textContent).toBe("只读");
     });
 
     // Save roster
@@ -656,7 +649,7 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
               label: "Claude Code",
               adapter: "claude_direct",
               status: "unavailable",
-              detail: "Command \"claude\" not found",
+              detail: 'Command "claude" not found',
             },
           ],
         });
@@ -676,8 +669,12 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
     });
 
     // Accordion defaults to only first enabled provider (codex) expanded; claude body is collapsed
-    const codexCard = localRender.container.querySelector('[data-provider-card="codex"]') as HTMLElement;
-    const claudeCard = localRender.container.querySelector('[data-provider-card="claude"]') as HTMLElement;
+    const codexCard = localRender.container.querySelector(
+      '[data-provider-card="codex"]',
+    ) as HTMLElement;
+    const claudeCard = localRender.container.querySelector(
+      '[data-provider-card="claude"]',
+    ) as HTMLElement;
     expect(codexCard.getAttribute("data-state")).toBe("open");
     expect(claudeCard.getAttribute("data-state")).toBe("closed");
 
@@ -696,15 +693,21 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
     // Click 重新探测 -> POST /api/providers/detect syncs host availability and clears dirty state
     fireEvent.click(screen.getByRole("button", { name: "重新探测" }));
     await waitFor(() => {
-      expect(calls.some((c) => c.url === "/api/providers/detect" && c.method === "POST")).toBe(true);
+      expect(calls.some((c) => c.url === "/api/providers/detect" && c.method === "POST")).toBe(
+        true,
+      );
       expect(codexCard.getAttribute("data-state")).toBe("open");
-      expect((within(claudeCard).getByLabelText("启用 Claude Code") as HTMLInputElement).checked).toBe(false);
+      expect(
+        (within(claudeCard).getByLabelText("启用 Claude Code") as HTMLInputElement).checked,
+      ).toBe(false);
     });
 
     // Test Codex connectivity
     fireEvent.click(within(codexCard).getByRole("button", { name: "测试连通" }));
     await waitFor(() => {
-      expect(calls.some((c) => c.url === "/api/providers/codex/test" && c.method === "POST")).toBe(true);
+      expect(calls.some((c) => c.url === "/api/providers/codex/test" && c.method === "POST")).toBe(
+        true,
+      );
       expect(codexCard.textContent).toContain("Probe ok");
     });
 
@@ -713,7 +716,9 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
     // Focus+blur without editing must NOT mark Providers dirty
     fireEvent.focus(argsInput);
     fireEvent.blur(argsInput);
-    expect(screen.getByRole("button", { name: "保存 Providers" }).textContent).toBe("保存 Providers");
+    expect(screen.getByRole("button", { name: "保存 Providers" }).textContent).toBe(
+      "保存 Providers",
+    );
 
     fireEvent.change(argsInput, { target: { value: "app-server " } });
     expect(argsInput.value).toBe("app-server ");
@@ -1164,9 +1169,7 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
     render(<App />);
 
     expect(await screen.findByText("阶段缓存与热复用效率")).toBeTruthy();
-    expect(
-      screen.getByText(/implement 热复用 1\/2 次 · 热命中 90% vs 冷命中 20%/),
-    ).toBeTruthy();
+    expect(screen.getByText(/implement 热复用 1\/2 次 · 热命中 90% vs 冷命中 20%/)).toBeTruthy();
     expect(screen.getByText("90%")).toBeTruthy();
   });
 
@@ -1365,7 +1368,10 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
       }
       if (url === "/api/spaces/demo-web" && method === "PUT") {
         savedSpaceBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
-        return jsonResponse({ ok: true, space: { schema_version: 1, id: "demo-web", ...savedSpaceBody } }, 201);
+        return jsonResponse(
+          { ok: true, space: { schema_version: 1, id: "demo-web", ...savedSpaceBody } },
+          201,
+        );
       }
       if (url === "/api/tasks/t-track3-ui") {
         return jsonResponse({
@@ -1390,7 +1396,12 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
               human_accept: false,
               external_actions: "ask",
             },
-            limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 2, max_tokens: 100000 },
+            limits: {
+              retries_per_stage: 2,
+              review_rounds: 2,
+              advisor_calls: 2,
+              max_tokens: 100000,
+            },
             created_at: "2026-01-01T00:00:00.000Z",
             updated_at: "2026-01-01T00:05:00.000Z",
           },
@@ -1421,7 +1432,12 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
                 url: "http://127.0.0.1:45123",
               },
             ],
-            traffic: { observed: true, total_requests: 2, unique_paths: ["/"], error_responses: [] },
+            traffic: {
+              observed: true,
+              total_requests: 2,
+              unique_paths: ["/"],
+              error_responses: [],
+            },
           },
           runs: [
             {
@@ -1462,7 +1478,12 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
                     url: "http://127.0.0.1:45123",
                   },
                 ],
-                traffic: { observed: true, total_requests: 0, unique_paths: [], error_responses: [] },
+                traffic: {
+                  observed: true,
+                  total_requests: 0,
+                  unique_paths: [],
+                  error_responses: [],
+                },
                 evidence_files: [
                   {
                     rel_path: "evidence/shot.png",
@@ -1655,189 +1676,193 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
             created_at: "2026-11-24T00:00:00Z",
             updated_at: "2026-11-24T01:00:00Z",
           },
-            state: {
-              status: "done",
-              stage: null,
-              round: null,
-              activeRunId: null,
-              priority: "P1",
-              effectivePriority: "P1",
-              track: "L2",
-              contractVersion: 1,
-              updatedAt: "2026-11-24T01:00:00Z",
-            },
-            brief: "Track 4 演示说明",
-            decisions: "",
-            pendingDecision: null,
-            ledgerProposals: [],
-            runs: [],
-            usageTurns: [],
-            usage: makeTrack4Boot().usage,
-            retro: {
-              report: {
-                schema_version: 1,
-                task_id: "t-track4-1",
-                space: "kiln",
-                terminal_status: "done",
-                mode: retroTriggered ? "ai_enriched" : "deterministic",
-                high_signal: true,
-                signals: ["review_rejections:1"],
-                metrics: {
-                  total_runs: 3,
-                  rework_rounds: 1,
-                  retries_count: 0,
-                  review_rejections: 1,
-                  accept_failures: 0,
-                  escalations_count: 1,
-                  track_escalated_to_l2: false,
-                  steer_count: 0,
-                  contract_updates: 0,
-                  first_pass: false,
-                  cache_hit_rate: 0.65,
-                  total_cost_usd: 0.18,
-                },
-                attributions: [
-                  {
-                    category: "space_rule",
-                    summary: "审查阶段暴露空间长期规则缺失",
-                    earliest_preventable_stage: "review",
-                    evidence: "review-1/RECEIPT.md",
-                  },
-                ],
-                summary: retroTriggered ? "AI 深度复盘结论" : "0-Token 初筛归因结论",
-                proposal_ids: ["prop-t4-1"],
-                generated_at: "2026-11-24T01:00:00Z",
-              },
-              markdown: "# 复盘正文\n- 已归因",
-            },
-          });
-        }
-        if (url === "/api/tasks/t-track4-1/retro" && method === "POST") {
-          retroTriggered = true;
-          return jsonResponse({ ok: true, retro: { mode: "ai_enriched" }, markdown: "# 复盘正文" });
-        }
-        if (url === "/api/improvements/summary" && method === "GET") {
-          return jsonResponse({
-            ok: true,
-            proposals: [
-              {
-                id: "prop-t4-1",
-                status: proposalStatus,
-                source: "retro",
-                target_kind: "space_ledger",
-                space: "kiln",
-                title: "补充 UI 改版必测回滚用例",
-                rationale: "t-track4-1 返工发现缺失回归提示",
-                expected_impact: "降低后续同类返工",
-                evidence_task_ids: ["t-track4-1"],
-                payload: { rule: "UI 改版前核对现有测试选择器" },
-                created_at: "2026-11-24T01:05:00Z",
-              },
-            ],
-            analytics: {
-              generated_at: "2026-11-24T01:05:00Z",
-              overall: {
-                task_count: 4,
-                first_pass_rate: 0.75,
-                avg_rework_rounds: 0.5,
-                cache_hit_rate: 0.78,
-                median_cost_usd: 0.15,
-                p90_cost_usd: 0.32,
-                accept_defect_catch_rate: 0.25,
-              },
-              by_space: [],
-              by_role_model: [
-                {
-                  roster_role: "main_dev",
-                  agent: "codex",
-                  model: "gpt-5.4",
-                  run_count: 4,
-                  pass_rate: 0.75,
-                  escalation_rate: 0.25,
-                  cache_hit_rate: 0.78,
-                  avg_cost_usd: 0.15,
-                },
-              ],
-              by_workflow_preset: [
-                {
-                  preset: "standard_dev",
-                  metrics: {
-                    task_count: 4,
-                    first_pass_rate: 0.75,
-                    avg_rework_rounds: 0.5,
-                    cache_hit_rate: 0.78,
-                    median_cost_usd: 0.15,
-                    p90_cost_usd: 0.32,
-                    accept_defect_catch_rate: 0.25,
-                  },
-                },
-              ],
-            },
-            policyHistory: [
-              {
-                schema_version: 1,
-                id: "chg-t4-1",
-                proposal_id: "prop-old",
-                target_kind: "roster_policy",
-                target_ref: "pm_orchestration",
-                space: "kiln",
-                summary: "降低 L1 升档阈值试点",
-                applied_at: "2026-11-24T00:30:00Z",
-                before_snapshot: {},
-                after_snapshot: {},
-                before_metrics: {
-                  task_count: 3,
-                  first_pass_rate: 0.9,
-                  avg_rework_rounds: 0.1,
-                  cache_hit_rate: 0.8,
-                  median_cost_usd: 0.1,
-                  p90_cost_usd: 0.2,
-                  accept_defect_catch_rate: 0,
-                },
-                after_metrics: {
-                  task_count: 3,
-                  first_pass_rate: 0.5,
-                  avg_rework_rounds: 1.4,
-                  cache_hit_rate: 0.6,
-                  median_cost_usd: 0.2,
-                  p90_cost_usd: 0.3,
-                  accept_defect_catch_rate: 0.2,
-                },
-                regression_alert: !rolledBackAt,
-                regression_reasons: rolledBackAt ? [] : ["一次通过率从 90% 降至 50%"],
-                ...(rolledBackAt ? { rolled_back_at: rolledBackAt } : {}),
-              },
-            ],
-          });
-        }
-        if (url === "/api/improvements/proposals/prop-t4-1/approve" && method === "POST") {
-          proposalStatus = "approved";
-          ledgersData = {
-            kiln: {
+          state: {
+            status: "done",
+            stage: null,
+            round: null,
+            activeRunId: null,
+            priority: "P1",
+            effectivePriority: "P1",
+            track: "L2",
+            contractVersion: 1,
+            updatedAt: "2026-11-24T01:00:00Z",
+          },
+          brief: "Track 4 演示说明",
+          decisions: "",
+          pendingDecision: null,
+          ledgerProposals: [],
+          runs: [],
+          usageTurns: [],
+          usage: makeTrack4Boot().usage,
+          retro: {
+            report: {
               schema_version: 1,
+              task_id: "t-track4-1",
               space: "kiln",
-              entries: [
-                ...ledgersData.kiln!.entries,
+              terminal_status: "done",
+              mode: retroTriggered ? "ai_enriched" : "deterministic",
+              high_signal: true,
+              signals: ["review_rejections:1"],
+              metrics: {
+                total_runs: 3,
+                rework_rounds: 1,
+                retries_count: 0,
+                review_rejections: 1,
+                accept_failures: 0,
+                escalations_count: 1,
+                track_escalated_to_l2: false,
+                steer_count: 0,
+                contract_updates: 0,
+                first_pass: false,
+                cache_hit_rate: 0.65,
+                total_cost_usd: 0.18,
+              },
+              attributions: [
                 {
-                  id: "led-t4-2",
-                  space: "kiln",
-                  rule: "UI 改版前核对现有测试选择器",
-                  source_task_id: "t-track4-1",
-                  created_at: "2026-11-24T01:10:00Z",
-                  hit_count: 0,
-                  status: "active",
+                  category: "space_rule",
+                  summary: "审查阶段暴露空间长期规则缺失",
+                  earliest_preventable_stage: "review",
+                  evidence: "review-1/RECEIPT.md",
                 },
               ],
+              summary: retroTriggered ? "AI 深度复盘结论" : "0-Token 初筛归因结论",
+              proposal_ids: ["prop-t4-1"],
+              generated_at: "2026-11-24T01:00:00Z",
             },
-          };
-          return jsonResponse({ ok: true, proposal: { id: "prop-t4-1", status: "approved" }, change: { id: "chg-new" } });
-        }
-        if (url === "/api/improvements/policy-history/chg-t4-1/rollback" && method === "POST") {
-          rolledBackAt = "2026-11-24T01:15:00Z";
-          return jsonResponse({ ok: true, change: { id: "chg-t4-1", rolled_back_at: rolledBackAt } });
-        }
-        return jsonResponse({ ok: true });
-      });
+            markdown: "# 复盘正文\n- 已归因",
+          },
+        });
+      }
+      if (url === "/api/tasks/t-track4-1/retro" && method === "POST") {
+        retroTriggered = true;
+        return jsonResponse({ ok: true, retro: { mode: "ai_enriched" }, markdown: "# 复盘正文" });
+      }
+      if (url === "/api/improvements/summary" && method === "GET") {
+        return jsonResponse({
+          ok: true,
+          proposals: [
+            {
+              id: "prop-t4-1",
+              status: proposalStatus,
+              source: "retro",
+              target_kind: "space_ledger",
+              space: "kiln",
+              title: "补充 UI 改版必测回滚用例",
+              rationale: "t-track4-1 返工发现缺失回归提示",
+              expected_impact: "降低后续同类返工",
+              evidence_task_ids: ["t-track4-1"],
+              payload: { rule: "UI 改版前核对现有测试选择器" },
+              created_at: "2026-11-24T01:05:00Z",
+            },
+          ],
+          analytics: {
+            generated_at: "2026-11-24T01:05:00Z",
+            overall: {
+              task_count: 4,
+              first_pass_rate: 0.75,
+              avg_rework_rounds: 0.5,
+              cache_hit_rate: 0.78,
+              median_cost_usd: 0.15,
+              p90_cost_usd: 0.32,
+              accept_defect_catch_rate: 0.25,
+            },
+            by_space: [],
+            by_role_model: [
+              {
+                roster_role: "main_dev",
+                agent: "codex",
+                model: "gpt-5.4",
+                run_count: 4,
+                pass_rate: 0.75,
+                escalation_rate: 0.25,
+                cache_hit_rate: 0.78,
+                avg_cost_usd: 0.15,
+              },
+            ],
+            by_workflow_preset: [
+              {
+                preset: "standard_dev",
+                metrics: {
+                  task_count: 4,
+                  first_pass_rate: 0.75,
+                  avg_rework_rounds: 0.5,
+                  cache_hit_rate: 0.78,
+                  median_cost_usd: 0.15,
+                  p90_cost_usd: 0.32,
+                  accept_defect_catch_rate: 0.25,
+                },
+              },
+            ],
+          },
+          policyHistory: [
+            {
+              schema_version: 1,
+              id: "chg-t4-1",
+              proposal_id: "prop-old",
+              target_kind: "roster_policy",
+              target_ref: "pm_orchestration",
+              space: "kiln",
+              summary: "降低 L1 升档阈值试点",
+              applied_at: "2026-11-24T00:30:00Z",
+              before_snapshot: {},
+              after_snapshot: {},
+              before_metrics: {
+                task_count: 3,
+                first_pass_rate: 0.9,
+                avg_rework_rounds: 0.1,
+                cache_hit_rate: 0.8,
+                median_cost_usd: 0.1,
+                p90_cost_usd: 0.2,
+                accept_defect_catch_rate: 0,
+              },
+              after_metrics: {
+                task_count: 3,
+                first_pass_rate: 0.5,
+                avg_rework_rounds: 1.4,
+                cache_hit_rate: 0.6,
+                median_cost_usd: 0.2,
+                p90_cost_usd: 0.3,
+                accept_defect_catch_rate: 0.2,
+              },
+              regression_alert: !rolledBackAt,
+              regression_reasons: rolledBackAt ? [] : ["一次通过率从 90% 降至 50%"],
+              ...(rolledBackAt ? { rolled_back_at: rolledBackAt } : {}),
+            },
+          ],
+        });
+      }
+      if (url === "/api/improvements/proposals/prop-t4-1/approve" && method === "POST") {
+        proposalStatus = "approved";
+        ledgersData = {
+          kiln: {
+            schema_version: 1,
+            space: "kiln",
+            entries: [
+              ...ledgersData.kiln!.entries,
+              {
+                id: "led-t4-2",
+                space: "kiln",
+                rule: "UI 改版前核对现有测试选择器",
+                source_task_id: "t-track4-1",
+                created_at: "2026-11-24T01:10:00Z",
+                hit_count: 0,
+                status: "active",
+              },
+            ],
+          },
+        };
+        return jsonResponse({
+          ok: true,
+          proposal: { id: "prop-t4-1", status: "approved" },
+          change: { id: "chg-new" },
+        });
+      }
+      if (url === "/api/improvements/policy-history/chg-t4-1/rollback" && method === "POST") {
+        rolledBackAt = "2026-11-24T01:15:00Z";
+        return jsonResponse({ ok: true, change: { id: "chg-t4-1", rolled_back_at: rolledBackAt } });
+      }
+      return jsonResponse({ ok: true });
+    });
 
     // 1. DetailView RETRO card + trigger AI retro
     window.location.hash = "#view=detail&task=t-track4-1";
@@ -2012,9 +2037,7 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
       if (url === "/api/tasks/t-b10-ui/limits" && method === "PATCH") {
         patchLimitBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
         cardMaxCostUsd =
-          typeof patchLimitBody.max_cost_usd === "number"
-            ? patchLimitBody.max_cost_usd
-            : undefined;
+          typeof patchLimitBody.max_cost_usd === "number" ? patchLimitBody.max_cost_usd : undefined;
         return jsonResponse({
           ok: true,
           card: { id: "t-b10-ui" },
@@ -2062,9 +2085,9 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
     fireEvent.click(within(billingGroup).getByRole("button", { name: "包月订阅" }));
     fireEvent.click(screen.getByRole("button", { name: /保存 Providers/ }));
     await waitFor(() => {
-      expect(
-        savedProviders?.providers.find((p) => p.id === "codex")?.billing_mode,
-      ).toBe("subscription");
+      expect(savedProviders?.providers.find((p) => p.id === "codex")?.billing_mode).toBe(
+        "subscription",
+      );
     });
   });
 
@@ -2973,7 +2996,13 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
             category: "review_escalation",
             question: "Review needs action",
             options: [
-              { id: "opt-1", label: "Rework", action: "resume", target_stage: "implement", recommended: true },
+              {
+                id: "opt-1",
+                label: "Rework",
+                action: "resume",
+                target_stage: "implement",
+                recommended: true,
+              },
             ],
             created_at: "2026-11-24T04:05:00Z",
           },
@@ -3208,14 +3237,17 @@ describe("Slice 6a: LineupView, Providers, Space Pin/Scripts, Usage V2, Statusba
     });
 
     resolveRunPost(
-      jsonResponse({
-        ok: true,
-        scriptRunId: "scr-fast-1",
-        spaceId: "alpha",
-        script: "dev",
-        command: "node server.js",
-        cwd: "/tmp/alpha",
-      }, 202),
+      jsonResponse(
+        {
+          ok: true,
+          scriptRunId: "scr-fast-1",
+          spaceId: "alpha",
+          script: "dev",
+          command: "node server.js",
+          cwd: "/tmp/alpha",
+        },
+        202,
+      ),
     );
 
     const previewBar = await screen.findByLabelText("探测到的本机预览地址");

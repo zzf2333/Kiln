@@ -15,11 +15,7 @@ function formatBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
-export function AttachmentLightbox({
-  attachment,
-  imageUrl,
-  onClose,
-}: AttachmentLightboxProps) {
+export function AttachmentLightbox({ attachment, imageUrl, onClose }: AttachmentLightboxProps) {
   const open = Boolean(attachment && imageUrl);
   if (!open || !attachment || !imageUrl) {
     return null;
@@ -60,11 +56,7 @@ export function AttachmentLightbox({
             </div>
             <div className="modal-body">
               <div className="att-lightbox-frame">
-                <img
-                  src={imageUrl}
-                  alt={attachment.filename}
-                  className="att-lightbox-img"
-                />
+                <img src={imageUrl} alt={attachment.filename} className="att-lightbox-img" />
               </div>
               <div className="att-lightbox-meta mono muted">
                 <span>{attachment.mime_type}</span>

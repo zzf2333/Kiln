@@ -75,7 +75,8 @@ export function validateImageMagicBytes(buf: Buffer, mimeType: AttachmentMimeTyp
 }
 
 export function sanitizeAttachmentFilename(raw: string, fallbackExt: string): string {
-  const base = path.basename(raw.replace(/\\/g, "/"))
+  const base = path
+    .basename(raw.replace(/\\/g, "/"))
     .replace(/[\u0000-\u001f\u007f<>:"/\\|?*]/g, "_")
     .trim();
   if (base.length === 0 || base === "." || base === "..") {

@@ -168,9 +168,7 @@ const MUTATING_KEYWORD_RE =
   /(?:^|[^a-z0-9])(write|edit|create|delete|remove|unlink|patch|move|rename|mkdir|bash|zsh|sh|shell|exec|command|terminal)(?:$|[^a-z0-9])/i;
 
 function splitCamelCase(input: string): string {
-  return input
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2");
+  return input.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2");
 }
 
 function isWriteOrExecuteToolCall(toolCall: ToolCallUpdate | undefined): boolean {
@@ -387,9 +385,7 @@ export class AcpBackend implements ProviderTelemetryBackend {
   private getCommandAndArgs(): { command: string; args: string[] } {
     const command = this.provider.command?.trim() || this.provider.id;
     const args =
-      this.provider.args.length > 0
-        ? [...this.provider.args]
-        : getDefaultAcpArgs(this.provider.id);
+      this.provider.args.length > 0 ? [...this.provider.args] : getDefaultAcpArgs(this.provider.id);
     return { command, args };
   }
 
@@ -431,7 +427,9 @@ export class AcpBackend implements ProviderTelemetryBackend {
     child: ChildProcess,
     handlers?: {
       onUpdate?: (params: SessionNotification) => void;
-      onPermission?: (params: RequestPermissionRequest) => Promise<{ outcome: RequestPermissionOutcome }>;
+      onPermission?: (
+        params: RequestPermissionRequest,
+      ) => Promise<{ outcome: RequestPermissionOutcome }>;
       onReadTextFile?: (params: {
         path: string;
         line?: number | null;
@@ -680,8 +678,7 @@ export class AcpBackend implements ProviderTelemetryBackend {
 
     const { command, args } = this.getCommandAndArgs();
     const env = buildProcessEnv(this.provider.env, runSpec.env);
-    const resolvedCmd =
-      resolveCliBinary(command, { env, ...(this.probeOptions ?? {}) }) ?? command;
+    const resolvedCmd = resolveCliBinary(command, { env, ...(this.probeOptions ?? {}) }) ?? command;
     const isReadOnly = isReadOnlyRole(runSpec.role) || runSpec.readOnly === true;
 
     let canonicalCwd = path.resolve(runSpec.cwd);
@@ -891,7 +888,11 @@ export class AcpBackend implements ProviderTelemetryBackend {
     if (session.status === "closed" || session.exited) {
       throw new Error(`Session "${sessionRef.sessionId}" is closed`);
     }
-    if (session.status === "running" && session.currentTurn && !session.currentTurn.queue.isFinished()) {
+    if (
+      session.status === "running" &&
+      session.currentTurn &&
+      !session.currentTurn.queue.isFinished()
+    ) {
       throw new Error(
         `Session "${sessionRef.sessionId}" already has an active turn "${session.currentTurn.turnId}"`,
       );
@@ -1149,7 +1150,11 @@ export class AcpBackend implements ProviderTelemetryBackend {
     switch (kind) {
       case "agent_message_chunk": {
         const content = update.content as { type?: unknown; text?: unknown } | undefined;
-        if (content?.type === "text" && typeof content.text === "string" && content.text.length > 0) {
+        if (
+          content?.type === "text" &&
+          typeof content.text === "string" &&
+          content.text.length > 0
+        ) {
           turn.queue.push({ kind: "message", at, text: content.text, delta: true });
         }
         break;
@@ -1161,7 +1166,7 @@ export class AcpBackend implements ProviderTelemetryBackend {
       case "tool_call":
       case "tool_call_update": {
         const title = typeof update.title === "string" ? update.title : undefined;
-        const name = typeof update.name === "string" ? update.name : title ?? "tool";
+        const name = typeof update.name === "string" ? update.name : (title ?? "tool");
         const locations = Array.isArray(update.locations) ? update.locations : [];
         const firstPath =
           locations[0] && typeof (locations[0] as { path?: unknown }).path === "string"

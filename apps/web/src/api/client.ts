@@ -144,9 +144,7 @@ async function parseJsonSafe(res: Response): Promise<Record<string, unknown>> {
   if (!text) return {};
   try {
     const parsed: unknown = JSON.parse(text);
-    return typeof parsed === "object" && parsed !== null
-      ? (parsed as Record<string, unknown>)
-      : {};
+    return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
   } catch {
     return { message: text };
   }
@@ -166,7 +164,7 @@ function makeApiError(
   const message =
     typeof data.message === "string"
       ? data.message
-      : fallbackMessage ?? `请求失败 (${res.status})`;
+      : (fallbackMessage ?? `请求失败 (${res.status})`);
   return new ApiError(res.status, code, message, data);
 }
 
@@ -208,9 +206,7 @@ export async function fetchAuthStatus(): Promise<RemoteAuthStatusResponse> {
   return { ok: true, mode: "local", authenticated: true, device: null };
 }
 
-export async function pairRemoteDevice(
-  payload: PairCompleteRequest,
-): Promise<PairAuthResponse> {
+export async function pairRemoteDevice(payload: PairCompleteRequest): Promise<PairAuthResponse> {
   return await requestJson<PairAuthResponse>("/api/auth/pair", {
     method: "POST",
     body: JSON.stringify(payload),
@@ -248,9 +244,7 @@ export async function fetchRemoteDevices(): Promise<RemoteDevicesResponse> {
   return await requestJson<RemoteDevicesResponse>("/api/remote/devices");
 }
 
-export async function revokeRemoteDevice(
-  deviceId: string,
-): Promise<RevokeDeviceResponse> {
+export async function revokeRemoteDevice(deviceId: string): Promise<RevokeDeviceResponse> {
   return await requestJson<RevokeDeviceResponse>(
     `/api/remote/devices/${encodeURIComponent(deviceId)}`,
     { method: "DELETE" },
@@ -258,25 +252,19 @@ export async function revokeRemoteDevice(
 }
 
 export async function revokeAllRemoteDevices(): Promise<RevokeAllDevicesResponse> {
-  return await requestJson<RevokeAllDevicesResponse>(
-    "/api/remote/devices/revoke-all",
-    {
-      method: "POST",
-      body: JSON.stringify({}),
-    },
-  );
+  return await requestJson<RevokeAllDevicesResponse>("/api/remote/devices/revoke-all", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
 }
 
 export async function sendRemoteNotificationTest(
   payload?: RemoteNotificationTestRequest,
 ): Promise<RemoteNotificationTestResponse> {
-  return await requestJson<RemoteNotificationTestResponse>(
-    "/api/remote/notifications/test",
-    {
-      method: "POST",
-      body: JSON.stringify(payload ?? {}),
-    },
-  );
+  return await requestJson<RemoteNotificationTestResponse>("/api/remote/notifications/test", {
+    method: "POST",
+    body: JSON.stringify(payload ?? {}),
+  });
 }
 
 export async function fetchTailscaleStatus(): Promise<TailscaleStatusResponse> {
@@ -288,9 +276,7 @@ export async function fetchBootstrap(): Promise<BootstrapResponse> {
 }
 
 export async function fetchTaskDetail(taskId: string): Promise<TaskDetailResponse> {
-  return await requestJson<TaskDetailResponse>(
-    `/api/tasks/${encodeURIComponent(taskId)}`,
-  );
+  return await requestJson<TaskDetailResponse>(`/api/tasks/${encodeURIComponent(taskId)}`);
 }
 
 export async function pauseTask(taskId: string, reason?: string): Promise<void> {
@@ -339,10 +325,7 @@ export async function completeTask(taskId: string, deliverRef?: string): Promise
   });
 }
 
-export async function openRunTui(
-  taskId: string,
-  runDir: string,
-): Promise<OpenRunTuiResponse> {
+export async function openRunTui(taskId: string, runDir: string): Promise<OpenRunTuiResponse> {
   return await requestJson<OpenRunTuiResponse>(
     `/api/tasks/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runDir)}/open-tui`,
     {
@@ -386,9 +369,7 @@ export async function submitDecision(
   });
 }
 
-export async function restoreHostBackup(
-  taskId: string,
-): Promise<RestoreHostBackupResult> {
+export async function restoreHostBackup(taskId: string): Promise<RestoreHostBackupResult> {
   const url = `/api/tasks/${encodeURIComponent(taskId)}/restore-backup`;
   const res = await apiFetch(url, { method: "POST" });
   const data = await parseJsonSafe(res);
@@ -401,20 +382,19 @@ export async function restoreHostBackup(
   }
 
   if (res.status === 409) {
-    const code = typeof data.code === "string"
-      ? data.code
-      : typeof data.error === "string"
-        ? data.error
-        : "hash_mismatch";
+    const code =
+      typeof data.code === "string"
+        ? data.code
+        : typeof data.error === "string"
+          ? data.error
+          : "hash_mismatch";
 
     if (code === "hash_mismatch") {
       const hashErr: HashMismatchError = {
         code: "hash_mismatch",
         path: typeof data.path === "string" ? data.path : "",
-        expectedSha256:
-          typeof data.expectedSha256 === "string" ? data.expectedSha256 : "",
-        actualSha256:
-          typeof data.actualSha256 === "string" ? data.actualSha256 : "",
+        expectedSha256: typeof data.expectedSha256 === "string" ? data.expectedSha256 : "",
+        actualSha256: typeof data.actualSha256 === "string" ? data.actualSha256 : "",
         diff: typeof data.diff === "string" ? data.diff : "",
       };
       const rawConflicts = Array.isArray(data.conflicts)
@@ -443,9 +423,7 @@ export async function restoreHostBackup(
         status: 409,
         code: "lock_conflict",
         message:
-          typeof data.message === "string"
-            ? data.message
-            : "路径正被其他任务锁定，无法恢复备份",
+          typeof data.message === "string" ? data.message : "路径正被其他任务锁定，无法恢复备份",
         lockConflicts: Array.isArray(data.conflicts)
           ? (data.conflicts as Array<{ path: string; heldByTaskId: string }>)
           : [],
@@ -456,8 +434,7 @@ export async function restoreHostBackup(
       ok: false,
       status: 409,
       code: "invalid_backup_state",
-      message:
-        typeof data.message === "string" ? data.message : "备份状态不可恢复",
+      message: typeof data.message === "string" ? data.message : "备份状态不可恢复",
     };
   }
 
@@ -466,8 +443,7 @@ export async function restoreHostBackup(
       ok: false,
       status: 404,
       code: "backup_not_found",
-      message:
-        typeof data.message === "string" ? data.message : "暂无可恢复的本机备份",
+      message: typeof data.message === "string" ? data.message : "暂无可恢复的本机备份",
     };
   }
 
@@ -518,9 +494,7 @@ export async function discoverSpaces(): Promise<DiscoverSpacesResponse> {
   return {
     ok: true,
     repos: data.repos as DiscoverSpacesResponse["repos"],
-    scanned_roots: Array.isArray(data.scanned_roots)
-      ? (data.scanned_roots as string[])
-      : [],
+    scanned_roots: Array.isArray(data.scanned_roots) ? (data.scanned_roots as string[]) : [],
     truncated: Boolean(data.truncated),
   };
 }
@@ -532,9 +506,7 @@ export async function pickSpaceDirectory(): Promise<PickDirectoryResponse> {
   });
 }
 
-export async function revealLocalPath(
-  targetPath: string,
-): Promise<{ ok: true; path: string }> {
+export async function revealLocalPath(targetPath: string): Promise<{ ok: true; path: string }> {
   return await requestJson<{ ok: true; path: string }>("/api/system/reveal-path", {
     method: "POST",
     body: JSON.stringify({ path: targetPath }),
@@ -578,10 +550,7 @@ export function resolvePlaceholdersForCommit(
           : {}),
         ...(payload.contract.accept_cmd !== undefined
           ? {
-              accept_cmd: replaceNewTaskPlaceholder(
-                payload.contract.accept_cmd,
-                resolvedTaskId,
-              ),
+              accept_cmd: replaceNewTaskPlaceholder(payload.contract.accept_cmd, resolvedTaskId),
             }
           : {}),
         ...(payload.contract.scope !== undefined
@@ -597,10 +566,7 @@ export function resolvePlaceholdersForCommit(
                 payload.contract.deliver.mode === "run_cmd"
                   ? {
                       mode: "run_cmd" as const,
-                      cmd: replaceNewTaskPlaceholder(
-                        payload.contract.deliver.cmd,
-                        resolvedTaskId,
-                      ),
+                      cmd: replaceNewTaskPlaceholder(payload.contract.deliver.cmd, resolvedTaskId),
                     }
                   : payload.contract.deliver,
             }
@@ -623,9 +589,7 @@ export async function commitDraft(
   draftId: string,
   payload: CommitDraftPayload,
 ): Promise<{ ok: boolean; card: TaskCard; state: Record<string, unknown> }> {
-  const effectivePayload = payload.id
-    ? resolvePlaceholdersForCommit(payload, payload.id)
-    : payload;
+  const effectivePayload = payload.id ? resolvePlaceholdersForCommit(payload, payload.id) : payload;
 
   return await requestJson(`/api/drafts/${encodeURIComponent(draftId)}/commit`, {
     method: "POST",
@@ -643,9 +607,7 @@ export async function updateSettings<K extends keyof SettingsSectionMap>(
   });
 }
 
-export async function syncModelPricing(
-  payload?: SyncPricingRequest,
-): Promise<SyncPricingResponse> {
+export async function syncModelPricing(payload?: SyncPricingRequest): Promise<SyncPricingResponse> {
   return await requestJson<SyncPricingResponse>("/api/settings/pricing/sync", {
     method: "POST",
     body: JSON.stringify(payload ?? {}),
@@ -669,20 +631,13 @@ export async function sendIntakeChat(
   draftId: string,
   message: string,
 ): Promise<ChatResponsePayload> {
-  return await requestJson<ChatResponsePayload>(
-    `/api/drafts/${encodeURIComponent(draftId)}/chat`,
-    {
-      method: "POST",
-      body: JSON.stringify({ message }),
-    },
-  );
+  return await requestJson<ChatResponsePayload>(`/api/drafts/${encodeURIComponent(draftId)}/chat`, {
+    method: "POST",
+    body: JSON.stringify({ message }),
+  });
 }
 
-export function acceptEvidenceUrl(
-  taskId: string,
-  runDir: string,
-  relPath: string,
-): string {
+export function acceptEvidenceUrl(taskId: string, runDir: string, relPath: string): string {
   return `/api/tasks/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runDir)}/evidence?path=${encodeURIComponent(relPath)}`;
 }
 
@@ -702,17 +657,11 @@ export async function fetchAcceptServiceLog(
   return await res.text();
 }
 
-export async function reconDraft(
-  draftId: string,
-  hint?: string,
-): Promise<ReconDraftResponse> {
-  return await requestJson<ReconDraftResponse>(
-    `/api/drafts/${encodeURIComponent(draftId)}/recon`,
-    {
-      method: "POST",
-      body: JSON.stringify(hint && hint.trim() ? { hint: hint.trim() } : {}),
-    },
-  );
+export async function reconDraft(draftId: string, hint?: string): Promise<ReconDraftResponse> {
+  return await requestJson<ReconDraftResponse>(`/api/drafts/${encodeURIComponent(draftId)}/recon`, {
+    method: "POST",
+    body: JSON.stringify(hint && hint.trim() ? { hint: hint.trim() } : {}),
+  });
 }
 
 export async function fetchTaskChat(taskId: string): Promise<ChatMessage[] | null> {
@@ -732,13 +681,10 @@ export async function sendResolveChat(
   taskId: string,
   message: string,
 ): Promise<ChatResponsePayload> {
-  return await requestJson<ChatResponsePayload>(
-    `/api/tasks/${encodeURIComponent(taskId)}/chat`,
-    {
-      method: "POST",
-      body: JSON.stringify({ message }),
-    },
-  );
+  return await requestJson<ChatResponsePayload>(`/api/tasks/${encodeURIComponent(taskId)}/chat`, {
+    method: "POST",
+    body: JSON.stringify({ message }),
+  });
 }
 
 export async function fetchAgents(options?: {
@@ -761,7 +707,10 @@ export async function fetchAgents(options?: {
 }
 
 export async function fetchLedgers(): Promise<
-  Record<string, LedgerFile> | LedgerFile[] | Array<{ space: string; entries: LedgerEntry[] }> | null
+  | Record<string, LedgerFile>
+  | LedgerFile[]
+  | Array<{ space: string; entries: LedgerEntry[] }>
+  | null
 > {
   const url = "/api/ledgers";
   const res = await apiFetch(url);
@@ -841,9 +790,7 @@ export async function fetchRosterSettings(): Promise<RosterSettingsResponse> {
   return await requestJson<RosterSettingsResponse>("/api/settings/roster");
 }
 
-export async function fetchTaskCheckpoints(
-  taskId: string,
-): Promise<TaskCheckpointsResponse> {
+export async function fetchTaskCheckpoints(taskId: string): Promise<TaskCheckpointsResponse> {
   return await requestJson<TaskCheckpointsResponse>(
     `/api/tasks/${encodeURIComponent(taskId)}/checkpoints`,
   );
@@ -883,9 +830,7 @@ export async function fetchScriptRuns(params?: {
   if (params?.spaceId) qs.set("spaceId", params.spaceId);
   if (params?.taskId) qs.set("taskId", params.taskId);
   const query = qs.toString();
-  return await requestJson<ListScriptsResponse>(
-    `/api/scripts${query ? `?${query}` : ""}`,
-  );
+  return await requestJson<ListScriptsResponse>(`/api/scripts${query ? `?${query}` : ""}`);
 }
 
 export async function stopScriptRun(
@@ -940,10 +885,9 @@ export async function deleteDraftAttachment(
     ok: true;
     deleted: boolean;
     draft: DraftAttachmentUploadResponse["draft"];
-  }>(
-    `/api/drafts/${encodeURIComponent(draftId)}/attachments/${encodeURIComponent(attachmentId)}`,
-    { method: "DELETE" },
-  );
+  }>(`/api/drafts/${encodeURIComponent(draftId)}/attachments/${encodeURIComponent(attachmentId)}`, {
+    method: "DELETE",
+  });
 }
 
 export async function commitSplitDraft(
@@ -1101,9 +1045,7 @@ export async function updateTaskLimits(
   );
 }
 
-export async function importGithubIssue(
-  body: ImportGithubIssueRequest,
-): Promise<{
+export async function importGithubIssue(body: ImportGithubIssueRequest): Promise<{
   ok: true;
   draft: DraftCard & { brief_markdown?: string };
   issue: {
@@ -1138,7 +1080,12 @@ export async function triggerPrFeedbackRework(
   body: PrFeedbackReworkRequest,
 ): Promise<
   | { ok: true; mode: "steered" | "resumed"; taskId: string; status: string; message: string }
-  | { ok: true; mode: "followup_draft"; draft: DraftCard & { brief_markdown?: string }; message: string }
+  | {
+      ok: true;
+      mode: "followup_draft";
+      draft: DraftCard & { brief_markdown?: string };
+      message: string;
+    }
 > {
   return requestJson(`/api/tasks/${encodeURIComponent(taskId)}/pr-feedback/rework`, {
     method: "POST",

@@ -341,10 +341,7 @@ export const ProviderEntrySchema = z
   .object({
     id: z
       .string()
-      .regex(
-        PROVIDER_OR_ROLE_ID_RE,
-        "id must be 1-48 chars matching ^[a-z0-9][a-z0-9_-]{0,47}$",
-      ),
+      .regex(PROVIDER_OR_ROLE_ID_RE, "id must be 1-48 chars matching ^[a-z0-9][a-z0-9_-]{0,47}$"),
     label: z.string().min(1),
     adapter: ProviderAdapterKindSchema,
     enabled: z.boolean().default(true),
@@ -487,25 +484,21 @@ export const RosterEntrySchema = z
     fallbacks: z.array(RosterModelBindingSchema).default([]),
     escalation_target: z
       .string()
-      .regex(
-        PROVIDER_OR_ROLE_ID_RE,
-        "escalation_target must match ^[a-z0-9][a-z0-9_-]{0,47}$",
-      )
+      .regex(PROVIDER_OR_ROLE_ID_RE, "escalation_target must match ^[a-z0-9][a-z0-9_-]{0,47}$")
       .optional(),
     custom_instructions: z.string().trim().min(1).max(4000).optional(),
-    avoid_same_as: z
-      .union([RosterStageIdSchema, z.array(RosterStageIdSchema).min(1)])
-      .optional(),
+    avoid_same_as: z.union([RosterStageIdSchema, z.array(RosterStageIdSchema).min(1)]).optional(),
     allow_full_access_fallback: z.boolean().default(false),
-    verifier_capabilities: z
-      .array(z.enum(VERIFIER_CAPABILITIES))
-      .min(1)
-      .optional(),
+    verifier_capabilities: z.array(z.enum(VERIFIER_CAPABILITIES)).min(1).optional(),
     builtin: z.boolean().default(false),
   })
   .strict()
   .superRefine((entry, ctx) => {
-    if ((entry.mode === "agent" || entry.mode === "on_conflict") && entry.enabled && !entry.primary) {
+    if (
+      (entry.mode === "agent" || entry.mode === "on_conflict") &&
+      entry.enabled &&
+      !entry.primary
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "Enabled agent-mode roster entry requires a primary model binding",
@@ -526,12 +519,7 @@ export const RosterConfigSchema = z
       require_review_for_core: true,
     }),
     roster: z.record(
-      z
-        .string()
-        .regex(
-          PROVIDER_OR_ROLE_ID_RE,
-          "roster key must match ^[a-z0-9][a-z0-9_-]{0,47}$",
-        ),
+      z.string().regex(PROVIDER_OR_ROLE_ID_RE, "roster key must match ^[a-z0-9][a-z0-9_-]{0,47}$"),
       RosterEntrySchema,
     ),
   })
@@ -575,7 +563,8 @@ const DEFAULT_ROSTER_SEED: Record<
     stage: "plan",
     secondary_stages: [],
     perm: "read_only",
-    traits: "事前疑难拆解、架构权衡与实施方案设计，产出 PLAN.md（严格只读，未单配时自动继承技术顾问）",
+    traits:
+      "事前疑难拆解、架构权衡与实施方案设计，产出 PLAN.md（严格只读，未单配时自动继承技术顾问）",
     mode: "agent",
     tier_hint: "flagship",
     builtin: true,
@@ -587,7 +576,8 @@ const DEFAULT_ROSTER_SEED: Record<
     stage: "advise",
     secondary_stages: [],
     perm: "read_only",
-    traits: "最高智商核心大脑：负责全新上下文裁决技术分歧与连续卡壳破局（同时作为架构/研判默认继承源）",
+    traits:
+      "最高智商核心大脑：负责全新上下文裁决技术分歧与连续卡壳破局（同时作为架构/研判默认继承源）",
     mode: "agent",
     tier_hint: "flagship",
     builtin: true,
@@ -704,7 +694,8 @@ const DEFAULT_ROSTER_SEED: Record<
     stage: "deliver",
     secondary_stages: [],
     perm: "kernel_gate",
-    traits: "默认内核 0 Token 执行 merge_main 或两阶段原子落盘；可选切「冲突按需」仅遇冲突时唤起模型解冲突",
+    traits:
+      "默认内核 0 Token 执行 merge_main 或两阶段原子落盘；可选切「冲突按需」仅遇冲突时唤起模型解冲突",
     mode: "kernel",
     builtin: true,
   },

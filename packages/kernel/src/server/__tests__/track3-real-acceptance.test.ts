@@ -21,8 +21,7 @@ import { writeFileAtomic, readYamlOptional } from "../../store/index.js";
 import { KilndServer, type AcceptEnvStarterFn } from "../index.js";
 
 const VALID_PNG_HEADER = Buffer.from([
-  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
-  0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
 ]);
 
 function git(args: readonly string[], cwd?: string): string {
@@ -42,11 +41,7 @@ function initTempGitRepo(baseDir: string, name: string): string {
   git(["init", "-b", "main"], repoDir);
   git(["config", "user.name", "Kiln Test"], repoDir);
   git(["config", "user.email", "kiln-test@example.com"], repoDir);
-  fs.writeFileSync(
-    path.join(repoDir, "src", "app.ts"),
-    "export const status = 'init';\n",
-    "utf8",
-  );
+  fs.writeFileSync(path.join(repoDir, "src", "app.ts"), "export const status = 'init';\n", "utf8");
   git(["add", "."], repoDir);
   git(["commit", "-m", "initial commit"], repoDir);
   return fs.realpathSync(repoDir);
@@ -94,18 +89,13 @@ function makeReviewerReceipt(fields: {
       p1: 0,
       p2: 0,
     },
-    [
-      "## 结论\n审查通过。\n",
-      "## 缺陷清单\n无\n",
-      "## 测试真实性与复现核查\n真实执行通过\n",
-    ].join("\n"),
+    ["## 结论\n审查通过。\n", "## 缺陷清单\n无\n", "## 测试真实性与复现核查\n真实执行通过\n"].join(
+      "\n",
+    ),
   );
 }
 
-function makeAdvisorPlanReceipt(fields: {
-  run_id: string;
-  contract_version: number;
-}): string {
+function makeAdvisorPlanReceipt(fields: { run_id: string; contract_version: number }): string {
   return serializeFrontmatterMarkdown(
     {
       run_id: fields.run_id,
@@ -117,10 +107,9 @@ function makeAdvisorPlanReceipt(fields: {
       requires_scope_expansion: false,
       requires_human_approval: false,
     },
-    [
-      "## 技术取舍\n最小改动实现即可。\n",
-      "## 授权裁决\n- 不扩 scope，直接实现并送审。\n",
-    ].join("\n"),
+    ["## 技术取舍\n最小改动实现即可。\n", "## 授权裁决\n- 不扩 scope，直接实现并送审。\n"].join(
+      "\n",
+    ),
   );
 }
 
@@ -470,7 +459,11 @@ describe("Track 3: Slim B8 + B9 Anti-Fake Evidence Gate & Multimodal Rework", ()
       const attempt = acceptLaunchNum;
       fs.mkdirSync(acceptEnvDir, { recursive: true });
       const logFile = path.join(acceptEnvDir, "web.log");
-      fs.writeFileSync(logFile, `boot attempt ${attempt}\nBackend crash hint: ECONNREFUSED\n`, "utf8");
+      fs.writeFileSync(
+        logFile,
+        `boot attempt ${attempt}\nBackend crash hint: ECONNREFUSED\n`,
+        "utf8",
+      );
       const totalReqs = attempt === 1 ? 0 : attempt === 2 ? 3 : 5;
       const errResps =
         attempt === 2 ? [{ method: "POST", path: "/api/save", status: 500, service: "web" }] : [];
@@ -762,7 +755,12 @@ describe("Track 3: Slim B8 + B9 Anti-Fake Evidence Gate & Multimodal Rework", ()
             getLiveSnapshot: () => ({
               entryKind: entry.kind,
               services: [{ name: "web", status: "ready", port: 45996, proxy_port: 45997 }],
-              traffic: { observed: true, total_requests: 2, unique_paths: ["/"], error_responses: [] },
+              traffic: {
+                observed: true,
+                total_requests: 2,
+                unique_paths: ["/"],
+                error_responses: [],
+              },
             }),
             stop: async () => {},
           },

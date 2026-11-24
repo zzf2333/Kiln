@@ -60,9 +60,7 @@ export function LedgerView() {
     void loadSummary(tab !== "ledger");
   }, [tab, loadSummary]);
 
-  const groups = Object.entries(ledgers).filter(
-    ([, entries]) => entries.length > 0,
-  );
+  const groups = Object.entries(ledgers).filter(([, entries]) => entries.length > 0);
   const totalCount = groups.reduce((acc, [, entries]) => acc + entries.length, 0);
   const knownTaskIds = new Set(tasks.map((t) => t.id));
 
@@ -76,9 +74,7 @@ export function LedgerView() {
   });
 
   const policyHistory = summary?.policyHistory ?? [];
-  const activeAlerts = policyHistory.filter(
-    (h) => h.regression_alert && !h.rolled_back_at,
-  ).length;
+  const activeAlerts = policyHistory.filter((h) => h.regression_alert && !h.rolled_back_at).length;
   const analytics = summary?.analytics ?? null;
 
   const handleAnalyze = async () => {
@@ -192,7 +188,8 @@ export function LedgerView() {
           {tab === "ledger" ? (
             <>
               <p className="page-lede">
-                你在「等你决定」中明确勾选写入账本的规则会沉淀于此；后续立项与审查都会先读取，避免同一约束反复打断你（单空间注入上限 20 条活跃规则）。
+                你在「等你决定」中明确勾选写入账本的规则会沉淀于此；后续立项与审查都会先读取，避免同一约束反复打断你（单空间注入上限
+                20 条活跃规则）。
               </p>
               {groups.length > 0 ? (
                 groups.map(([spaceId, entries]) => {
@@ -215,13 +212,9 @@ export function LedgerView() {
                           <div key={entry.id} className="ledger-row">
                             <div className="ledger-row-main">
                               <span>{entry.rule}</span>
-                              {isArchived ? (
-                                <span className="chip">已归档</span>
-                              ) : null}
+                              {isArchived ? <span className="chip">已归档</span> : null}
                               {(entry.hit_count ?? 0) > 0 ? (
-                                <span className="chip">
-                                  命中 {entry.hit_count} 次
-                                </span>
+                                <span className="chip">命中 {entry.hit_count} 次</span>
                               ) : null}
                             </div>
                             {hasTask ? (
@@ -246,9 +239,7 @@ export function LedgerView() {
                           {spaceCfg?.default_workflow_preset ? (
                             <div>
                               <strong>默认工作流预设：</strong>
-                              <span className="mono">
-                                {spaceCfg.default_workflow_preset}
-                              </span>
+                              <span className="mono">{spaceCfg.default_workflow_preset}</span>
                             </div>
                           ) : null}
                           {checklist.length > 0 ? (
@@ -322,19 +313,20 @@ export function LedgerView() {
                   return (
                     <section key={prop.id} className="proposal-card">
                       <div className="proposal-card-head">
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "8px",
+                            flexWrap: "wrap",
+                          }}
+                        >
                           <strong>{prop.title}</strong>
-                          <span className="chip">
-                            {TARGET_KIND_LABELS[prop.target_kind]}
-                          </span>
+                          <span className="chip">{TARGET_KIND_LABELS[prop.target_kind]}</span>
                           {prop.space ? (
-                            <span className="chip">
-                              {spaces[prop.space]?.name ?? prop.space}
-                            </span>
+                            <span className="chip">{spaces[prop.space]?.name ?? prop.space}</span>
                           ) : null}
-                          <span
-                            className={`chip${prop.status === "pending" ? " chip-warn" : ""}`}
-                          >
+                          <span className={`chip${prop.status === "pending" ? " chip-warn" : ""}`}>
                             {statusLabel}
                           </span>
                         </div>
@@ -342,14 +334,19 @@ export function LedgerView() {
                           {fmtTime(prop.created_at)}
                         </span>
                       </div>
-                      <p style={{ fontSize: "13px", color: "var(--t2)" }}>
-                        {prop.rationale}
-                      </p>
+                      <p style={{ fontSize: "13px", color: "var(--t2)" }}>{prop.rationale}</p>
                       <p style={{ fontSize: "12px", color: "var(--t3)" }}>
                         预期效果：{prop.expected_impact}
                       </p>
                       {prop.evidence_task_ids.length > 0 ? (
-                        <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
+                        <div
+                          style={{
+                            display: "flex",
+                            gap: "6px",
+                            flexWrap: "wrap",
+                            alignItems: "center",
+                          }}
+                        >
                           <span className="muted" style={{ fontSize: "12px" }}>
                             证据任务：
                           </span>
@@ -417,7 +414,8 @@ export function LedgerView() {
                 }}
               >
                 <p className="page-lede" style={{ margin: 0 }}>
-                  0-Token 聚合统计各项目、角色/模型与预设效率；已批准的策略会持续比对变更前后窗口并支持一键回滚。
+                  0-Token
+                  聚合统计各项目、角色/模型与预设效率；已批准的策略会持续比对变更前后窗口并支持一键回滚。
                 </p>
                 <button
                   type="button"
@@ -444,9 +442,7 @@ export function LedgerView() {
                     </div>
                     <div className="analytics-kpi">
                       <span>一次通过率</span>
-                      <strong className="mono">
-                        {fmtPct(analytics.overall.first_pass_rate)}
-                      </strong>
+                      <strong className="mono">{fmtPct(analytics.overall.first_pass_rate)}</strong>
                     </div>
                     <div className="analytics-kpi">
                       <span>平均返工轮次</span>
@@ -456,23 +452,17 @@ export function LedgerView() {
                     </div>
                     <div className="analytics-kpi">
                       <span>缓存命中率</span>
-                      <strong className="mono">
-                        {fmtPct(analytics.overall.cache_hit_rate)}
-                      </strong>
+                      <strong className="mono">{fmtPct(analytics.overall.cache_hit_rate)}</strong>
                     </div>
                     <div className="analytics-kpi">
                       <span>中位单卡费用</span>
-                      <strong className="mono">
-                        {fmtUsd(analytics.overall.median_cost_usd)}
-                      </strong>
+                      <strong className="mono">{fmtUsd(analytics.overall.median_cost_usd)}</strong>
                     </div>
                   </div>
 
                   {analytics.by_role_model.length > 0 ? (
                     <>
-                      <h3 style={{ fontSize: "13px", marginBottom: "8px" }}>
-                        角色 / 模型效率分布
-                      </h3>
+                      <h3 style={{ fontSize: "13px", marginBottom: "8px" }}>角色 / 模型效率分布</h3>
                       <table className="analytics-table">
                         <thead>
                           <tr>
@@ -487,21 +477,15 @@ export function LedgerView() {
                         </thead>
                         <tbody>
                           {analytics.by_role_model.map((row) => (
-                            <tr
-                              key={`${row.roster_role}-${row.agent}-${row.model}`}
-                            >
+                            <tr key={`${row.roster_role}-${row.agent}-${row.model}`}>
                               <td className="mono">{row.roster_role}</td>
                               <td className="mono">
                                 {row.agent} · {row.model}
                               </td>
                               <td className="mono">{row.run_count}</td>
                               <td className="mono">{fmtPct(row.pass_rate)}</td>
-                              <td className="mono">
-                                {fmtPct(row.escalation_rate)}
-                              </td>
-                              <td className="mono">
-                                {fmtPct(row.cache_hit_rate)}
-                              </td>
+                              <td className="mono">{fmtPct(row.escalation_rate)}</td>
+                              <td className="mono">{fmtPct(row.cache_hit_rate)}</td>
                               <td className="mono">{fmtUsd(row.avg_cost_usd)}</td>
                             </tr>
                           ))}
@@ -512,9 +496,7 @@ export function LedgerView() {
 
                   {analytics.by_workflow_preset.length > 0 ? (
                     <>
-                      <h3 style={{ fontSize: "13px", marginBottom: "8px" }}>
-                        工作流预设表现
-                      </h3>
+                      <h3 style={{ fontSize: "13px", marginBottom: "8px" }}>工作流预设表现</h3>
                       <table className="analytics-table">
                         <thead>
                           <tr>
@@ -530,15 +512,9 @@ export function LedgerView() {
                             <tr key={row.preset}>
                               <td className="mono">{row.preset}</td>
                               <td className="mono">{row.metrics.task_count}</td>
-                              <td className="mono">
-                                {fmtPct(row.metrics.first_pass_rate)}
-                              </td>
-                              <td className="mono">
-                                {row.metrics.avg_rework_rounds.toFixed(2)}
-                              </td>
-                              <td className="mono">
-                                {fmtUsd(row.metrics.median_cost_usd)}
-                              </td>
+                              <td className="mono">{fmtPct(row.metrics.first_pass_rate)}</td>
+                              <td className="mono">{row.metrics.avg_rework_rounds.toFixed(2)}</td>
+                              <td className="mono">{fmtUsd(row.metrics.median_cost_usd)}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -555,11 +531,16 @@ export function LedgerView() {
                 policyHistory.map((rec) => (
                   <section key={rec.id} className="proposal-card">
                     <div className="proposal-card-head">
-                      <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: "8px",
+                          alignItems: "center",
+                          flexWrap: "wrap",
+                        }}
+                      >
                         <strong>{rec.summary}</strong>
-                        <span className="chip">
-                          {TARGET_KIND_LABELS[rec.target_kind]}
-                        </span>
+                        <span className="chip">{TARGET_KIND_LABELS[rec.target_kind]}</span>
                         <span className="chip mono">{rec.target_ref}</span>
                         {rec.rolled_back_at ? (
                           <span className="chip">已回滚</span>
@@ -577,31 +558,19 @@ export function LedgerView() {
                     <div className="retro-metrics">
                       <span>
                         变更前（{rec.before_metrics.task_count} 卡）：通过率{" "}
-                        <b className="mono">
-                          {fmtPct(rec.before_metrics.first_pass_rate)}
-                        </b>
+                        <b className="mono">{fmtPct(rec.before_metrics.first_pass_rate)}</b>
                         ，平均返工{" "}
-                        <b className="mono">
-                          {rec.before_metrics.avg_rework_rounds.toFixed(1)}
-                        </b>
+                        <b className="mono">{rec.before_metrics.avg_rework_rounds.toFixed(1)}</b>
                         ，中位费用{" "}
-                        <b className="mono">
-                          {fmtUsd(rec.before_metrics.median_cost_usd)}
-                        </b>
+                        <b className="mono">{fmtUsd(rec.before_metrics.median_cost_usd)}</b>
                       </span>
                       <span>
                         变更后（{rec.after_metrics.task_count} 卡）：通过率{" "}
-                        <b className="mono">
-                          {fmtPct(rec.after_metrics.first_pass_rate)}
-                        </b>
+                        <b className="mono">{fmtPct(rec.after_metrics.first_pass_rate)}</b>
                         ，平均返工{" "}
-                        <b className="mono">
-                          {rec.after_metrics.avg_rework_rounds.toFixed(1)}
-                        </b>
+                        <b className="mono">{rec.after_metrics.avg_rework_rounds.toFixed(1)}</b>
                         ，中位费用{" "}
-                        <b className="mono">
-                          {fmtUsd(rec.after_metrics.median_cost_usd)}
-                        </b>
+                        <b className="mono">{fmtUsd(rec.after_metrics.median_cost_usd)}</b>
                       </span>
                     </div>
 

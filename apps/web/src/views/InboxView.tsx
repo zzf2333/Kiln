@@ -18,8 +18,7 @@ export function InboxView() {
     .filter((t) => t.status === "waiting")
     .sort((a, b) => PRIORITY_RANK[a.effective_priority] - PRIORITY_RANK[b.effective_priority]);
 
-  const selectedTask =
-    waitingTasks.find((t) => t.id === selectedTaskId) ?? waitingTasks[0] ?? null;
+  const selectedTask = waitingTasks.find((t) => t.id === selectedTaskId) ?? waitingTasks[0] ?? null;
   const selectedDecision = selectedTask ? decisionByTask.get(selectedTask.id) : undefined;
 
   return (
@@ -28,7 +27,8 @@ export function InboxView() {
         <>
           <h1 className="tb-title">等你决定</h1>
           <span className="tb-sub">
-            {waitingTasks.length} 件 · 只有产品承诺、本机首次写入、外部动作、前置取消和熔断会来到这里（手动暂停不进此处）
+            {waitingTasks.length} 件 ·
+            只有产品承诺、本机首次写入、外部动作、前置取消和熔断会来到这里（手动暂停不进此处）
           </span>
         </>
       }
@@ -112,9 +112,7 @@ export function InboxView() {
                 />
               ) : (
                 <div className="decision">
-                  <p className="decision-q">
-                    {selectedTask.waiting_reason ?? "等待人工裁决"}
-                  </p>
+                  <p className="decision-q">{selectedTask.waiting_reason ?? "等待人工裁决"}</p>
                   <div className="decision-actions">
                     <button
                       type="button"
@@ -128,9 +126,7 @@ export function InboxView() {
               )}
 
               <section className="ib-foot-card" aria-label="任务进度摘要">
-                {selectedTask.summary ? (
-                  <p className="ib-summary">{selectedTask.summary}</p>
-                ) : null}
+                {selectedTask.summary ? <p className="ib-summary">{selectedTask.summary}</p> : null}
                 <MiniRail
                   track={selectedTask.track}
                   workflow={selectedTask.workflow}

@@ -180,9 +180,7 @@ function segmentsCanIntersect(segA: string, segB: string): boolean {
 
     if (aStar && bStar) {
       result =
-        visit(i + 1, j, hasChar) ||
-        visit(i, j + 1, hasChar) ||
-        (!hasChar && visit(i, j, true));
+        visit(i + 1, j, hasChar) || visit(i, j + 1, hasChar) || (!hasChar && visit(i, j, true));
     } else if (aStar) {
       result = visit(i + 1, j, hasChar) || (j < lenB && visit(i, j + 1, true));
     } else if (bStar) {
@@ -202,10 +200,7 @@ function segmentsCanIntersect(segA: string, segB: string): boolean {
   return visit(0, 0, false);
 }
 
-function compiledSequencesOverlap(
-  segsA: readonly string[],
-  segsB: readonly string[],
-): boolean {
+function compiledSequencesOverlap(segsA: readonly string[], segsB: readonly string[]): boolean {
   const lenA = segsA.length;
   const lenB = segsB.length;
   const memo = new Map<number, boolean>();
@@ -243,10 +238,7 @@ function compiledSequencesOverlap(
  * Returns `true` whenever both scopes can match a common path (or either side is empty/global),
  * while returning `false` for disjoint directories or files (enabling same-repo parallelism).
  */
-export function scopesOverlap(
-  scopeA: readonly string[],
-  scopeB: readonly string[],
-): boolean {
+export function scopesOverlap(scopeA: readonly string[], scopeB: readonly string[]): boolean {
   if (scopeA.length === 0 || scopeB.length === 0) {
     return true;
   }
@@ -369,14 +361,19 @@ function normalizeHostPatternToScopeComparable(rawPattern: string): string | nul
       const prefixComparable =
         firstGlobIdx === 0
           ? `__win_drive_${drivePrefix[0]!.toLowerCase()}`
-          : resolveHostPrefixToComparable(`${drivePrefix}/${restSegs.slice(0, firstGlobIdx).join("/")}`);
+          : resolveHostPrefixToComparable(
+              `${drivePrefix}/${restSegs.slice(0, firstGlobIdx).join("/")}`,
+            );
       const tail = restSegs.slice(firstGlobIdx).join("/").toLowerCase();
       const combined = tail ? `${prefixComparable}/${tail}` : prefixComparable;
       return trailingSlash ? `${combined}/` : combined;
     }
 
     if (uncPath) {
-      const restSegs = posix.slice(2).split("/").filter((s) => s.length > 0 && s !== ".");
+      const restSegs = posix
+        .slice(2)
+        .split("/")
+        .filter((s) => s.length > 0 && s !== ".");
       const firstGlobIdx = restSegs.findIndex((seg) => hasGlobSyntax(seg));
       if (firstGlobIdx === -1) {
         const trimmed = resolveHostPrefixToComparable(rawPattern);
@@ -631,11 +628,7 @@ function matchesRateLimitKey(
 export class RateLimitTracker {
   private readonly entries = new Map<string, RateLimitEntry>();
 
-  markRateLimited(
-    key: RateLimitKey,
-    retryAfterMs: number,
-    nowMs: number = Date.now(),
-  ): number {
+  markRateLimited(key: RateLimitKey, retryAfterMs: number, nowMs: number = Date.now()): number {
     if (!Number.isFinite(retryAfterMs) || retryAfterMs < 0) {
       throw new RangeError(
         `retryAfterMs must be a non-negative finite number, got: ${retryAfterMs}`,

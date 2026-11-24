@@ -105,10 +105,7 @@ function createInProcessFetch(
   server: KilndServer,
   isRunning: () => boolean = () => true,
 ): typeof fetch {
-  return async (
-    input: Parameters<typeof fetch>[0],
-    init?: RequestInit,
-  ): Promise<Response> => {
+  return async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
     if (!isRunning()) {
       throw new TypeError("fetch failed: ECONNREFUSED");
     }
@@ -618,17 +615,11 @@ describe("@kiln/cli", () => {
       kilnHome: specialKilnHome,
       logDir: path.join(specialKilnHome, "logs"),
     });
-    expect(plist).toContain("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
+    expect(plist).toContain('<?xml version="1.0" encoding="UTF-8"?>');
     expect(plist).toContain(`<string>${MACOS_LAUNCH_AGENT_LABEL}</string>`);
-    expect(plist).toContain(
-      "<string>/usr/local/bin/node</string>",
-    );
-    expect(plist).toContain(
-      "<string>/opt/kiln/dist/bin.js</string>",
-    );
-    expect(plist).toContain(
-      "Kiln &amp; &quot;Work&quot; &lt;dir&gt;&apos;1",
-    );
+    expect(plist).toContain("<string>/usr/local/bin/node</string>");
+    expect(plist).toContain("<string>/opt/kiln/dist/bin.js</string>");
+    expect(plist).toContain("Kiln &amp; &quot;Work&quot; &lt;dir&gt;&apos;1");
     expect(plist).toContain("<key>RunAtLoad</key>");
     expect(plist).toContain("<key>KeepAlive</key>");
     expect(() =>
@@ -778,15 +769,25 @@ describe("@kiln/cli", () => {
     fs.mkdirSync(repoPath, { recursive: true });
     execFileSync("git", ["init", "-b", "main", repoPath], { stdio: "pipe" });
     execFileSync("git", ["-C", repoPath, "config", "user.name", "Kiln Test"], { stdio: "pipe" });
-    execFileSync("git", ["-C", repoPath, "config", "user.email", "kiln@example.com"], { stdio: "pipe" });
-    execFileSync("git", ["-C", repoPath, "commit", "--allow-empty", "-m", "init"], { stdio: "pipe" });
-    execFileSync("git", ["-C", repoPath, "worktree", "add", "-b", "kiln/t-dirty", wtPath, "HEAD"], { stdio: "pipe" });
+    execFileSync("git", ["-C", repoPath, "config", "user.email", "kiln@example.com"], {
+      stdio: "pipe",
+    });
+    execFileSync("git", ["-C", repoPath, "commit", "--allow-empty", "-m", "init"], {
+      stdio: "pipe",
+    });
+    execFileSync("git", ["-C", repoPath, "worktree", "add", "-b", "kiln/t-dirty", wtPath, "HEAD"], {
+      stdio: "pipe",
+    });
     const dirtyFile = path.join(wtPath, "uncommitted.txt");
     fs.writeFileSync(dirtyFile, "do not delete me\n", "utf8");
 
     const cleanWtPath = path.join(h.kilnHome, "workspaces", "t-clean", "worktree");
     fs.mkdirSync(path.dirname(cleanWtPath), { recursive: true });
-    execFileSync("git", ["-C", repoPath, "worktree", "add", "-b", "kiln/t-clean", cleanWtPath, "HEAD"], { stdio: "pipe" });
+    execFileSync(
+      "git",
+      ["-C", repoPath, "worktree", "add", "-b", "kiln/t-clean", cleanWtPath, "HEAD"],
+      { stdio: "pipe" },
+    );
 
     h.server.store.writeSpace({
       schema_version: 1,
@@ -880,9 +881,7 @@ describe("@kiln/cli", () => {
   });
 
   it("registers PaseoBackend on `kiln up --foreground`, forwards url/password, exposes /api/agents, and disposes on abort or start failure", async () => {
-    const createDisposableFakePaseo = (
-      disposeCounter: { count: number },
-    ): ExecutionBackend => {
+    const createDisposableFakePaseo = (disposeCounter: { count: number }): ExecutionBackend => {
       const inner = new FakeBackend({ backendId: "paseo" });
       return Object.assign(inner, {
         dispose: async (): Promise<void> => {
@@ -964,9 +963,7 @@ describe("@kiln/cli", () => {
       };
       expect(agentsJson.ok).toBe(true);
       expect(agentsJson.backends).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ backendId: "paseo", connected: true }),
-        ]),
+        expect.arrayContaining([expect.objectContaining({ backendId: "paseo", connected: true })]),
       );
       expect(agentsJson.agents.some((a) => a.backendId === "paseo")).toBe(true);
       expect(disposeCounter1.count).toBe(0);
@@ -1356,7 +1353,9 @@ describe("@kiln/cli", () => {
     fs.writeFileSync(path.join(repoPath, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
     execFileSync("git", ["init", "-b", "main", repoPath], { stdio: "pipe" });
     execFileSync("git", ["-C", repoPath, "config", "user.name", "Kiln Test"], { stdio: "pipe" });
-    execFileSync("git", ["-C", repoPath, "config", "user.email", "kiln@example.com"], { stdio: "pipe" });
+    execFileSync("git", ["-C", repoPath, "config", "user.email", "kiln@example.com"], {
+      stdio: "pipe",
+    });
     execFileSync("git", ["-C", repoPath, "add", "."], { stdio: "pipe" });
     execFileSync("git", ["-C", repoPath, "commit", "-m", "init"], { stdio: "pipe" });
 

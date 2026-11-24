@@ -4,10 +4,7 @@ import {
   IneligibleRoleAgentError,
   UnknownBackendError,
 } from "../backend/types.js";
-import {
-  CheckpointNotFoundError,
-  InvalidCheckpointRefError,
-} from "../gate/checkpoints.js";
+import { CheckpointNotFoundError, InvalidCheckpointRefError } from "../gate/checkpoints.js";
 import {
   DependencyCycleError,
   InvalidStateTransitionError,
@@ -55,9 +52,7 @@ export function mapDomainError(err: unknown): {
       statusCode: 400,
       payload: {
         error: "validation_error",
-        message: err.issues
-          .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
-          .join("; "),
+        message: err.issues.map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`).join("; "),
         issues: err.issues,
       },
     };

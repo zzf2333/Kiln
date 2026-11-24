@@ -55,10 +55,7 @@ import {
   type ExecutionBackend,
   type UsageSnapshot,
 } from "@kiln/kernel";
-import {
-  runStdioMcpServer,
-  type RunStdioMcpServerOptions,
-} from "@kiln/mcp";
+import { runStdioMcpServer, type RunStdioMcpServerOptions } from "@kiln/mcp";
 import { getEmbeddedPublicAssets } from "./embedded-public.js";
 import {
   getServiceStatus,
@@ -86,9 +83,7 @@ const HEALTH_TIMEOUT_MS = 1_500;
 const API_TIMEOUT_MS = 5_000;
 const DAEMON_START_TIMEOUT_MS = 5_000;
 
-export type CliOutputSink =
-  | ((chunk: string) => void)
-  | { write(chunk: string): unknown };
+export type CliOutputSink = ((chunk: string) => void) | { write(chunk: string): unknown };
 
 export interface SpawnDaemonContext {
   kilnHome: string;
@@ -121,9 +116,7 @@ export interface CliRuntimeOptions {
   host?: string;
   fetchImpl?: typeof fetch;
   openUrl?: (url: string) => Promise<void> | void;
-  spawnDaemon?: (
-    ctx: SpawnDaemonContext,
-  ) => Promise<SpawnDaemonResult> | SpawnDaemonResult;
+  spawnDaemon?: (ctx: SpawnDaemonContext) => Promise<SpawnDaemonResult> | SpawnDaemonResult;
   stopDaemon?: () => Promise<boolean | void> | boolean | void;
   requestGracefulShutdown?: GracefulShutdownRequestFn;
   killProcessTree?: KillProcessTreeFn;
@@ -205,7 +198,10 @@ export interface DoctorReport {
 }
 
 class CliUsageError extends Error {
-  constructor(message: string, readonly helpText?: string) {
+  constructor(
+    message: string,
+    readonly helpText?: string,
+  ) {
     super(message);
     this.name = "CliUsageError";
   }
@@ -305,26 +301,15 @@ function createOutputCollector(options: CliRuntimeOptions): {
   };
 }
 
-function parseSafeCliSegment(
-  value: string,
-  label: string,
-  helpText?: string,
-): string {
+function parseSafeCliSegment(value: string, label: string, helpText?: string): string {
   try {
     return assertSafeSegment(value, label);
   } catch (err) {
-    throw new CliUsageError(
-      err instanceof Error ? err.message : String(err),
-      helpText,
-    );
+    throw new CliUsageError(err instanceof Error ? err.message : String(err), helpText);
   }
 }
 
-function parsePortValue(
-  rawPort: string | undefined,
-  fallback: number,
-  allowZero: boolean,
-): number {
+function parsePortValue(rawPort: string | undefined, fallback: number, allowZero: boolean): number {
   if (rawPort === undefined) {
     return fallback;
   }
@@ -376,10 +361,7 @@ function parsePaseoUrlValue(rawUrl: string | undefined): string | undefined {
       COMMAND_HELP.up,
     );
   }
-  if (
-    (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") ||
-    parsed.hostname.length === 0
-  ) {
+  if ((parsed.protocol !== "ws:" && parsed.protocol !== "wss:") || parsed.hostname.length === 0) {
     throw new CliUsageError(
       `Invalid --paseo-url "${rawUrl}": expected a ws:// or wss:// URL`,
       COMMAND_HELP.up,
@@ -400,21 +382,12 @@ export interface BuildDaemonForegroundArgsInput {
  * Builds the child process argument list used by `kiln up` when spawning
  * `kilnd` in detached foreground mode.
  */
-export function buildDaemonForegroundArgs(
-  input: BuildDaemonForegroundArgsInput,
-): string[] {
+export function buildDaemonForegroundArgs(input: BuildDaemonForegroundArgsInput): string[] {
   const args: string[] = [];
   if (input.entrypoint !== undefined && input.entrypoint.length > 0) {
     args.push(input.entrypoint);
   }
-  args.push(
-    "up",
-    "--foreground",
-    "--host",
-    input.host,
-    "--port",
-    String(input.port),
-  );
+  args.push("up", "--foreground", "--host", input.host, "--port", String(input.port));
   if (input.paseoUrl !== undefined) {
     args.push("--paseo-url", input.paseoUrl);
   }
@@ -551,11 +524,7 @@ function emptyUsageSnapshot(): UsageSnapshot {
   };
 }
 
-function readOfflineStatusSummary(
-  kilnHome: string,
-  baseUrl: string,
-  now: Date,
-): CliStatusSummary {
+function readOfflineStatusSummary(kilnHome: string, baseUrl: string, now: Date): CliStatusSummary {
   if (!hasLocalStoreData(kilnHome)) {
     const empty = emptyUsageSnapshot();
     return {
@@ -602,9 +571,7 @@ function readOfflineStatusSummary(
     const allTurns = store.listUsageTurns();
     const usage = computeUsageSnapshot(allTurns, pricing);
     const todayPrefix = now.toISOString().slice(0, 10);
-    const todayTurns = allTurns.filter((turn) =>
-      turn.recorded_at.startsWith(todayPrefix),
-    );
+    const todayTurns = allTurns.filter((turn) => turn.recorded_at.startsWith(todayPrefix));
     const todayUsage = computeUsageSnapshot(todayTurns, pricing);
 
     return {
@@ -629,9 +596,7 @@ async function fetchStatusSummary(
   fetchImpl: typeof fetch,
 ): Promise<{ ok: true; summary: CliStatusSummary } | { ok: false; error: string }> {
   const now = options.now?.() ?? new Date();
-  const explicitRunning = options.isDaemonRunning
-    ? await options.isDaemonRunning()
-    : null;
+  const explicitRunning = options.isDaemonRunning ? await options.isDaemonRunning() : null;
 
   if (explicitRunning === false) {
     return { ok: true, summary: readOfflineStatusSummary(kilnHome, baseUrl, now) };
@@ -708,11 +673,12 @@ function formatStatusReport(summary: CliStatusSummary): string {
     );
   }
 
-  const activeList = summary.tasks.filter((task) =>
-    task.status === "running" ||
-    task.status === "queued" ||
-    task.status === "paused" ||
-    task.status === "waiting",
+  const activeList = summary.tasks.filter(
+    (task) =>
+      task.status === "running" ||
+      task.status === "queued" ||
+      task.status === "paused" ||
+      task.status === "waiting",
   );
   if (activeList.length > 0) {
     lines.push("", "Active / Queued / Paused / Waiting Tasks:");
@@ -769,11 +735,7 @@ async function defaultExecFile(
 /**
  * Reads trailing log bytes appended after `startOffset` for startup failure diagnostics.
  */
-export function readNewLogTail(
-  logPath: string,
-  startOffset: number,
-  maxBytes = 2048,
-): string {
+export function readNewLogTail(logPath: string, startOffset: number, maxBytes = 2048): string {
   try {
     const stat = fs.statSync(logPath);
     if (stat.size <= startOffset) {
@@ -833,13 +795,10 @@ async function handleUp(
 
   const kilnHome = resolveCliKilnHome({
     ...options,
-    ...(parsed.values["kiln-home"] !== undefined
-      ? { kilnHome: parsed.values["kiln-home"] }
-      : {}),
+    ...(parsed.values["kiln-home"] !== undefined ? { kilnHome: parsed.values["kiln-home"] } : {}),
   });
   const host = parseHostValue(parsed.values.host, options.host);
-  const allowZeroPort =
-    Boolean(parsed.values.foreground) || Boolean(options.spawnDaemon);
+  const allowZeroPort = Boolean(parsed.values.foreground) || Boolean(options.spawnDaemon);
   const port = parsePortValue(
     parsed.values.port,
     options.port ?? DEFAULT_KILND_PORT,
@@ -850,20 +809,16 @@ async function handleUp(
     Boolean(options.disablePaseo) ||
     process.env.KILN_DISABLE_PASEO === "1" ||
     process.env.KILN_DISABLE_PASEO === "true";
-  const explicitCliOrOptionPaseoUrl =
-    parsed.values["paseo-url"] ?? options.paseoUrl;
+  const explicitCliOrOptionPaseoUrl = parsed.values["paseo-url"] ?? options.paseoUrl;
   const rawPaseoUrl =
-    explicitCliOrOptionPaseoUrl ??
-    (disablePaseo ? undefined : process.env.PASEO_URL);
+    explicitCliOrOptionPaseoUrl ?? (disablePaseo ? undefined : process.env.PASEO_URL);
   const paseoUrl = parsePaseoUrlValue(rawPaseoUrl);
 
   const baseUrl = buildBaseUrl(host, port);
   const pidFile = resolveKilnPidPath(kilnHome);
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
 
-  const explicitRunning = options.isDaemonRunning
-    ? await options.isDaemonRunning()
-    : null;
+  const explicitRunning = options.isDaemonRunning ? await options.isDaemonRunning() : null;
 
   if (explicitRunning !== false) {
     const health = await probeHealth(fetchImpl, baseUrl);
@@ -966,13 +921,13 @@ async function handleUp(
         (ownsRegistry || options.createPaseoBackend !== undefined) &&
         !disablePaseo &&
         !backendRegistry.has("paseo") &&
-        (!shouldRegisterNativeComposite || options.createPaseoBackend !== undefined || explicitCliOrOptionPaseoUrl !== undefined)
+        (!shouldRegisterNativeComposite ||
+          options.createPaseoBackend !== undefined ||
+          explicitCliOrOptionPaseoUrl !== undefined)
       ) {
         const paseoOpts: { url?: string; password?: string } = {
           ...(paseoUrl ? { url: paseoUrl } : {}),
-          ...(process.env.PASEO_PASSWORD
-            ? { password: process.env.PASEO_PASSWORD }
-            : {}),
+          ...(process.env.PASEO_PASSWORD ? { password: process.env.PASEO_PASSWORD } : {}),
         };
         const paseoBackend = options.createPaseoBackend
           ? options.createPaseoBackend(paseoOpts)
@@ -1070,22 +1025,15 @@ async function handleUp(
       entrypoint,
       host,
       port,
-      ...(explicitCliOrOptionPaseoUrl !== undefined && paseoUrl !== undefined
-        ? { paseoUrl }
-        : {}),
-      disablePaseo:
-        Boolean(parsed.values["no-paseo"]) || Boolean(options.disablePaseo),
+      ...(explicitCliOrOptionPaseoUrl !== undefined && paseoUrl !== undefined ? { paseoUrl } : {}),
+      disablePaseo: Boolean(parsed.values["no-paseo"]) || Boolean(options.disablePaseo),
     });
-    const child = spawn(
-      process.execPath,
-      spawnArgs,
-      {
-        detached: true,
-        windowsHide: true,
-        stdio: ["ignore", outFd, outFd],
-        env: { ...process.env, KILN_HOME: kilnHome },
-      },
-    );
+    const child = spawn(process.execPath, spawnArgs, {
+      detached: true,
+      windowsHide: true,
+      stdio: ["ignore", outFd, outFd],
+      env: { ...process.env, KILN_HOME: kilnHome },
+    });
     childPid = child.pid;
     child.once("error", (err) => {
       childExited = true;
@@ -1162,13 +1110,9 @@ async function handleDown(
   });
 
   if (res.stopped) {
-    io.out(
-      `Stopped kilnd${res.pid !== null ? ` (PID ${res.pid})` : ""}.`,
-    );
+    io.out(`Stopped kilnd${res.pid !== null ? ` (PID ${res.pid})` : ""}.`);
   } else if (res.removedStalePid) {
-    io.out(
-      `Removed stale kilnd.pid${res.pid !== null ? ` (PID ${res.pid} not running)` : ""}.`,
-    );
+    io.out(`Removed stale kilnd.pid${res.pid !== null ? ` (PID ${res.pid} not running)` : ""}.`);
   } else {
     io.out("kilnd is not running.");
   }
@@ -1203,11 +1147,7 @@ async function handleOpen(
   }
 
   const host = parseHostValue(parsed.values.host, options.host);
-  const port = parsePortValue(
-    parsed.values.port,
-    options.port ?? DEFAULT_KILND_PORT,
-    false,
-  );
+  const port = parsePortValue(parsed.values.port, options.port ?? DEFAULT_KILND_PORT, false);
   const url = buildBaseUrl(host, port);
   const platform = options.platform ?? process.platform;
 
@@ -1270,11 +1210,7 @@ async function handleStatus(
 
   const kilnHome = resolveCliKilnHome(options);
   const host = parseHostValue(parsed.values.host, options.host);
-  const port = parsePortValue(
-    parsed.values.port,
-    options.port ?? DEFAULT_KILND_PORT,
-    false,
-  );
+  const port = parsePortValue(parsed.values.port, options.port ?? DEFAULT_KILND_PORT, false);
   const baseUrl = buildBaseUrl(host, port);
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
 
@@ -1325,10 +1261,7 @@ async function handleDraft(
   }
 
   if (parsed.positionals.length !== 1) {
-    throw new CliUsageError(
-      "draft requires exactly one <idea> argument",
-      COMMAND_HELP.draft,
-    );
+    throw new CliUsageError("draft requires exactly one <idea> argument", COMMAND_HELP.draft);
   }
   const title = parsed.positionals[0]!.trim();
   if (title.length === 0) {
@@ -1340,11 +1273,7 @@ async function handleDraft(
     "draftId",
     COMMAND_HELP.draft,
   );
-  const space = parseSafeCliSegment(
-    parsed.values.space ?? "local",
-    "space",
-    COMMAND_HELP.draft,
-  );
+  const space = parseSafeCliSegment(parsed.values.space ?? "local", "space", COMMAND_HELP.draft);
 
   const priorityResult = PrioritySchema.safeParse(parsed.values.priority ?? "P2");
   if (!priorityResult.success) {
@@ -1362,15 +1291,10 @@ async function handleDraft(
     );
   }
   if (trackResult.data === "L3") {
-    throw new CliUsageError(
-      'Track "L3" is Post-MVP and not supported yet',
-      COMMAND_HELP.draft,
-    );
+    throw new CliUsageError('Track "L3" is Post-MVP and not supported yet', COMMAND_HELP.draft);
   }
 
-  const modeResult = WorkspaceModeSchema.safeParse(
-    parsed.values.mode ?? "git_worktree",
-  );
+  const modeResult = WorkspaceModeSchema.safeParse(parsed.values.mode ?? "git_worktree");
   if (!modeResult.success) {
     throw new CliUsageError(
       `Invalid --mode "${String(parsed.values.mode)}": expected git_worktree, host_scoped, or scratch_dir`,
@@ -1386,17 +1310,11 @@ async function handleDraft(
 
   const kilnHome = resolveCliKilnHome(options);
   const host = parseHostValue(parsed.values.host, options.host);
-  const port = parsePortValue(
-    parsed.values.port,
-    options.port ?? DEFAULT_KILND_PORT,
-    false,
-  );
+  const port = parsePortValue(parsed.values.port, options.port ?? DEFAULT_KILND_PORT, false);
   const baseUrl = buildBaseUrl(host, port);
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
 
-  const explicitRunning = options.isDaemonRunning
-    ? await options.isDaemonRunning()
-    : null;
+  const explicitRunning = options.isDaemonRunning ? await options.isDaemonRunning() : null;
 
   if (explicitRunning !== false) {
     let res: Response | null = null;
@@ -1510,11 +1428,7 @@ async function handleDecide(
 
   const kilnHome = resolveCliKilnHome(options);
   const host = parseHostValue(parsed.values.host, options.host);
-  const port = parsePortValue(
-    parsed.values.port,
-    options.port ?? DEFAULT_KILND_PORT,
-    false,
-  );
+  const port = parsePortValue(parsed.values.port, options.port ?? DEFAULT_KILND_PORT, false);
   const baseUrl = buildBaseUrl(host, port);
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
 
@@ -1530,11 +1444,7 @@ async function handleDecide(
       : statusRes.summary.pendingDecisions;
 
     if (items.length === 0) {
-      io.out(
-        taskId
-          ? `No pending decisions for task "${taskId}".`
-          : "No pending decisions.",
-      );
+      io.out(taskId ? `No pending decisions for task "${taskId}".` : "No pending decisions.");
       return {
         exitCode: 0,
         stdout: io.getStdout(),
@@ -1617,9 +1527,7 @@ async function handleDecide(
     decision_id: pending.id,
     option_id: selectedOption.id,
     action: selectedOption.action,
-    ...(parsed.values.rationale !== undefined
-      ? { rationale: parsed.values.rationale }
-      : {}),
+    ...(parsed.values.rationale !== undefined ? { rationale: parsed.values.rationale } : {}),
     apply_ledger_rule: parsed.values["apply-ledger"],
   });
 
@@ -1714,24 +1622,15 @@ async function handleSpace(
 
   const subcommand = parsed.positionals[0];
   if (!subcommand) {
-    throw new CliUsageError(
-      "space requires a subcommand: list, add, or rm",
-      COMMAND_HELP.space,
-    );
+    throw new CliUsageError("space requires a subcommand: list, add, or rm", COMMAND_HELP.space);
   }
 
   const kilnHome = resolveCliKilnHome(options);
   const host = parseHostValue(parsed.values.host, options.host);
-  const port = parsePortValue(
-    parsed.values.port,
-    options.port ?? DEFAULT_KILND_PORT,
-    false,
-  );
+  const port = parsePortValue(parsed.values.port, options.port ?? DEFAULT_KILND_PORT, false);
   const baseUrl = buildBaseUrl(host, port);
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
-  const explicitRunning = options.isDaemonRunning
-    ? await options.isDaemonRunning()
-    : null;
+  const explicitRunning = options.isDaemonRunning ? await options.isDaemonRunning() : null;
 
   if (subcommand === "list") {
     if (parsed.positionals.length > 1) {
@@ -1802,10 +1701,7 @@ async function handleSpace(
 
   if (subcommand === "add") {
     if (parsed.positionals.length > 2) {
-      throw new CliUsageError(
-        "space add accepts at most one [path] argument",
-        COMMAND_HELP.space,
-      );
+      throw new CliUsageError("space add accepts at most one [path] argument", COMMAND_HELP.space);
     }
 
     const targetPath = parsed.positionals[1] ?? process.cwd();
@@ -1823,10 +1719,7 @@ async function handleSpace(
     const rawId = parsed.values.id ?? inspected.suggested_id;
     const spaceId = parseSafeCliSegment(rawId, "spaceId", COMMAND_HELP.space);
     if (spaceId === "local" || spaceId === "all") {
-      throw new CliUsageError(
-        `Space ID "${spaceId}" is reserved`,
-        COMMAND_HELP.space,
-      );
+      throw new CliUsageError(`Space ID "${spaceId}" is reserved`, COMMAND_HELP.space);
     }
 
     const name = (parsed.values.name ?? inspected.suggested_name).trim();
@@ -1838,7 +1731,8 @@ async function handleSpace(
       throw new CliUsageError("Space --branch cannot be empty", COMMAND_HELP.space);
     }
     const rawAcceptCmd = parsed.values["accept-cmd"] ?? inspected.default_accept_cmd;
-    const acceptCmd = rawAcceptCmd && rawAcceptCmd.trim().length > 0 ? rawAcceptCmd.trim() : undefined;
+    const acceptCmd =
+      rawAcceptCmd && rawAcceptCmd.trim().length > 0 ? rawAcceptCmd.trim() : undefined;
     const copyUntracked = parseCsvFlag(parsed.values["copy-untracked"]) ?? inspected.copy_untracked;
     const cloneDeps = parseCsvFlag(parsed.values["clone-deps"]) ?? inspected.clone_deps;
 
@@ -1876,7 +1770,9 @@ async function handleSpace(
         if (parsed.values.json) {
           io.out(JSON.stringify({ space: body.space, mode: "online" }, null, 2));
         } else {
-          io.out(`Saved space ${body.space.id} (${body.space.name}) -> ${body.space.repo_path} (online)`);
+          io.out(
+            `Saved space ${body.space.id} (${body.space.name}) -> ${body.space.repo_path} (online)`,
+          );
         }
         return {
           exitCode: 0,
@@ -1925,10 +1821,7 @@ async function handleSpace(
     }
     const spaceId = parseSafeCliSegment(parsed.positionals[1]!, "spaceId", COMMAND_HELP.space);
     if (spaceId === "local" || spaceId === "all") {
-      throw new CliUsageError(
-        `Space ID "${spaceId}" is reserved`,
-        COMMAND_HELP.space,
-      );
+      throw new CliUsageError(`Space ID "${spaceId}" is reserved`, COMMAND_HELP.space);
     }
 
     if (explicitRunning !== false) {
@@ -2054,17 +1947,16 @@ async function handleRemote(
   }
 
   const host = parseHostValue(parsed.values.host, options.host);
-  const port = parsePortValue(
-    parsed.values.port,
-    options.port ?? DEFAULT_KILND_PORT,
-    false,
-  );
+  const port = parsePortValue(parsed.values.port, options.port ?? DEFAULT_KILND_PORT, false);
   const baseUrl = buildBaseUrl(host, port);
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
 
   if (subcommand === "status") {
     if (parsed.positionals.length !== 1) {
-      throw new CliUsageError("remote status takes no extra positional arguments", COMMAND_HELP.remote);
+      throw new CliUsageError(
+        "remote status takes no extra positional arguments",
+        COMMAND_HELP.remote,
+      );
     }
     const call = await fetchLocalRemoteApi(
       fetchImpl,
@@ -2125,9 +2017,7 @@ async function handleRemote(
       return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
     }
     if (!currentCall.res.ok) {
-      io.err(
-        `Failed to load existing remote settings: ${await readErrorMessage(currentCall.res)}`,
-      );
+      io.err(`Failed to load existing remote settings: ${await readErrorMessage(currentCall.res)}`);
       return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
     }
     const currentBody = (await currentCall.res.json()) as { remote: RemoteConfig };
@@ -2177,9 +2067,7 @@ async function handleRemote(
       schema_version: 1,
       enabled: subcommand === "enable",
       remote_port: nextRemotePort,
-      keep_awake_on_ac: parsed.values["keep-awake-ac"]
-        ? true
-        : currentBody.remote.keep_awake_on_ac,
+      keep_awake_on_ac: parsed.values["keep-awake-ac"] ? true : currentBody.remote.keep_awake_on_ac,
       notifications: currentBody.remote.notifications,
       ...(nextPublicUrl !== undefined ? { public_url: nextPublicUrl } : {}),
     };
@@ -2207,9 +2095,7 @@ async function handleRemote(
       return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
     }
     if (!updateCall.res.ok) {
-      io.err(
-        `Failed to ${subcommand} remote access: ${await readErrorMessage(updateCall.res)}`,
-      );
+      io.err(`Failed to ${subcommand} remote access: ${await readErrorMessage(updateCall.res)}`);
       return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
     }
     const updated = (await updateCall.res.json()) as {
@@ -2228,9 +2114,7 @@ async function handleRemote(
       if (updated.data.public_url) {
         io.out(`Public URL: ${updated.data.public_url}`);
       }
-      io.out(
-        `Tunnel command: tailscale serve --bg http://127.0.0.1:${updated.data.remote_port}`,
-      );
+      io.out(`Tunnel command: tailscale serve --bg http://127.0.0.1:${updated.data.remote_port}`);
     } else {
       io.out("Remote access disabled.");
     }
@@ -2239,7 +2123,10 @@ async function handleRemote(
 
   if (subcommand === "pair") {
     if (parsed.positionals.length !== 1) {
-      throw new CliUsageError("remote pair takes no extra positional arguments", COMMAND_HELP.remote);
+      throw new CliUsageError(
+        "remote pair takes no extra positional arguments",
+        COMMAND_HELP.remote,
+      );
     }
     const call = await fetchLocalRemoteApi(
       fetchImpl,
@@ -2283,7 +2170,10 @@ async function handleRemote(
 
   if (subcommand === "devices") {
     if (parsed.positionals.length !== 1) {
-      throw new CliUsageError("remote devices takes no extra positional arguments", COMMAND_HELP.remote);
+      throw new CliUsageError(
+        "remote devices takes no extra positional arguments",
+        COMMAND_HELP.remote,
+      );
     }
     const call = await fetchLocalRemoteApi(
       fetchImpl,
@@ -2312,9 +2202,7 @@ async function handleRemote(
       io.out(`Paired devices (${body.devices.length}):`);
       for (const dev of body.devices) {
         const status = dev.revoked_at ? `revoked (${dev.revoked_at})` : "active";
-        io.out(
-          `- ${dev.id} | ${dev.label} | ${status} | last_seen=${dev.last_seen_at}`,
-        );
+        io.out(`- ${dev.id} | ${dev.label} | ${status} | last_seen=${dev.last_seen_at}`);
       }
     }
     return { exitCode: 0, stdout: io.getStdout(), stderr: io.getStderr(), data: body };
@@ -2358,16 +2246,9 @@ async function handleRemote(
     }
 
     if (parsed.positionals.length !== 2) {
-      throw new CliUsageError(
-        "remote revoke requires <device-id> or --all",
-        COMMAND_HELP.remote,
-      );
+      throw new CliUsageError("remote revoke requires <device-id> or --all", COMMAND_HELP.remote);
     }
-    const deviceId = parseSafeCliSegment(
-      parsed.positionals[1]!,
-      "deviceId",
-      COMMAND_HELP.remote,
-    );
+    const deviceId = parseSafeCliSegment(parsed.positionals[1]!, "deviceId", COMMAND_HELP.remote);
     const call = await fetchLocalRemoteApi(
       fetchImpl,
       `${baseUrl}/api/remote/devices/${encodeURIComponent(deviceId)}`,
@@ -2400,7 +2281,10 @@ async function handleRemote(
 
   if (subcommand === "tailscale") {
     if (parsed.positionals.length !== 1) {
-      throw new CliUsageError("remote tailscale takes no extra positional arguments", COMMAND_HELP.remote);
+      throw new CliUsageError(
+        "remote tailscale takes no extra positional arguments",
+        COMMAND_HELP.remote,
+      );
     }
     const call = await fetchLocalRemoteApi(
       fetchImpl,
@@ -2511,7 +2395,12 @@ async function checkDoctorProviders(
     }
   }
 
-  let enabledEntries: Array<{ id: string; adapter: string; command?: string; env: Record<string, string> }> = [];
+  let enabledEntries: Array<{
+    id: string;
+    adapter: string;
+    command?: string;
+    env: Record<string, string>;
+  }> = [];
   const tempStore = new KilnStore({ kilnHome });
   try {
     enabledEntries = tempStore
@@ -2600,18 +2489,11 @@ async function checkDoctorPaseo(
       };
     }
 
-    const backends = Array.isArray(body.backends)
-      ? (body.backends as AgentsEndpointBackend[])
-      : [];
-    const agents = Array.isArray(body.agents)
-      ? (body.agents as AgentsEndpointAgent[])
-      : [];
+    const backends = Array.isArray(body.backends) ? (body.backends as AgentsEndpointBackend[]) : [];
+    const agents = Array.isArray(body.agents) ? (body.agents as AgentsEndpointAgent[]) : [];
 
     const connectedBackends = backends.filter(
-      (backend) =>
-        backend !== null &&
-        typeof backend === "object" &&
-        backend.connected === true,
+      (backend) => backend !== null && typeof backend === "object" && backend.connected === true,
     );
 
     if (connectedBackends.length > 0) {
@@ -2634,9 +2516,7 @@ async function checkDoctorPaseo(
         .filter((id): id is string => id !== null);
 
       const agentsSummary =
-        agentIds.length > 0
-          ? `agents: ${agentIds.join(", ")}`
-          : "0 agents discovered";
+        agentIds.length > 0 ? `agents: ${agentIds.join(", ")}` : "0 agents discovered";
 
       return {
         id: "paseo",
@@ -2727,11 +2607,7 @@ async function handleDoctor(
 
   const platform = options.platform ?? process.platform;
   const host = parseHostValue(parsed.values.host, options.host);
-  const port = parsePortValue(
-    parsed.values.port,
-    options.port ?? DEFAULT_KILND_PORT,
-    false,
-  );
+  const port = parsePortValue(parsed.values.port, options.port ?? DEFAULT_KILND_PORT, false);
   const baseUrl = buildBaseUrl(host, port);
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const execImpl = options.execFileImpl ?? defaultExecFile;
@@ -2803,9 +2679,7 @@ async function handleDoctor(
         ok: cloneOk,
         required: false,
         status: cloneOk ? "pass" : "warn",
-        detail: cloneOk
-          ? "APFS clone (/bin/cp -c) available"
-          : "APFS clone verification mismatch",
+        detail: cloneOk ? "APFS clone (/bin/cp -c) available" : "APFS clone verification mismatch",
         meta: { supported: cloneOk },
       });
     } catch (err) {
@@ -2833,9 +2707,7 @@ async function handleDoctor(
   }
 
   let kilndOnline = false;
-  const explicitRunning = options.isDaemonRunning
-    ? await options.isDaemonRunning()
-    : null;
+  const explicitRunning = options.isDaemonRunning ? await options.isDaemonRunning() : null;
   if (explicitRunning === false) {
     checks.push({
       id: "kilnd",
@@ -2865,7 +2737,9 @@ async function handleDoctor(
   }
 
   checks.push(await checkDoctorPaseo(fetchImpl, baseUrl, kilndOnline));
-  checks.push(await checkDoctorProviders(fetchImpl, baseUrl, kilndOnline, resolveCliKilnHome(options)));
+  checks.push(
+    await checkDoctorProviders(fetchImpl, baseUrl, kilndOnline, resolveCliKilnHome(options)),
+  );
 
   if (platform === "darwin" || platform === "linux" || platform === "win32") {
     const svc = getServiceStatus(buildServiceOptions(options, platform));
@@ -3067,9 +2941,7 @@ async function handleInternalMcp(
   });
 
   if (parsed.values.help) {
-    io.err(
-      "Usage: kiln __mcp (internal stdio MCP bridge; requires KILN_RUN_TOKEN in environment)",
-    );
+    io.err("Usage: kiln __mcp (internal stdio MCP bridge; requires KILN_RUN_TOKEN in environment)");
     return { exitCode: 0, stdout: io.getStdout(), stderr: io.getStderr() };
   }
 

@@ -76,21 +76,29 @@ const optionalTrimmedString = z.preprocess((val) => {
   return val;
 }, z.string().min(1).optional());
 
-const optionalStringList = z.preprocess((val) => {
-  if (val === undefined || val === null) return undefined;
-  if (typeof val === "string") {
-    return val
-      .split(/\r?\n/)
-      .map((line) => line.trim().replace(/^[-*•]\s+/, "").trim())
-      .filter((line) => line.length > 0);
-  }
-  if (Array.isArray(val)) {
-    return val
-      .map((item) => (typeof item === "string" ? item.trim() : item))
-      .filter((item) => typeof item !== "string" || item.length > 0);
-  }
-  return val;
-}, z.array(z.string().min(1)).optional());
+const optionalStringList = z.preprocess(
+  (val) => {
+    if (val === undefined || val === null) return undefined;
+    if (typeof val === "string") {
+      return val
+        .split(/\r?\n/)
+        .map((line) =>
+          line
+            .trim()
+            .replace(/^[-*•]\s+/, "")
+            .trim(),
+        )
+        .filter((line) => line.length > 0);
+    }
+    if (Array.isArray(val)) {
+      return val
+        .map((item) => (typeof item === "string" ? item.trim() : item))
+        .filter((item) => typeof item !== "string" || item.length > 0);
+    }
+    return val;
+  },
+  z.array(z.string().min(1)).optional(),
+);
 
 const NonMcpDraftPatchSchema = z.object({
   title: optionalTrimmedString,
@@ -134,7 +142,9 @@ function extractLabeledJsonPatchBlock(
   label: string,
 ): { displayText: string; rawJson: string | null } {
   const anchoredPattern = new RegExp(
-    "(^|\\r?\\n)[ \\t]*```" + label + "[ \\t]*\\r?\\n([\\s\\S]*?)\\r?\\n[ \\t]*```[ \\t]*(?=\\r?\\n|$)",
+    "(^|\\r?\\n)[ \\t]*```" +
+      label +
+      "[ \\t]*\\r?\\n([\\s\\S]*?)\\r?\\n[ \\t]*```[ \\t]*(?=\\r?\\n|$)",
     "gi",
   );
   const anchoredMatches = Array.from(rawText.matchAll(anchoredPattern));
@@ -289,11 +299,7 @@ interface MaybeProviderUsageBackend extends ExecutionBackend {
   listProviderUsage?: () => Promise<unknown[]>;
 }
 
-async function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  label: string,
-): Promise<T> {
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   if (timeoutMs <= 0) {
     return await promise;
   }
@@ -543,9 +549,7 @@ export interface CompiledBinaryDetectInput {
 
 function isBunVirtualFsPath(value: string): boolean {
   return (
-    value.includes("/$bunfs/") ||
-    value.includes("\\$bunfs\\") ||
-    /[\\/]~BUN[\\/]/i.test(value)
+    value.includes("/$bunfs/") || value.includes("\\$bunfs\\") || /[\\/]~BUN[\\/]/i.test(value)
   );
 }
 
@@ -571,8 +575,7 @@ export function isCompiledKilnBinary(input?: CompiledBinaryDetectInput): boolean
     return true;
   }
 
-  const bunMain =
-    input?.bunMain ?? (typeof bunRuntime?.main === "string" ? bunRuntime.main : "");
+  const bunMain = input?.bunMain ?? (typeof bunRuntime?.main === "string" ? bunRuntime.main : "");
   if (isBunVirtualFsPath(bunMain)) {
     return true;
   }
@@ -854,10 +857,7 @@ export class KilnChatEngine {
     return `[调用技能 ${matched.name}：请先只读读取技能说明文件 ${matched.skillMdPath} 并严格按其流程与约束执行。]`;
   }
 
-  private composePromptForAgent(
-    effectiveMessage: string,
-    contextLines: readonly string[],
-  ): string {
+  private composePromptForAgent(effectiveMessage: string, contextLines: readonly string[]): string {
     const filtered = contextLines.filter((line) => line.trim().length > 0);
     if (effectiveMessage.startsWith("/")) {
       if (PURE_CONTROL_SLASH_PATTERN.test(effectiveMessage) || filtered.length === 0) {
@@ -987,9 +987,7 @@ export class KilnChatEngine {
     backendId?: string,
   ): Promise<ExecutionBackend | null> {
     if (backendId) {
-      return this.backendRegistry.has(backendId)
-        ? this.backendRegistry.get(backendId)
-        : null;
+      return this.backendRegistry.has(backendId) ? this.backendRegistry.get(backendId) : null;
     }
     for (const candidate of this.backendRegistry.list()) {
       try {
@@ -1015,8 +1013,7 @@ export class KilnChatEngine {
         role === "intake" ? "intake" : "advise",
         role,
         {
-          isCoolingDown: (key) =>
-            this.providerHealth?.isInCooldown(key.agent) ?? false,
+          isCoolingDown: (key) => this.providerHealth?.isInCooldown(key.agent) ?? false,
         },
       );
     } catch (err) {
@@ -1059,10 +1056,7 @@ export class KilnChatEngine {
     const assignment = rolesConfig?.roles[role];
 
     if (assignment) {
-      const targetBackend = await this.findBackendForAgent(
-        assignment.agent,
-        assignment.backend_id,
-      );
+      const targetBackend = await this.findBackendForAgent(assignment.agent, assignment.backend_id);
 
       if (!targetBackend) {
         if (this.chatResponder) {
@@ -1223,9 +1217,7 @@ export class KilnChatEngine {
     }
 
     const replyText =
-      fullMessages.length > 0
-        ? fullMessages.join("\n").trim()
-        : deltaChunks.join("").trim();
+      fullMessages.length > 0 ? fullMessages.join("\n").trim() : deltaChunks.join("").trim();
 
     return {
       replyText: replyText || "已处理当前对话回合。",
@@ -1372,7 +1364,10 @@ export class KilnChatEngine {
       }
 
       let nextTrack = patch.track ?? latest.track;
-      if (patch.track === undefined && (patch.workflow_preset !== undefined || nextWorkflow !== undefined)) {
+      if (
+        patch.track === undefined &&
+        (patch.workflow_preset !== undefined || nextWorkflow !== undefined)
+      ) {
         const effectivePreset = nextWorkflow?.preset ?? patch.workflow_preset;
         nextTrack =
           effectivePreset === "quick" || effectivePreset === "host_op"
@@ -1433,10 +1428,10 @@ export class KilnChatEngine {
     }
   }
 
-  private applyNonMcpContractPatch(params: {
-    safeTaskId: string;
-    rawJson: string;
-  }): { applied: boolean; message: string } {
+  private applyNonMcpContractPatch(params: { safeTaskId: string; rawJson: string }): {
+    applied: boolean;
+    message: string;
+  } {
     if (!this.stateMachine) {
       return {
         applied: false,
@@ -1474,7 +1469,8 @@ export class KilnChatEngine {
       ) {
         return {
           applied: false,
-          message: "contract_patch · 修改 accept_cmd 需同步提供新的 accept_files_hash，已跳过自动修改",
+          message:
+            "contract_patch · 修改 accept_cmd 需同步提供新的 accept_files_hash，已跳过自动修改",
         };
       }
 
@@ -1666,7 +1662,10 @@ export class KilnChatEngine {
     const attachmentsSection =
       draft.attachments && draft.attachments.length > 0
         ? `当前草稿附件截图 (${draft.attachments.length})：\n${draft.attachments
-            .map((a) => `- ${a.filename} (${a.mime_type}, ${a.size_bytes} bytes, rel_path=${a.rel_path})`)
+            .map(
+              (a) =>
+                `- ${a.filename} (${a.mime_type}, ${a.size_bytes} bytes, rel_path=${a.rel_path})`,
+            )
             .join("\n")}`
         : "";
 
@@ -1721,9 +1720,7 @@ export class KilnChatEngine {
         ? selectActiveLedgerEntriesForHandoff(ledger.entries)
         : [];
     const ledgerLines =
-      activeLedger.length > 0
-        ? activeLedger.map((e) => `- ${e.rule}`).join("\n")
-        : "";
+      activeLedger.length > 0 ? activeLedger.map((e) => `- ${e.rule}`).join("\n") : "";
     const decisionSection = pendingDecision
       ? `当前待决 (${pendingDecision.id}): ${pendingDecision.question}\n选项:\n${pendingDecision.options
           .map((o) => `- ${o.id} (${o.action}): ${o.label}`)
@@ -1821,9 +1818,7 @@ export class KilnChatEngine {
         role: "advisor",
         agent: pickedBinding.provider,
         model: pickedBinding.model,
-        ...(pickedBinding.effort !== undefined
-          ? { reasoningEffort: pickedBinding.effort }
-          : {}),
+        ...(pickedBinding.effort !== undefined ? { reasoningEffort: pickedBinding.effort } : {}),
         cwd: workspace.cwd,
         prompt: reconPrompt,
         freshContext: true,
@@ -1940,10 +1935,7 @@ export class KilnChatEngine {
       );
 
       if (executor === null && this.chatResponder) {
-        const promptForResponder = this.composePromptForAgent(
-          effectiveMessage,
-          turnContextNotes,
-        );
+        const promptForResponder = this.composePromptForAgent(effectiveMessage, turnContextNotes);
         const res = await this.chatResponder({
           role: "intake",
           targetId: safeDraftId,
@@ -1996,14 +1988,11 @@ export class KilnChatEngine {
             await this.executeDraftRecon(safeDraftId, trimmed);
           }
           const allSpaces = this.store.listSpaces();
-          const firstTurnPrompt = this.composePromptForAgent(
-            effectiveMessage,
-            turnContextNotes,
-          );
-          const draftAttachments: RunAttachmentInput[] = resolveRunAttachmentInputs(
-            this.store,
-            { kind: "draft", draftId: safeDraftId },
-          );
+          const firstTurnPrompt = this.composePromptForAgent(effectiveMessage, turnContextNotes);
+          const draftAttachments: RunAttachmentInput[] = resolveRunAttachmentInputs(this.store, {
+            kind: "draft",
+            draftId: safeDraftId,
+          });
           const spec: BackendRunSpec = {
             runId,
             taskId: safeDraftId,
@@ -2052,39 +2041,32 @@ export class KilnChatEngine {
 
         appendNdjsonLine(chatFile, userRecord);
         let lastProgressKind: "thinking" | "tool" | null = null;
-        const consumed = await this.consumeTurnEvents(
-          activeBackend,
-          sessionRef,
-          "intake",
-          (ev) => {
-            if (!this.sseHub) return;
-            if (ev.kind === "thinking") {
-              if (lastProgressKind === "thinking") return;
-              lastProgressKind = "thinking";
-              this.sseHub.publish({
-                type: "intake.progress",
-                draftId: safeDraftId,
-                kind: "thinking",
-                text: resolvedWorkspace.isProjectRepo
-                  ? "正在分析项目结构与方案可行性…"
-                  : "正在梳理需求并整理方案…",
-                at: ev.at,
-              });
-            } else if (ev.kind === "tool") {
-              lastProgressKind = "tool";
-              this.sseHub.publish({
-                type: "intake.progress",
-                draftId: safeDraftId,
-                kind: "tool",
-                toolName: ev.name,
-                text: ev.target
-                  ? `正在读取/调用 ${ev.name} · ${ev.target}`
-                  : `正在调用 ${ev.name}`,
-                at: ev.at,
-              });
-            }
-          },
-        );
+        const consumed = await this.consumeTurnEvents(activeBackend, sessionRef, "intake", (ev) => {
+          if (!this.sseHub) return;
+          if (ev.kind === "thinking") {
+            if (lastProgressKind === "thinking") return;
+            lastProgressKind = "thinking";
+            this.sseHub.publish({
+              type: "intake.progress",
+              draftId: safeDraftId,
+              kind: "thinking",
+              text: resolvedWorkspace.isProjectRepo
+                ? "正在分析项目结构与方案可行性…"
+                : "正在梳理需求并整理方案…",
+              at: ev.at,
+            });
+          } else if (ev.kind === "tool") {
+            lastProgressKind = "tool";
+            this.sseHub.publish({
+              type: "intake.progress",
+              draftId: safeDraftId,
+              kind: "tool",
+              toolName: ev.name,
+              text: ev.target ? `正在读取/调用 ${ev.name} · ${ev.target}` : `正在调用 ${ev.name}`,
+              at: ev.at,
+            });
+          }
+        });
         replyText = consumed.replyText;
         toolMessages = consumed.toolMessages;
 
@@ -2231,10 +2213,7 @@ export class KilnChatEngine {
       );
 
       if (executor === null && this.chatResponder) {
-        const promptForResponder = this.composePromptForAgent(
-          effectiveMessage,
-          turnContextNotes,
-        );
+        const promptForResponder = this.composePromptForAgent(effectiveMessage, turnContextNotes);
         const res = await this.chatResponder({
           role: "resolver",
           targetId: safeTaskId,
@@ -2290,10 +2269,7 @@ export class KilnChatEngine {
           const promptForAgent = this.composePromptForAgent(effectiveMessage, contextLines);
           await executor.backend.send(sessionRef, promptForAgent);
         } else {
-          const firstTurnPrompt = this.composePromptForAgent(
-            effectiveMessage,
-            turnContextNotes,
-          );
+          const firstTurnPrompt = this.composePromptForAgent(effectiveMessage, turnContextNotes);
           const spec: BackendRunSpec = {
             runId,
             taskId: safeTaskId,

@@ -7,12 +7,10 @@ export function IntakeDock() {
     return null;
   }
 
-  const { intakeForm, intakeMessages, intakeBusy, intakeHasUnreadReply, spaces } =
-    state;
+  const { intakeForm, intakeMessages, intakeBusy, intakeHasUnreadReply, spaces } = state;
   const firstUserMsg = intakeMessages.find((m) => m.who === "me")?.text.trim() ?? "";
   const rawTitle = intakeForm.title.trim() || firstUserMsg || "未命名的立项对话";
-  const displayTitle =
-    rawTitle.length > 34 ? `${rawTitle.slice(0, 34)}…` : rawTitle;
+  const displayTitle = rawTitle.length > 34 ? `${rawTitle.slice(0, 34)}…` : rawTitle;
 
   const projectSpaces = getProjectSpaces(spaces);
   const spaceLabel =
@@ -33,8 +31,7 @@ export function IntakeDock() {
       : Boolean(spaces[intakeForm.space]?.repo_path),
     intakeForm.track !== "",
     intakeForm.mode === "local"
-      ? intakeForm.workspace_mode === "scratch_dir" ||
-        intakeForm.workspace_mode === "host_scoped"
+      ? intakeForm.workspace_mode === "scratch_dir" || intakeForm.workspace_mode === "host_scoped"
       : intakeForm.workspace_mode === "git_worktree",
     intakeForm.end.trim().length > 0,
     intakeForm.accept_cmd.trim().length > 0,
@@ -48,16 +45,8 @@ export function IntakeDock() {
       : "未完成的新需求";
 
   return (
-    <aside
-      className="intake-dock"
-      aria-label="未完成的新需求对话"
-      data-intake-dock="true"
-    >
-      <button
-        type="button"
-        className="intake-dock-main"
-        onClick={() => store.go("intake")}
-      >
+    <aside className="intake-dock" aria-label="未完成的新需求对话" data-intake-dock="true">
+      <button type="button" className="intake-dock-main" onClick={() => store.go("intake")}>
         <span
           className={`intake-dock-dot ${
             intakeBusy ? "is-busy" : intakeHasUnreadReply ? "is-unread" : ""

@@ -179,9 +179,9 @@ describe("Track 5 [B12.3] Script local port detection & bootstrap stall summary"
     expect(scriptEvents.some((ev) => ev.detectedUrls?.includes("http://127.0.0.1:5173/app"))).toBe(
       true,
     );
-    expect(scriptEvents.some((ev) => ev.detectedUrls?.some((u) => u.includes("evil.example.com")))).toBe(
-      false,
-    );
+    expect(
+      scriptEvents.some((ev) => ev.detectedUrls?.some((u) => u.includes("evil.example.com"))),
+    ).toBe(false);
 
     // 2. Verify /api/bootstrap includes stall_silent_sec on running card
     const bootRes = await server.app.request(new Request("http://127.0.0.1/api/bootstrap"));

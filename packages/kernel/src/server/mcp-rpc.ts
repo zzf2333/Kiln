@@ -32,11 +32,7 @@ import {
   type TaskAttachment,
   type TaskCard,
 } from "@kiln/protocol";
-import {
-  InvalidStateTransitionError,
-  TaskStateMachine,
-  canTransition,
-} from "../state/index.js";
+import { InvalidStateTransitionError, TaskStateMachine, canTransition } from "../state/index.js";
 import {
   KilnStore,
   assertSafeSegment,
@@ -329,9 +325,7 @@ export class McpRpcServer {
   private readonly onContractUpdated: ((taskId: string) => void) | undefined;
   private readonly onDecisionRequested: ((taskId: string) => void) | undefined;
   private readonly onTechnicalDecisionForAdvisor:
-    | ((
-        input: TechnicalDecisionAdvisorRouteInput,
-      ) => TechnicalDecisionAdvisorRouteResult)
+    | ((input: TechnicalDecisionAdvisorRouteInput) => TechnicalDecisionAdvisorRouteResult)
     | undefined;
 
   private shutdownToken: string | undefined;
@@ -501,9 +495,7 @@ export class McpRpcServer {
     }
   }
 
-  private extractBearerToken(
-    headers: Record<string, string | undefined> | undefined,
-  ): string {
+  private extractBearerToken(headers: Record<string, string | undefined> | undefined): string {
     const rawAuth = headers?.authorization ?? headers?.Authorization;
     if (typeof rawAuth !== "string") {
       throw new ServerHttpError(401, {
@@ -675,9 +667,7 @@ export class McpRpcServer {
           url: req.url ?? "/",
           headers: {
             authorization:
-              typeof req.headers.authorization === "string"
-                ? req.headers.authorization
-                : undefined,
+              typeof req.headers.authorization === "string" ? req.headers.authorization : undefined,
           },
           rawBody,
         },
@@ -749,7 +739,9 @@ export class McpRpcServer {
       return claims.runId;
     }
     try {
-      const leaseSession = JSON.parse(lease.session_ref) as { meta?: Record<string, unknown> } | null;
+      const leaseSession = JSON.parse(lease.session_ref) as {
+        meta?: Record<string, unknown>;
+      } | null;
       if (leaseSession?.meta?.kilnSessionKey !== claims.sessionKey) {
         return claims.runId;
       }
@@ -767,10 +759,7 @@ export class McpRpcServer {
     return lease.run_id;
   }
 
-  private handleGetContext(
-    rawBody: unknown,
-    claims: RunTokenClaims,
-  ): Record<string, unknown> {
+  private handleGetContext(rawBody: unknown, claims: RunTokenClaims): Record<string, unknown> {
     WbGetContextInputSchema.parse(rawBody);
     const effectiveRunId = this.resolveEffectiveRunId(claims);
     const card = this.requireCard(claims.taskId);
@@ -895,9 +884,7 @@ export class McpRpcServer {
             ...(input.contract ?? {}),
           },
           session_ref: existing?.session_ref ?? null,
-          ...(existing?.intake_open !== undefined
-            ? { intake_open: existing.intake_open }
-            : {}),
+          ...(existing?.intake_open !== undefined ? { intake_open: existing.intake_open } : {}),
           created_at: existing?.created_at ?? now,
           updated_at: now,
         });
@@ -1095,8 +1082,7 @@ export class McpRpcServer {
             this.sseHub.publish({
               type: "decision.requested",
               taskId: input.task_id,
-              priority:
-                this.store.getTaskIndex(input.task_id)?.priority ?? updated.state.priority,
+              priority: this.store.getTaskIndex(input.task_id)?.priority ?? updated.state.priority,
               question: rebound.question,
             });
           }
@@ -1128,10 +1114,7 @@ export class McpRpcServer {
     }
   }
 
-  private handleAskDecision(
-    rawBody: unknown,
-    claims: RunTokenClaims,
-  ): Record<string, unknown> {
+  private handleAskDecision(rawBody: unknown, claims: RunTokenClaims): Record<string, unknown> {
     const input = WbAskDecisionInputSchema.parse(rawBody);
     if (input.options.some((opt) => opt.action === "return_external")) {
       throw new ServerHttpError(400, {
@@ -1298,10 +1281,7 @@ export class McpRpcServer {
     };
   }
 
-  private handleSubmitReceipt(
-    rawBody: unknown,
-    claims: RunTokenClaims,
-  ): Record<string, unknown> {
+  private handleSubmitReceipt(rawBody: unknown, claims: RunTokenClaims): Record<string, unknown> {
     const input = WbSubmitReceiptInputSchema.parse(rawBody);
     const effectiveRunId = this.resolveEffectiveRunId(claims);
     this.requireCard(claims.taskId);
@@ -1377,10 +1357,7 @@ export class McpRpcServer {
     };
   }
 
-  private handleProposeLedger(
-    rawBody: unknown,
-    claims: RunTokenClaims,
-  ): Record<string, unknown> {
+  private handleProposeLedger(rawBody: unknown, claims: RunTokenClaims): Record<string, unknown> {
     const input = WbProposeLedgerInputSchema.parse(rawBody);
     assertSafeSegment(input.space, "space");
     this.requireCard(claims.taskId);

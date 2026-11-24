@@ -16,11 +16,7 @@ import {
 import { BackendRegistry, FakeBackend, type BackendAgentDescriptor } from "../../backend/index.js";
 import { checkCircuitBreaker } from "../../state/escalation.js";
 import { KilnStore, writeYamlAtomic } from "../../store/index.js";
-import {
-  KilndServer,
-  computeGlobalBudgetStatus,
-  computeTaskBudgetStatus,
-} from "../index.js";
+import { KilndServer, computeGlobalBudgetStatus, computeTaskBudgetStatus } from "../index.js";
 
 const tempDirs: string[] = [];
 
@@ -114,8 +110,20 @@ describe("Track 5 [B10] USD budget circuit breakers", () => {
       ProvidersConfigSchema.parse({
         schema_version: 1,
         providers: [
-          { id: "codex", label: "Codex", adapter: "codex_app_server", enabled: true, billing_mode: "api" },
-          { id: "claude", label: "Claude", adapter: "claude_direct", enabled: true, billing_mode: "subscription" },
+          {
+            id: "codex",
+            label: "Codex",
+            adapter: "codex_app_server",
+            enabled: true,
+            billing_mode: "api",
+          },
+          {
+            id: "claude",
+            label: "Claude",
+            adapter: "claude_direct",
+            enabled: true,
+            billing_mode: "subscription",
+          },
         ],
       }),
     );

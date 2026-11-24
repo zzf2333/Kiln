@@ -143,9 +143,7 @@ export function calculateCacheNetSavedUsd(
  * Normalizes providers (such as Pi / Anthropic) whose `inputTokens` excludes cached tokens
  * into Kiln's canonical `inputTokens = uncached + cached` representation.
  */
-export function normalizeUncachedUsage(
-  usage: UncachedUsageInput,
-): NormalizedUsageCounters {
+export function normalizeUncachedUsage(usage: UncachedUsageInput): NormalizedUsageCounters {
   assertValidCounter(usage.uncachedInputTokens, "uncachedInputTokens");
   assertValidCounter(usage.cachedInputTokens, "cachedInputTokens");
   assertValidCounter(usage.outputTokens, "outputTokens");

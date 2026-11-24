@@ -40,7 +40,9 @@ function createFakeGitRepo(repoPath: string): void {
   fs.writeFileSync(path.join(repoPath, "README.md"), "# repo\n", "utf8");
   execFileSync("git", ["init", "-b", "main", repoPath], { stdio: "pipe" });
   execFileSync("git", ["-C", repoPath, "config", "user.name", "Kiln Test"], { stdio: "pipe" });
-  execFileSync("git", ["-C", repoPath, "config", "user.email", "test@kiln.local"], { stdio: "pipe" });
+  execFileSync("git", ["-C", repoPath, "config", "user.email", "test@kiln.local"], {
+    stdio: "pipe",
+  });
   execFileSync("git", ["-C", repoPath, "add", "."], { stdio: "pipe" });
   execFileSync("git", ["-C", repoPath, "commit", "-m", "init"], { stdio: "pipe" });
 }
@@ -139,7 +141,12 @@ class MultiAgentScriptedBackend implements ExecutionBackend {
   async answer(): Promise<void> {}
   async cancel(): Promise<void> {}
   async probe(sessionRef: SessionRef) {
-    return { alive: true, status: "idle" as const, activeTurnId: null, detail: sessionRef.sessionId };
+    return {
+      alive: true,
+      status: "idle" as const,
+      activeTurnId: null,
+      detail: sessionRef.sessionId,
+    };
   }
   async liveViewUrl(): Promise<string | null> {
     return null;
@@ -159,7 +166,12 @@ function makeContract(scope: string[] = ["app.txt"]) {
   };
 }
 
-function writeRoleReceipt(store: KilnStore, spec: BackendRunSpec, verdictOrOutcome: Record<string, unknown>, body: string): void {
+function writeRoleReceipt(
+  store: KilnStore,
+  spec: BackendRunSpec,
+  verdictOrOutcome: Record<string, unknown>,
+  body: string,
+): void {
   const handoffDir = path.join(
     store.paths.runsDir(spec.taskId),
     findRunDirById(store, spec.taskId, spec.runId),
@@ -443,11 +455,15 @@ describe("Slice 5a: Roster PM point-assign, cooldown fallback, multimodal attach
 
     await waitUntil(() => server.store.getTaskIndex("t-roster-1")?.status === "done");
 
-    const detailRes = await server.app.request(new Request("http://127.0.0.1/api/tasks/t-roster-1"));
+    const detailRes = await server.app.request(
+      new Request("http://127.0.0.1/api/tasks/t-roster-1"),
+    );
     expect(detailRes.status).toBe(200);
     const detail = (await detailRes.json()) as {
       research: string;
-      runs: Array<{ meta: { stage: string; roster_role?: string; agent: string; model: string } | null }>;
+      runs: Array<{
+        meta: { stage: string; roster_role?: string; agent: string; model: string } | null;
+      }>;
     };
     expect(detail.research).toContain("确认缓存复用可行");
 
@@ -647,7 +663,9 @@ describe("Slice 5a: Roster PM point-assign, cooldown fallback, multimodal attach
       }),
     );
     expect(conflictCommitRes.status).toBe(409);
-    expect(((await conflictCommitRes.json()) as { error: string }).error).toBe("task_already_exists");
+    expect(((await conflictCommitRes.json()) as { error: string }).error).toBe(
+      "task_already_exists",
+    );
     expect(server.store.getTaskIndex("t-att-1")?.id).toBe("t-att-1");
     expect(fs.existsSync(server.store.paths.cardYaml("t-att-1"))).toBe(true);
 
@@ -1015,7 +1033,11 @@ process.stdin.on("data", (c) => {
       new MultiAgentScriptedBackend("mut-test", ["codex"], (spec) => {
         if (spec.runId.includes("-research-")) {
           // Mutate git worktree during read-only research stage!
-          fs.writeFileSync(path.join(spec.cwd, "app.txt"), "illegal edit during research\n", "utf8");
+          fs.writeFileSync(
+            path.join(spec.cwd, "app.txt"),
+            "illegal edit during research\n",
+            "utf8",
+          );
           writeRoleReceipt(
             storeRef,
             spec,

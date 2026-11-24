@@ -154,15 +154,11 @@ export function CommandPalette() {
   ];
 
   const q = query.trim().toLowerCase();
-  const filteredActions = actions.filter((a) =>
-    a.label.toLowerCase().includes(q),
-  );
+  const filteredActions = actions.filter((a) => a.label.toLowerCase().includes(q));
   const filteredTasks = state.tasks.filter(
     (t) =>
       t.status !== "cancelled" &&
-      (!q ||
-        t.title.toLowerCase().includes(q) ||
-        t.id.toLowerCase().includes(q)),
+      (!q || t.title.toLowerCase().includes(q) || t.id.toLowerCase().includes(q)),
   );
 
   return (

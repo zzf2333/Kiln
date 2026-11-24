@@ -2,13 +2,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { z } from "zod";
 import { VERIFIER_ENTRY_MODES } from "./constants.js";
 
-export const RECEIPT_KINDS = [
-  "worker",
-  "reviewer",
-  "verifier",
-  "triage",
-  "advisor",
-] as const;
+export const RECEIPT_KINDS = ["worker", "reviewer", "verifier", "triage", "advisor"] as const;
 
 export type ReceiptKind = (typeof RECEIPT_KINDS)[number];
 
@@ -255,8 +249,7 @@ const MAX_REVIEW_FINDINGS = 50;
 const EMPTY_FINDING_PLACEHOLDER_RE =
   /^(?:[-*+]\s*)?(?:无|暂无|none|n\/a|无缺陷|未发现缺陷|no\s+findings)[。.\s]*$/i;
 const FINDING_BULLET_START_RE = /^(?:[-*+]|\d+[.)]|#{3})\s+(.+)$/;
-const LEADING_SEVERITY_TAG_RE =
-  /^(?:[[(【*]*(P[012])[\])】*]*[\s:：\-–—]*)+/i;
+const LEADING_SEVERITY_TAG_RE = /^(?:[[(【*]*(P[012])[\])】*]*[\s:：\-–—]*)+/i;
 const INLINE_SEVERITY_TAG_RE = /[[(【\b](P[012])[\])】\b]/i;
 const INLINE_BACKTICK_PATH_RE = /`([^`\s]*[/.][^`\s]*)`/;
 
@@ -303,8 +296,7 @@ function normalizeFindingBulletText(
   const cleanedDetailLines = extraLines
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
-  const detail =
-    cleanedDetailLines.length > 0 ? cleanedDetailLines.join("\n") : undefined;
+  const detail = cleanedDetailLines.length > 0 ? cleanedDetailLines.join("\n") : undefined;
 
   return {
     severity,
@@ -319,9 +311,7 @@ function normalizeFindingBulletText(
  * prefers structured `frontmatter.findings` when present and non-empty,
  * otherwise parses bullets/headings under `## 缺陷清单` cleanly.
  */
-export function extractReviewFindingsFromReceipt(
-  rawReceipt: string,
-): NormalizedReviewFinding[] {
+export function extractReviewFindingsFromReceipt(rawReceipt: string): NormalizedReviewFinding[] {
   if (!rawReceipt || rawReceipt.trim().length === 0) {
     return [];
   }
@@ -334,9 +324,7 @@ export function extractReviewFindingsFromReceipt(
   }
 
   if (Array.isArray(parsed.frontmatter.findings)) {
-    const parsedFindings = z
-      .array(ReviewFindingItemSchema)
-      .safeParse(parsed.frontmatter.findings);
+    const parsedFindings = z.array(ReviewFindingItemSchema).safeParse(parsed.frontmatter.findings);
     if (parsedFindings.success && parsedFindings.data.length > 0) {
       return parsedFindings.data.slice(0, MAX_REVIEW_FINDINGS).map((item, idx) => ({
         id: item.id?.trim() || `rf-${idx + 1}`,
@@ -358,11 +346,7 @@ export function extractReviewFindingsFromReceipt(
   const p1 = typeof fm.p1 === "number" ? fm.p1 : 0;
   const p2 = typeof fm.p2 === "number" ? fm.p2 : 0;
   const fallbackSeverity: ReviewFindingSeverity =
-    p0 > 0 && p1 === 0 && p2 === 0
-      ? "P0"
-      : p2 > 0 && p0 === 0 && p1 === 0
-        ? "P2"
-        : "P1";
+    p0 > 0 && p1 === 0 && p2 === 0 ? "P0" : p2 > 0 && p0 === 0 && p1 === 0 ? "P2" : "P1";
 
   const lines = sectionBody.split(/\r?\n/);
   const blocks: Array<{ head: string; continuation: string[] }> = [];
@@ -390,11 +374,7 @@ export function extractReviewFindingsFromReceipt(
     if (findings.length >= MAX_REVIEW_FINDINGS) {
       break;
     }
-    const normalized = normalizeFindingBulletText(
-      blk.head,
-      blk.continuation,
-      fallbackSeverity,
-    );
+    const normalized = normalizeFindingBulletText(blk.head, blk.continuation, fallbackSeverity);
     if (!normalized) {
       continue;
     }

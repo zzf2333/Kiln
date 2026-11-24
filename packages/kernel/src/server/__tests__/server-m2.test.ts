@@ -119,9 +119,7 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     expect(await rootRes.text()).toContain("Kiln UI");
 
     // 2. Hashed assets -> immutable + proper MIME
-    const jsRes = await server.app.request(
-      new Request("http://127.0.0.1/assets/app-abcdef12.js"),
-    );
+    const jsRes = await server.app.request(new Request("http://127.0.0.1/assets/app-abcdef12.js"));
     expect(jsRes.status).toBe(200);
     expect(jsRes.headers.get("content-type")).toContain("text/javascript");
     expect(jsRes.headers.get("cache-control")).toContain("immutable");
@@ -152,15 +150,9 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     expect(apiErr.error).toBe("not_found");
 
     // 5. Traversal, encoded traversal, backslash, NUL byte, symlink escape -> 403/404 and zero secret leak
-    const strictlyForbiddenPaths = [
-      "/%2e%2e%5csecret.txt",
-      "/index.html%00.png",
-      "/escaped.txt",
-    ];
+    const strictlyForbiddenPaths = ["/%2e%2e%5csecret.txt", "/index.html%00.png", "/escaped.txt"];
     for (const attackPath of strictlyForbiddenPaths) {
-      const res = await server.app.request(
-        new Request(`http://127.0.0.1${attackPath}`),
-      );
+      const res = await server.app.request(new Request(`http://127.0.0.1${attackPath}`));
       expect(res.status).toBe(403);
       const body = await res.text();
       expect(body).not.toContain("TOP_SECRET_DATA");
@@ -171,9 +163,7 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
       "/%2e%2e/secret.txt",
       "/assets/%2e%2e/%2e%2e/secret.txt",
     ]) {
-      const res = await server.app.request(
-        new Request(`http://127.0.0.1${normalizedByFetch}`),
-      );
+      const res = await server.app.request(new Request(`http://127.0.0.1${normalizedByFetch}`));
       expect([403, 404]).toContain(res.status);
       expect(await res.text()).not.toContain("TOP_SECRET_DATA");
     }
@@ -492,9 +482,7 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
       `${JSON.stringify({ who: "agent", name: "resolver", text: "你好" })}\n`,
     );
 
-    const taskRes = await server.app.request(
-      new Request(`http://127.0.0.1/api/tasks/${card.id}`),
-    );
+    const taskRes = await server.app.request(new Request(`http://127.0.0.1/api/tasks/${card.id}`));
     expect(taskRes.status).toBe(200);
     const taskJson = (await taskRes.json()) as {
       liveViewUrl: string | null;
@@ -765,11 +753,17 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
       },
     });
     fakeBackend.enqueueScript(
-      [{ kind: "message", text: "turn1", delta: false }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "message", text: "turn1", delta: false },
+        { kind: "exit", reason: "completed" },
+      ],
       { role: "intake" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "message", text: "turn2", delta: false }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "message", text: "turn2", delta: false },
+        { kind: "exit", reason: "completed" },
+      ],
       { role: "intake" },
     );
 
@@ -897,11 +891,17 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     );
 
     fakeBackend.enqueueScript(
-      [{ kind: "message", text: "已在 Alpha 仓库检查结构", delta: false }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "message", text: "已在 Alpha 仓库检查结构", delta: false },
+        { kind: "exit", reason: "completed" },
+      ],
       { role: "intake" },
     );
     fakeBackend.enqueueScript(
-      [{ kind: "message", text: "已切换到 Beta 仓库继续聊", delta: false }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "message", text: "已切换到 Beta 仓库继续聊", delta: false },
+        { kind: "exit", reason: "completed" },
+      ],
       { role: "intake" },
     );
 
@@ -1085,9 +1085,9 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
       backends: Array<{ backendId: string; connected: boolean; detail: string }>;
     };
     expect(cachedAgentsJson.agents.some((a) => a.id === "dyn-pi")).toBe(true);
-    expect(
-      cachedAgentsJson.backends.find((b) => b.backendId === "custom-probe")?.detail,
-    ).toContain("cached");
+    expect(cachedAgentsJson.backends.find((b) => b.backendId === "custom-probe")?.detail).toContain(
+      "cached",
+    );
 
     shouldTimeOut = false;
     const refreshedRes = await server.app.request(
@@ -1108,7 +1108,12 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
       new Request("http://127.0.0.1/api/drafts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: "d-nonmcp-1", title: "Local Non-MCP", space: "local", workspace_mode: "scratch_dir" }),
+        body: JSON.stringify({
+          id: "d-nonmcp-1",
+          title: "Local Non-MCP",
+          space: "local",
+          workspace_mode: "scratch_dir",
+        }),
       }),
     );
     server.store.writeConfig("roles", {
@@ -1150,7 +1155,10 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
       },
     });
     fakeBackend.enqueueScript(
-      [{ kind: "message", text: "Antigravity opt-in reply", delta: false }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "message", text: "Antigravity opt-in reply", delta: false },
+        { kind: "exit", reason: "completed" },
+      ],
       { role: "intake" },
     );
     const agyOkRes = await server.app.request(
@@ -1264,9 +1272,9 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
       messages: Array<{ who: string; text: string }>;
     };
     expect(piTurn2Json.reply.text).toBe("这是正文提示。");
-    expect(piTurn2Json.messages.some((m) => m.who === "tool" && m.text.includes("格式校验失败"))).toBe(
-      true,
-    );
+    expect(
+      piTurn2Json.messages.some((m) => m.who === "tool" && m.text.includes("格式校验失败")),
+    ).toBe(true);
 
     const piIntakeSpecs = fakeBackend
       .getRecordedSpecs()
@@ -1427,11 +1435,7 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
       created_at: "2026-11-20T00:02:00.000Z",
     };
     server.pendingDecisions.set(nonMcpDecision);
-    server.stateMachine.requestDecision(
-      "t-nonmcp-res",
-      nonMcpDecision,
-      "2026-11-20T00:02:00.000Z",
-    );
+    server.stateMachine.requestDecision("t-nonmcp-res", nonMcpDecision, "2026-11-20T00:02:00.000Z");
 
     fakeBackend.enqueueScript(
       [
@@ -1488,24 +1492,17 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     const embeddedPublicAssets = new Map([
       [
         "index.html",
-        { readBytes: () => encoder.encode("<!doctype html><html><body>Embedded Kiln</body></html>") },
+        {
+          readBytes: () => encoder.encode("<!doctype html><html><body>Embedded Kiln</body></html>"),
+        },
       ],
       [
         "manifest.webmanifest",
         { readBytes: () => encoder.encode('{"name":"Kiln","display":"standalone"}') },
       ],
-      [
-        "assets/app-abc12345.js",
-        { readBytes: () => encoder.encode("console.log('embedded');") },
-      ],
-      [
-        "assets/style-abc12345.css",
-        { readBytes: () => encoder.encode("body { color: #222; }") },
-      ],
-      [
-        "icon.svg",
-        { readBytes: () => encoder.encode("<svg/>") },
-      ],
+      ["assets/app-abc12345.js", { readBytes: () => encoder.encode("console.log('embedded');") }],
+      ["assets/style-abc12345.css", { readBytes: () => encoder.encode("body { color: #222; }") }],
+      ["icon.svg", { readBytes: () => encoder.encode("<svg/>") }],
     ]);
 
     const outsideDir = makeTempDir("kiln-embedded-static-");
@@ -1518,7 +1515,9 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
       tokenSecret: "embedded-default-secret-01234567",
     });
     servers.push(defaultEmbeddedServer);
-    const defaultRootRes = await defaultEmbeddedServer.app.request(new Request("http://127.0.0.1/"));
+    const defaultRootRes = await defaultEmbeddedServer.app.request(
+      new Request("http://127.0.0.1/"),
+    );
     expect(defaultRootRes.status).toBe(200);
     expect(await defaultRootRes.text()).toContain("Embedded Kiln");
 
@@ -1565,11 +1564,11 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
       new Request("http://127.0.0.1/manifest.webmanifest"),
     );
     expect(manifestRes.status).toBe(200);
-    expect(manifestRes.headers.get("content-type")).toBe("application/manifest+json; charset=utf-8");
-
-    const jsRes = await server.app.request(
-      new Request("http://127.0.0.1/assets/app-abc12345.js"),
+    expect(manifestRes.headers.get("content-type")).toBe(
+      "application/manifest+json; charset=utf-8",
     );
+
+    const jsRes = await server.app.request(new Request("http://127.0.0.1/assets/app-abc12345.js"));
     expect(jsRes.status).toBe(200);
     expect(jsRes.headers.get("content-type")).toContain("text/javascript");
     expect(jsRes.headers.get("cache-control")).toContain("immutable");
@@ -1789,7 +1788,10 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
       }),
     );
     fakeBackend.enqueueScript(
-      [{ kind: "message", text: "L1 方案已精简补全。", delta: false }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "message", text: "L1 方案已精简补全。", delta: false },
+        { kind: "exit", reason: "completed" },
+      ],
       { role: "intake" },
     );
     await server.app.request(
@@ -1828,7 +1830,10 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     expect(commitRes.status).toBe(201);
 
     fakeBackend.enqueueScript(
-      [{ kind: "message", text: "done", delta: false }, { kind: "exit", reason: "completed" }],
+      [
+        { kind: "message", text: "done", delta: false },
+        { kind: "exit", reason: "completed" },
+      ],
       { role: "worker" },
     );
     await server.orchestrator.start();
@@ -1847,12 +1852,19 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     const homeDir = makeTempDir("kiln-ext-home-");
     const repoDir = makeTempDir("kiln-repo-cmd-");
     execFileSync("git", ["init"], { cwd: repoDir, stdio: "ignore" });
-    execFileSync("git", ["config", "user.email", "kiln@example.com"], { cwd: repoDir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "kiln@example.com"], {
+      cwd: repoDir,
+      stdio: "ignore",
+    });
     execFileSync("git", ["config", "user.name", "Kiln"], { cwd: repoDir, stdio: "ignore" });
     fs.mkdirSync(path.join(repoDir, "apps", "web", "src", "components"), { recursive: true });
     fs.mkdirSync(path.join(repoDir, "ignored_dir"), { recursive: true });
     fs.writeFileSync(path.join(repoDir, ".gitignore"), "ignored_dir/\n*.log\n", "utf8");
-    fs.writeFileSync(path.join(repoDir, "apps", "web", "src", "components", "ChatComposer.tsx"), "// tracked\n", "utf8");
+    fs.writeFileSync(
+      path.join(repoDir, "apps", "web", "src", "components", "ChatComposer.tsx"),
+      "// tracked\n",
+      "utf8",
+    );
     fs.writeFileSync(path.join(repoDir, "apps", "web", "package.json"), "{}\n", "utf8");
 
     // Project skill (overrides any user skill with same name) + project .mcp.json (with secret env that must never leak)
@@ -1883,7 +1895,11 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
       { cwd: repoDir, stdio: "ignore" },
     );
     execFileSync("git", ["commit", "-m", "init"], { cwd: repoDir, stdio: "ignore" });
-    fs.writeFileSync(path.join(repoDir, "apps", "web", "src", "UntrackedGuide.md"), "# guide\n", "utf8");
+    fs.writeFileSync(
+      path.join(repoDir, "apps", "web", "src", "UntrackedGuide.md"),
+      "# guide\n",
+      "utf8",
+    );
     fs.writeFileSync(path.join(repoDir, "ignored_dir", "secret.ts"), "secret\n", "utf8");
     fs.writeFileSync(path.join(repoDir, "debug.log"), "noise\n", "utf8");
 
@@ -1900,7 +1916,9 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
       "---\nname: forge-dialogue\ndescription: 用户目录被项目同名技能覆盖\n---\n",
       "utf8",
     );
-    fs.mkdirSync(path.join(homeDir, ".pi", "agent", "skills", "pi-only-skill"), { recursive: true });
+    fs.mkdirSync(path.join(homeDir, ".pi", "agent", "skills", "pi-only-skill"), {
+      recursive: true,
+    });
     fs.writeFileSync(
       path.join(homeDir, ".pi", "agent", "skills", "pi-only-skill", "SKILL.md"),
       "---\nname: pi-only-skill\ndescription: Pi 专属技能\n---\n",
@@ -2021,7 +2039,13 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     const cmdJson = JSON.parse(cmdText) as {
       ok: boolean;
       agent: string | null;
-      commands: Array<{ name: string; source: string; kind: string; scope?: string; description: string }>;
+      commands: Array<{
+        name: string;
+        source: string;
+        kind: string;
+        scope?: string;
+        description: string;
+      }>;
       mcpServers: Array<{ name: string; scope: string; origin: string }>;
     };
     expect(cmdJson.ok).toBe(true);
@@ -2154,7 +2178,8 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          message: "结合 @task:t-ref-1 与 @ledger:kiln 与 @mcp:context7 帮我看 @apps/web/src/components/ChatComposer.tsx",
+          message:
+            "结合 @task:t-ref-1 与 @ledger:kiln 与 @mcp:context7 帮我看 @apps/web/src/components/ChatComposer.tsx",
         }),
       }),
     );

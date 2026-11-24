@@ -17,11 +17,13 @@ import {
   type SseEvent,
   type TaskCard,
 } from "@kiln/protocol";
+import { applyApprovedHostScopedChanges, stageHostScopedChanges } from "../../gate/index.js";
 import {
-  applyApprovedHostScopedChanges,
-  stageHostScopedChanges,
-} from "../../gate/index.js";
-import { ensureDir, isWindowsNamedPipe, realpathCanonical, writeFileAtomic } from "../../store/index.js";
+  ensureDir,
+  isWindowsNamedPipe,
+  realpathCanonical,
+  writeFileAtomic,
+} from "../../store/index.js";
 import {
   CaffeinateController,
   ES_CONTINUOUS,
@@ -411,10 +413,7 @@ describe("CaffeinateController state machine", () => {
 
     winCtrl.syncRunningCount(0);
     expect(winCtrl.isActive).toBe(false);
-    expect(flagsSeen).toEqual([
-      (ES_CONTINUOUS | ES_SYSTEM_REQUIRED) >>> 0,
-      ES_CONTINUOUS >>> 0,
-    ]);
+    expect(flagsSeen).toEqual([(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) >>> 0, ES_CONTINUOUS >>> 0]);
 
     // AC-only standby mode: fails closed on battery/unknown and releases immediately when unplugged
     const acFlags: number[] = [];
@@ -456,10 +455,7 @@ describe("CaffeinateController state machine", () => {
     powerState = "battery";
     pollCb!();
     expect(acController.isActive).toBe(false);
-    expect(acFlags).toEqual([
-      (ES_CONTINUOUS | ES_SYSTEM_REQUIRED) >>> 0,
-      ES_CONTINUOUS >>> 0,
-    ]);
+    expect(acFlags).toEqual([(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) >>> 0, ES_CONTINUOUS >>> 0]);
 
     acController.release();
     expect(clearedCount).toBe(1);
@@ -527,10 +523,7 @@ describe("CaffeinateController state machine", () => {
     expect(winCtrl.mode).toBe("remote_ac_standby");
     expect(windowsPower.isRequireAcMode).toBe(true);
     expect(winCtrl.isActive).toBe(false);
-    expect(flagsSeen).toEqual([
-      (ES_CONTINUOUS | ES_SYSTEM_REQUIRED) >>> 0,
-      ES_CONTINUOUS >>> 0,
-    ]);
+    expect(flagsSeen).toEqual([(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) >>> 0, ES_CONTINUOUS >>> 0]);
 
     // 5. stop() transitions to off and clears AC poll
     winCtrl.stop();
@@ -1582,11 +1575,9 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     const tamperedText = "export PATH=/opt/manual-edit/bin\n";
     fs.writeFileSync(targetConflict, tamperedText, "utf8");
 
-    const conflictRes = await requestHttp(
-      server,
-      "/api/tasks/t-host-conflict/restore-backup",
-      { method: "POST" },
-    );
+    const conflictRes = await requestHttp(server, "/api/tasks/t-host-conflict/restore-backup", {
+      method: "POST",
+    });
     expect(conflictRes.status).toBe(409);
     const conflictJson = await conflictRes.json();
     const parsedErr = HashMismatchErrorSchema.parse(conflictJson);
@@ -1681,12 +1672,21 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
       role: "worker",
       contractVersion: 1,
     });
-    expect((await requestHttp(server, "/api/tasks/t-paused-stale/pause", { method: "POST" })).status).toBe(200);
-    expect((await requestHttp(server, "/api/tasks/t-paused-stale/resume", { method: "POST" })).status).toBe(200);
+    expect(
+      (await requestHttp(server, "/api/tasks/t-paused-stale/pause", { method: "POST" })).status,
+    ).toBe(200);
+    expect(
+      (await requestHttp(server, "/api/tasks/t-paused-stale/resume", { method: "POST" })).status,
+    ).toBe(200);
 
     expect(
       server.persistRunForDispatch(
-        makeRunMeta({ task_id: "t-paused-stale", run_id: "run-cycle-2", round: 2, input_ref: undefined }),
+        makeRunMeta({
+          task_id: "t-paused-stale",
+          run_id: "run-cycle-2",
+          round: 2,
+          input_ref: undefined,
+        }),
         "002-implement",
       ),
     ).toEqual({ acquired: true });
@@ -1696,8 +1696,12 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
       role: "worker",
       contractVersion: 1,
     });
-    expect((await requestHttp(server, "/api/tasks/t-paused-stale/pause", { method: "POST" })).status).toBe(200);
-    expect((await requestHttp(server, "/api/tasks/t-paused-stale/resume", { method: "POST" })).status).toBe(200);
+    expect(
+      (await requestHttp(server, "/api/tasks/t-paused-stale/pause", { method: "POST" })).status,
+    ).toBe(200);
+    expect(
+      (await requestHttp(server, "/api/tasks/t-paused-stale/resume", { method: "POST" })).status,
+    ).toBe(200);
 
     expect(server.store.getTaskIndex("t-paused-stale")?.status).toBe("queued");
     expect(server.store.getStageLease("t-paused-stale")?.state).toBe("expired");
@@ -1730,7 +1734,9 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     expect(server.store.getTaskIndex("t-paused-stale")?.status).toBe("queued");
     expect(server.pendingDecisions.get("t-paused-stale")).toBeNull();
     expect(
-      fs.existsSync(path.join(server.store.paths.taskDir("t-paused-stale"), "pending_decision.json")),
+      fs.existsSync(
+        path.join(server.store.paths.taskDir("t-paused-stale"), "pending_decision.json"),
+      ),
     ).toBe(false);
   });
 
@@ -1738,12 +1744,22 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     const kilnHome = makeTempDir();
     tempDirs.push(kilnHome);
 
-    const server = new KilndServer({ kilnHome, port: 0, tokenSecret: "upstream-decide-secret-123" });
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      tokenSecret: "upstream-decide-secret-123",
+    });
     servers.push(server);
     await server.start();
 
-    server.stateMachine.createTask(makeTaskCard({ id: "t-a", workspace_mode: "scratch_dir" }), "# A");
-    server.stateMachine.createTask(makeTaskCard({ id: "t-x", workspace_mode: "scratch_dir" }), "# X");
+    server.stateMachine.createTask(
+      makeTaskCard({ id: "t-a", workspace_mode: "scratch_dir" }),
+      "# A",
+    );
+    server.stateMachine.createTask(
+      makeTaskCard({ id: "t-x", workspace_mode: "scratch_dir" }),
+      "# X",
+    );
     server.stateMachine.createTask(
       makeTaskCard({ id: "t-b", workspace_mode: "scratch_dir", depends_on: ["t-a"] }),
       "# B",
@@ -1767,7 +1783,9 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     expect(cancelAJson.waitingDownstreamTaskIds).toEqual(["t-b", "t-d"]);
 
     const boot1 = await readJson(await requestHttp(server, "/api/bootstrap"));
-    const pendingTaskIds = (boot1.pendingDecisions as Array<{ task_id: string }>).map((d) => d.task_id).sort();
+    const pendingTaskIds = (boot1.pendingDecisions as Array<{ task_id: string }>)
+      .map((d) => d.task_id)
+      .sort();
     expect(pendingTaskIds).toEqual(["t-b", "t-d"]);
 
     const detailB = await readJson(await requestHttp(server, "/api/tasks/t-b"));
@@ -1775,7 +1793,9 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     const originalDecIdB = detailB.pendingDecision.id as string;
 
     // Even if pending_decision.json is absent, hydrateFromDisk/get deterministically recreates it
-    fs.rmSync(path.join(server.store.paths.taskDir("t-b"), "pending_decision.json"), { force: true });
+    fs.rmSync(path.join(server.store.paths.taskDir("t-b"), "pending_decision.json"), {
+      force: true,
+    });
     server.pendingDecisions.hydrateFromDisk();
     expect(server.pendingDecisions.get("t-b")?.id).toBe(originalDecIdB);
 
@@ -1813,7 +1833,9 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     expect(decideBJson.waitingDownstreamTaskIds).toEqual(["t-c"]);
 
     const boot2 = await readJson(await requestHttp(server, "/api/bootstrap"));
-    expect((boot2.pendingDecisions as Array<{ task_id: string }>).map((d) => d.task_id)).toEqual(["t-c"]);
+    expect((boot2.pendingDecisions as Array<{ task_id: string }>).map((d) => d.task_id)).toEqual([
+      "t-c",
+    ]);
 
     const decC = server.pendingDecisions.get("t-c")!;
     const decideC = await requestHttp(server, "/api/tasks/t-c/decide", {
@@ -1862,7 +1884,13 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
       "# Running task",
     );
     server.persistRunForDispatch(
-      makeRunMeta({ task_id: "t-run-uc", run_id: "run-exec-1", stage: "review", round: 1, input_ref: undefined }),
+      makeRunMeta({
+        task_id: "t-run-uc",
+        run_id: "run-exec-1",
+        stage: "review",
+        round: 1,
+        input_ref: undefined,
+      }),
       "001-review",
     );
     expect(caffeinate.isActive).toBe(true);
@@ -1893,7 +1921,13 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
       "# Waiting task",
     );
     server.persistRunForDispatch(
-      makeRunMeta({ task_id: "t-wait-uc", run_id: "run-wait-1", stage: "implement", round: 1, input_ref: undefined }),
+      makeRunMeta({
+        task_id: "t-wait-uc",
+        run_id: "run-wait-1",
+        stage: "implement",
+        round: 1,
+        input_ref: undefined,
+      }),
       "001-implement",
     );
     const waitToken = server.issueRunToken({
@@ -1979,14 +2013,24 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
       "# Up 2",
     );
     server.stateMachine.createTask(
-      makeTaskCard({ id: "t-paused-down", workspace_mode: "scratch_dir", depends_on: ["t-up1", "t-up2"] }),
+      makeTaskCard({
+        id: "t-paused-down",
+        workspace_mode: "scratch_dir",
+        depends_on: ["t-up1", "t-up2"],
+      }),
       "# Paused down",
     );
-    expect((await requestHttp(server, "/api/tasks/t-paused-down/pause", { method: "POST" })).status).toBe(200);
-    expect((await requestHttp(server, "/api/tasks/t-up1/cancel", { method: "POST" })).status).toBe(200);
+    expect(
+      (await requestHttp(server, "/api/tasks/t-paused-down/pause", { method: "POST" })).status,
+    ).toBe(200);
+    expect((await requestHttp(server, "/api/tasks/t-up1/cancel", { method: "POST" })).status).toBe(
+      200,
+    );
     expect(server.store.getTaskIndex("t-paused-down")?.status).toBe("paused");
 
-    const resumeRes = await requestHttp(server, "/api/tasks/t-paused-down/resume", { method: "POST" });
+    const resumeRes = await requestHttp(server, "/api/tasks/t-paused-down/resume", {
+      method: "POST",
+    });
     expect(resumeRes.status).toBe(200);
     const resumeJson = await readJson(resumeRes);
     expect(resumeJson.state.status).toBe("waiting");
@@ -1995,7 +2039,9 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     expect(firstDownDec?.question).toContain("t-up1");
 
     // 5. Second prerequisite cancels later -> get() preserves same decision ID & refreshes question with both t-up1 and t-up2
-    expect((await requestHttp(server, "/api/tasks/t-up2/cancel", { method: "POST" })).status).toBe(200);
+    expect((await requestHttp(server, "/api/tasks/t-up2/cancel", { method: "POST" })).status).toBe(
+      200,
+    );
     const refreshedDec = server.pendingDecisions.get("t-paused-down");
     expect(refreshedDec?.id).toBe(firstDownDec?.id);
     expect(refreshedDec?.question).toContain("t-up1");
@@ -2122,7 +2168,9 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     const normalDecId = askNormal.json.decision.id as string;
 
     // Upstream cancels while t-r3-down is waiting on normal decision
-    expect((await requestHttp(server, "/api/tasks/t-r3-up/cancel", { method: "POST" })).status).toBe(200);
+    expect(
+      (await requestHttp(server, "/api/tasks/t-r3-up/cancel", { method: "POST" })).status,
+    ).toBe(200);
 
     // Reject empty contractUpdate.affectedStages with 400
     const badAffected = await requestHttp(server, "/api/tasks/t-r3-down/decide", {
@@ -2151,8 +2199,9 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     expect(resolveNormalJson.state.status).toBe("waiting");
 
     const bootAfterNormal = await readJson(await requestHttp(server, "/api/bootstrap"));
-    const upstreamDec = (bootAfterNormal.pendingDecisions as Array<{ id: string; task_id: string; reason: string }>)
-      .find((d) => d.task_id === "t-r3-down");
+    const upstreamDec = (
+      bootAfterNormal.pendingDecisions as Array<{ id: string; task_id: string; reason: string }>
+    ).find((d) => d.task_id === "t-r3-down");
     expect(upstreamDec).toBeDefined();
     expect(upstreamDec?.reason).toBe("upstream_cancelled");
 
@@ -2202,8 +2251,11 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     let sseText = "";
     const frames: Array<{ id: number; event: string; data: SseEvent }> = [];
     while (
-      !frames.some((f) => f.data.type === "decision.requested" && f.data.taskId === "t-r3-draft-born") ||
-      frames.filter((f) => f.data.type === "decision.requested" && f.data.taskId === "t-r3-down").length < 2
+      !frames.some(
+        (f) => f.data.type === "decision.requested" && f.data.taskId === "t-r3-draft-born",
+      ) ||
+      frames.filter((f) => f.data.type === "decision.requested" && f.data.taskId === "t-r3-down")
+        .length < 2
     ) {
       const chunk = await reader.read();
       if (chunk.done) break;
@@ -2211,10 +2263,13 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
       frames.splice(0, frames.length, ...parseSseFrames(sseText));
     }
     expect(
-      frames.some((f) => f.data.type === "decision.requested" && f.data.taskId === "t-r3-draft-born"),
+      frames.some(
+        (f) => f.data.type === "decision.requested" && f.data.taskId === "t-r3-draft-born",
+      ),
     ).toBe(true);
     expect(
-      frames.filter((f) => f.data.type === "decision.requested" && f.data.taskId === "t-r3-down").length,
+      frames.filter((f) => f.data.type === "decision.requested" && f.data.taskId === "t-r3-down")
+        .length,
     ).toBeGreaterThanOrEqual(2);
 
     sseAbort.abort();
@@ -2277,9 +2332,7 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     expect(badArrayRes.json.role).toBe("reviewer");
     expect(Array.isArray(badArrayRes.json.errors)).toBe(true);
     expect((badArrayRes.json.errors as string[]).some((e) => e.includes("p0"))).toBe(true);
-    expect(
-      (badArrayRes.json.errors as string[]).some((e) => e.includes("缺陷清单")),
-    ).toBe(true);
+    expect((badArrayRes.json.errors as string[]).some((e) => e.includes("缺陷清单"))).toBe(true);
     expect(server.store.getStageLease("t-p1-6")?.state).toBe("active");
     expect(fs.existsSync(server.store.paths.receiptMd("t-p1-6", "001-review"))).toBe(false);
 
@@ -3064,9 +3117,9 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     await expect(revealLocalPath("//evil.example.com/share/notes.txt")).rejects.toMatchObject({
       statusCode: 400,
     });
-    await expect(
-      revealLocalPath(path.join(sampleDir, "missing.txt")),
-    ).rejects.toMatchObject({ statusCode: 404 });
+    await expect(revealLocalPath(path.join(sampleDir, "missing.txt"))).rejects.toMatchObject({
+      statusCode: 404,
+    });
 
     // 2. Local & remote HTTP listener parity
     const revealedCalls: string[] = [];
@@ -3336,9 +3389,7 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     expect(
       publishedEvents.some(
         (ev) =>
-          ev.type === "task.updated" &&
-          ev.taskId === "t-ext-api-2" &&
-          ev.patch.status === "done",
+          ev.type === "task.updated" && ev.taskId === "t-ext-api-2" && ev.patch.status === "done",
       ),
     ).toBe(true);
 
@@ -3350,34 +3401,30 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     });
     expect(badDeliverDraft.status).toBe(201);
 
-    const badDeliverCmdCommit = await requestHttp(
-      server,
-      "/api/drafts/d-bad-deliver-cmd/commit",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          id: "t-bad-deliver-cmd",
-          title: "Bad deliver cmd task",
-          space: "local",
-          track: "L1",
-          workspace_mode: "host_scoped",
-          workflow: buildWorkflowPreset("host_op", { hasDeliverCmd: true }),
-          brief_markdown: "# Bad deliver cmd",
-          contract: {
-            goal: "Run script",
-            end: "Done",
-            accept_cmd: "echo ok",
-            accept_files_hash: "sha256:bad-deliv",
-            scope: ["/tmp/target.txt"],
-            deliver: {
-              mode: "run_cmd",
-              cmd: `python3 ${path.join(server.store.paths.draftDir("d-bad-deliver-cmd"), "run.py")}`,
-            },
+    const badDeliverCmdCommit = await requestHttp(server, "/api/drafts/d-bad-deliver-cmd/commit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "t-bad-deliver-cmd",
+        title: "Bad deliver cmd task",
+        space: "local",
+        track: "L1",
+        workspace_mode: "host_scoped",
+        workflow: buildWorkflowPreset("host_op", { hasDeliverCmd: true }),
+        brief_markdown: "# Bad deliver cmd",
+        contract: {
+          goal: "Run script",
+          end: "Done",
+          accept_cmd: "echo ok",
+          accept_files_hash: "sha256:bad-deliv",
+          scope: ["/tmp/target.txt"],
+          deliver: {
+            mode: "run_cmd",
+            cmd: `python3 ${path.join(server.store.paths.draftDir("d-bad-deliver-cmd"), "run.py")}`,
           },
-        }),
-      },
-    );
+        },
+      }),
+    });
     expect(badDeliverCmdCommit.status).toBe(400);
     const badDeliverBody = await readJson(badDeliverCmdCommit);
     expect(badDeliverBody.error).toBe("invalid_contract_path");
@@ -3394,59 +3441,51 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
       freeze_patterns: [],
     });
 
-    const hostOpOnGitCommit = await requestHttp(
-      server,
-      "/api/drafts/d-bad-deliver-cmd/commit",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          id: "t-host-op-git",
-          title: "Host op on git worktree rejected",
-          space: "proj-wf-check",
-          track: "L1",
-          workspace_mode: "git_worktree",
-          workflow: buildWorkflowPreset("host_op"),
-          brief_markdown: "# Bad combination",
-          contract: {
-            goal: "Goal",
-            end: "End",
-            accept_cmd: "echo ok",
-            accept_files_hash: "sha256:bad-wf1",
-            scope: ["src/**"],
-            deliver: { mode: "merge_main", cmd: null },
-          },
-        }),
-      },
-    );
+    const hostOpOnGitCommit = await requestHttp(server, "/api/drafts/d-bad-deliver-cmd/commit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "t-host-op-git",
+        title: "Host op on git worktree rejected",
+        space: "proj-wf-check",
+        track: "L1",
+        workspace_mode: "git_worktree",
+        workflow: buildWorkflowPreset("host_op"),
+        brief_markdown: "# Bad combination",
+        contract: {
+          goal: "Goal",
+          end: "End",
+          accept_cmd: "echo ok",
+          accept_files_hash: "sha256:bad-wf1",
+          scope: ["src/**"],
+          deliver: { mode: "merge_main", cmd: null },
+        },
+      }),
+    });
     expect(hostOpOnGitCommit.status).toBe(400);
     expect((await readJson(hostOpOnGitCommit)).error).toBe("invalid_workflow_workspace");
 
-    const quickOnHostCommit = await requestHttp(
-      server,
-      "/api/drafts/d-bad-deliver-cmd/commit",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          id: "t-quick-host",
-          title: "Non two-phase on host_scoped rejected",
-          space: "local",
-          track: "L1",
-          workspace_mode: "host_scoped",
-          workflow: buildWorkflowPreset("quick"),
-          brief_markdown: "# Bad combination 2",
-          contract: {
-            goal: "Goal",
-            end: "End",
-            accept_cmd: "echo ok",
-            accept_files_hash: "sha256:bad-wf2",
-            scope: ["/tmp/target.txt"],
-            deliver: { mode: "manual", cmd: null },
-          },
-        }),
-      },
-    );
+    const quickOnHostCommit = await requestHttp(server, "/api/drafts/d-bad-deliver-cmd/commit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "t-quick-host",
+        title: "Non two-phase on host_scoped rejected",
+        space: "local",
+        track: "L1",
+        workspace_mode: "host_scoped",
+        workflow: buildWorkflowPreset("quick"),
+        brief_markdown: "# Bad combination 2",
+        contract: {
+          goal: "Goal",
+          end: "End",
+          accept_cmd: "echo ok",
+          accept_files_hash: "sha256:bad-wf2",
+          scope: ["/tmp/target.txt"],
+          deliver: { mode: "manual", cmd: null },
+        },
+      }),
+    });
     expect(quickOnHostCommit.status).toBe(400);
     expect((await readJson(quickOnHostCommit)).error).toBe("invalid_workflow_workspace");
 

@@ -52,10 +52,7 @@ export function extractActiveSteerNotes(
 }
 
 export function extractSection(markdownBody: string, heading: string): string {
-  const pattern = new RegExp(
-    `^#{1,3}[ \\t]+${heading}(?:[ \\t:(（][^\\r\\n]*)?(?=\\r?\\n|$)`,
-    "m",
-  );
+  const pattern = new RegExp(`^#{1,3}[ \\t]+${heading}(?:[ \\t:(（][^\\r\\n]*)?(?=\\r?\\n|$)`, "m");
   const match = pattern.exec(markdownBody);
   if (!match) return "";
   const after = markdownBody.slice(match.index + match[0].length);
@@ -70,8 +67,7 @@ export function buildReceiptTemplateSection(params: {
   const { role, workspaceMode } = params;
   const fallbackRef = workspaceMode === "git_worktree" ? "HEAD" : workspaceMode;
   const staticRunIdPlaceholder = "<REPLACE_WITH_RUN_ID>";
-  const staticInputRefPlaceholder =
-    workspaceMode === "git_worktree" ? "HEAD" : fallbackRef;
+  const staticInputRefPlaceholder = workspaceMode === "git_worktree" ? "HEAD" : fallbackRef;
 
   let templateMarkdown: string;
   let fieldNotes: string[];
@@ -138,7 +134,7 @@ export function buildReceiptTemplateSection(params: {
         "- `run_id` / `contract_version`: 提交时务必替换为末尾「本轮执行指令」给出的真实值",
         "- `verdict`: 仅允许 `pass` | `changes_requested`",
         "- **重要**：`p0`、`p1`、`p2` 必须为非负整数（如 `0`、`1`），**绝不能写成数组 `[]`**；具体问题明细请写在 `## 缺陷清单` 正文中",
-        "- 可选结构化字段 `findings`: 数组项 `{ severity: \"P0\"|\"P1\"|\"P2\", title, location?, detail? }`（仍须保留整型 `p0/p1/p2` 与正文 `## 缺陷清单`）",
+        '- 可选结构化字段 `findings`: 数组项 `{ severity: "P0"|"P1"|"P2", title, location?, detail? }`（仍须保留整型 `p0/p1/p2` 与正文 `## 缺陷清单`）',
         "- `reviewed_ref`: 被审查的提交 Hash 或工作区产物引用（非空字符串）",
       ];
       break;
@@ -284,11 +280,7 @@ export interface BuildHandoffParams {
   acceptEnvContext?: AcceptEnvHandoffContext | null;
 }
 
-function buildLayer0WorkspaceSafetyNote(
-  card: TaskCard,
-  role: RoleId,
-  stage: StageId,
-): string {
+function buildLayer0WorkspaceSafetyNote(card: TaskCard, role: RoleId, stage: StageId): string {
   const isReadOnlyStageOrRole =
     role !== "worker" ||
     stage === "plan" ||
@@ -416,18 +408,13 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
       : "";
   const decisions = readOptionalText(store.paths.decisionsMd(card.id)) ?? "";
   const ledger = store.readLedger(card.space);
-  const activeLedgerEntries = ledger
-    ? selectActiveLedgerEntriesForHandoff(ledger.entries)
-    : [];
+  const activeLedgerEntries = ledger ? selectActiveLedgerEntriesForHandoff(ledger.entries) : [];
   const ledgerText =
     activeLedgerEntries.length > 0
       ? activeLedgerEntries.map((e) => `- ${e.rule}`).join("\n")
       : "(无)";
 
-  const steerNotes = extractActiveSteerNotes(
-    store.readStateEvents(card.id),
-    card.contract_version,
-  );
+  const steerNotes = extractActiveSteerNotes(store.readStateEvents(card.id), card.contract_version);
 
   const advisorRoutingHint =
     role === "worker" || role === "reviewer"
@@ -548,10 +535,7 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
       ? [
           `## 运行中补充纠偏指令（Steer，未变更契约）`,
           `以下为用户在任务执行期间补充的纠偏提示，请在不违反 \`contract.scope\`、验收命令与人类红线的前提下优先遵循：`,
-          ...steerNotes.map(
-            (n) =>
-              `- [${n.at}${n.interrupt ? " · 已中断重跑" : ""}] ${n.message}`,
-          ),
+          ...steerNotes.map((n) => `- [${n.at}${n.interrupt ? " · 已中断重跑" : ""}] ${n.message}`),
         ].join("\n")
       : "";
 
@@ -571,7 +555,7 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
       : "";
 
   const spaceAcceptScenarios =
-    stage === "accept" ? store.readSpace(card.space)?.accept_scenarios ?? [] : [];
+    stage === "accept" ? (store.readSpace(card.space)?.accept_scenarios ?? []) : [];
   const spaceAcceptScenariosSection =
     stage === "accept" && spaceAcceptScenarios.length > 0
       ? [
@@ -591,9 +575,7 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
           ...(acceptEnvContext.primaryUrl
             ? [`- 主被测访问地址 (accept_url): ${acceptEnvContext.primaryUrl}`]
             : []),
-          ...(acceptEnvContext.entryHint
-            ? [`- 入口提示: ${acceptEnvContext.entryHint}`]
-            : []),
+          ...(acceptEnvContext.entryHint ? [`- 入口提示: ${acceptEnvContext.entryHint}`] : []),
           ...(acceptEnvContext.services && acceptEnvContext.services.length > 0
             ? [
                 `- 已拉起被测服务：`,
@@ -636,9 +618,7 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
     ...(rosterRoleId ? [`- roster_role: ${rosterRoleId}`] : []),
     `- contract_version: ${card.contract_version}`,
     ...(inputRef ? [`- input_ref: ${inputRef}`] : []),
-    ...(!mcpEnabled
-      ? [`- 本轮回执写入路径：${store.paths.receiptMd(card.id, runDirName)}`]
-      : []),
+    ...(!mcpEnabled ? [`- 本轮回执写入路径：${store.paths.receiptMd(card.id, runDirName)}`] : []),
     `- 提交回执时请将 frontmatter 中的 \`run_id\` 设为 \`${runId}\`、\`contract_version\` 设为 \`${card.contract_version}\`。`,
     ``,
     buildStageCognitiveDirective({
@@ -680,14 +660,15 @@ export function extractDecisionFromNeedDecisionReceipt(
   body: string,
 ): PendingDecision {
   const parsedFm = parseFrontmatterMarkdown(rawReceipt).frontmatter;
-  const issueSection =
-    extractSection(body, "未完成或待决问题") || extractSection(body, "待决问题");
+  const issueSection = extractSection(body, "未完成或待决问题") || extractSection(body, "待决问题");
 
   const question =
     typeof parsedFm.question === "string" && parsedFm.question.trim().length > 0
       ? parsedFm.question.trim()
-      : issueSection.split(/\r?\n/).find((l) => l.trim().length > 0)?.trim() ||
-        `任务 "${taskId}" 在执行过程中提出待决问题，请确认继续方案`;
+      : issueSection
+          .split(/\r?\n/)
+          .find((l) => l.trim().length > 0)
+          ?.trim() || `任务 "${taskId}" 在执行过程中提出待决问题，请确认继续方案`;
 
   const reason =
     typeof parsedFm.reason === "string" && parsedFm.reason.trim().length > 0
@@ -710,9 +691,10 @@ export function extractDecisionFromNeedDecisionReceipt(
   if (!options) {
     const parsedFromBullets: DecisionOption[] = [];
     for (const line of body.split(/\r?\n/)) {
-      const m = /^[-*]\s+\[([^\]]+)\]\s+(.+?)(?:\s+\(action:\s*(resume|return_external|finish|cancel)\))?$/i.exec(
-        line.trim(),
-      );
+      const m =
+        /^[-*]\s+\[([^\]]+)\]\s+(.+?)(?:\s+\(action:\s*(resume|return_external|finish|cancel)\))?$/i.exec(
+          line.trim(),
+        );
       if (m) {
         parsedFromBullets.push(
           DecisionOptionSchema.parse({

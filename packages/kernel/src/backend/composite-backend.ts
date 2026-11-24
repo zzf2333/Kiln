@@ -16,11 +16,7 @@ import { CodexAppServerBackend } from "./codex-app-server.js";
 import { PaseoBackend } from "./paseo/index.js";
 import { PiRpcBackend } from "./pi-rpc.js";
 import { ProviderHealthTracker } from "./provider-health.js";
-import {
-  buildAgentCliEnv,
-  probeCliBinary,
-  type ProbeCliBinaryOptions,
-} from "./stdio-rpc.js";
+import { buildAgentCliEnv, probeCliBinary, type ProbeCliBinaryOptions } from "./stdio-rpc.js";
 import type {
   ApprovalHandler,
   BackendAgentDescriptor,
@@ -109,10 +105,7 @@ function stableProviderConfigKey(entry: ProviderEntry): string {
 
 export interface DetectProvidersOptions {
   healthTracker?: ProviderHealthTracker;
-  probeFn?: (
-    command: string,
-    options?: ProbeCliBinaryOptions,
-  ) => ReturnType<typeof probeCliBinary>;
+  probeFn?: (command: string, options?: ProbeCliBinaryOptions) => ReturnType<typeof probeCliBinary>;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -205,9 +198,7 @@ export class CompositeBackend implements ProviderTelemetryBackend {
   readonly healthTracker: ProviderHealthTracker;
 
   private readonly adapterFactories: Partial<Record<ProviderAdapterKind, AdapterFactoryFn>>;
-  private readonly onProviderStatusChanged:
-    | ((status: ProviderRuntimeStatus) => void)
-    | undefined;
+  private readonly onProviderStatusChanged: ((status: ProviderRuntimeStatus) => void) | undefined;
   private readonly getUsageContext:
     | (() => { localTurns: readonly UsageTurnRow[]; pricing: PricingConfig | null })
     | undefined;

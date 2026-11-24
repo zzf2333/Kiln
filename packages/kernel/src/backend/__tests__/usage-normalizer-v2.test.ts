@@ -296,7 +296,13 @@ describe("v0.0.5 usage normalizer V2, SQLite migration, provider health, and 5-f
     const pricing = {
       schema_version: 1 as const,
       models: {
-        "claude-sonnet-4-6": { in: 3, cached: 0.3, cache_write: 3.75, out: 15, context_window: 1_000_000 },
+        "claude-sonnet-4-6": {
+          in: 3,
+          cached: 0.3,
+          cache_write: 3.75,
+          out: 15,
+          context_window: 1_000_000,
+        },
       },
     };
     const snapshot = computeUsageSnapshot(
@@ -350,12 +356,20 @@ describe("v0.0.5 usage normalizer V2, SQLite migration, provider health, and 5-f
 
     const health = new ProviderHealthTracker();
     const nowMs = Date.parse("2026-11-23T02:00:00.000Z");
-    const until = health.recordRateLimit("codex", { retryAfterSec: 120, nowMs, detail: "HTTP 429" });
+    const until = health.recordRateLimit("codex", {
+      retryAfterSec: 120,
+      nowMs,
+      detail: "HTTP 429",
+    });
     expect(until).toBe("2026-11-23T02:02:00.000Z");
     expect(health.isInCooldown("codex", nowMs + 60_000)).toBe(true);
     expect(health.isInCooldown("codex", nowMs + 120_000)).toBe(false);
 
-    health.setNativeQuota("codex", { source: "codex", used_percent: 14, window_duration_mins: 10080 });
+    health.setNativeQuota("codex", {
+      source: "codex",
+      used_percent: 14,
+      window_duration_mins: 10080,
+    });
     const home = makeTempDir("kiln-health-");
     const store = new KilnStore({ kilnHome: home });
     try {

@@ -1,15 +1,15 @@
 import { spawn, type SpawnOptions } from "node:child_process";
 import fs from "node:fs";
-import {
-  WindowsPowerController,
-  type WindowsPowerApi,
-} from "./windows-power.js";
+import { WindowsPowerController, type WindowsPowerApi } from "./windows-power.js";
 
 export const CAFFEINATE_BIN_PATH = "/usr/bin/caffeinate";
 
 export interface CaffeinateChildProcess {
   kill(signal?: NodeJS.Signals | number): boolean;
-  once(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown;
+  once(
+    event: "exit",
+    listener: (code: number | null, signal: NodeJS.Signals | null) => void,
+  ): unknown;
   once(event: "error", listener: (err: Error) => void): unknown;
   unref?: () => unknown;
 }
@@ -187,11 +187,9 @@ export class CaffeinateController {
       return;
     }
 
-    const spawned = this.spawnProcess(
-      this.caffeinatePath,
-      this.argsForDarwinMode(desired),
-      { stdio: "ignore" },
-    );
+    const spawned = this.spawnProcess(this.caffeinatePath, this.argsForDarwinMode(desired), {
+      stdio: "ignore",
+    });
     this.child = spawned;
     this.activeMode = desired;
 

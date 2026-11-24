@@ -339,9 +339,7 @@ export type PaseoDaemonEvent =
   | {
       type: "agent_update";
       agentId: string;
-      payload:
-        | { kind: "upsert"; agent: PaseoAgentSnapshot }
-        | { kind: "remove"; agentId: string };
+      payload: { kind: "upsert"; agent: PaseoAgentSnapshot } | { kind: "remove"; agentId: string };
     }
   | {
       type: "agent_deleted";
@@ -491,10 +489,7 @@ export interface PaseoDaemonLike {
     ifNoneMatch?: string;
     requestId?: string;
   }): Promise<PaseoProvidersSnapshot>;
-  refreshProvidersSnapshot?(options?: {
-    cwd?: string;
-    requestId?: string;
-  }): Promise<unknown>;
+  refreshProvidersSnapshot?(options?: { cwd?: string; requestId?: string }): Promise<unknown>;
   createAgent(options: PaseoCreateAgentOptions): Promise<PaseoAgentSnapshot>;
   fetchAgent(options: {
     agentId: string;
@@ -520,9 +515,7 @@ export interface PaseoDaemonLike {
   ): PaseoTimelineSubscription;
   observeEvents?(
     events: Array<
-      | "agent_permission_request"
-      | "agent_permission_resolved"
-      | "providers_snapshot_update"
+      "agent_permission_request" | "agent_permission_resolved" | "providers_snapshot_update"
     >,
     options?: { notifications?: boolean },
   ): PaseoObservationHandle;

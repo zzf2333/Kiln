@@ -34,7 +34,8 @@ export function Statusbar() {
   const totalRate = Math.round(
     Object.keys(ratesByTask).length > 0 ? ratesSum : (liveTotals?.tokPerSec ?? 0),
   );
-  const heatPct = totalRate > 0 ? Math.min(100, Math.max(8, Math.round((totalRate / 600) * 100))) : 0;
+  const heatPct =
+    totalRate > 0 ? Math.min(100, Math.max(8, Math.round((totalRate / 600) * 100))) : 0;
 
   const cooldownProviders = providerStatuses.filter((p) => p.status === "cooldown");
   const isOffline = sseStatus === "reconnecting" || networkOffline;
@@ -73,9 +74,7 @@ export function Statusbar() {
         <span
           className={`dot ${isOffline ? "dot-ask" : sseStatus === "connected" ? "dot-ok" : ""}`}
         />
-        <span>
-          kilnd {isOffline ? "重连中" : authMode === "remote" ? "远程" : "本机"}
-        </span>
+        <span>kilnd {isOffline ? "重连中" : authMode === "remote" ? "远程" : "本机"}</span>
       </button>
 
       <span className="sb-sep" aria-hidden="true" />
@@ -125,9 +124,7 @@ export function Statusbar() {
           title="查看限流冷却中的订阅"
         >
           <span className="dot dot-ask" />
-          <span>
-            {cooldownProviders.map((p) => p.label || p.provider_id).join("·")} 429 冷却
-          </span>
+          <span>{cooldownProviders.map((p) => p.label || p.provider_id).join("·")} 429 冷却</span>
         </button>
       ) : null}
 
@@ -144,18 +141,11 @@ export function Statusbar() {
         <span>{sidebarCollapsed ? "展开导航" : "导航"}</span>
       </button>
 
-      <button
-        type="button"
-        className="sb-item"
-        onClick={cycleTheme}
-        title="切换外观主题"
-      >
+      <button type="button" className="sb-item" onClick={cycleTheme} title="切换外观主题">
         <span>{themeText}</span>
       </button>
 
-      {daemonVersion ? (
-        <span className="sb-item mono">v{daemonVersion}</span>
-      ) : null}
+      {daemonVersion ? <span className="sb-item mono">v{daemonVersion}</span> : null}
     </footer>
   );
 }

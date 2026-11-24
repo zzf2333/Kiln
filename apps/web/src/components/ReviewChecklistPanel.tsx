@@ -76,7 +76,9 @@ export function ReviewChecklistPanel({
       choice: drafts[item.id],
     }))
     .filter(
-      (entry): entry is {
+      (
+        entry,
+      ): entry is {
         item: ChecklistItem;
         choice: { disposition: ChecklistDisposition; rationale: string };
       } => Boolean(entry.choice?.disposition),
@@ -85,9 +87,7 @@ export function ReviewChecklistPanel({
   const reworkCount = selectedEntries.filter(
     (entry) => entry.choice.disposition === "rework",
   ).length;
-  const waiveCount = selectedEntries.filter(
-    (entry) => entry.choice.disposition === "waive",
-  ).length;
+  const waiveCount = selectedEntries.filter((entry) => entry.choice.disposition === "waive").length;
 
   const canAdvanceAfterWaive =
     !readOnly &&
@@ -143,14 +143,10 @@ export function ReviewChecklistPanel({
     if (submitting || selectedEntries.length === 0) return;
 
     const missingWaiveRationale = selectedEntries.find(
-      (entry) =>
-        entry.choice.disposition === "waive" &&
-        entry.choice.rationale.trim().length === 0,
+      (entry) => entry.choice.disposition === "waive" && entry.choice.rationale.trim().length === 0,
     );
     if (missingWaiveRationale) {
-      setErrorMsg(
-        `确认豁免「${missingWaiveRationale.item.title}」必须填写豁免理由`,
-      );
+      setErrorMsg(`确认豁免「${missingWaiveRationale.item.title}」必须填写豁免理由`);
       return;
     }
 
@@ -162,9 +158,7 @@ export function ReviewChecklistPanel({
         items: selectedEntries.map(({ item, choice }) => ({
           item_id: item.id,
           disposition: choice.disposition,
-          ...(choice.rationale.trim().length > 0
-            ? { rationale: choice.rationale.trim() }
-            : {}),
+          ...(choice.rationale.trim().length > 0 ? { rationale: choice.rationale.trim() } : {}),
         })),
         ...(extraNote.trim().length > 0 ? { extra_note: extraNote.trim() } : {}),
         interrupt: false,
@@ -211,9 +205,7 @@ export function ReviewChecklistPanel({
                   ) : null}
                   {item.disposition ? (
                     <span
-                      className={`chip ${
-                        item.disposition === "rework" ? "chip-warn" : "chip-ok"
-                      }`}
+                      className={`chip ${item.disposition === "rework" ? "chip-warn" : "chip-ok"}`}
                     >
                       {item.disposition === "rework"
                         ? "已打回修复"
@@ -223,11 +215,7 @@ export function ReviewChecklistPanel({
                 </div>
 
                 {!readOnly ? (
-                  <div
-                    className="checklist-seg"
-                    role="group"
-                    aria-label={`处理条目 ${item.title}`}
-                  >
+                  <div className="checklist-seg" role="group" aria-label={`处理条目 ${item.title}`}>
                     <button
                       type="button"
                       className={`checklist-seg-btn${!activeDisp ? " is-active" : ""}`}
@@ -257,18 +245,14 @@ export function ReviewChecklistPanel({
                 ) : null}
               </div>
 
-              {item.detail ? (
-                <div className="checklist-row-detail muted">{item.detail}</div>
-              ) : null}
+              {item.detail ? <div className="checklist-row-detail muted">{item.detail}</div> : null}
 
               {!readOnly && activeDisp ? (
                 <input
                   type="text"
                   className="input input-sm checklist-input"
                   aria-label={
-                    activeDisp === "waive"
-                      ? `豁免理由：${item.title}`
-                      : `修复批注：${item.title}`
+                    activeDisp === "waive" ? `豁免理由：${item.title}` : `修复批注：${item.title}`
                   }
                   placeholder={
                     activeDisp === "waive"

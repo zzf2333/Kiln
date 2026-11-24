@@ -36,11 +36,7 @@ function initTempGitRepo(baseDir: string, name: string): string {
   git(["init", "-b", "main"], repoDir);
   git(["config", "user.name", "Kiln Test"], repoDir);
   git(["config", "user.email", "kiln-test@example.com"], repoDir);
-  fs.writeFileSync(
-    path.join(repoDir, "src", "app.ts"),
-    "export const status = 'init';\n",
-    "utf8",
-  );
+  fs.writeFileSync(path.join(repoDir, "src", "app.ts"), "export const status = 'init';\n", "utf8");
   fs.writeFileSync(
     path.join(repoDir, "src", "shared.ts"),
     "export const line1 = 'base';\nexport const line2 = 'base';\n",
@@ -79,10 +75,7 @@ function makeWorkerReceiptMarkdown(fields: {
   );
 }
 
-function makeAdvisorReceiptMarkdown(fields: {
-  run_id: string;
-  contract_version: number;
-}): string {
+function makeAdvisorReceiptMarkdown(fields: { run_id: string; contract_version: number }): string {
   return serializeFrontmatterMarkdown(
     {
       run_id: fields.run_id,
@@ -117,11 +110,9 @@ function makeReviewerReceiptMarkdown(fields: {
       p1: 0,
       p2: 0,
     },
-    [
-      "## 结论\n审查通过\n",
-      "## 缺陷清单\n无\n",
-      "## 测试真实性与复现核查\n真实核验通过\n",
-    ].join("\n"),
+    ["## 结论\n审查通过\n", "## 缺陷清单\n无\n", "## 测试真实性与复现核查\n真实核验通过\n"].join(
+      "\n",
+    ),
   );
 }
 
@@ -271,7 +262,12 @@ describe("Track 2: B4 intake recon, B5 PLAN-driven fast_fix & auto-escalation, B
         pm: {
           ...seed.pm,
           enabled: true,
-          primary: { provider: "claude", model: "claude-opus-4-6", effort: "high", backend_id: "fake" },
+          primary: {
+            provider: "claude",
+            model: "claude-opus-4-6",
+            effort: "high",
+            backend_id: "fake",
+          },
         },
         researcher: {
           ...seed.researcher,
@@ -281,7 +277,12 @@ describe("Track 2: B4 intake recon, B5 PLAN-driven fast_fix & auto-escalation, B
         advisor: {
           ...seed.advisor,
           enabled: true,
-          primary: { provider: "claude", model: "claude-opus-4-6", effort: "high", backend_id: "fake" },
+          primary: {
+            provider: "claude",
+            model: "claude-opus-4-6",
+            effort: "high",
+            backend_id: "fake",
+          },
         },
         fast_fix: {
           ...seed.fast_fix,
@@ -344,7 +345,7 @@ describe("Track 2: B4 intake recon, B5 PLAN-driven fast_fix & auto-escalation, B
         {
           kind: "message",
           delta: false,
-          text: "已收到前置侦察，方案如下：\n```kiln-draft-patch\n{\"title\":\"更新状态\",\"open_questions\":[]}\n```",
+          text: '已收到前置侦察，方案如下：\n```kiln-draft-patch\n{"title":"更新状态","open_questions":[]}\n```',
         },
         { kind: "exit", reason: "completed" },
       ],
@@ -455,10 +456,7 @@ describe("Track 2: B4 intake recon, B5 PLAN-driven fast_fix & auto-escalation, B
       }),
     );
     expect(commitRes.status).toBe(201);
-    const inheritedResearch = fs.readFileSync(
-      server.store.paths.researchMd("t-b4-single"),
-      "utf8",
-    );
+    const inheritedResearch = fs.readFileSync(server.store.paths.researchMd("t-b4-single"), "utf8");
     expect(inheritedResearch).toContain("src/app.ts");
     // Cancel single inherited task before testing disabled-research skip flow
     server.stateMachine.cancelTask("t-b4-single", "verified inheritance");
@@ -544,7 +542,10 @@ describe("Track 2: B4 intake recon, B5 PLAN-driven fast_fix & auto-escalation, B
         const dirName = `00${implDirSeq}-implement`;
         const wt = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
         if (req.action === "b5_fast_fail") {
-          fs.writeFileSync(path.join(wt, "src", "app.ts"), `export const status = 'broken-${implDirSeq}';\n`);
+          fs.writeFileSync(
+            path.join(wt, "src", "app.ts"),
+            `export const status = 'broken-${implDirSeq}';\n`,
+          );
         } else if (req.action === "b5_main_fix") {
           const handoffText = fs.readFileSync(
             server.store.paths.handoffMd(ctx.taskId, dirName),
@@ -632,7 +633,10 @@ describe("Track 2: B4 intake recon, B5 PLAN-driven fast_fix & auto-escalation, B
       updated_at: now,
     };
     server.stateMachine.createTask(card, "# B5 Brief");
-    writeFileAtomic(server.store.paths.planMd("t-b5-esc"), "# Plan\n1. Update src/app.ts to fixed\n");
+    writeFileAtomic(
+      server.store.paths.planMd("t-b5-esc"),
+      "# Plan\n1. Update src/app.ts to fixed\n",
+    );
     await server.start();
 
     await waitUntil(
@@ -680,12 +684,10 @@ describe("Track 2: B4 intake recon, B5 PLAN-driven fast_fix & auto-escalation, B
       tokenSecret: "track2-b6-secret-0123456789abcdef",
       approvalHandler: async (req, ctx) => {
         const wt = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
-        const runDirs = fs
-          .readdirSync(server.store.paths.runsDir(ctx.taskId))
-          .filter((d) => {
-            const meta = readYamlOptional(server.store.paths.runYaml(ctx.taskId, d), RunMetaSchema);
-            return meta?.run_id === ctx.runId;
-          });
+        const runDirs = fs.readdirSync(server.store.paths.runsDir(ctx.taskId)).filter((d) => {
+          const meta = readYamlOptional(server.store.paths.runYaml(ctx.taskId, d), RunMetaSchema);
+          return meta?.run_id === ctx.runId;
+        });
         const runDir = runDirs[0]!;
 
         if (req.action === "b6_plan") {
@@ -869,9 +871,9 @@ describe("Track 2: B4 intake recon, B5 PLAN-driven fast_fix & auto-escalation, B
       .readdirSync(server.store.paths.runsDir("t-b6-conflict"))
       .filter((d) => d.includes("-deliver"));
     expect(deliverAgentRuns).toHaveLength(1);
-    expect(
-      fs.existsSync(server.store.paths.gateYaml("t-b6-conflict", deliverAgentRuns[0]!)),
-    ).toBe(true);
+    expect(fs.existsSync(server.store.paths.gateYaml("t-b6-conflict", deliverAgentRuns[0]!))).toBe(
+      true,
+    );
 
     const mainShared = fs.readFileSync(path.join(repoPath, "src", "shared.ts"), "utf8");
     expect(mainShared).toContain("from-task");

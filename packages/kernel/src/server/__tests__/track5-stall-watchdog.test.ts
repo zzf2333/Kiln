@@ -11,16 +11,9 @@ import {
   TaskCardSchema,
   type RunEvent,
 } from "@kiln/protocol";
-import {
-  BackendRegistry,
-  FakeBackend,
-  type BackendAgentDescriptor,
-} from "../../backend/index.js";
+import { BackendRegistry, FakeBackend, type BackendAgentDescriptor } from "../../backend/index.js";
 import { KilnStore, readNdjsonValidated, readYamlOptional } from "../../store/index.js";
-import {
-  KilndServer,
-  evaluateRunStallState,
-} from "../index.js";
+import { KilndServer, evaluateRunStallState } from "../index.js";
 
 const tempDirs: string[] = [];
 
@@ -277,7 +270,8 @@ describe("Track 5 [B12.1] Run heartbeat stall watchdog (Witness)", () => {
     );
     await waitUntil(
       () =>
-        (listRunSnapshots(store, card.id).find((r) => r.runDirName === "001-implement")?.events.length ?? 0) >= 1,
+        (listRunSnapshots(store, card.id).find((r) => r.runDirName === "001-implement")?.events
+          .length ?? 0) >= 1,
       "turn 1 thinking event emitted",
     );
 

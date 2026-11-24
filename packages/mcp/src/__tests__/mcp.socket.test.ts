@@ -147,8 +147,7 @@ describe("@kiln/mcp OS Unix Domain Socket smoke suite (requires unsandboxed conn
     try {
       const mcpCtx = await mcpClient.callTool({ name: "wb_get_context", arguments: {} });
       expect(mcpCtx.isError).toBeFalsy();
-      const ctxContent =
-        "content" in mcpCtx && Array.isArray(mcpCtx.content) ? mcpCtx.content : [];
+      const ctxContent = "content" in mcpCtx && Array.isArray(mcpCtx.content) ? mcpCtx.content : [];
       const textItem = ctxContent[0];
       expect(textItem?.type).toBe("text");
       if (textItem?.type === "text" && typeof textItem.text === "string") {
@@ -165,7 +164,9 @@ describe("@kiln/mcp OS Unix Domain Socket smoke suite (requires unsandboxed conn
       });
       expect(mcpForbidden.isError).toBe(true);
       const errContent =
-        "content" in mcpForbidden && Array.isArray(mcpForbidden.content) ? mcpForbidden.content : [];
+        "content" in mcpForbidden && Array.isArray(mcpForbidden.content)
+          ? mcpForbidden.content
+          : [];
       const errItem = errContent[0];
       expect(errItem?.type).toBe("text");
       if (errItem?.type === "text" && typeof errItem.text === "string") {

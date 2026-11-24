@@ -164,13 +164,7 @@ interface FilePathPillProps {
   onCopied: ((targetPath: string) => void) | null;
 }
 
-function FilePathPill({
-  label,
-  fullPath,
-  allowReveal,
-  onReveal,
-  onCopied,
-}: FilePathPillProps) {
+function FilePathPill({ label, fullPath, allowReveal, onReveal, onCopied }: FilePathPillProps) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async (): Promise<void> => {
@@ -285,9 +279,7 @@ function isSafeHttpUrl(raw: string): string | null {
   return null;
 }
 
-export function parseSafeFileUrl(
-  raw: string,
-): { path: string; lineSuffix?: string } | null {
+export function parseSafeFileUrl(raw: string): { path: string; lineSuffix?: string } | null {
   const trimmed = raw.trim();
   if (!/^file:\/\//i.test(trimmed)) return null;
 
@@ -299,9 +291,7 @@ export function parseSafeFileUrl(
     const frag = trimmed.slice(hashIdx + 1);
     const lineMatch = /^L(\d+)(?:-L?(\d+))?$/i.exec(frag);
     if (lineMatch) {
-      lineSuffix = lineMatch[2]
-        ? `:${lineMatch[1]}-${lineMatch[2]}`
-        : `:${lineMatch[1]}`;
+      lineSuffix = lineMatch[2] ? `:${lineMatch[1]}-${lineMatch[2]}` : `:${lineMatch[1]}`;
     }
   }
 
@@ -348,11 +338,7 @@ function isWordBoundaryChar(ch: string | undefined): boolean {
   return ch !== undefined && /[A-Za-z0-9]/.test(ch);
 }
 
-function renderInline(
-  text: string,
-  ctx: InlineRenderContext,
-  depth = 0,
-): ReactNode {
+function renderInline(text: string, ctx: InlineRenderContext, depth = 0): ReactNode {
   if (depth > 8 || text.length === 0) return text;
   const out: ReactNode[] = [];
   let buf = "";
@@ -450,10 +436,7 @@ function renderInline(
     ) {
       const marker = text.slice(i, i + 2);
       const closeIdx = text.indexOf(marker, i + 2);
-      if (
-        closeIdx > i + 2 &&
-        (ch !== "_" || !isWordBoundaryChar(text[closeIdx + 2]))
-      ) {
+      if (closeIdx > i + 2 && (ch !== "_" || !isWordBoundaryChar(text[closeIdx + 2]))) {
         flush();
         out.push(
           <strong key={out.length}>
@@ -471,9 +454,7 @@ function renderInline(
       if (closeIdx > i + 2) {
         flush();
         out.push(
-          <del key={out.length}>
-            {renderInline(text.slice(i + 2, closeIdx), ctx, depth + 1)}
-          </del>,
+          <del key={out.length}>{renderInline(text.slice(i + 2, closeIdx), ctx, depth + 1)}</del>,
         );
         i = closeIdx + 2;
         continue;
@@ -507,9 +488,7 @@ function renderInline(
       if (found > i + 1) {
         flush();
         out.push(
-          <em key={out.length}>
-            {renderInline(text.slice(i + 1, found), ctx, depth + 1)}
-          </em>,
+          <em key={out.length}>{renderInline(text.slice(i + 1, found), ctx, depth + 1)}</em>,
         );
         i = found + 1;
         continue;
@@ -822,10 +801,7 @@ function parseMarkdown(raw: string): MdBlock[] {
   return blocks;
 }
 
-function renderInlineMultiline(
-  text: string,
-  ctx: InlineRenderContext,
-): ReactNode {
+function renderInlineMultiline(text: string, ctx: InlineRenderContext): ReactNode {
   if (!text.includes("\n")) {
     return renderInline(text, ctx);
   }
@@ -842,14 +818,7 @@ function renderBlocks(blocks: MdBlock[], ctx: InlineRenderContext): ReactNode {
   return blocks.map((b, idx) => {
     switch (b.kind) {
       case "heading": {
-        const Tag =
-          b.level === 1
-            ? "h1"
-            : b.level === 2
-              ? "h2"
-              : b.level === 3
-                ? "h3"
-                : "h4";
+        const Tag = b.level === 1 ? "h1" : b.level === 2 ? "h2" : b.level === 3 ? "h3" : "h4";
         return <Tag key={idx}>{renderInline(b.text, ctx)}</Tag>;
       }
       case "code":
@@ -863,10 +832,7 @@ function renderBlocks(blocks: MdBlock[], ctx: InlineRenderContext): ReactNode {
         return (
           <ListTag key={idx}>
             {b.items.map((item, j) => (
-              <li
-                key={j}
-                className={item.checked !== undefined ? "md-task-item" : undefined}
-              >
+              <li key={j} className={item.checked !== undefined ? "md-task-item" : undefined}>
                 {item.checked !== undefined ? (
                   <span
                     className={`md-task-box ${item.checked ? "is-checked" : ""}`}
@@ -897,9 +863,7 @@ function renderBlocks(blocks: MdBlock[], ctx: InlineRenderContext): ReactNode {
                     <th
                       key={ci}
                       className={`col-${colSizes[ci] ?? "medium"}`}
-                      style={
-                        b.aligns[ci] ? { textAlign: b.aligns[ci]! } : undefined
-                      }
+                      style={b.aligns[ci] ? { textAlign: b.aligns[ci]! } : undefined}
                     >
                       {renderInline(h, ctx)}
                     </th>
@@ -913,9 +877,7 @@ function renderBlocks(blocks: MdBlock[], ctx: InlineRenderContext): ReactNode {
                       <td
                         key={ci}
                         className={`col-${colSizes[ci] ?? "medium"}`}
-                        style={
-                          b.aligns[ci] ? { textAlign: b.aligns[ci]! } : undefined
-                        }
+                        style={b.aligns[ci] ? { textAlign: b.aligns[ci]! } : undefined}
                       >
                         {renderInline(cell, ctx)}
                       </td>
@@ -949,27 +911,15 @@ export interface MarkdownContentProps {
   onReveal?: (targetPath: string) => void;
 }
 
-export function MarkdownContent({
-  text,
-  className,
-  allowReveal,
-  onReveal,
-}: MarkdownContentProps) {
+export function MarkdownContent({ text, className, allowReveal, onReveal }: MarkdownContentProps) {
   const kilnStore = useContext(StoreContext);
   const effectiveReveal =
     allowReveal ?? (kilnStore ? kilnStore.getState().authMode === "local" : false);
   const ctx: InlineRenderContext = {
     allowReveal: effectiveReveal,
-    onReveal:
-      onReveal ?? (kilnStore ? (p) => void kilnStore.revealLocalPath(p) : null),
-    onCopied: kilnStore
-      ? (p) => kilnStore.showToast(`已复制路径：${p}`)
-      : null,
+    onReveal: onReveal ?? (kilnStore ? (p) => void kilnStore.revealLocalPath(p) : null),
+    onCopied: kilnStore ? (p) => kilnStore.showToast(`已复制路径：${p}`) : null,
   };
   const blocks = parseMarkdown(text);
-  return (
-    <div className={className ? `md ${className}` : "md"}>
-      {renderBlocks(blocks, ctx)}
-    </div>
-  );
+  return <div className={className ? `md ${className}` : "md"}>{renderBlocks(blocks, ctx)}</div>;
 }

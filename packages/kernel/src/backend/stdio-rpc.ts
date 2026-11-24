@@ -459,17 +459,18 @@ export class StdioRpcProcess {
   }
 
   send(payload: Record<string, unknown>): void {
-    if (this.exited || !this.child.stdin || this.child.stdin.destroyed || this.child.stdin.writableEnded) {
+    if (
+      this.exited ||
+      !this.child.stdin ||
+      this.child.stdin.destroyed ||
+      this.child.stdin.writableEnded
+    ) {
       throw new Error("Cannot write to closed StdioRpcProcess stdin");
     }
     this.child.stdin.write(`${JSON.stringify(payload)}\n`);
   }
 
-  respond(
-    id: string | number,
-    result: unknown,
-    opts?: { includeJsonRpcField?: boolean },
-  ): void {
+  respond(id: string | number, result: unknown, opts?: { includeJsonRpcField?: boolean }): void {
     const includeJsonRpc = opts?.includeJsonRpcField ?? true;
     this.send({
       ...(includeJsonRpc ? { jsonrpc: "2.0" } : {}),
@@ -606,7 +607,11 @@ export class StdioRpcProcess {
     if (this.stdoutBytes > MAX_LINE_BYTES && !this.stdoutBuffer.includes("\n")) {
       this.stdoutBuffer = "";
       this.stdoutBytes = 0;
-      this.handleTermination(null, null, new Error("StdioRpcProcess stdout line exceeded 16 MiB cap"));
+      this.handleTermination(
+        null,
+        null,
+        new Error("StdioRpcProcess stdout line exceeded 16 MiB cap"),
+      );
       void terminateProcessTree(this.child.pid).catch(() => false);
       return;
     }
@@ -687,9 +692,7 @@ export class StdioRpcProcess {
       if (msg.error !== undefined) {
         const errObj = msg.error as { message?: unknown };
         const errMsg =
-          typeof errObj?.message === "string"
-            ? errObj.message
-            : JSON.stringify(msg.error);
+          typeof errObj?.message === "string" ? errObj.message : JSON.stringify(msg.error);
         entry.reject(new Error(errMsg));
       } else {
         entry.resolve(msg.result);

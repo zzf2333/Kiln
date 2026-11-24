@@ -2,10 +2,10 @@
   "name": "@kiln/mcp",
   "version": "0.0.5",
   "private": true,
-  "type": "module",
   "bin": {
     "kiln-mcp": "./dist/bin.js"
   },
+  "type": "module",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

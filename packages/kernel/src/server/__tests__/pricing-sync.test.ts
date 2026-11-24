@@ -227,9 +227,7 @@ describe("model pricing auto-sync (#4)", () => {
       JSON.stringify({
         providers: {
           magpie: {
-            models: [
-              { id: "group/work", cost: { input: 2, cacheRead: 0.1, output: 10 } },
-            ],
+            models: [{ id: "group/work", cost: { input: 2, cacheRead: 0.1, output: 10 } }],
           },
         },
       }),
@@ -256,9 +254,17 @@ describe("model pricing auto-sync (#4)", () => {
       schema_version: 1,
       heterogeneous_review: true,
       roles: {
-        intake: { agent: "antigravity", model: "gemini-pro-orchestrator-neon", allow_full_access_fallback: true },
+        intake: {
+          agent: "antigravity",
+          model: "gemini-pro-orchestrator-neon",
+          allow_full_access_fallback: true,
+        },
         worker: { agent: "pi", model: "magpie/group/work", allow_full_access_fallback: true },
-        reviewer: { agent: "antigravity", model: "gemini-4-neon-high", allow_full_access_fallback: false },
+        reviewer: {
+          agent: "antigravity",
+          model: "gemini-4-neon-high",
+          allow_full_access_fallback: false,
+        },
         verifier: { agent: "codex", model: "gpt-5.4", allow_full_access_fallback: false },
         triage: {
           agent: "antigravity",
@@ -344,7 +350,11 @@ describe("model pricing auto-sync (#4)", () => {
     expect(r1.pricing.models["gpt-5.4"]).toEqual({ in: 9.9, cached: 0.9, out: 39 });
     expect(r1.pricing.models["claude-opus-5-5-high"]).toEqual({ in: 4, cached: 0.2, out: 20 });
     expect(r1.pricing.models["gemini-4-neon-high"]).toEqual({ in: 3, cached: 0.15, out: 15 });
-    expect(r1.pricing.models["gemini-pro-orchestrator-neon"]).toEqual({ in: 3, cached: 0.15, out: 15 });
+    expect(r1.pricing.models["gemini-pro-orchestrator-neon"]).toEqual({
+      in: 3,
+      cached: 0.15,
+      out: 15,
+    });
     expect(r1.pricing.models["magpie/group/work"]).toEqual({ in: 2, cached: 0.1, out: 10 });
     expect(r1.pricing.models["gpt-6.2-astra"]).toEqual({ in: 8, cached: 0.4, out: 40 });
     expect(r1.pricing.models["stale-unused-gpt"]).toBeUndefined();
@@ -412,8 +422,12 @@ describe("model pricing auto-sync (#4)", () => {
     expect(r4.source).toBe("builtin");
     expect(r4.warning).toContain("内置离线基线");
     expect(r4.pricing.models["gpt-5.4"]).toEqual(BUILTIN_MODEL_PRICING["gpt-5.4"]);
-    expect(r4.pricing.models["claude-opus-5-5-high"]).toEqual(BUILTIN_MODEL_PRICING["claude-opus-5-5"]);
-    expect(r4.pricing.models["gemini-pro-orchestrator-neon"]).toEqual(BUILTIN_MODEL_PRICING["gemini-4-neon"]);
+    expect(r4.pricing.models["claude-opus-5-5-high"]).toEqual(
+      BUILTIN_MODEL_PRICING["claude-opus-5-5"],
+    );
+    expect(r4.pricing.models["gemini-pro-orchestrator-neon"]).toEqual(
+      BUILTIN_MODEL_PRICING["gemini-4-neon"],
+    );
   });
 
   it("handles POST /api/settings/pricing/sync HTTP endpoint and auto-syncs on PUT /api/settings/roles when cache exists", async () => {
@@ -470,14 +484,22 @@ describe("model pricing auto-sync (#4)", () => {
         schema_version: 1,
         heterogeneous_review: true,
         roles: {
-          worker: { agent: "antigravity", model: "claude-opus-5-5-high", allow_full_access_fallback: false },
+          worker: {
+            agent: "antigravity",
+            model: "claude-opus-5-5-high",
+            allow_full_access_fallback: false,
+          },
         },
       }),
     });
     expect(updateRolesRes.status).toBe(200);
     await new Promise((r) => setTimeout(r, 30));
     const refreshedPricing = server.store.readConfig("pricing");
-    expect(refreshedPricing?.models["claude-opus-5-5-high"]).toEqual({ in: 4, cached: 0.2, out: 20 });
+    expect(refreshedPricing?.models["claude-opus-5-5-high"]).toEqual({
+      in: 4,
+      cached: 0.2,
+      out: 20,
+    });
     expect(refreshedPricing?.models["gpt-5.4"]).toBeUndefined();
   });
 });

@@ -96,20 +96,28 @@ async function detectDefaultBranch(repoPath: string): Promise<string> {
   }
 
   try {
-    await execFileAsync("git", ["-C", repoPath, "show-ref", "--verify", "--quiet", "refs/heads/main"], {
-      env: buildSanitizedEnv(),
-      timeout: 5_000,
-    });
+    await execFileAsync(
+      "git",
+      ["-C", repoPath, "show-ref", "--verify", "--quiet", "refs/heads/main"],
+      {
+        env: buildSanitizedEnv(),
+        timeout: 5_000,
+      },
+    );
     return "main";
   } catch {
     // Check master fallback below.
   }
 
   try {
-    await execFileAsync("git", ["-C", repoPath, "show-ref", "--verify", "--quiet", "refs/heads/master"], {
-      env: buildSanitizedEnv(),
-      timeout: 5_000,
-    });
+    await execFileAsync(
+      "git",
+      ["-C", repoPath, "show-ref", "--verify", "--quiet", "refs/heads/master"],
+      {
+        env: buildSanitizedEnv(),
+        timeout: 5_000,
+      },
+    );
     return "master";
   } catch {
     return "main";
@@ -281,9 +289,7 @@ export async function inspectGitSpacePath(rawPath: string): Promise<InspectedSpa
     suggested_name: suggestedName,
     default_branch: defaultBranch,
     ...(defaultAcceptCmd !== undefined ? { default_accept_cmd: defaultAcceptCmd } : {}),
-    ...(suggestedAcceptEntry !== undefined
-      ? { suggested_accept_entry: suggestedAcceptEntry }
-      : {}),
+    ...(suggestedAcceptEntry !== undefined ? { suggested_accept_entry: suggestedAcceptEntry } : {}),
     copy_untracked: [],
     clone_deps: hasNodeModules ? ["node_modules"] : [],
   };
@@ -418,10 +424,7 @@ async function readGitBranchFast(gitDir: string | null): Promise<string> {
   return "main";
 }
 
-async function readRepoModifiedAt(
-  repoPath: string,
-  gitDir: string | null,
-): Promise<string> {
+async function readRepoModifiedAt(repoPath: string, gitDir: string | null): Promise<string> {
   let latestMs = 0;
   for (const candidate of [
     repoPath,
@@ -473,11 +476,7 @@ export async function discoverLocalGitRepos(
 
     const parent = path.dirname(canonicalRepo);
     const grandParent = path.dirname(parent);
-    if (
-      parent !== canonicalRepo &&
-      grandParent !== parent &&
-      parent !== canonicalHome
-    ) {
+    if (parent !== canonicalRepo && grandParent !== parent && parent !== canonicalHome) {
       rawCandidates.push(parent);
     }
   }
@@ -759,11 +758,10 @@ export async function pickLocalDirectory(
       }
 
       try {
-        const { stdout } = await execFn(
-          "kdialog",
-          ["--getexistingdirectory", os.homedir()],
-          { timeout: 120_000, encoding: "utf8" },
-        );
+        const { stdout } = await execFn("kdialog", ["--getexistingdirectory", os.homedir()], {
+          timeout: 120_000,
+          encoding: "utf8",
+        });
         const picked = normalizePickedPath(stdout);
         return picked.length === 0
           ? { ok: true, cancelled: true, path: null }
@@ -1041,9 +1039,7 @@ function isInsideDraftsDir(candidatePath: string, fsRoots: readonly string[]): b
     for (const root of fsRoots) {
       const normalizedCand = process.platform === "win32" ? cand.toLowerCase() : cand;
       const normalizedRoot = process.platform === "win32" ? root.toLowerCase() : root;
-      const prefix = normalizedRoot.endsWith(path.sep)
-        ? normalizedRoot
-        : normalizedRoot + path.sep;
+      const prefix = normalizedRoot.endsWith(path.sep) ? normalizedRoot : normalizedRoot + path.sep;
       if (normalizedCand === normalizedRoot || normalizedCand.startsWith(prefix)) {
         return true;
       }
@@ -1056,10 +1052,7 @@ function containsDraftsReference(text: string, textPrefixes: readonly string[]):
   const flags = process.platform === "win32" ? "i" : "";
   for (const prefix of textPrefixes) {
     const escaped = escapeRegExp(prefix);
-    const pattern = new RegExp(
-      `(?:^|[\\s"'\`=:(;|&])${escaped}(?:$|[/\\\\\\s"'\`;|&)])`,
-      flags,
-    );
+    const pattern = new RegExp(`(?:^|[\\s"'\`=:(;|&])${escaped}(?:$|[/\\\\\\s"'\`;|&)])`, flags);
     if (pattern.test(text)) {
       return true;
     }
@@ -1113,11 +1106,9 @@ export function validateCommitWorkflow(
     (node) => node.kind === "agent" && node.roster_role !== undefined,
   );
   if (usesRosterRoles) {
-    const rosterCheck = validateBlueprintAgainstRoster(
-      workflow,
-      roster?.roster ?? {},
-      { workspaceMode },
-    );
+    const rosterCheck = validateBlueprintAgainstRoster(workflow, roster?.roster ?? {}, {
+      workspaceMode,
+    });
     if (!rosterCheck.ok) {
       throw new ServerHttpError(400, {
         error: "invalid_workflow_roster",

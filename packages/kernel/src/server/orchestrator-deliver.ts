@@ -38,9 +38,7 @@ export type DeliverOutcome =
   | { status: "external"; detail?: string }
   | { status: "waiting"; decision: PendingDecision };
 
-export type DeliverHandler = (
-  ctx: DeliverContext,
-) => Promise<DeliverOutcome> | DeliverOutcome;
+export type DeliverHandler = (ctx: DeliverContext) => Promise<DeliverOutcome> | DeliverOutcome;
 
 export interface DeliverExecutionContext {
   store: KilnStore;
@@ -115,11 +113,7 @@ export function hasApprovedDeliverDecision(
   }
   for (let i = lastWaitingIdx + 1; i < events.length; i++) {
     const ev = events[i]!;
-    if (
-      ev.type === "decided" &&
-      ev.action === "resume" &&
-      ev.target_stage === "deliver"
-    ) {
+    if (ev.type === "decided" && ev.action === "resume" && ev.target_stage === "deliver") {
       return true;
     }
   }
@@ -164,10 +158,7 @@ export async function executeDeliverStage(
   });
 
   await ctx.runTrackedStageOperation(plan.taskId, deliverRunId, async (signal) => {
-    if (
-      signal.aborted ||
-      !ctx.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
-    ) {
+    if (signal.aborted || !ctx.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)) {
       ctx.syncCaffeinate();
       return;
     }
@@ -175,9 +166,7 @@ export async function executeDeliverStage(
     const card = ctx.store.readTaskCard(plan.taskId);
     const deliverPolicy = getDeliverCommandPolicy(card);
     const worktreePath =
-      card.workspace_mode === "git_worktree"
-        ? ctx.getGitWorktreeDir(plan.taskId)
-        : null;
+      card.workspace_mode === "git_worktree" ? ctx.getGitWorktreeDir(plan.taskId) : null;
     let deliverRef = worktreePath ?? ctx.store.paths.workspaceDir(plan.taskId);
     let hostAppliedWithVerify = false;
 
@@ -298,111 +287,107 @@ export async function executeDeliverStage(
         }
 
         hostAppliedWithVerify = true;
-        hostDeliverRef = applyRes.manifest.files
-          .map((f) => f.target_canonical_path)
-          .join(", ");
+        hostDeliverRef = applyRes.manifest.files.map((f) => f.target_canonical_path).join(", ");
         deliverRef = hostDeliverRef;
         ctx.completeTaskDelivery(plan.taskId, deliverRef, deliverGuard);
         return;
       }
 
-        if (existingManifest?.status === "applied") {
-          hostDeliverRef = existingManifest.files
-            .map((f) => f.target_canonical_path)
-            .join(", ");
-          hostAppliedWithVerify = true;
-        }
-
-        deliverRef = hostDeliverRef;
-        if (card.contract.deliver.mode !== "run_cmd") {
-          if (deliverPolicy.finalAcceptGate && !hostAppliedWithVerify) {
-            const events = ctx.store.readStateEvents(plan.taskId);
-            const approved =
-              hasApprovedDeliverDecision(events, "deliver_approval") ||
-              hasApprovedDeliverDecision(events, "host_scoped_approval");
-            if (!approved) {
-              const decision = PendingDecisionSchema.parse({
-                id: `dec-${randomUUID().slice(0, 8)}`,
-                task_id: plan.taskId,
-                contract_version: card.contract_version,
-                reason: "deliver_approval",
-                category: "deliver_approval",
-                question: `本机任务 "${card.title}" 待执行最终宿主机验收命令 \`${card.contract.accept_cmd}\`，是否批准执行？`,
-                options: [
-                  {
-                    id: "opt-approve-deliver",
-                    label: "批准执行交付与宿主机验收",
-                    action: "resume",
-                    target_stage: "deliver",
-                    recommended: true,
-                  },
-                  {
-                    id: "opt-reimplement",
-                    label: "退回实施阶段修改",
-                    action: "resume",
-                    target_stage: "implement",
-                    recommended: false,
-                  },
-                  {
-                    id: "opt-cancel",
-                    label: "取消任务",
-                    action: "cancel",
-                    recommended: false,
-                  },
-                ],
-                created_at: new Date().toISOString(),
-              });
-              ctx.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
-              return;
-            }
-
-            const finalCwd = fs.existsSync(ctx.store.paths.workspaceDir(plan.taskId))
-              ? ctx.store.paths.workspaceDir(plan.taskId)
-              : ctx.store.paths.taskDir(plan.taskId);
-            const finalAccept = await runIsolatedCommand(card.contract.accept_cmd, {
-              cwd: finalCwd,
-              signal,
-            });
-            if (
-              signal.aborted ||
-              !ctx.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
-            ) {
-              ctx.syncCaffeinate();
-              return;
-            }
-            if (finalAccept.exitCode !== 0 || finalAccept.timedOut) {
-              const decision = PendingDecisionSchema.parse({
-                id: `dec-${randomUUID().slice(0, 8)}`,
-                task_id: plan.taskId,
-                contract_version: card.contract_version,
-                reason: "deliver_final_accept_failed",
-                category: "deliver_approval",
-                question: `最终宿主机验收命令失败 (exit=${finalAccept.exitCode}, timedOut=${finalAccept.timedOut})，请选择处理方式。`,
-                options: [
-                  {
-                    id: "opt-reimplement",
-                    label: "退回实施阶段修复",
-                    action: "resume",
-                    target_stage: "implement",
-                    recommended: true,
-                  },
-                  {
-                    id: "opt-cancel",
-                    label: "取消任务",
-                    action: "cancel",
-                    recommended: false,
-                  },
-                ],
-                created_at: new Date().toISOString(),
-              });
-              ctx.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
-              return;
-            }
-          }
-          ctx.completeTaskDelivery(plan.taskId, deliverRef, deliverGuard);
-          return;
-        }
+      if (existingManifest?.status === "applied") {
+        hostDeliverRef = existingManifest.files.map((f) => f.target_canonical_path).join(", ");
+        hostAppliedWithVerify = true;
       }
+
+      deliverRef = hostDeliverRef;
+      if (card.contract.deliver.mode !== "run_cmd") {
+        if (deliverPolicy.finalAcceptGate && !hostAppliedWithVerify) {
+          const events = ctx.store.readStateEvents(plan.taskId);
+          const approved =
+            hasApprovedDeliverDecision(events, "deliver_approval") ||
+            hasApprovedDeliverDecision(events, "host_scoped_approval");
+          if (!approved) {
+            const decision = PendingDecisionSchema.parse({
+              id: `dec-${randomUUID().slice(0, 8)}`,
+              task_id: plan.taskId,
+              contract_version: card.contract_version,
+              reason: "deliver_approval",
+              category: "deliver_approval",
+              question: `本机任务 "${card.title}" 待执行最终宿主机验收命令 \`${card.contract.accept_cmd}\`，是否批准执行？`,
+              options: [
+                {
+                  id: "opt-approve-deliver",
+                  label: "批准执行交付与宿主机验收",
+                  action: "resume",
+                  target_stage: "deliver",
+                  recommended: true,
+                },
+                {
+                  id: "opt-reimplement",
+                  label: "退回实施阶段修改",
+                  action: "resume",
+                  target_stage: "implement",
+                  recommended: false,
+                },
+                {
+                  id: "opt-cancel",
+                  label: "取消任务",
+                  action: "cancel",
+                  recommended: false,
+                },
+              ],
+              created_at: new Date().toISOString(),
+            });
+            ctx.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
+            return;
+          }
+
+          const finalCwd = fs.existsSync(ctx.store.paths.workspaceDir(plan.taskId))
+            ? ctx.store.paths.workspaceDir(plan.taskId)
+            : ctx.store.paths.taskDir(plan.taskId);
+          const finalAccept = await runIsolatedCommand(card.contract.accept_cmd, {
+            cwd: finalCwd,
+            signal,
+          });
+          if (
+            signal.aborted ||
+            !ctx.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
+          ) {
+            ctx.syncCaffeinate();
+            return;
+          }
+          if (finalAccept.exitCode !== 0 || finalAccept.timedOut) {
+            const decision = PendingDecisionSchema.parse({
+              id: `dec-${randomUUID().slice(0, 8)}`,
+              task_id: plan.taskId,
+              contract_version: card.contract_version,
+              reason: "deliver_final_accept_failed",
+              category: "deliver_approval",
+              question: `最终宿主机验收命令失败 (exit=${finalAccept.exitCode}, timedOut=${finalAccept.timedOut})，请选择处理方式。`,
+              options: [
+                {
+                  id: "opt-reimplement",
+                  label: "退回实施阶段修复",
+                  action: "resume",
+                  target_stage: "implement",
+                  recommended: true,
+                },
+                {
+                  id: "opt-cancel",
+                  label: "取消任务",
+                  action: "cancel",
+                  recommended: false,
+                },
+              ],
+              created_at: new Date().toISOString(),
+            });
+            ctx.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
+            return;
+          }
+        }
+        ctx.completeTaskDelivery(plan.taskId, deliverRef, deliverGuard);
+        return;
+      }
+    }
 
     if (
       !ctx.deliverHandler &&
@@ -497,19 +482,13 @@ export async function executeDeliverStage(
       return;
     }
 
-    if (
-      card.workspace_mode === "git_worktree" &&
-      worktreePath &&
-      fs.existsSync(worktreePath)
-    ) {
+    if (card.workspace_mode === "git_worktree" && worktreePath && fs.existsSync(worktreePath)) {
       const space = ctx.store.readSpace(card.space);
       if (card.contract.deliver.mode === "merge_main" && space?.repo_path) {
         const statusOut = (
           await runGitCommand(["-C", worktreePath, "status", "--porcelain"])
         ).trim();
-        const headCommit = (
-          await runGitCommand(["-C", worktreePath, "rev-parse", "HEAD"])
-        ).trim();
+        const headCommit = (await runGitCommand(["-C", worktreePath, "rev-parse", "HEAD"])).trim();
         if (
           signal.aborted ||
           !ctx.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
@@ -556,167 +535,12 @@ export async function executeDeliverStage(
         }
 
         const baseRef = space.default_branch;
-        const mergeOutcome = await ctx.withSpaceMergeLock(space.repo_path, async (): Promise<{
-          handled: boolean;
-          deliverRef?: string;
-        }> => {
-          if (
-            signal.aborted ||
-            !ctx.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
-          ) {
-            ctx.syncCaffeinate();
-            return { handled: true };
-          }
-
-          const aheadInLock = Number(
-            (
-              await runGitCommand([
-                "-C",
-                space.repo_path!,
-                "rev-list",
-                "--count",
-                `${baseRef}..kiln/${plan.taskId}`,
-              ]).catch(() => "0")
-            ).trim(),
-          );
-          if (aheadInLock <= 0) {
-            return { handled: false };
-          }
-
-          const currentMainBranch = (
-            await runGitCommand([
-              "-C",
-              space.repo_path!,
-              "rev-parse",
-              "--abbrev-ref",
-              "HEAD",
-            ]).catch(() => "")
-          ).trim();
-          const mainStatus = (
-            await runGitCommand(["-C", space.repo_path!, "status", "--porcelain"])
-          ).trim();
-          if (
-            signal.aborted ||
-            !ctx.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
-          ) {
-            ctx.syncCaffeinate();
-            return { handled: true };
-          }
-          if (mainStatus.length > 0 || currentMainBranch !== baseRef) {
-            const reasons: string[] = [];
-            if (mainStatus.length > 0) {
-              reasons.push("主仓库存在未提交改动");
-            }
-            if (currentMainBranch !== baseRef) {
-              reasons.push(
-                `主仓库当前位于 "${currentMainBranch || "unknown"}" 而非 "${baseRef}"`,
-              );
-            }
-            const decision = PendingDecisionSchema.parse({
-              id: `dec-${randomUUID().slice(0, 8)}`,
-              task_id: plan.taskId,
-              contract_version: card.contract_version,
-              reason: "main_repo_not_ready_for_merge",
-              category: "deliver_merge_blocked",
-              question: `分支 kiln/${plan.taskId} 尚有 ${aheadInLock} 个提交未合并至 ${baseRef}，但${reasons.join("且")}，已保留 worktree 等待处理。`,
-              options: [
-                {
-                  id: "opt-retry-deliver",
-                  label: "主仓库就绪后重试合并主分支",
-                  action: "resume",
-                  target_stage: "deliver",
-                  recommended: true,
-                },
-                {
-                  id: "opt-finish",
-                  label: "跳过合并主分支直接标记完成（保留工作树）",
-                  action: "finish",
-                  recommended: false,
-                },
-              ],
-              created_at: new Date().toISOString(),
-            });
-            ctx.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
-            return { handled: true };
-          }
-
-          const handleMergeConflict = async (msg: string): Promise<{ handled: true }> => {
-            if (ctx.canRunOnConflictDeliverer(plan)) {
-              await ctx.dispatchOnConflictDeliverer(plan, {
-                baseRef,
-                mergeError: msg,
-              });
-              return { handled: true };
-            }
-            const priorAutoReworks = countRefineryAutoReworks(
-              ctx.store.readStateEvents(plan.taskId),
-              card.contract_version,
-            );
-            if (priorAutoReworks < MAX_REFINERY_AUTO_REWORKS) {
-              await ctx.reworkDeliverFailure(
-                plan,
-                {
-                  steerId: `refinery-conflict-${randomUUID().slice(0, 8)}`,
-                  message: `[Refinery 串行合并冲突] 分支 kiln/${plan.taskId} 在基于最新 ${baseRef} 变基或合入时发生冲突：${msg}。请在工作树合并最新 ${baseRef} 解决冲突并重跑验收后重新交付。`,
-                },
-                deliverGuard,
-              );
-              return { handled: true };
-            }
-            const decision = PendingDecisionSchema.parse({
-              id: `dec-${randomUUID().slice(0, 8)}`,
-              task_id: plan.taskId,
-              contract_version: card.contract_version,
-              reason: "merge_conflict",
-              category: "deliver_merge_conflict",
-              question: `本地合并分支 kiln/${plan.taskId} 到 ${baseRef} 时冲突（${msg}），已达自动返工上限，请人工处理或选择继续方式。`,
-              options: [
-                {
-                  id: "opt-reimplement",
-                  label: "退回实施解决冲突",
-                  action: "resume",
-                  target_stage: "implement",
-                  recommended: true,
-                },
-                {
-                  id: "opt-finish",
-                  label: "保留工作区分支并直接标记完成",
-                  action: "finish",
-                  recommended: false,
-                },
-              ],
-              created_at: new Date().toISOString(),
-            });
-            ctx.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
-            return { handled: true };
-          };
-
-          const behindCount = Number(
-            (
-              await runGitCommand([
-                "-C",
-                space.repo_path!,
-                "rev-list",
-                "--count",
-                `kiln/${plan.taskId}..${baseRef}`,
-              ]).catch(() => "0")
-            ).trim(),
-          );
-
-          if (behindCount > 0) {
-            try {
-              await runGitCommand(["-C", worktreePath, "rebase", baseRef]);
-            } catch (rebaseErr) {
-              await runGitCommand(["-C", worktreePath, "rebase", "--abort"]).catch(() => {});
-              const msg =
-                rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
-              return await handleMergeConflict(msg);
-            }
-
-            const postAccept = await runIsolatedCommand(card.contract.accept_cmd, {
-              cwd: worktreePath,
-              signal,
-            });
+        const mergeOutcome = await ctx.withSpaceMergeLock(
+          space.repo_path,
+          async (): Promise<{
+            handled: boolean;
+            deliverRef?: string;
+          }> => {
             if (
               signal.aborted ||
               !ctx.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
@@ -724,7 +548,87 @@ export async function executeDeliverStage(
               ctx.syncCaffeinate();
               return { handled: true };
             }
-            if (postAccept.exitCode !== 0 || postAccept.timedOut) {
+
+            const aheadInLock = Number(
+              (
+                await runGitCommand([
+                  "-C",
+                  space.repo_path!,
+                  "rev-list",
+                  "--count",
+                  `${baseRef}..kiln/${plan.taskId}`,
+                ]).catch(() => "0")
+              ).trim(),
+            );
+            if (aheadInLock <= 0) {
+              return { handled: false };
+            }
+
+            const currentMainBranch = (
+              await runGitCommand([
+                "-C",
+                space.repo_path!,
+                "rev-parse",
+                "--abbrev-ref",
+                "HEAD",
+              ]).catch(() => "")
+            ).trim();
+            const mainStatus = (
+              await runGitCommand(["-C", space.repo_path!, "status", "--porcelain"])
+            ).trim();
+            if (
+              signal.aborted ||
+              !ctx.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
+            ) {
+              ctx.syncCaffeinate();
+              return { handled: true };
+            }
+            if (mainStatus.length > 0 || currentMainBranch !== baseRef) {
+              const reasons: string[] = [];
+              if (mainStatus.length > 0) {
+                reasons.push("主仓库存在未提交改动");
+              }
+              if (currentMainBranch !== baseRef) {
+                reasons.push(
+                  `主仓库当前位于 "${currentMainBranch || "unknown"}" 而非 "${baseRef}"`,
+                );
+              }
+              const decision = PendingDecisionSchema.parse({
+                id: `dec-${randomUUID().slice(0, 8)}`,
+                task_id: plan.taskId,
+                contract_version: card.contract_version,
+                reason: "main_repo_not_ready_for_merge",
+                category: "deliver_merge_blocked",
+                question: `分支 kiln/${plan.taskId} 尚有 ${aheadInLock} 个提交未合并至 ${baseRef}，但${reasons.join("且")}，已保留 worktree 等待处理。`,
+                options: [
+                  {
+                    id: "opt-retry-deliver",
+                    label: "主仓库就绪后重试合并主分支",
+                    action: "resume",
+                    target_stage: "deliver",
+                    recommended: true,
+                  },
+                  {
+                    id: "opt-finish",
+                    label: "跳过合并主分支直接标记完成（保留工作树）",
+                    action: "finish",
+                    recommended: false,
+                  },
+                ],
+                created_at: new Date().toISOString(),
+              });
+              ctx.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
+              return { handled: true };
+            }
+
+            const handleMergeConflict = async (msg: string): Promise<{ handled: true }> => {
+              if (ctx.canRunOnConflictDeliverer(plan)) {
+                await ctx.dispatchOnConflictDeliverer(plan, {
+                  baseRef,
+                  mergeError: msg,
+                });
+                return { handled: true };
+              }
               const priorAutoReworks = countRefineryAutoReworks(
                 ctx.store.readStateEvents(plan.taskId),
                 card.contract_version,
@@ -733,8 +637,8 @@ export async function executeDeliverStage(
                 await ctx.reworkDeliverFailure(
                   plan,
                   {
-                    steerId: `refinery-accept-${randomUUID().slice(0, 8)}`,
-                    message: `[Refinery 合并前联合验收失败] 分支 kiln/${plan.taskId} 已成功 rebase 到最新 ${baseRef}，但重跑验收命令 \`${card.contract.accept_cmd}\` 失败 (exit=${postAccept.exitCode}, timedOut=${postAccept.timedOut})。请结合主干最新代码修复回归问题并重新通过验收。`,
+                    steerId: `refinery-conflict-${randomUUID().slice(0, 8)}`,
+                    message: `[Refinery 串行合并冲突] 分支 kiln/${plan.taskId} 在基于最新 ${baseRef} 变基或合入时发生冲突：${msg}。请在工作树合并最新 ${baseRef} 解决冲突并重跑验收后重新交付。`,
                   },
                   deliverGuard,
                 );
@@ -744,21 +648,21 @@ export async function executeDeliverStage(
                 id: `dec-${randomUUID().slice(0, 8)}`,
                 task_id: plan.taskId,
                 contract_version: card.contract_version,
-                reason: "refinery_accept_failed",
-                category: "deliver_merge_blocked",
-                question: `分支 kiln/${plan.taskId} 在 rebase 至最新 ${baseRef} 后重跑验收命令 \`${card.contract.accept_cmd}\` 仍然失败 (exit=${postAccept.exitCode}, timedOut=${postAccept.timedOut})，主干未被写入，请选择后续操作。`,
+                reason: "merge_conflict",
+                category: "deliver_merge_conflict",
+                question: `本地合并分支 kiln/${plan.taskId} 到 ${baseRef} 时冲突（${msg}），已达自动返工上限，请人工处理或选择继续方式。`,
                 options: [
                   {
                     id: "opt-reimplement",
-                    label: "退回实施阶段修复",
+                    label: "退回实施解决冲突",
                     action: "resume",
                     target_stage: "implement",
                     recommended: true,
                   },
                   {
-                    id: "opt-cancel",
-                    label: "取消任务",
-                    action: "cancel",
+                    id: "opt-finish",
+                    label: "保留工作区分支并直接标记完成",
+                    action: "finish",
                     recommended: false,
                   },
                 ],
@@ -766,40 +670,114 @@ export async function executeDeliverStage(
               });
               ctx.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
               return { handled: true };
-            }
-          }
+            };
 
-          try {
-            try {
-              await runGitCommand([
-                "-C",
-                space.repo_path!,
-                "merge",
-                "--ff-only",
-                `kiln/${plan.taskId}`,
-              ]);
-            } catch {
-              await runGitCommand([
-                "-C",
-                space.repo_path!,
-                "merge",
-                "--no-edit",
-                `kiln/${plan.taskId}`,
-              ]);
-            }
-            const nextRef = (
-              await runGitCommand(["-C", space.repo_path!, "rev-parse", "HEAD"])
-            ).trim();
-            return { handled: false, deliverRef: nextRef };
-          } catch (mergeErr) {
-            await runGitCommand(["-C", space.repo_path!, "merge", "--abort"]).catch(
-              () => {},
+            const behindCount = Number(
+              (
+                await runGitCommand([
+                  "-C",
+                  space.repo_path!,
+                  "rev-list",
+                  "--count",
+                  `kiln/${plan.taskId}..${baseRef}`,
+                ]).catch(() => "0")
+              ).trim(),
             );
-            const msg =
-              mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
-            return await handleMergeConflict(msg);
-          }
-        });
+
+            if (behindCount > 0) {
+              try {
+                await runGitCommand(["-C", worktreePath, "rebase", baseRef]);
+              } catch (rebaseErr) {
+                await runGitCommand(["-C", worktreePath, "rebase", "--abort"]).catch(() => {});
+                const msg = rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
+                return await handleMergeConflict(msg);
+              }
+
+              const postAccept = await runIsolatedCommand(card.contract.accept_cmd, {
+                cwd: worktreePath,
+                signal,
+              });
+              if (
+                signal.aborted ||
+                !ctx.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
+              ) {
+                ctx.syncCaffeinate();
+                return { handled: true };
+              }
+              if (postAccept.exitCode !== 0 || postAccept.timedOut) {
+                const priorAutoReworks = countRefineryAutoReworks(
+                  ctx.store.readStateEvents(plan.taskId),
+                  card.contract_version,
+                );
+                if (priorAutoReworks < MAX_REFINERY_AUTO_REWORKS) {
+                  await ctx.reworkDeliverFailure(
+                    plan,
+                    {
+                      steerId: `refinery-accept-${randomUUID().slice(0, 8)}`,
+                      message: `[Refinery 合并前联合验收失败] 分支 kiln/${plan.taskId} 已成功 rebase 到最新 ${baseRef}，但重跑验收命令 \`${card.contract.accept_cmd}\` 失败 (exit=${postAccept.exitCode}, timedOut=${postAccept.timedOut})。请结合主干最新代码修复回归问题并重新通过验收。`,
+                    },
+                    deliverGuard,
+                  );
+                  return { handled: true };
+                }
+                const decision = PendingDecisionSchema.parse({
+                  id: `dec-${randomUUID().slice(0, 8)}`,
+                  task_id: plan.taskId,
+                  contract_version: card.contract_version,
+                  reason: "refinery_accept_failed",
+                  category: "deliver_merge_blocked",
+                  question: `分支 kiln/${plan.taskId} 在 rebase 至最新 ${baseRef} 后重跑验收命令 \`${card.contract.accept_cmd}\` 仍然失败 (exit=${postAccept.exitCode}, timedOut=${postAccept.timedOut})，主干未被写入，请选择后续操作。`,
+                  options: [
+                    {
+                      id: "opt-reimplement",
+                      label: "退回实施阶段修复",
+                      action: "resume",
+                      target_stage: "implement",
+                      recommended: true,
+                    },
+                    {
+                      id: "opt-cancel",
+                      label: "取消任务",
+                      action: "cancel",
+                      recommended: false,
+                    },
+                  ],
+                  created_at: new Date().toISOString(),
+                });
+                ctx.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
+                return { handled: true };
+              }
+            }
+
+            try {
+              try {
+                await runGitCommand([
+                  "-C",
+                  space.repo_path!,
+                  "merge",
+                  "--ff-only",
+                  `kiln/${plan.taskId}`,
+                ]);
+              } catch {
+                await runGitCommand([
+                  "-C",
+                  space.repo_path!,
+                  "merge",
+                  "--no-edit",
+                  `kiln/${plan.taskId}`,
+                ]);
+              }
+              const nextRef = (
+                await runGitCommand(["-C", space.repo_path!, "rev-parse", "HEAD"])
+              ).trim();
+              return { handled: false, deliverRef: nextRef };
+            } catch (mergeErr) {
+              await runGitCommand(["-C", space.repo_path!, "merge", "--abort"]).catch(() => {});
+              const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
+              return await handleMergeConflict(msg);
+            }
+          },
+        );
 
         if (mergeOutcome.handled) {
           return;
@@ -809,10 +787,7 @@ export async function executeDeliverStage(
         }
       } else if (card.contract.deliver.mode === "open_pr") {
         const events = ctx.store.readStateEvents(plan.taskId);
-        const approvedPr = hasApprovedDeliverDecision(
-          events,
-          "external_action_approval",
-        );
+        const approvedPr = hasApprovedDeliverDecision(events, "external_action_approval");
         if (!approvedPr && card.contract.external_actions === "ask") {
           const decision = PendingDecisionSchema.parse({
             id: `dec-${randomUUID().slice(0, 8)}`,
@@ -843,19 +818,12 @@ export async function executeDeliverStage(
       }
     }
 
-    if (
-      card.contract.deliver.mode === "run_cmd" &&
-      card.contract.deliver.cmd
-    ) {
+    if (card.contract.deliver.mode === "run_cmd" && card.contract.deliver.cmd) {
       const cmdCwd =
         card.workspace_mode === "git_worktree"
           ? worktreePath
           : ctx.store.paths.workspaceDir(plan.taskId);
-      if (
-        !cmdCwd ||
-        !fs.existsSync(cmdCwd) ||
-        !fs.statSync(cmdCwd).isDirectory()
-      ) {
+      if (!cmdCwd || !fs.existsSync(cmdCwd) || !fs.statSync(cmdCwd).isDirectory()) {
         throw new Error(
           `Delivery command working directory does not exist for task "${plan.taskId}": ${String(cmdCwd)}`,
         );
@@ -954,11 +922,7 @@ export async function executeDeliverStage(
       }
     }
 
-    const delivered = ctx.completeTaskDelivery(
-      plan.taskId,
-      deliverRef,
-      deliverGuard,
-    );
+    const delivered = ctx.completeTaskDelivery(plan.taskId, deliverRef, deliverGuard);
 
     if (delivered && card.workspace_mode === "git_worktree" && worktreePath) {
       const space = ctx.store.readSpace(card.space);

@@ -144,9 +144,7 @@ function groupTimelineSegments(messages: ReadonlyArray<ChatMessage>): TimelineSe
   };
 
   for (const m of messages) {
-    const who =
-      m.who ??
-      (m.role === "user" ? "me" : m.role === "tool" ? "tool" : "agent");
+    const who = m.who ?? (m.role === "user" ? "me" : m.role === "tool" ? "tool" : "agent");
     if (who === "tool") {
       toolBuf.push(m);
       continue;
@@ -170,13 +168,7 @@ function summarizeWorkLog(steps: ReadonlyArray<ParsedToolStep>, rawCount: number
   return `探索与操作 · ${rawCount} 步${breakdown}`;
 }
 
-function WorkLogGroupCard({
-  steps,
-  rawCount,
-}: {
-  steps: ParsedToolStep[];
-  rawCount: number;
-}) {
+function WorkLogGroupCard({ steps, rawCount }: { steps: ParsedToolStep[]; rawCount: number }) {
   const [expanded, setExpanded] = useState(false);
   const [openStepIds, setOpenStepIds] = useState<Record<string, boolean>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -291,9 +283,7 @@ function AgentMessageCard({
           <span className="msg-role-dot" aria-hidden="true" />
           <span className="msg-who">{roleLabel}</span>
           <span className="msg-agent mono">{msg.name ?? defaultAgentName}</span>
-          {msg.at ? (
-            <span className="msg-time mono">{fmtTime(msg.at)}</span>
-          ) : null}
+          {msg.at ? <span className="msg-time mono">{fmtTime(msg.at)}</span> : null}
         </div>
         <button
           type="button"
@@ -366,13 +356,7 @@ export function ChatTimeline({
 
           {segments.map((seg, idx) => {
             if (seg.kind === "worklog") {
-              return (
-                <WorkLogGroupCard
-                  key={seg.key}
-                  steps={seg.steps}
-                  rawCount={seg.rawCount}
-                />
-              );
+              return <WorkLogGroupCard key={seg.key} steps={seg.steps} rawCount={seg.rawCount} />;
             }
             if (seg.who === "me") {
               return (
@@ -407,11 +391,7 @@ export function ChatTimeline({
                   ) : null}
                 </div>
                 {progressLogs.length > 0 ? (
-                  <ul
-                    className="worklog-rail"
-                    aria-label="立项探索进度"
-                    ref={liveRailRef}
-                  >
+                  <ul className="worklog-rail" aria-label="立项探索进度" ref={liveRailRef}>
                     {progressLogs.map((step, idx) => (
                       <li
                         key={`${step.at}-${idx}`}
@@ -438,11 +418,7 @@ export function ChatTimeline({
       </div>
 
       {showJumpBottom ? (
-        <button
-          type="button"
-          className="scroll-bottom-btn"
-          onClick={() => scrollToBottom(true)}
-        >
+        <button type="button" className="scroll-bottom-btn" onClick={() => scrollToBottom(true)}>
           ↓ 回到底部
         </button>
       ) : null}

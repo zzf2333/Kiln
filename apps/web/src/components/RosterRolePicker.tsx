@@ -66,9 +66,7 @@ export function RosterRolePicker({
 
   const currentEntry = selectedRoleId ? roster.roster[selectedRoleId] : undefined;
   const triggerProvider =
-    currentEntry?.mode === "kernel"
-      ? "kernel"
-      : currentEntry?.primary?.provider ?? "pm";
+    currentEntry?.mode === "kernel" ? "kernel" : (currentEntry?.primary?.provider ?? "pm");
 
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
@@ -117,9 +115,7 @@ export function RosterRolePicker({
                 const isSelected = id === selectedRoleId;
                 const permMeta = PERM_BADGE[entry.perm];
                 const provId =
-                  entry.mode === "kernel"
-                    ? "kernel"
-                    : entry.primary?.provider ?? "pm";
+                  entry.mode === "kernel" ? "kernel" : (entry.primary?.provider ?? "pm");
                 const provStatus = entry.primary
                   ? providerStatuses.find((p) => p.provider_id === entry.primary?.provider)
                   : undefined;
