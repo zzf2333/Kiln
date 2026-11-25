@@ -2141,22 +2141,26 @@
     border: 1px solid var(--line);
     border-radius: 12px;
     padding: 10px 14px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
   }
   .msg-me-acts {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    z-index: 2;
     display: flex;
     align-items: center;
     justify-content: flex-end;
     gap: 4px;
-    margin-top: 2px;
+    padding-top: 4px;
+    white-space: nowrap;
     opacity: 0;
+    pointer-events: none;
     transition: opacity 0.14s var(--ease);
   }
   .msg.me:hover .msg-me-acts,
   .msg.me:focus-within .msg-me-acts {
     opacity: 1;
+    pointer-events: auto;
   }
   .msg-me-btn {
     display: inline-flex;
