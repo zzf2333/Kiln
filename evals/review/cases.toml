@@ -71,3 +71,11 @@ fix = ["a7a0b8804ec47371dbd35e3a405b001fadd26427"]
 risk = "high"
 files = ["packages/kernel/src/server/mcp-rpc.ts"]
 defect = "handleAskDecision 未禁止执行阶段 Agent 提交 action='return_external' 的待决选项，导致用户误采纳后将未完成任务切入 external 且缺乏恢复/完结出口而永久停滞。"
+
+[[cases]]
+id = "R10"
+intro = "c1ad56288d8413a7fdcb2ca64cb83ffc755bc23b"
+fix = ["b00b46fc527fbc0ee92553a37f3417020207dddd"]
+risk = "high"
+files = ["packages/kernel/src/server/orchestrator.ts"]
+defect = "全局每日或每月 USD 硬预算熔断在构造 budget_exceeded 待决选项时写入了不在 DecisionActionSchema 枚举内的 action='pause'，导致 PendingDecisionSchema.parse 抛错，使本应挂起在 budget_exceeded 的任务退化为 dispatch_error 并丢失预算恢复选项。"
