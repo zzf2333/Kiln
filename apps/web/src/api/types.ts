@@ -283,6 +283,7 @@ export interface BootstrapResponse {
   pricing: PricingConfig | null;
   providers?: ProviderRuntimeStatus[];
   usage: UsageSnapshot;
+  todayUsage?: UsageSnapshot;
   budget?: GlobalBudgetStatus;
   runningCount: number;
   mergeQueue?: MergeQueueEntry[];

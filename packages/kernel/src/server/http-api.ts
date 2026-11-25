@@ -1611,7 +1611,22 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     });
 
     const allTurns = store.listUsageTurns();
+    const now = new Date();
+    const todayStartMs = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+      0,
+      0,
+      0,
+      0,
+    ).getTime();
+    const todayTurns = allTurns.filter((turn) => {
+      const ts = Date.parse(turn.recorded_at);
+      return Number.isFinite(ts) && ts >= todayStartMs;
+    });
     const usage = computeUsageSnapshot(allTurns, pricing);
+    const todayUsage = computeUsageSnapshot(todayTurns, pricing);
     const liveSnap = rateTracker ? rateTracker.snapshot() : { tokPerSec: 0, rates: {} };
 
     return c.json({
@@ -1646,6 +1661,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       limits,
       pricing,
       usage,
+      todayUsage,
       budget: computeGlobalBudgetStatus(store),
       runningCount: countRunningLeafTasks(store),
       mergeQueue: computeMergeQueueSnapshot(store),

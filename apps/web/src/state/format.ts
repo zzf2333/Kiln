@@ -285,3 +285,66 @@ export function isSafeHttpOrPaseoUrl(url: string | null | undefined): url is str
     return false;
   }
 }
+
+function fmtLocalMonthDayTime(date: Date): string {
+  const mo = String(date.getMonth() + 1).padStart(2, "0");
+  const da = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  return `${mo}-${da} ${hh}:${mm}`;
+}
+
+export function fmtResetLocalExact(raw: string | null | undefined): string {
+  if (!raw) return "";
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  if (!trimmed.includes("T") && !trimmed.includes("-")) {
+    return trimmed;
+  }
+  const ts = Date.parse(trimmed);
+  if (!Number.isFinite(ts)) return trimmed;
+  return fmtLocalMonthDayTime(new Date(ts));
+}
+
+export function fmtResetShort(raw: string | null | undefined, nowMs = Date.now()): string {
+  if (!raw) return "";
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  if (!trimmed.includes("T") && !trimmed.includes("-")) {
+    return `${trimmed} 重置`;
+  }
+  const ts = Date.parse(trimmed);
+  if (!Number.isFinite(ts)) return trimmed;
+  const diffMs = ts - nowMs;
+  if (diffMs <= 0) return "即将重置";
+  const mins = Math.max(1, Math.round(diffMs / 60_000));
+  if (mins < 60) return `${mins}m后重置`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h后重置`;
+  const nowDate = new Date(nowMs);
+  const targetDate = new Date(ts);
+  const tomorrow = new Date(nowDate.getFullYear(), nowDate.getMonth(), nowDate.getDate() + 1);
+  if (
+    targetDate.getFullYear() === tomorrow.getFullYear() &&
+    targetDate.getMonth() === tomorrow.getMonth() &&
+    targetDate.getDate() === tomorrow.getDate()
+  ) {
+    const hh = String(targetDate.getHours()).padStart(2, "0");
+    const mm = String(targetDate.getMinutes()).padStart(2, "0");
+    return `明 ${hh}:${mm}`;
+  }
+  return fmtLocalMonthDayTime(targetDate);
+}
+
+export function fmtCooldownShort(raw: string | null | undefined, nowMs = Date.now()): string {
+  if (!raw) return "冷却中";
+  const ts = Date.parse(raw.trim());
+  if (!Number.isFinite(ts)) return "冷却中";
+  const diffMs = ts - nowMs;
+  if (diffMs <= 0) return "即将恢复";
+  const mins = Math.max(1, Math.round(diffMs / 60_000));
+  if (mins < 60) return `冷却 ${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `冷却 ${hrs}h`;
+  return `冷却 ${Math.floor(hrs / 24)}d`;
+}

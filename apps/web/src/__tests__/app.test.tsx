@@ -4844,4 +4844,122 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     expect(flatSteps.some((s) => s.kind === "agent" && s.stage === "plan")).toBe(true);
     expect(flatSteps.some((s) => s.kind === "agent" && s.stage === "review")).toBe(true);
   });
+
+  it("UsagePanel renders true todayUsage, normalizes 7d window + local reset text, and supports L2/L3 popovers", async () => {
+    const resetAtIso = new Date(Date.now() + 3 * 3_600_000).toISOString();
+    fetchMock.mockImplementation(async () =>
+      jsonResponse(
+        makeBaseBootstrap({
+          usage: {
+            inputTokens: 2_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 200_000,
+            totalTokens: 2_200_000,
+            costUsd: 99.0,
+            byAgent: {
+              codex: {
+                inputTokens: 2_000_000,
+                cachedInputTokens: 0,
+                outputTokens: 200_000,
+                totalTokens: 2_200_000,
+                costUsd: 99.0,
+              },
+            },
+            byModel: {},
+          },
+          todayUsage: {
+            inputTokens: 100_000,
+            cachedInputTokens: 50_000,
+            outputTokens: 10_000,
+            totalTokens: 110_000,
+            costUsd: 0.42,
+            byAgent: {
+              codex: {
+                inputTokens: 100_000,
+                cachedInputTokens: 50_000,
+                outputTokens: 10_000,
+                totalTokens: 110_000,
+                costUsd: 0.42,
+              },
+            },
+            byModel: {
+              "gpt-5.4": {
+                inputTokens: 100_000,
+                cachedInputTokens: 50_000,
+                outputTokens: 10_000,
+                totalTokens: 110_000,
+                costUsd: 0.42,
+              },
+            },
+            byAgentModel: {
+              codex: {
+                "gpt-5.4": {
+                  inputTokens: 100_000,
+                  cachedInputTokens: 50_000,
+                  outputTokens: 10_000,
+                  totalTokens: 110_000,
+                  costUsd: 0.42,
+                },
+              },
+            },
+          },
+          providers: [
+            {
+              provider_id: "codex",
+              label: "Codex CLI",
+              adapter: "codex_app_server",
+              status: "ready",
+              native_quota: {
+                source: "codex",
+                used_percent: 18,
+                window_duration_mins: 10080,
+                resets_at: resetAtIso,
+                plan_type: "plus",
+              },
+            },
+            {
+              provider_id: "pi",
+              label: "Pi Agent",
+              adapter: "pi_rpc",
+              status: "ready",
+            },
+          ],
+          liveRates: { rates: { "t-live": 86 }, totals: { costUsd: 99.0, tokPerSec: 86 } },
+        }),
+      ),
+    );
+
+    const { container } = render(<App />);
+
+    await waitFor(() => {
+      // Uses todayUsage ($0.17 at pricing table 1.25/0.125/10 = 50k*1.25/1M + 50k*0.125/1M + 10k*10/1M = 0.0625 + 0.00625 + 0.1 = $0.17)
+      expect(document.getElementById("upTotalCost")?.textContent).toBe("$0.17");
+    });
+
+    // 10080 mins renders as 7天窗口 and resets_at does not leak raw ISO timestamp
+    expect(container.querySelector('[data-up-qtext="codex"]')?.textContent).toBe("7天窗口");
+    const resetText = container.querySelector('[data-up-reset="codex"]')?.textContent ?? "";
+    expect(resetText).toContain("后重置");
+    expect(resetText).not.toContain("T");
+
+    // Toggle L2 monitor popover
+    const toggleBtn = container.querySelector('[data-up-pop-toggle="true"]') as HTMLButtonElement;
+    expect(toggleBtn).toBeTruthy();
+    fireEvent.click(toggleBtn);
+
+    const l2Dialog = await screen.findByRole("dialog", { name: "今日实时监控浮层" });
+    expect(l2Dialog.textContent).toContain("运行中 Agent 与模型");
+    expect(l2Dialog.textContent).toContain("Pi Agent");
+
+    // Open L3 detail popover for active running task (from makeBaseBootstrap) or Codex provider
+    const codexRow = Array.from(l2Dialog.querySelectorAll(".up-pop-row")).find((el) =>
+      el.textContent?.includes("Codex CLI"),
+    ) as HTMLElement;
+    expect(codexRow).toBeTruthy();
+    fireEvent.mouseEnter(codexRow);
+
+    const l3Dialog = await screen.findByRole("dialog", { name: "详细明细浮层" });
+    expect(l3Dialog.textContent).toContain("今日按模型消耗");
+    expect(l3Dialog.textContent).toContain("gpt-5.4");
+  });
 });

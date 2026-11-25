@@ -75,6 +75,7 @@ export interface UsageSnapshot {
   unknownPricingModels: string[];
   byAgent: Record<string, UsageBucketSummary>;
   byModel: Record<string, UsageBucketSummary>;
+  byAgentModel?: Record<string, Record<string, UsageBucketSummary>>;
   byStage?: Record<string, StageUsageBucketSummary>;
   byRosterRole?: Record<string, StageUsageBucketSummary>;
   warmSessionStats?: WarmSessionStats;
@@ -145,6 +146,7 @@ export function computeUsageSnapshot(
 
   const byAgent: Record<string, UsageBucketSummary> = {};
   const byModel: Record<string, UsageBucketSummary> = {};
+  const byAgentModel: Record<string, Record<string, UsageBucketSummary>> = {};
   const byStage: Record<string, StageUsageBucketSummary> = {};
   const byRosterRole: Record<string, StageUsageBucketSummary> = {};
   const stageRuns = new Map<string, Set<string>>();
@@ -256,6 +258,8 @@ export function computeUsageSnapshot(
 
     accumulateBucket(byAgent, turn.agent, turn, turnCost, turnSaved);
     accumulateBucket(byModel, turn.model, turn, turnCost, turnSaved);
+    const agentModels = (byAgentModel[turn.agent] ??= {});
+    accumulateBucket(agentModels, turn.model, turn, turnCost, turnSaved);
     if (turn.stage) {
       accumulateStageBucket(
         byStage,
@@ -303,6 +307,7 @@ export function computeUsageSnapshot(
     unknownPricingModels: Array.from(unknownPricingSet).sort(),
     byAgent,
     byModel,
+    byAgentModel,
     byStage,
     byRosterRole,
     warmSessionStats: {

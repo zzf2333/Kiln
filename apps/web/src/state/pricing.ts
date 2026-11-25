@@ -215,6 +215,16 @@ export function formatModelPricingSummary(
   return `${fmtRate(modelPrice.in)} / ${fmtRate(modelPrice.cached)} / ${fmtRate(writePrice)} / ${fmtRate(modelPrice.out)}`;
 }
 
+export function formatModelPricingCompact(
+  modelId: string,
+  modelPrice: ModelPricing | undefined,
+): string {
+  if (!modelPrice) return "未定单价";
+  const fmtRate = (n: number): string => `$${Number(n.toFixed(3))}`;
+  void modelId;
+  return `${fmtRate(modelPrice.in)}/${fmtRate(modelPrice.cached)}/${fmtRate(modelPrice.out)} /M`;
+}
+
 function normalizeQuotaEntry(raw: RawProviderUsageEntry | undefined): ProviderQuotaWindow | null {
   if (!raw) return null;
   const q = raw.quota ?? raw;
@@ -278,9 +288,11 @@ export function extractEffectiveQuotas(
     if (!ps.native_quota) continue;
     const mins = ps.native_quota.window_duration_mins;
     const label = mins
-      ? mins >= 60 && mins % 60 === 0
-        ? `${mins / 60} 小时窗口`
-        : `${mins} 分钟窗口`
+      ? mins >= 1440 && mins % 1440 === 0
+        ? `${mins / 1440}天窗口`
+        : mins >= 60 && mins % 60 === 0
+          ? `${mins / 60}h窗口`
+          : `${mins}m窗口`
       : "官方配额窗口";
     result[ps.provider_id] = {
       label,

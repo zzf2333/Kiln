@@ -361,6 +361,7 @@ export interface KilnStoreState {
   limits: LimitsConfig;
   pricing: PricingConfig;
   usage: UsageSnapshot;
+  todayUsage: UsageSnapshot | null;
   budget: GlobalBudgetStatus | null;
   runningCount: number;
   mergeQueue: MergeQueueEntry[];
@@ -1090,6 +1091,7 @@ export class KilnWebStore {
       limits: { ...DEFAULT_LIMITS },
       pricing: { ...DEFAULT_PRICING, models: {} },
       usage: { ...EMPTY_USAGE },
+      todayUsage: null,
       budget: null,
       runningCount: 0,
       mergeQueue: [],
@@ -1283,6 +1285,7 @@ export class KilnWebStore {
       resolveMessagesByTask: {},
       ratesByTask: {},
       liveTotals: null,
+      todayUsage: null,
       providersConfig: null,
       providersConfigLoaded: false,
       providerStatuses: [],
@@ -1648,6 +1651,7 @@ export class KilnWebStore {
           limits,
           pricing,
           usage: data.usage ?? { ...EMPTY_USAGE },
+          todayUsage: data.todayUsage ?? null,
           budget: data.budget ?? null,
           runningCount: data.runningCount ?? 0,
           mergeQueue: data.mergeQueue ?? [],

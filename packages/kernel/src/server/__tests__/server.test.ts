@@ -3519,4 +3519,82 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
 
     unsubscribeSse();
   });
+
+  it("separates todayUsage from cumulative usage and populates byAgentModel in /api/bootstrap", async () => {
+    const kilnHome = makeTempDir();
+    tempDirs.push(kilnHome);
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      tokenSecret: "today-usage-secret-1234567890",
+    });
+    servers.push(server);
+    await server.start();
+
+    const now = new Date();
+    const yesterdayIso = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate() - 1,
+      14,
+      0,
+      0,
+      0,
+    ).toISOString();
+    const todayIso = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+      10,
+      0,
+      0,
+      0,
+    ).toISOString();
+
+    server.store.sqlite.upsertUsageTurn({
+      run_id: "r-yest",
+      turn_id: "t-yest",
+      task_id: "task-yest",
+      agent: "codex",
+      model: "gpt-5.4",
+      input_tokens: 20_000,
+      cached_input_tokens: 0,
+      output_tokens: 2_000,
+      provider_cost_usd: 0.9,
+      recorded_at: yesterdayIso,
+    });
+    server.store.sqlite.upsertUsageTurn({
+      run_id: "r-today",
+      turn_id: "t-today",
+      task_id: "task-today",
+      agent: "codex",
+      model: "gpt-5.4-mini",
+      input_tokens: 10_000,
+      cached_input_tokens: 4_000,
+      output_tokens: 1_000,
+      provider_cost_usd: 0.25,
+      recorded_at: todayIso,
+    });
+
+    const bootRes = await requestHttp(server, "/api/bootstrap");
+    expect(bootRes.status).toBe(200);
+    const boot = (await readJson(bootRes)) as {
+      usage: {
+        totalTokens: number;
+        byAgentModel?: Record<string, Record<string, { totalTokens: number }>>;
+      };
+      todayUsage: {
+        totalTokens: number;
+        byAgentModel?: Record<string, Record<string, { totalTokens: number }>>;
+      };
+    };
+
+    expect(boot.usage.totalTokens).toBe(33_000);
+    expect(boot.usage.byAgentModel?.codex?.["gpt-5.4"]?.totalTokens).toBe(22_000);
+    expect(boot.usage.byAgentModel?.codex?.["gpt-5.4-mini"]?.totalTokens).toBe(11_000);
+
+    expect(boot.todayUsage.totalTokens).toBe(11_000);
+    expect(boot.todayUsage.byAgentModel?.codex?.["gpt-5.4-mini"]?.totalTokens).toBe(11_000);
+    expect(boot.todayUsage.byAgentModel?.codex?.["gpt-5.4"]).toBeUndefined();
+  });
 });
