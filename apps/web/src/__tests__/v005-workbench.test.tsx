@@ -1532,12 +1532,11 @@ describe("Slice 6a: WorkflowView, Providers, Space Pin/Scripts, Usage V2, Status
       return jsonResponse({ ok: true });
     });
 
-    // 1. WorkflowView verifier_capabilities toggle
+    // 1. WorkflowView verifier_capabilities toggle (accept is mandatory in default templates)
     window.location.hash = "#view=workflow";
     const { container } = render(<App />);
     expect(await screen.findByRole("heading", { name: "工作流" })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "真实验收" }));
     await waitFor(() => {
       expect(container.querySelector('[data-wf-node="accept"]')).not.toBeNull();
     });

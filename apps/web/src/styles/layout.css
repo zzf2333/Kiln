@@ -6910,7 +6910,7 @@
     .wf-stage-layout {
       grid-template-columns: 1fr;
     }
-    .wf-advisor-bridge-svg {
+    .wf-advisor-bridge {
       display: none;
     }
   }
@@ -7588,8 +7588,8 @@
 
   .wf-stage-layout {
     display: grid;
-    grid-template-columns: minmax(0, 500px) minmax(240px, 310px);
-    gap: 36px;
+    grid-template-columns: minmax(0, 560px) minmax(264px, 324px);
+    gap: 44px;
     align-items: start;
     justify-content: center;
   }
@@ -7626,6 +7626,17 @@
     border-color: var(--acc);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--acc) 26%, transparent);
   }
+  .wf-node.is-accept {
+    border-color: color-mix(in srgb, var(--ok) 46%, var(--line));
+    background: color-mix(in srgb, var(--ok) 6%, var(--panel));
+  }
+  .wf-node.is-accept:hover {
+    border-color: color-mix(in srgb, var(--ok) 68%, var(--line));
+  }
+  .wf-node.is-accept.on {
+    border-color: var(--ok);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 24%, transparent);
+  }
   .wf-node.is-custom {
     border-style: dashed;
     border-color: color-mix(in srgb, var(--acc) 55%, var(--line));
@@ -7645,32 +7656,89 @@
     gap: 7px;
     flex-wrap: wrap;
   }
+  .wf-step-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 22px;
+    height: 19px;
+    padding: 0 5px;
+    border-radius: 5px;
+    background: var(--raised);
+    border: 1px solid var(--line-2);
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--t2);
+    flex-shrink: 0;
+  }
+  .wf-node.is-accept .wf-step-num {
+    background: color-mix(in srgb, var(--ok) 15%, var(--panel));
+    border-color: color-mix(in srgb, var(--ok) 42%, transparent);
+    color: var(--ok);
+  }
   .wf-node-title {
     font-size: 13.5px;
     font-weight: 600;
     color: var(--t1);
+    white-space: nowrap;
   }
   .wf-node-body {
+    margin-top: 8px;
+    display: flex;
+    align-items: center;
+    min-width: 0;
+  }
+  .wf-node-foot {
     margin-top: 7px;
+    padding-top: 6px;
+    border-top: 1px dashed var(--line);
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
     flex-wrap: wrap;
   }
-  .wf-node-binding {
+  .wf-accept-caps {
     display: inline-flex;
     align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+  }
+  .wf-cap-tag {
+    display: inline-flex;
+    align-items: center;
+    height: 18px;
+    padding: 0 6px;
+    border-radius: 5px;
+    font-size: 10.5px;
+    font-weight: 500;
+    background: color-mix(in srgb, var(--ok) 12%, var(--panel));
+    color: var(--ok);
+    border: 1px solid color-mix(in srgb, var(--ok) 28%, transparent);
+  }
+  .wf-binding-bar {
+    display: flex;
+    align-items: center;
     gap: 6px;
+    width: 100%;
     min-width: 0;
     font-size: 12px;
   }
   .wf-node-prov {
     color: var(--t2);
     font-weight: 500;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .wf-binding-sep {
+    color: var(--t3);
+    flex-shrink: 0;
   }
   .wf-node-model {
     color: var(--t1);
+    flex: 1;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -7682,6 +7750,8 @@
     color: var(--t3);
     font-family: var(--mono);
     font-size: 10.5px;
+    flex-shrink: 0;
+    white-space: nowrap;
   }
   .wf-hetero-ok {
     display: inline-flex;
@@ -7701,11 +7771,16 @@
     font-weight: 600;
     background: var(--raised);
     color: var(--t2);
+    white-space: nowrap;
   }
   .wf-badge.custom,
   .wf-badge.ask {
     background: var(--acc-soft);
     color: var(--acc-2);
+  }
+  .wf-badge.accept {
+    background: color-mix(in srgb, var(--ok) 15%, var(--panel));
+    color: var(--ok);
   }
   .wf-badge.rw {
     background: rgba(219, 161, 69, 0.16);
@@ -7726,6 +7801,7 @@
     background: var(--raised);
     color: var(--t3);
     border: 1px solid var(--line);
+    white-space: nowrap;
   }
   .wf-perm-pill.rw {
     border-color: rgba(219, 161, 69, 0.45);
@@ -7736,15 +7812,15 @@
     color: var(--ok);
   }
 
-  /* 连接线与流动粒子动画 */
+  /* 连接线与三层 SVG 流转粒子动画 */
   .wf-conn {
     position: relative;
-    height: 46px;
+    height: 58px;
     display: grid;
     place-items: center;
   }
   .wf-conn.is-compact {
-    height: 36px;
+    height: 46px;
   }
   .wf-conn-svg {
     width: 28px;
@@ -7754,32 +7830,35 @@
   }
   .wf-conn-rail {
     stroke: var(--line-2);
-    stroke-width: 2;
+    stroke-width: 1.75;
   }
   .wf-conn-stream {
-    stroke: var(--acc);
-    stroke-width: 2;
-    stroke-dasharray: 5 7;
-    opacity: 0.72;
-    animation: wf-dash-down 1.4s linear infinite;
+    stroke: color-mix(in srgb, var(--acc) 76%, transparent);
+    stroke-width: 1.9;
+    stroke-dasharray: 4 6;
+    animation: wf-dash-down 1.3s linear infinite;
   }
-  .wf-conn-bead {
-    fill: var(--acc);
-    opacity: 0;
-    animation: wf-bead-down 2.2s var(--ease) infinite;
+  .wf-conn-pulse {
+    stroke: var(--acc);
+    stroke-width: 3.4;
+    stroke-linecap: round;
+    stroke-dasharray: 18 82;
+    opacity: 0.92;
+    filter: drop-shadow(0 0 4px color-mix(in srgb, var(--acc) 65%, transparent));
+    animation: wf-pulse-down 2.1s linear infinite;
   }
   .wf-conn-arrow {
     fill: none;
     stroke: var(--acc);
-    stroke-width: 1.8;
+    stroke-width: 1.9;
     stroke-linecap: round;
     stroke-linejoin: round;
-    opacity: 0.85;
+    opacity: 0.92;
   }
   .wf-slot-btn {
     position: absolute;
-    width: 22px;
-    height: 22px;
+    width: 24px;
+    height: 24px;
     border-radius: 99px;
     border: 1px solid var(--line-2);
     background: var(--panel);
@@ -7794,6 +7873,10 @@
       background-color 0.16s var(--ease),
       color 0.16s var(--ease);
   }
+  .wf-slot-btn svg {
+    width: 12px;
+    height: 12px;
+  }
   .wf-slot-btn:hover,
   .wf-slot-btn.on {
     transform: scale(1.18);
@@ -7802,12 +7885,12 @@
     color: #fff;
   }
 
-  /* 3<->4 闭环容器与回流弯轨动画 */
+  /* 闭环容器与三段式精准回流 SVG */
   .wf-loop-box {
     border-radius: 13px;
     border: 1px solid color-mix(in srgb, var(--acc) 45%, var(--line));
-    background: color-mix(in srgb, var(--acc) 5%, var(--panel));
-    padding: 12px 14px 12px 8px;
+    background: color-mix(in srgb, var(--acc) 4.5%, var(--panel));
+    padding: 12px 14px 10px 8px;
   }
   .wf-loop-head {
     display: flex;
@@ -7815,7 +7898,7 @@
     justify-content: space-between;
     gap: 8px;
     margin-bottom: 10px;
-    padding-left: 8px;
+    padding-left: 10px;
   }
   .wf-loop-title {
     font-size: 12px;
@@ -7824,24 +7907,28 @@
   }
   .wf-loop-body {
     display: grid;
-    grid-template-columns: 52px minmax(0, 1fr);
-    gap: 4px;
+    grid-template-columns: 72px minmax(0, 1fr);
+    gap: 8px;
     align-items: stretch;
   }
   .wf-loop-return {
     position: relative;
-    min-height: 150px;
+    display: flex;
+    flex-direction: column;
+    padding: 20px 0;
   }
-  .wf-loop-return-svg {
-    width: 100%;
-    height: 100%;
+  .wf-loop-return-cap {
     display: block;
+    width: 72px;
+    height: 28px;
+    flex-shrink: 0;
+    overflow: visible;
   }
-  .wf-loop-return-arrow-svg {
-    position: absolute;
-    right: -3px;
-    top: 6px;
-    pointer-events: none;
+  .wf-loop-return-mid {
+    display: block;
+    width: 72px;
+    flex: 1;
+    min-height: 70px;
   }
   .wf-loop-arrow-head {
     fill: none;
@@ -7852,31 +7939,40 @@
   }
   .wf-loop-rail {
     fill: none;
-    stroke: color-mix(in srgb, var(--acc) 28%, transparent);
-    stroke-width: 2;
+    stroke: color-mix(in srgb, var(--acc) 26%, transparent);
+    stroke-width: 1.8;
   }
   .wf-loop-stream {
     fill: none;
     stroke: var(--acc);
-    stroke-width: 2.1;
-    stroke-dasharray: 6 7;
-    animation: wf-dash-up 1.6s linear infinite;
+    stroke-width: 2;
+    stroke-dasharray: 5 6;
+    animation: wf-dash-up 1.5s linear infinite;
+  }
+  .wf-loop-pulse {
+    fill: none;
+    stroke: var(--acc);
+    stroke-width: 3.4;
+    stroke-linecap: round;
+    stroke-dasharray: 18 82;
+    opacity: 0.9;
+    filter: drop-shadow(0 0 4px color-mix(in srgb, var(--acc) 65%, transparent));
+    animation: wf-pulse-up 2.2s linear infinite;
   }
   .wf-loop-return-tag {
     position: absolute;
-    left: 2px;
+    left: 24px;
     top: 50%;
-    transform: translateY(-50%);
-    writing-mode: vertical-rl;
-    text-orientation: mixed;
+    transform: translate(-50%, -50%);
+    white-space: nowrap;
     font-size: 10.5px;
     font-weight: 600;
-    letter-spacing: 0.04em;
     color: var(--acc-2);
     background: var(--panel);
-    padding: 6px 2px;
-    border-radius: 6px;
-    border: 1px solid color-mix(in srgb, var(--acc) 35%, var(--line));
+    padding: 3px 7px;
+    border-radius: 99px;
+    border: 1px solid color-mix(in srgb, var(--acc) 40%, var(--line));
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.12);
     pointer-events: none;
   }
   .wf-loop-steps {
@@ -7885,41 +7981,111 @@
     align-items: stretch;
     min-width: 0;
   }
+  .wf-loop-foot {
+    margin-top: 10px;
+    padding: 8px 0 2px 10px;
+    border-top: 1px dashed color-mix(in srgb, var(--acc) 26%, var(--line));
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: nowrap;
+  }
+  .wf-loop-tail-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 24px;
+    padding: 0 10px;
+    border-radius: 99px;
+    border: 1px dashed color-mix(in srgb, var(--acc) 48%, var(--line-2));
+    background: transparent;
+    color: var(--t2);
+    font-size: 11px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    cursor: pointer;
+    transition:
+      border-color 0.16s var(--ease),
+      color 0.16s var(--ease),
+      background-color 0.16s var(--ease);
+  }
+  .wf-loop-tail-btn svg {
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+  }
+  .wf-loop-tail-btn:hover,
+  .wf-loop-tail-btn.on {
+    border-style: solid;
+    border-color: var(--acc);
+    background: var(--acc-soft);
+    color: var(--acc-2);
+  }
 
   /* 独立顾问 & 低频辅助右侧停靠 */
   .wf-dock-col {
     display: flex;
     flex-direction: column;
     gap: 14px;
-    padding-top: 68px;
+    padding-top: 78px;
   }
   .wf-advisor-wrap {
     position: relative;
     display: flex;
     align-items: center;
   }
-  .wf-advisor-bridge-svg {
+  .wf-advisor-bridge {
     position: absolute;
-    left: -36px;
-    width: 36px;
+    left: -44px;
+    width: 44px;
     height: 36px;
     pointer-events: none;
+  }
+  .wf-advisor-bridge-svg {
+    width: 44px;
+    height: 36px;
+    display: block;
+    overflow: visible;
   }
   .wf-advisor-rail {
     fill: none;
     stroke: var(--line-2);
-    stroke-width: 1.8;
+    stroke-width: 1.7;
   }
   .wf-advisor-stream {
     fill: none;
     stroke: var(--ask);
-    stroke-width: 2;
+    stroke-width: 1.9;
     stroke-dasharray: 4 6;
     animation: wf-dash-right 1.6s linear infinite;
   }
+  .wf-advisor-pulse {
+    fill: none;
+    stroke: var(--ask);
+    stroke-width: 3.2;
+    stroke-linecap: round;
+    stroke-dasharray: 22 78;
+    opacity: 0.9;
+    animation: wf-pulse-right 2.2s linear infinite;
+  }
   .wf-advisor-dot {
     fill: var(--ask);
-    opacity: 0.88;
+    opacity: 0.92;
+  }
+  .wf-advisor-tag {
+    position: absolute;
+    left: 50%;
+    top: -12px;
+    transform: translateX(-50%);
+    white-space: nowrap;
+    font-size: 9.5px;
+    font-weight: 500;
+    color: var(--ask-strong-fg);
+    background: var(--panel);
+    padding: 1px 5px;
+    border-radius: 4px;
+    border: 1px solid color-mix(in srgb, var(--ask) 35%, var(--line));
   }
   .wf-dock-card {
     width: 100%;
@@ -7996,11 +8162,26 @@
   }
   .wf-aux-sub {
     font-size: 11px;
+    min-width: 0;
+  }
+  .wf-aux-inherit {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   @keyframes wf-dash-down {
     from {
-      stroke-dashoffset: 24;
+      stroke-dashoffset: 20;
+    }
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+  @keyframes wf-pulse-down {
+    from {
+      stroke-dashoffset: 100;
     }
     to {
       stroke-dashoffset: 0;
@@ -8011,7 +8192,15 @@
       stroke-dashoffset: 0;
     }
     to {
-      stroke-dashoffset: 26;
+      stroke-dashoffset: 22;
+    }
+  }
+  @keyframes wf-pulse-up {
+    from {
+      stroke-dashoffset: 0;
+    }
+    to {
+      stroke-dashoffset: 100;
     }
   }
   @keyframes wf-dash-right {
@@ -8022,20 +8211,12 @@
       stroke-dashoffset: 0;
     }
   }
-  @keyframes wf-bead-down {
-    0% {
-      transform: translateY(-6px);
-      opacity: 0;
+  @keyframes wf-pulse-right {
+    from {
+      stroke-dashoffset: 100;
     }
-    25% {
-      opacity: 0.95;
-    }
-    75% {
-      opacity: 0.85;
-    }
-    100% {
-      transform: translateY(28px);
-      opacity: 0;
+    to {
+      stroke-dashoffset: 0;
     }
   }
 

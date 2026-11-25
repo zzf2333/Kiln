@@ -190,10 +190,34 @@ describe("WorkflowView animated flowchart, custom slots, same-model reuse & Inta
 
     expect(await screen.findByRole("heading", { name: "工作流" })).toBeTruthy();
 
-    // Animated SVG rails: connector stream, curved loop-return SVG, and advisor bridge SVG
-    expect(container.querySelectorAll(".wf-conn-stream").length).toBeGreaterThanOrEqual(4);
-    expect(container.querySelector(".wf-loop-return-svg")).not.toBeNull();
+    // Animated SVG rails: connector stream, 3-part loop return SVG, and advisor bridge SVG
+    expect(container.querySelectorAll(".wf-conn-stream").length).toBeGreaterThanOrEqual(3);
+    expect(container.querySelector(".wf-loop-return-mid")).not.toBeNull();
+    expect(container.querySelectorAll(".wf-loop-return-cap").length).toBe(2);
     expect(container.querySelector(".wf-advisor-bridge-svg")).not.toBeNull();
+
+    // Mandatory accept stage renders cleanly with continuous sequential numbering (01..05)
+    expect(container.querySelector('[data-wf-node="accept"]')).not.toBeNull();
+    expect(
+      Array.from(container.querySelectorAll("[data-step-num]")).map((el) =>
+        el.getAttribute("data-step-num"),
+      ),
+    ).toEqual(["01", "02", "03", "04", "05"]);
+
+    // Inside loop box, no dangling connector sits below the last inner node (review)
+    const loopStepsEl = container.querySelector(".wf-loop-steps")!;
+    expect(loopStepsEl.lastElementChild?.querySelector(".wf-conn")).toBeNull();
+    expect(container.querySelector('[data-wf-slot="loop_after_review"]')).not.toBeNull();
+
+    // Turning off optional 独立审查循环 keeps mandatory 真实验收 & shifts numbers sequentially (01..04)
+    fireEvent.click(screen.getByRole("button", { name: "独立审查循环" }));
+    expect(container.querySelector('[data-wf-node="accept"]')).not.toBeNull();
+    expect(
+      Array.from(container.querySelectorAll("[data-step-num]")).map((el) =>
+        el.getAttribute("data-step-num"),
+      ),
+    ).toEqual(["01", "02", "03", "04"]);
+    fireEvent.click(screen.getByRole("button", { name: "独立审查循环" }));
 
     // All steps reuse codex/gpt-5.4 with heterogeneous_review disabled -> zero clash warning
     expect(screen.queryByText(/撞模型/)).toBeNull();

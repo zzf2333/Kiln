@@ -640,7 +640,19 @@ export function createDefaultIntakeForm(
     space: chosen?.id ?? "",
     track: "L2",
     workspace_mode: "git_worktree",
-    workflow: buildWorkflowPreset("standard_dev"),
+    workflow: buildCustomWorkflow({
+      preset: "standard_dev",
+      includeResearch: false,
+      includePlan: false,
+      includeReview: true,
+      includeAccept: true,
+      acceptMode: "verifier",
+      deliverApproval: false,
+      hostTwoPhase: false,
+      hasDeliverCmd: false,
+      maxRounds: 3,
+      stuckThreshold: 2,
+    }),
     end: "",
     accept_cmd: chosen?.default_accept_cmd ?? "",
     deliver_cmd: "",
@@ -1579,6 +1591,9 @@ export class KilnWebStore {
           nextIntakeForm.mode === "project" &&
           !isProjectSpace(nextSpaces[nextIntakeForm.space])
         ) {
+          const defaultTpl =
+            workflows.templates.find((t) => t.id === workflows.default_template_id) ??
+            workflows.templates[0];
           const preferred = this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
           const projects = getProjectSpaces(nextSpaces);
           const chosen =
@@ -1590,6 +1605,12 @@ export class KilnWebStore {
               ...nextIntakeForm,
               space: chosen.id,
               workspace_mode: "git_worktree",
+              ...(defaultTpl && !this.state.intakeForm.title.trim()
+                ? {
+                    workflow: normalizeWorkflowBlueprintSafety(defaultTpl.blueprint),
+                    track: extractWorkflowToggles(defaultTpl.blueprint).includeReview ? "L2" : "L1",
+                  }
+                : {}),
               ...(nextIntakeForm.accept_cmd.trim() === "" && chosen.default_accept_cmd
                 ? { accept_cmd: chosen.default_accept_cmd }
                 : {}),

@@ -6,6 +6,7 @@ import {
   VERIFIER_CAPABILITIES,
   buildWorkflowPreset,
   createDefaultWorkflowTemplates,
+  ensureWorkflowAcceptStep,
   normalizeWorkflowBlueprintSafety,
   type ReasoningEffort,
   type StageId,
@@ -79,42 +80,42 @@ const STAGE_META: Record<WorkflowBindingKey, StageUiMeta> = {
     permLabel: "只读·草稿",
     permTone: "ro",
     interactive: true,
-    badge: "① 起点",
+    badge: "起点",
   },
   research: {
     title: "前置调研",
     subtitle: "只读摸底代码与约束，产出侦察结论",
     permLabel: "只读",
     permTone: "ro",
-    badge: "② 可选",
+    badge: "可选",
   },
   plan: {
     title: "方案设计",
     subtitle: "形成技术方案与验证计划",
     permLabel: "只读",
     permTone: "ro",
-    badge: "② 可选",
+    badge: "可选",
   },
   implement: {
     title: "实施写码",
     subtitle: "在隔离工作树修改代码并提交构建检查",
     permLabel: "工作区可写",
     permTone: "rw",
-    badge: "③ 核心",
+    badge: "核心",
   },
   review: {
     title: "独立审查",
     subtitle: "新上下文只读审查，不通过则退回实施",
     permLabel: "只读",
     permTone: "ro",
-    badge: "④ 审查",
+    badge: "审查",
   },
   accept: {
     title: "真实验收",
-    subtitle: "从真实入口端到端验证目标产物",
+    subtitle: "从真实入口与产物端到端验证目标，失败自动回炉实施",
     permLabel: "只读+验收入口",
     permTone: "accept",
-    badge: "⑤ 可选",
+    badge: "必选验收",
   },
   advisor: {
     title: "技术顾问",
@@ -276,7 +277,9 @@ function cloneWorkflowsConfig(src: WorkflowsConfig): WorkflowsConfig {
     src.templates && src.templates.length > 0
       ? src.templates.map((t) => ({
           ...t,
-          blueprint: cloneBlueprint(t.blueprint),
+          blueprint: normalizeWorkflowBlueprintSafety(
+            ensureWorkflowAcceptStep(cloneBlueprint(t.blueprint)),
+          ),
         }))
       : createDefaultWorkflowTemplates();
   return {
@@ -349,6 +352,10 @@ function mapStageToBindingKey(stage: StageId): WorkflowBindingKey {
   return "implement";
 }
 
+function formatStepNum(num: number): string {
+  return String(num).padStart(2, "0");
+}
+
 function FlowConnector({
   slot,
   selected,
@@ -360,16 +367,15 @@ function FlowConnector({
   compact?: boolean;
   onSelect: (slot: SlotSpec) => void;
 }) {
+  const h = compact ? 46 : 58;
+  const lineEnd = h - 5;
   return (
     <div className={`wf-conn ${compact ? "is-compact" : ""} ${selected ? "is-selected" : ""}`}>
-      <svg className="wf-conn-svg" viewBox={compact ? "0 0 28 38" : "0 0 28 48"} aria-hidden="true">
-        <line x1="14" y1="0" x2="14" y2={compact ? 34 : 44} className="wf-conn-rail" />
-        <line x1="14" y1="0" x2="14" y2={compact ? 34 : 44} className="wf-conn-stream" />
-        <circle cx="14" cy="10" r="2.6" className="wf-conn-bead" />
-        <path
-          d={compact ? "M10 30 L14 35 L18 30" : "M10 40 L14 45 L18 40"}
-          className="wf-conn-arrow"
-        />
+      <svg className="wf-conn-svg" viewBox={`0 0 28 ${h}`} aria-hidden="true">
+        <line x1="14" y1="0" x2="14" y2={lineEnd} className="wf-conn-rail" />
+        <line x1="14" y1="0" x2="14" y2={lineEnd} className="wf-conn-stream" />
+        <line x1="14" y1="0" x2="14" y2={lineEnd} pathLength={100} className="wf-conn-pulse" />
+        <path d={`M10 ${lineEnd - 4} L14 ${h - 1} L18 ${lineEnd - 4}`} className="wf-conn-arrow" />
       </svg>
       <button
         type="button"
@@ -409,14 +415,12 @@ export function WorkflowView() {
   const [pendingConfirmFullAccessKey, setPendingConfirmFullAccessKey] =
     useState<WorkflowBindingKey | null>(null);
 
-  // New template dialog state
   const [newTplOpen, setNewTplOpen] = useState(false);
   const [newTplName, setNewTplName] = useState("");
   const [newTplDesc, setNewTplDesc] = useState("");
   const [newTplBaseId, setNewTplBaseId] = useState("standard_dev");
   const [newTplError, setNewTplError] = useState<string | null>(null);
 
-  // Slot insert form state
   const [slotLabel, setSlotLabel] = useState("");
   const [slotPerm, setSlotPerm] = useState<"read_only" | "workspace_write">("read_only");
   const [slotStage, setSlotStage] = useState<"research" | "plan" | "implement" | "review">(
@@ -515,7 +519,9 @@ export function WorkflowView() {
         if (tpl.id !== activeTemplate.id) return tpl;
         return {
           ...tpl,
-          blueprint: normalizeWorkflowBlueprintSafety(updater(cloneBlueprint(tpl.blueprint))),
+          blueprint: normalizeWorkflowBlueprintSafety(
+            ensureWorkflowAcceptStep(updater(cloneBlueprint(tpl.blueprint))),
+          ),
         };
       }),
     }));
@@ -731,8 +737,16 @@ export function WorkflowView() {
     if (saveBusy) return;
     setSaveBusy(true);
     try {
-      const ok = await store.saveSettingsSection("workflows", draft);
+      const normalizedDraft: WorkflowsConfig = {
+        ...draft,
+        templates: draft.templates.map((tpl) => ({
+          ...tpl,
+          blueprint: normalizeWorkflowBlueprintSafety(ensureWorkflowAcceptStep(tpl.blueprint)),
+        })),
+      };
+      const ok = await store.saveSettingsSection("workflows", normalizedDraft);
       if (ok) {
+        setDraft(cloneWorkflowsConfig(normalizedDraft));
         setDirty(false);
       }
     } finally {
@@ -756,10 +770,12 @@ export function WorkflowView() {
       name,
       ...(newTplDesc.trim() ? { description: newTplDesc.trim() } : {}),
       builtin: false,
-      blueprint: {
-        ...baseBp,
-        preset: "custom",
-      },
+      blueprint: normalizeWorkflowBlueprintSafety(
+        ensureWorkflowAcceptStep({
+          ...baseBp,
+          preset: "custom",
+        }),
+      ),
     };
     mutateDraft((prev) => ({
       ...prev,
@@ -807,7 +823,7 @@ export function WorkflowView() {
     store.showToast(`已删除模板「${deletedName}」`);
   };
 
-  const toggleOptionalStageInTemplate = (stage: "research" | "plan" | "accept"): void => {
+  const toggleOptionalStageInTemplate = (stage: "research" | "plan"): void => {
     mutateActiveTemplate((bp) => {
       const steps = [...bp.steps];
       const existingIdx = steps.findIndex((s) => s.kind === "agent" && s.stage === stage);
@@ -823,21 +839,82 @@ export function WorkflowView() {
       };
       if (stage === "research") {
         steps.unshift(newNode);
-      } else if (stage === "plan") {
+      } else {
         const resIdx = steps.findIndex((s) => s.kind === "agent" && s.stage === "research");
         steps.splice(resIdx >= 0 ? resIdx + 1 : 0, 0, newNode);
-      } else {
-        const deliverIdx = steps.findIndex(
-          (s) => (s.kind === "approval" || s.kind === "command") && s.stage === "deliver",
-        );
-        steps.splice(deliverIdx >= 0 ? deliverIdx : steps.length, 0, newNode);
       }
       return { ...bp, preset: "custom", steps };
     });
   };
 
-  // Partition active template blueprint steps cleanly into preLoop / loop / postLoop
-  const bpSteps = activeTemplate.blueprint.steps;
+  const toggleReviewLoopInTemplate = (): void => {
+    mutateActiveTemplate((bp) => {
+      const curLoopIdx = bp.steps.findIndex((s) => s.kind === "loop");
+      if (curLoopIdx >= 0) {
+        const loop = bp.steps[curLoopIdx] as WorkflowLoopNode;
+        const kept = loop.steps.filter((s) => s.kind !== "agent" || s.stage !== "review");
+        const nextSteps = [...bp.steps];
+        nextSteps.splice(curLoopIdx, 1, ...kept);
+        return { ...bp, preset: "custom", steps: nextSteps };
+      }
+
+      const firstCoreIdx = bp.steps.findIndex(
+        (s) => s.kind === "gate" || (s.kind === "agent" && s.stage === "implement"),
+      );
+      const lastCoreIdx = (() => {
+        let last = firstCoreIdx;
+        for (let i = Math.max(0, firstCoreIdx); i < bp.steps.length; i++) {
+          const s = bp.steps[i]!;
+          if (
+            s.kind === "gate" ||
+            (s.kind === "agent" && (s.stage === "implement" || s.stage === "review"))
+          ) {
+            last = i;
+          } else {
+            break;
+          }
+        }
+        return last;
+      })();
+
+      const innerCore: WorkflowAtomicNode[] =
+        firstCoreIdx >= 0
+          ? (bp.steps.slice(firstCoreIdx, lastCoreIdx + 1) as WorkflowAtomicNode[])
+          : [
+              { kind: "agent", stage: "implement", role: "worker", fresh_context: false },
+              { kind: "gate", stage: "verify", check: "full" },
+            ];
+      if (!innerCore.some((n) => n.kind === "agent" && n.stage === "review")) {
+        innerCore.push({
+          kind: "agent",
+          stage: "review",
+          role: "reviewer",
+          fresh_context: true,
+        });
+      }
+      const newLoop: WorkflowLoopNode = {
+        kind: "loop",
+        max_rounds: 3,
+        stuck_threshold: 2,
+        steps: innerCore,
+      };
+      const nextSteps = [...bp.steps];
+      if (firstCoreIdx >= 0) {
+        nextSteps.splice(firstCoreIdx, lastCoreIdx - firstCoreIdx + 1, newLoop);
+      } else {
+        const acceptIdx = nextSteps.findIndex((s) => s.kind === "agent" && s.stage === "accept");
+        nextSteps.splice(acceptIdx >= 0 ? acceptIdx : nextSteps.length, 0, newLoop);
+      }
+      return { ...bp, preset: "custom", steps: nextSteps };
+    });
+    if (selected.kind === "stage" && selected.key === "review") {
+      setSelected({ kind: "stage", key: "implement" });
+    }
+  };
+
+  // Normalize display blueprint to guarantee accept is always visible in flowchart
+  const displayBlueprint = ensureWorkflowAcceptStep(activeTemplate.blueprint);
+  const bpSteps = displayBlueprint.steps;
   const loopIndex = bpSteps.findIndex((s) => s.kind === "loop");
   const loopNode: WorkflowLoopNode | null =
     loopIndex >= 0 && bpSteps[loopIndex]?.kind === "loop"
@@ -880,7 +957,22 @@ export function WorkflowView() {
 
   const hasResearch = topPreItems.some((x) => x.step.stage === "research");
   const hasPlan = topPreItems.some((x) => x.step.stage === "plan");
-  const hasAccept = topPostItems.some((x) => x.step.stage === "accept");
+  const hasReviewLoop = Boolean(loopNode);
+
+  // Assign continuous sequential step numbers (01, 02, 03...) across all agent steps
+  let seqCounter = 1;
+  const intakeNum = seqCounter++;
+  const preStepNums = topPreItems.map((item) => (item.step.kind === "agent" ? seqCounter++ : null));
+  const loopStepNums = loopNode
+    ? loopNode.steps.map((inner) => (inner.kind === "agent" ? seqCounter++ : null))
+    : [];
+  const coreStepNums = topCoreItems.map((item) =>
+    item.step.kind === "agent" ? seqCounter++ : null,
+  );
+  const postStepNums = topPostItems.map((item) =>
+    item.step.kind === "agent" ? seqCounter++ : null,
+  );
+  const deliverNum = seqCounter++;
 
   const renderPoolBar = () => {
     const readyCount = visibleProviders.filter((p) => p.status === "ready").length;
@@ -957,11 +1049,7 @@ export function WorkflowView() {
     );
   };
 
-  const renderBindingChip = (
-    binding: WorkflowNodeBinding | undefined,
-    fallbackText: string,
-    isUnavailableBadge?: boolean,
-  ) => {
+  const renderBindingChip = (binding: WorkflowNodeBinding | undefined, fallbackText: string) => {
     if (!binding) {
       return (
         <span className="muted mono" style={{ fontSize: "11.5px" }}>
@@ -971,12 +1059,16 @@ export function WorkflowView() {
     }
     const provLabel = statusByProvider.get(binding.provider)?.label ?? binding.provider;
     return (
-      <span className="wf-node-binding">
+      <span className="wf-binding-bar">
         <ProviderAvatar providerId={binding.provider} />
         <span className="wf-node-prov">{provLabel}</span>
-        <span className="mono wf-node-model">{binding.model}</span>
+        <span className="wf-binding-sep" aria-hidden="true">
+          ·
+        </span>
+        <span className="mono wf-node-model" title={binding.model}>
+          {binding.model}
+        </span>
         {binding.effort ? <span className="wf-effort">{binding.effort}</span> : null}
-        {isUnavailableBadge ? <span className="chip chip-bad">不可用</span> : null}
       </span>
     );
   };
@@ -984,6 +1076,7 @@ export function WorkflowView() {
   const renderAtomicFlowNode = (
     node: WorkflowAtomicNode,
     loc: { scope: "top"; index: number } | { scope: "loop"; loopIndex: number; innerIndex: number },
+    stepNumber: number | null,
   ) => {
     if (node.kind === "gate") {
       return (
@@ -1026,10 +1119,12 @@ export function WorkflowView() {
       : selected.kind === "stage" && selected.key === bindingKey;
 
     const isReviewNode = bindingKey === "review" && !isCustom;
+    const isAcceptNode = bindingKey === "accept" && !isCustom;
     const isCollision = isReviewNode && reviewStatus.clash;
 
     const permText = node.stage === "implement" ? "工作区可写" : meta.permLabel;
     const permTone = node.stage === "implement" ? "rw" : meta.permTone;
+    const activeAcceptCaps = draft.verifier_capabilities ?? ["cli"];
 
     return (
       <button
@@ -1040,7 +1135,7 @@ export function WorkflowView() {
         type="button"
         data-wf-node={node.id ?? bindingKey}
         data-stage-node={node.stage}
-        className={`wf-node ${isCustom ? "is-custom" : ""} ${isSelected ? "on" : ""} ${isCollision ? "is-warn" : ""}`}
+        className={`wf-node ${isCustom ? "is-custom" : ""} ${isAcceptNode ? "is-accept" : ""} ${isSelected ? "on" : ""} ${isCollision ? "is-warn" : ""}`}
         onClick={() => {
           if (isCustom) {
             setSelected(
@@ -1059,6 +1154,11 @@ export function WorkflowView() {
         }}
       >
         <div className="wf-node-head">
+          {stepNumber !== null ? (
+            <span className="wf-step-num" data-step-num={formatStepNum(stepNumber)}>
+              {formatStepNum(stepNumber)}
+            </span>
+          ) : null}
           <span className={`wf-badge ${isCustom ? "custom" : permTone}`}>
             {isCustom ? "自定义" : (meta.badge ?? meta.title)}
           </span>
@@ -1074,19 +1174,35 @@ export function WorkflowView() {
         </div>
         <div className="wf-node-body">
           {renderBindingChip(effectiveBinding, inheritedLabel ?? "未配置模型（点此绑定）")}
-          {isReviewNode &&
-          reviewStatus.effective &&
-          !reviewStatus.clash &&
-          draft.heterogeneous_review &&
-          draft.stage_bindings.implement ? (
+        </div>
+        {isAcceptNode ? (
+          <div className="wf-node-foot">
+            <span className="wf-accept-caps">
+              {activeAcceptCaps.map((cap) => (
+                <span key={cap} className="wf-cap-tag">
+                  {VERIFIER_CAPABILITY_LABELS[cap]}
+                </span>
+              ))}
+            </span>
+            <span className="muted" style={{ fontSize: "11px" }}>
+              不通过 ↺ 自动回炉实施
+            </span>
+          </div>
+        ) : null}
+        {isReviewNode &&
+        reviewStatus.effective &&
+        !reviewStatus.clash &&
+        draft.heterogeneous_review &&
+        draft.stage_bindings.implement ? (
+          <div className="wf-node-foot">
             <span className="wf-hetero-ok">
               <CheckCircleIcon />
               <span>
                 主力 {draft.stage_bindings.implement.model} ≠ 审查 {reviewStatus.effective.model}
               </span>
             </span>
-          ) : null}
-        </div>
+          </div>
+        ) : null}
       </button>
     );
   };
@@ -1142,7 +1258,7 @@ export function WorkflowView() {
       if (isCustom && customNodeInfo) {
         const nextBinding: WorkflowNodeBinding = {
           provider: customNode!.binding?.provider ?? currentProvider,
-          model: customNode!.binding?.model ?? currentModel ?? "default",
+          model: customNode!.binding?.model ?? (currentModel || "default"),
           effort: customNode!.binding?.effort ?? currentEffort,
           ...patch,
         };
@@ -1657,7 +1773,7 @@ export function WorkflowView() {
           <div className="insp-sec">
             <div className="insp-h">
               <ShieldIcon />
-              <span>验收能力声明</span>
+              <span>验收能力声明（必选主环）</span>
             </div>
             <div className="verifier-cap-row" role="group" aria-label="验收能力声明">
               {VERIFIER_CAPABILITIES.map((cap) => {
@@ -1681,8 +1797,8 @@ export function WorkflowView() {
               })}
             </div>
             <p className="muted" style={{ fontSize: "11.5px" }}>
-              仅声明你为此步骤绑定的 Agent 自身具备的能力，用于调度前防配错（Kiln
-              不内置浏览器驱动）。
+              真实验收通过真实入口与产物核查，失败将自动回炉实施修复；此处仅声明所绑 Agent
+              自身具备的能力（Kiln 不内置浏览器驱动）。
             </p>
           </div>
         ) : null}
@@ -2080,10 +2196,10 @@ export function WorkflowView() {
                   ? "冲突按需"
                   : "Agent 合并"}
             </span>
-            <h2 style={{ fontSize: "15px", fontWeight: 600, margin: 0 }}>⑥ 合并交付</h2>
+            <h2 style={{ fontSize: "15px", fontWeight: 600, margin: 0 }}>合并交付</h2>
           </div>
           <p className="muted" style={{ fontSize: "12px", lineHeight: 1.5 }}>
-            决定任务通过审查/验收后如何合回目标分支。
+            决定任务通过审查与真实验收后如何合回目标分支。
           </p>
         </div>
 
@@ -2183,7 +2299,7 @@ export function WorkflowView() {
                 value={currentModel}
                 options={
                   models.length === 0
-                    ? [{ value: currentModel || "default", label: currentModel || "default" }]
+                    ? [{ value: currentModel || "", label: currentModel || "请选择模型" }]
                     : models.map((m) => ({ value: m, label: m }))
                 }
                 onChange={(m) =>
@@ -2342,7 +2458,7 @@ export function WorkflowView() {
         <div className="wf-canvas-main">
           <div className="wf-canvas-toolbar">
             <span className="muted" style={{ fontSize: "12px" }}>
-              单线推进 · 点任意连接线「+」插入步骤 · 任意步可复用同一模型
+              单线推进 · 点任意连接线「+」插入步骤 · 真实验收必经
             </span>
             <div className="wf-stage-toggles" role="group" aria-label="可选阶段开关">
               <button
@@ -2363,11 +2479,11 @@ export function WorkflowView() {
               </button>
               <button
                 type="button"
-                className={`chip-tab ${hasAccept ? "on" : ""}`}
-                aria-pressed={hasAccept}
-                onClick={() => toggleOptionalStageInTemplate("accept")}
+                className={`chip-tab ${hasReviewLoop ? "on" : ""}`}
+                aria-pressed={hasReviewLoop}
+                onClick={toggleReviewLoopInTemplate}
               >
-                真实验收
+                独立审查循环
               </button>
             </div>
             {draft.heterogeneous_review && reviewStatus.clash ? (
@@ -2376,9 +2492,8 @@ export function WorkflowView() {
           </div>
 
           <div className="wf-stage-layout">
-            {/* 主流程单线主轴 */}
             <div className="wf-flow-col" aria-label="工作流主流程图">
-              {/* Step 1: Intake anchor */}
+              {/* Step 01: Intake anchor */}
               <button
                 type="button"
                 data-wf-node="intake"
@@ -2386,6 +2501,9 @@ export function WorkflowView() {
                 onClick={() => setSelected({ kind: "stage", key: "intake" })}
               >
                 <div className="wf-node-head">
+                  <span className="wf-step-num" data-step-num={formatStepNum(intakeNum)}>
+                    {formatStepNum(intakeNum)}
+                  </span>
                   <span className="wf-badge ro">{STAGE_META.intake.badge}</span>
                   <span className="wf-node-title">{STAGE_META.intake.title}</span>
                   <span className="wf-perm-pill ro">{STAGE_META.intake.permLabel}</span>
@@ -2407,12 +2525,12 @@ export function WorkflowView() {
               />
 
               {/* Pre-loop steps (research / plan / custom read-only) */}
-              {topPreItems.map(({ step, index }) => (
+              {topPreItems.map(({ step, index }, posIdx) => (
                 <div
                   key={`pre-wrap-${step.kind === "agent" ? (step.id ?? `${step.stage}-${index}`) : `${step.stage}-${index}`}`}
                   className="wf-chain-unit"
                 >
-                  {renderAtomicFlowNode(step, { scope: "top", index })}
+                  {renderAtomicFlowNode(step, { scope: "top", index }, preStepNums[posIdx] ?? null)}
                   <FlowConnector
                     slot={{
                       id: `after_top_${index}`,
@@ -2426,40 +2544,70 @@ export function WorkflowView() {
                 </div>
               ))}
 
-              {/* Loop box (3 <-> 4) OR quick serial core */}
+              {/* Loop box (implement <-> verify <-> review) OR quick serial core */}
               {loopNode ? (
                 <section className="wf-loop-box" aria-label="实施与审查循环">
                   <div className="wf-loop-head">
-                    <span className="wf-loop-title">③ 实施 ↔ ④ 审查 · 自动纠偏闭环</span>
+                    <span className="wf-loop-title">实施 ↔ 门禁 ↔ 审查 · 自动纠偏闭环</span>
                     <span className="chip">上限 {loopNode.max_rounds} 轮</span>
                   </div>
                   <div className="wf-loop-body">
+                    {/* Three-part aligned loop return curve (top curved arrow + fluid vertical rail + bottom curve) */}
                     <div className="wf-loop-return" aria-hidden="true">
                       <svg
-                        className="wf-loop-return-arrow-svg"
-                        width="16"
-                        height="16"
-                        viewBox="0 0 16 16"
+                        className="wf-loop-return-cap"
+                        width="72"
+                        height="28"
+                        viewBox="0 0 72 28"
                       >
-                        <path d="M2 8 H13 M9 4 L13.5 8 L9 12" className="wf-loop-arrow-head" />
+                        <path d="M 24 28 L 24 20 Q 24 12, 32 12 L 66 12" className="wf-loop-rail" />
+                        <path
+                          d="M 24 28 L 24 20 Q 24 12, 32 12 L 66 12"
+                          className="wf-loop-stream"
+                        />
+                        <path d="M 60 7 L 67 12 L 60 17" className="wf-loop-arrow-head" />
                       </svg>
                       <svg
-                        className="wf-loop-return-svg"
-                        viewBox="0 0 56 200"
+                        className="wf-loop-return-mid"
+                        viewBox="0 0 72 100"
                         preserveAspectRatio="none"
                       >
-                        <path
-                          d="M54 182 C 18 182, 16 162, 16 140 L 16 42 C 16 22, 20 14, 52 14"
+                        <line
+                          x1="24"
+                          y1="0"
+                          x2="24"
+                          y2="100"
                           className="wf-loop-rail"
                           vectorEffect="non-scaling-stroke"
                         />
-                        <path
-                          d="M54 182 C 18 182, 16 162, 16 140 L 16 42 C 16 22, 20 14, 52 14"
+                        <line
+                          x1="24"
+                          y1="0"
+                          x2="24"
+                          y2="100"
                           className="wf-loop-stream"
                           vectorEffect="non-scaling-stroke"
                         />
+                        <line
+                          x1="24"
+                          y1="0"
+                          x2="24"
+                          y2="100"
+                          pathLength={100}
+                          className="wf-loop-pulse"
+                          vectorEffect="non-scaling-stroke"
+                        />
                       </svg>
-                      <span className="wf-loop-return-tag">有问题 ↺ 退回修复</span>
+                      <svg
+                        className="wf-loop-return-cap"
+                        width="72"
+                        height="28"
+                        viewBox="0 0 72 28"
+                      >
+                        <path d="M 68 16 L 32 16 Q 24 16, 24 8 L 24 0" className="wf-loop-rail" />
+                        <path d="M 68 16 L 32 16 Q 24 16, 24 8 L 24 0" className="wf-loop-stream" />
+                      </svg>
+                      <span className="wf-loop-return-tag">↺ 退回修复</span>
                     </div>
 
                     <div className="wf-loop-steps">
@@ -2468,47 +2616,83 @@ export function WorkflowView() {
                         const slotZone: SlotZone =
                           verifyIdx >= 0 && innerIdx < verifyIdx ? "in_implement" : "in_review";
                         const slotId = `loop_${loopIndex}_after_${innerIdx}`;
+                        const isLastInner = innerIdx === loopNode.steps.length - 1;
                         return (
                           <div
                             key={`loop-inner-${inner.kind === "agent" ? (inner.id ?? `${inner.stage}-${innerIdx}`) : `${inner.stage}-${innerIdx}`}`}
                             className="wf-chain-unit"
                           >
-                            {renderAtomicFlowNode(inner, {
-                              scope: "loop",
-                              loopIndex,
-                              innerIndex: innerIdx,
-                            })}
-                            <FlowConnector
-                              compact
-                              slot={{
-                                id: slotId,
-                                title:
-                                  slotZone === "in_implement"
-                                    ? "在循环实施区插入写码/自检步骤"
-                                    : "在循环审查区插入只读审查步骤",
-                                zone: slotZone,
-                                insertTarget: {
-                                  scope: "loop",
-                                  loopIndex,
-                                  innerIndex: innerIdx + 1,
-                                },
-                              }}
-                              selected={selected.kind === "slot" && selected.slot.id === slotId}
-                              onSelect={openSlotInspector}
-                            />
+                            {renderAtomicFlowNode(
+                              inner,
+                              {
+                                scope: "loop",
+                                loopIndex,
+                                innerIndex: innerIdx,
+                              },
+                              loopStepNums[innerIdx] ?? null,
+                            )}
+                            {!isLastInner ? (
+                              <FlowConnector
+                                compact
+                                slot={{
+                                  id: slotId,
+                                  title:
+                                    slotZone === "in_implement"
+                                      ? "在循环实施区插入写码/自检步骤"
+                                      : "在循环审查区插入只读审查步骤",
+                                  zone: slotZone,
+                                  insertTarget: {
+                                    scope: "loop",
+                                    loopIndex,
+                                    innerIndex: innerIdx + 1,
+                                  },
+                                }}
+                                selected={selected.kind === "slot" && selected.slot.id === slotId}
+                                onSelect={openSlotInspector}
+                              />
+                            ) : null}
                           </div>
                         );
                       })}
                     </div>
                   </div>
+                  <div className="wf-loop-foot">
+                    <span className="muted" style={{ fontSize: "11px" }}>
+                      审查通过后向下进入真实验收
+                    </span>
+                    <button
+                      type="button"
+                      className={`wf-loop-tail-btn ${selected.kind === "slot" && selected.slot.id === "loop_after_review" ? "on" : ""}`}
+                      data-wf-slot="loop_after_review"
+                      onClick={() =>
+                        openSlotInspector({
+                          id: "loop_after_review",
+                          title: "在独立审查后追加只读审查步骤",
+                          zone: "in_review",
+                          insertTarget: {
+                            scope: "loop",
+                            loopIndex,
+                            innerIndex: loopNode.steps.length,
+                          },
+                        })
+                      }
+                    >
+                      <PlusIcon />
+                      <span>在审查后追加只读步骤</span>
+                    </button>
+                  </div>
                 </section>
               ) : (
-                topCoreItems.map(({ step, index }) => (
+                topCoreItems.map(({ step, index }, posIdx) => (
                   <div
                     key={`core-${step.kind === "agent" ? (step.id ?? `${step.stage}-${index}`) : `${step.stage}-${index}`}`}
                     className="wf-chain-unit"
                   >
-                    {renderAtomicFlowNode(step, { scope: "top", index })}
+                    {renderAtomicFlowNode(
+                      step,
+                      { scope: "top", index },
+                      coreStepNums[posIdx] ?? null,
+                    )}
                     <FlowConnector
                       compact
                       slot={{
@@ -2529,7 +2713,7 @@ export function WorkflowView() {
                 ))
               )}
 
-              {/* Post-loop connector */}
+              {/* Post-loop connector into mandatory accept */}
               {loopNode ? (
                 <FlowConnector
                   slot={{
@@ -2543,13 +2727,17 @@ export function WorkflowView() {
                 />
               ) : null}
 
-              {/* Post-loop steps (accept / custom) */}
-              {topPostItems.map(({ step, index }) => (
+              {/* Post-loop steps (mandatory accept + optional custom steps) */}
+              {topPostItems.map(({ step, index }, posIdx) => (
                 <div
                   key={`post-${step.kind === "agent" ? (step.id ?? `${step.stage}-${index}`) : `${step.stage}-${index}`}`}
                   className="wf-chain-unit"
                 >
-                  {renderAtomicFlowNode(step, { scope: "top", index })}
+                  {renderAtomicFlowNode(
+                    step,
+                    { scope: "top", index },
+                    postStepNums[posIdx] ?? null,
+                  )}
                   <FlowConnector
                     slot={{
                       id: `after_post_${index}`,
@@ -2586,7 +2774,10 @@ export function WorkflowView() {
                 onClick={() => setSelected({ kind: "deliver" })}
               >
                 <div className="wf-node-head">
-                  <span className="wf-badge kernel">⑥ 终点</span>
+                  <span className="wf-step-num" data-step-num={formatStepNum(deliverNum)}>
+                    {formatStepNum(deliverNum)}
+                  </span>
+                  <span className="wf-badge kernel">终点</span>
                   <span className="wf-node-title">合并交付</span>
                   <span className="wf-perm-pill kernel">
                     {draft.deliver_mode === "kernel"
@@ -2608,22 +2799,26 @@ export function WorkflowView() {
               </button>
             </div>
 
-            {/* 右侧独立顾问与低频继承停靠区 */}
+            {/* Right dock: independent advisor + collapsed aux inheritance */}
             <div className="wf-dock-col">
               <div className="wf-advisor-wrap">
-                <svg className="wf-advisor-bridge-svg" viewBox="0 0 64 40" aria-hidden="true">
-                  <path
-                    d="M 2 20 C 24 20, 38 20, 62 20"
-                    className="wf-advisor-rail"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                  <path
-                    d="M 2 20 C 24 20, 38 20, 62 20"
-                    className="wf-advisor-stream"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                  <circle cx="8" cy="20" r="3" className="wf-advisor-dot" />
-                </svg>
+                <div className="wf-advisor-bridge" aria-hidden="true">
+                  <svg className="wf-advisor-bridge-svg" viewBox="0 0 44 36">
+                    <line x1="3" y1="18" x2="41" y2="18" className="wf-advisor-rail" />
+                    <line x1="3" y1="18" x2="41" y2="18" className="wf-advisor-stream" />
+                    <line
+                      x1="3"
+                      y1="18"
+                      x2="41"
+                      y2="18"
+                      pathLength={100}
+                      className="wf-advisor-pulse"
+                    />
+                    <circle cx="3" cy="18" r="2.8" className="wf-advisor-dot" />
+                    <circle cx="41" cy="18" r="2.8" className="wf-advisor-dot" />
+                  </svg>
+                  <span className="wf-advisor-tag">随时介入</span>
+                </div>
 
                 <button
                   type="button"
@@ -2683,7 +2878,7 @@ export function WorkflowView() {
                           </div>
                           <div className="wf-aux-sub">
                             {!draft.stage_bindings[k] && res.inheritedFrom ? (
-                              <span className="muted">
+                              <span className="muted wf-aux-inherit">
                                 自动继承 {STAGE_META[res.inheritedFrom].title}
                                 {res.binding ? ` · ${res.binding.model}` : ""}
                               </span>

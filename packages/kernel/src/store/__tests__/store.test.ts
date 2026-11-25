@@ -983,11 +983,17 @@ describe("KilnStore concurrency, contract bump, locks, usage, and isolation", ()
   });
 
   it("readEffectiveWorkflowsConfig initializes clean defaults, migrates legacy roster, and projects back losslessly", () => {
-    // 1. Fresh store defaults to single-subscription friendly heterogeneous_review=false + 2 builtin templates
+    // 1. Fresh store defaults to single-subscription friendly heterogeneous_review=false + 2 builtin templates with mandatory accept stage
     const fresh = store.readEffectiveWorkflowsConfig();
     expect(fresh.default_template_id).toBe("standard_dev");
     expect(fresh.heterogeneous_review).toBe(false);
     expect(fresh.templates.map((t) => t.id)).toEqual(["standard_dev", "quick"]);
+    for (const tpl of fresh.templates) {
+      const stages = tpl.blueprint.steps.flatMap((s) =>
+        s.kind === "loop" ? s.steps.map((i) => i.stage) : [s.stage],
+      );
+      expect(stages).toContain("accept");
+    }
 
     // 2. Migrating an existing roster preserves all bindings, fallbacks, and full-access flags
     const seed = createDefaultBuiltinRosterMetadata();

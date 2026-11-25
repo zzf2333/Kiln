@@ -221,21 +221,68 @@ export interface WorkflowsConfig {
   templates: WorkflowTemplate[];
 }
 
+export function ensureWorkflowAcceptStep(blueprint: WorkflowBlueprint): WorkflowBlueprint {
+  if (blueprint.preset === "host_op") {
+    return blueprint;
+  }
+  const hasAccept = flattenWorkflowSteps(blueprint).some((n) => n.stage === "accept");
+  if (hasAccept) {
+    return blueprint;
+  }
+  const steps = [...blueprint.steps];
+  const acceptNode: WorkflowAgentNode = {
+    kind: "agent",
+    stage: "accept",
+    role: "verifier",
+    fresh_context: true,
+  };
+  const deliverIdx = steps.findIndex(
+    (s) => (s.kind === "approval" || s.kind === "command") && s.stage === "deliver",
+  );
+  steps.splice(deliverIdx >= 0 ? deliverIdx : steps.length, 0, acceptNode);
+  return {
+    ...blueprint,
+    steps,
+  };
+}
+
 export function createDefaultWorkflowTemplates(): WorkflowTemplate[] {
   return [
     {
       id: "standard_dev",
-      name: "标准开发（含 3↔4 循环）",
-      description: "调研/方案（可选）→ [实施 ↔ 门禁 ↔ 独立审查] → 真实验收（可选）→ 合并交付",
+      name: "标准开发（含 3↔4 循环与真实验收）",
+      description: "调研/方案（可选）→ [实施 ↔ 门禁 ↔ 独立审查] → 真实验收（必选）→ 合并交付",
       builtin: true,
-      blueprint: buildWorkflowPreset("standard_dev"),
+      blueprint: buildCustomWorkflow({
+        preset: "standard_dev",
+        includeResearch: false,
+        includePlan: false,
+        includeReview: true,
+        includeAccept: true,
+        acceptMode: "verifier",
+        deliverApproval: false,
+        hostTwoPhase: false,
+        hasDeliverCmd: false,
+        maxRounds: 3,
+        stuckThreshold: 2,
+      }),
     },
     {
       id: "quick",
-      name: "极速修复",
-      description: "实施写码 → 确定性门禁 → 合并交付（轻量单步，无审查循环）",
+      name: "极速修复（含真实验收）",
+      description: "实施写码 → 确定性门禁 → 真实验收（必选）→ 合并交付",
       builtin: true,
-      blueprint: buildWorkflowPreset("quick"),
+      blueprint: buildCustomWorkflow({
+        preset: "quick",
+        includeResearch: false,
+        includePlan: false,
+        includeReview: false,
+        includeAccept: true,
+        acceptMode: "verifier",
+        deliverApproval: false,
+        hostTwoPhase: false,
+        hasDeliverCmd: false,
+      }),
     },
   ];
 }
