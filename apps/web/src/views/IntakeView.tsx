@@ -12,8 +12,9 @@ import {
 import type { TaskAttachment } from "../api/types";
 import { AttachmentLightbox } from "../components/AttachmentLightbox";
 import { importGithubIssue } from "../api/client";
-import { ChatComposer } from "../components/ChatComposer";
+import { ChatComposer, type ComposerQuickPrompt } from "../components/ChatComposer";
 import { ChatTimeline } from "../components/ChatTimeline";
+import { parseClarificationQuestions } from "../state/clarification-parser";
 import { CheckIcon, CloseIcon, GitPrIcon } from "../components/Icons";
 import { KilnSelect } from "../components/KilnSelect";
 import { MarkdownContent } from "../components/MarkdownContent";
@@ -193,18 +194,47 @@ export function IntakeView() {
           : "临时沙盒 scratch_dir"
       }`;
 
-  const handleSend = async (): Promise<void> => {
-    const val = chatInput.trim();
+  const handleSend = async (overrideText?: string): Promise<void> => {
+    const val = (overrideText ?? chatInput).trim();
     if (!val || intakeBusy || state.attachmentUploadBusy) return;
     if (val.toLowerCase() === "/new") {
-      setChatInput("");
+      if (overrideText === undefined) setChatInput("");
       store.startNewIntake();
       return;
     }
     if (projectBlocked) return;
-    setChatInput("");
+    if (overrideText === undefined) setChatInput("");
     await store.sendIntakeChat(val);
   };
+
+  const recentUserMessages = intakeMessages.filter((m) => m.who === "me").map((m) => m.text);
+  const lastNonToolMsg = [...intakeMessages].reverse().find((m) => m.who !== "tool");
+  const latestHasOptions =
+    !intakeBusy &&
+    lastNonToolMsg?.who === "agent" &&
+    parseClarificationQuestions(lastNonToolMsg.text).length > 0;
+
+  const intakeQuickPrompts: ComposerQuickPrompt[] =
+    intakeMessages.length <= 1
+      ? isProjectMode
+        ? [
+            { label: "新功能实现", text: "帮我在当前项目中设计并实现：" },
+            { label: "定位修复 Bug", text: "帮我排查并修复一个问题：" },
+            { label: "结构重构方案", text: "先不写代码，帮我调研并梳理改造方案：" },
+          ]
+        : [
+            { label: "磁盘 / 残留清理", text: "帮我扫描并安全清理本机残余文件：" },
+            { label: "本机配置排查", text: "帮我检查并调整本机配置：" },
+            { label: "一次性分析脚本", text: "在临时沙盒写个脚本帮我处理：" },
+          ]
+      : latestHasOptions
+        ? []
+        : [
+            { label: "按推荐走", text: "以上问题均按推荐方案走", autoSend: true },
+            { label: "生成方案 /brief", text: "/brief", autoSend: true },
+            { label: "补全契约 /fill", text: "/fill", autoSend: true },
+            { label: "评估拆分 /split", text: "/split", autoSend: true },
+          ];
 
   return (
     <ViewFrame
@@ -446,6 +476,8 @@ export function IntakeView() {
             progressLogs={intakeProgressLogs}
             roleLabel="立项助手"
             defaultAgentName="intake"
+            onQuickReply={(text) => void handleSend(text)}
+            onFillComposer={(text) => setChatInput(text)}
             emptySlot={
               projectBlocked ? (
                 <div className="intake-empty">
@@ -497,15 +529,19 @@ export function IntakeView() {
             draftId={intakeDraftId}
             value={chatInput}
             disabled={intakeBusy || projectBlocked}
+            busy={intakeBusy}
             placeholder={
               projectBlocked
                 ? "请先添加或选择项目空间"
                 : isProjectMode && selectedProject
-                  ? `描述「${selectedProject.name}」需求（/ 调用指令或技能，@ 选择文件、MCP 或任务，可粘贴截图）`
-                  : "描述本机或临时任务需求（/ 调用指令或技能，@ 选择当前目录文件、MCP 或任务，可粘贴截图）"
+                  ? `描述「${selectedProject.name}」需求（/ 调用指令或技能，@ 引用文件、MCP 或任务，可粘贴截图）`
+                  : "描述本机或临时任务需求（/ 调用指令或技能，@ 引用当前目录文件、MCP 或任务，可粘贴截图）"
             }
             onChange={setChatInput}
-            onSend={() => void handleSend()}
+            onSend={(textToSend) => void handleSend(textToSend)}
+            quickPrompts={intakeQuickPrompts}
+            recentUserMessages={recentUserMessages}
+            onOpenWorkflow={() => store.go("lineup")}
             attachments={intakeForm.attachments}
             attachmentUrlFor={draftAttachmentUrl}
             attachmentBusy={state.attachmentUploadBusy}

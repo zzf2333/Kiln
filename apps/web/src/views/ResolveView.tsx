@@ -80,12 +80,14 @@ export function ResolveView() {
     );
   }
 
-  const handleSend = async (): Promise<void> => {
-    const val = chatInput.trim();
+  const handleSend = async (overrideText?: string): Promise<void> => {
+    const val = (overrideText ?? chatInput).trim();
     if (!val || state.resolveBusy) return;
-    setChatInput("");
+    if (overrideText === undefined) setChatInput("");
     await store.sendResolveChat(taskId, val);
   };
+
+  const recentUserMessages = messages.filter((m) => m.who === "me").map((m) => m.text);
 
   return (
     <ViewFrame
@@ -126,6 +128,8 @@ export function ResolveView() {
             busyLabel="正在整理上下文并思考回应…"
             roleLabel="讨论助手"
             defaultAgentName="resolver"
+            onQuickReply={(text) => void handleSend(text)}
+            onFillComposer={(text) => setChatInput(text)}
           />
 
           <ChatComposer
@@ -135,9 +139,16 @@ export function ResolveView() {
             taskId={taskId}
             value={chatInput}
             disabled={state.resolveBusy}
-            placeholder="说说你的想法（/ 调用指令或技能，@ 选择文件、MCP 或任务）"
+            busy={state.resolveBusy}
+            placeholder="说说你的想法（/ 调用指令或技能，@ 引用文件、MCP 或任务）"
             onChange={setChatInput}
-            onSend={() => void handleSend()}
+            onSend={(textToSend) => void handleSend(textToSend)}
+            quickPrompts={[
+              { label: "梳理利弊 /summary", text: "/summary", autoSend: true },
+              { label: "生成契约修订 /contract", text: "/contract", autoSend: true },
+            ]}
+            recentUserMessages={recentUserMessages}
+            onOpenWorkflow={() => store.go("lineup")}
           />
         </div>
 

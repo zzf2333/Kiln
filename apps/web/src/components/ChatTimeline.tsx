@@ -1,9 +1,12 @@
 import type { ReactNode } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage } from "../api/types";
+import { parseClarificationQuestions } from "../state/clarification-parser";
 import { fmtTime } from "../state/format";
 import type { IntakeProgressItem } from "../state/store";
+import { CornerUpLeftIcon } from "./Icons";
 import { MarkdownContent } from "./MarkdownContent";
+import { OptionPickerCard } from "./OptionPickerCard";
 
 export interface ChatTimelineProps {
   messages: ReadonlyArray<ChatMessage>;
@@ -13,6 +16,8 @@ export interface ChatTimelineProps {
   roleLabel: string;
   defaultAgentName: string;
   emptySlot?: ReactNode;
+  onQuickReply?: (text: string) => void;
+  onFillComposer?: (text: string) => void;
 }
 
 interface ParsedToolStep {
@@ -255,16 +260,75 @@ function WorkLogGroupCard({ steps, rawCount }: { steps: ParsedToolStep[]; rawCou
   );
 }
 
+function UserMessageCard({
+  msg,
+  onFillComposer,
+}: {
+  msg: ChatMessage;
+  onFillComposer?: (text: string) => void;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async (): Promise<void> => {
+    try {
+      await navigator.clipboard?.writeText(msg.text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1400);
+    } catch {
+      // Clipboard unavailable
+    }
+  };
+
+  return (
+    <div className="msg me">
+      <div className="msg-text">{msg.text}</div>
+      <div className="msg-me-acts">
+        <button
+          type="button"
+          className="msg-me-btn"
+          aria-label="复制我发送的内容"
+          onClick={() => void handleCopy()}
+        >
+          {copied ? "已复制" : "复制"}
+        </button>
+        {onFillComposer ? (
+          <button
+            type="button"
+            className="msg-me-btn"
+            aria-label="回填到输入框继续编辑"
+            onClick={() => onFillComposer(msg.text)}
+          >
+            <CornerUpLeftIcon />
+            <span>回填编辑</span>
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function AgentMessageCard({
   msg,
   roleLabel,
   defaultAgentName,
+  showOptionPicker,
+  disabled,
+  onQuickReply,
+  onFillComposer,
 }: {
   msg: ChatMessage;
   roleLabel: string;
   defaultAgentName: string;
+  showOptionPicker: boolean;
+  disabled: boolean;
+  onQuickReply?: (text: string) => void;
+  onFillComposer?: (text: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const questions = useMemo(
+    () => (showOptionPicker ? parseClarificationQuestions(msg.text) : []),
+    [showOptionPicker, msg.text],
+  );
 
   const handleCopy = async (): Promise<void> => {
     try {
@@ -295,6 +359,14 @@ function AgentMessageCard({
         </button>
       </header>
       <MarkdownContent text={msg.text} className="msg-md" />
+      {questions.length > 0 && onQuickReply && onFillComposer ? (
+        <OptionPickerCard
+          questions={questions}
+          disabled={disabled}
+          onSubmit={onQuickReply}
+          onFill={onFillComposer}
+        />
+      ) : null}
     </article>
   );
 }
@@ -307,6 +379,8 @@ export function ChatTimeline({
   roleLabel,
   defaultAgentName,
   emptySlot,
+  onQuickReply,
+  onFillComposer,
 }: ChatTimelineProps) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const liveRailRef = useRef<HTMLUListElement | null>(null);
@@ -347,6 +421,13 @@ export function ChatTimeline({
   }, [busy, progressLogs.length]);
 
   const segments = groupTimelineSegments(messages);
+  let lastChatSegIdx = -1;
+  for (let i = segments.length - 1; i >= 0; i -= 1) {
+    if (segments[i]!.kind === "message") {
+      lastChatSegIdx = i;
+      break;
+    }
+  }
 
   return (
     <div className="msgs-wrap">
@@ -360,17 +441,24 @@ export function ChatTimeline({
             }
             if (seg.who === "me") {
               return (
-                <div key={seg.msg.id ?? `me-${idx}`} className="msg me">
-                  <div className="msg-text">{seg.msg.text}</div>
-                </div>
+                <UserMessageCard
+                  key={seg.msg.id ?? `me-${idx}`}
+                  msg={seg.msg}
+                  onFillComposer={onFillComposer}
+                />
               );
             }
+            const isLatestAgent = idx === lastChatSegIdx && !busy;
             return (
               <AgentMessageCard
                 key={seg.msg.id ?? `ag-${idx}`}
                 msg={seg.msg}
                 roleLabel={roleLabel}
                 defaultAgentName={defaultAgentName}
+                showOptionPicker={isLatestAgent}
+                disabled={busy}
+                onQuickReply={onQuickReply}
+                onFillComposer={onFillComposer}
               />
             );
           })}

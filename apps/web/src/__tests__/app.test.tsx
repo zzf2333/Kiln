@@ -4976,4 +4976,125 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       expect(screen.queryByRole("dialog", { name: "今日实时监控浮层" })).toBeNull();
     });
   });
+
+  it("IntakeView renders interactive OptionPickerCard for structured A/B/C options and triggers @ / composer toolbar", async () => {
+    const sentMessages: string[] = [];
+    let draftCreated = false;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof Request ? input.url : "";
+      if (url.endsWith("/api/bootstrap")) {
+        return jsonResponse(
+          makeBaseBootstrap({
+            drafts: [
+              {
+                schema_version: 1,
+                id: "d-pick",
+                title: "本机清理残余文件",
+                space: "local",
+                priority: "P2",
+                track: "L2",
+                workspace_mode: "host_scoped",
+                depends_on: [],
+                open_questions: [],
+                contract: {
+                  goal: "清理残余",
+                  end: "已清理",
+                  accept_cmd: "echo ok",
+                  scope: ["/tmp/test"],
+                  deliver: { mode: "manual", cmd: null },
+                },
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              },
+            ],
+          }),
+        );
+      }
+      if (url.includes("/api/chat/commands")) {
+        return jsonResponse({ commands: [], mcpServers: [] });
+      }
+      if (url.includes("/api/spaces/") && url.includes("/files")) {
+        return jsonResponse({ rootLabel: "local", files: [{ kind: "file", path: "README.md" }] });
+      }
+      if (url.endsWith("/api/drafts") && init?.method === "POST") {
+        draftCreated = true;
+        return jsonResponse({
+          draft: {
+            schema_version: 1,
+            id: "d-pick",
+            title: "本机清理残余文件",
+            space: "local",
+            priority: "P2",
+            track: "L2",
+            workspace_mode: "host_scoped",
+            depends_on: [],
+            open_questions: [],
+            contract: {
+              goal: "清理残余",
+              end: "已清理",
+              accept_cmd: "echo ok",
+              scope: ["/tmp/test"],
+              deliver: { mode: "manual", cmd: null },
+            },
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+        });
+      }
+      if (url.endsWith("/api/drafts/d-pick/chat")) {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { message?: string };
+        const msg = body.message ?? "";
+        sentMessages.push(msg);
+        if (sentMessages.length === 1) {
+          return jsonResponse({
+            reply: [
+              "请先确认以下 2 个问题：",
+              "1. 清理范围",
+              "A（推荐）：仅扫描已卸载应用残留",
+              "B：清理指定的 App",
+              "2. 处置方式",
+              "A（推荐）：移入可恢复隔离区",
+              "B：永久删除",
+            ].join("\n"),
+          });
+        }
+        return jsonResponse({ reply: "收到，已按选定方案推进。" });
+      }
+      return jsonResponse({});
+    });
+
+    window.location.hash = "#view=intake";
+    render(<App />);
+
+    await waitFor(() => {
+      expect(document.getElementById("chatIn")).toBeTruthy();
+    });
+
+    // Click @ toolbar button -> opens context popup without manual typing
+    const atBtn = screen.getByRole("button", { name: "引用上下文" });
+    fireEvent.click(atBtn);
+    await waitFor(() => {
+      expect(screen.getByRole("listbox", { name: "选择文件、MCP、任务或账本" })).toBeTruthy();
+    });
+    fireEvent.keyDown(document.getElementById("chatIn")!, { key: "Escape" });
+
+    // Send first intake chat message (switch to local mode)
+    fireEvent.click(screen.getByRole("button", { name: "本机 / 临时任务" }));
+    fireEvent.change(document.getElementById("chatIn")!, { target: { value: "帮我清理 Mac" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    // OptionPickerCard appears automatically below the 2-question reply
+    const recBtn = await screen.findByRole("button", { name: "一键选推荐" });
+    expect(draftCreated).toBe(true);
+    fireEvent.click(recBtn);
+
+    const submitOptsBtn = screen.getByRole("button", { name: "发送所选方案" });
+    fireEvent.click(submitOptsBtn);
+
+    await waitFor(() => {
+      expect(sentMessages).toHaveLength(2);
+    });
+    expect(sentMessages[1]).toContain("1. 清理范围：选 A");
+    expect(sentMessages[1]).toContain("2. 处置方式：选 A");
+  });
 });

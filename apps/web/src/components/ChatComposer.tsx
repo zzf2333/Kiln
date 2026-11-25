@@ -8,13 +8,20 @@ import type {
   TaskAttachment,
 } from "../api/types";
 import { useKilnStore } from "../state/store";
-import { CloseIcon, ImageIcon } from "./Icons";
+import { CloseIcon, ImageIcon, SendIcon } from "./Icons";
+import { ProviderAvatar } from "./ProviderAvatar";
 
 export interface ComposerTrigger {
   kind: "/" | "@";
   start: number;
   end: number;
   query: string;
+}
+
+export interface ComposerQuickPrompt {
+  label: string;
+  text: string;
+  autoSend?: boolean;
 }
 
 export function detectComposerTrigger(text: string, rawCaret: number): ComposerTrigger | null {
@@ -124,6 +131,37 @@ type PopupEntry =
       item: MentionPopupItem;
     };
 
+interface InlineMentionChip {
+  token: string;
+  label: string;
+  start: number;
+  end: number;
+  kind: "mcp" | "task" | "ledger" | "path";
+}
+
+function extractInlineMentions(text: string): InlineMentionChip[] {
+  const chips: InlineMentionChip[] = [];
+  const re = /(?:^|(\s))@([^\s@]+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    const leadingWsLen = match[1] ? match[1].length : 0;
+    const token = match[2] ?? "";
+    if (!token) continue;
+    const start = match.index + leadingWsLen;
+    const end = start + 1 + token.length;
+    const kind: InlineMentionChip["kind"] = token.startsWith("mcp:")
+      ? "mcp"
+      : token.startsWith("task:")
+        ? "task"
+        : token.startsWith("ledger:")
+          ? "ledger"
+          : "path";
+    const label = kind === "path" && token.length > 32 ? `…${token.slice(-29)}` : `@${token}`;
+    chips.push({ token, label, start, end, kind });
+  }
+  return chips;
+}
+
 function scoreFuzzyMatch(candidate: string, query: string): number | null {
   const q = query.trim().toLowerCase();
   if (!q) return 0;
@@ -156,6 +194,7 @@ export interface ChatComposerProps {
   taskId?: string | null;
   value: string;
   disabled: boolean;
+  busy?: boolean;
   placeholder: string;
   onChange: (nextValue: string) => void;
   onSend: (textToSend?: string) => void;
@@ -166,6 +205,9 @@ export interface ChatComposerProps {
   onUploadImageFiles?: (files: File[]) => void;
   onRemoveAttachment?: (attachmentId: string) => void;
   onPreviewAttachment?: (attachment: TaskAttachment) => void;
+  quickPrompts?: ReadonlyArray<ComposerQuickPrompt>;
+  recentUserMessages?: ReadonlyArray<string>;
+  onOpenWorkflow?: () => void;
 }
 
 interface CachedExtensionsPayload {
@@ -182,6 +224,7 @@ export function ChatComposer({
   taskId,
   value,
   disabled,
+  busy = false,
   placeholder,
   onChange,
   onSend,
@@ -192,6 +235,9 @@ export function ChatComposer({
   onUploadImageFiles,
   onRemoveAttachment,
   onPreviewAttachment,
+  quickPrompts,
+  recentUserMessages,
+  onOpenWorkflow,
 }: ChatComposerProps) {
   const { state } = useKilnStore();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -206,9 +252,14 @@ export function ChatComposer({
   const [activeIndex, setActiveIndex] = useState(0);
   const [dragOver, setDragOver] = useState(false);
 
+  const wfBinding =
+    role === "intake"
+      ? state.workflows?.stage_bindings?.intake
+      : (state.workflows?.stage_bindings?.resolver ?? state.workflows?.stage_bindings?.advisor);
   const activeRoleAssignment = state.roles.roles[role];
-  const activeAgent = activeRoleAssignment?.agent ?? "";
-  const activeModel = activeRoleAssignment?.model ?? "";
+  const activeAgent = wfBinding?.provider || activeRoleAssignment?.agent || "";
+  const activeModel = wfBinding?.model || activeRoleAssignment?.model || "";
+  const activeEffort = wfBinding?.effort || activeRoleAssignment?.reasoning_effort || "";
 
   const [commands, setCommands] = useState<ChatCommandItem[]>(() => FALLBACK_KILN_COMMANDS[role]);
   const [mcpServers, setMcpServers] = useState<ChatMcpServerItem[]>([]);
@@ -265,6 +316,18 @@ export function ChatComposer({
       cancelled = true;
     };
   }, [commandCacheKey, role, effectiveSpaceId, draftId, taskId]);
+
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const measured = el.scrollHeight;
+    if (Number.isFinite(measured) && measured > 0) {
+      el.style.height = `${Math.min(200, Math.max(44, measured))}px`;
+    } else {
+      el.style.height = "44px";
+    }
+  }, [value]);
 
   const rawTrigger = useMemo(() => detectComposerTrigger(value, caretPos), [value, caretPos]);
   const currentAnchor = rawTrigger ? `${rawTrigger.kind}:${rawTrigger.start}` : null;
@@ -398,7 +461,6 @@ export function ChatComposer({
       ];
     }
 
-    // Preserve server-ranked directory/file entries while merging scored @mcp / @task / @ledger matches.
     const scoredNonFile: Array<{ score: number; item: MentionPopupItem }> = [];
     for (const item of [...mcpEntries, ...taskEntries, ...ledgerEntries]) {
       const s1 = scoreFuzzyMatch(item.insertValue, q);
@@ -449,6 +511,61 @@ export function ChatComposer({
     setCaretPos(el.selectionStart ?? el.value.length);
   };
 
+  const focusWithCaret = (pos: number): void => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange?.(pos, pos);
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => {
+        const cur = textareaRef.current;
+        if (cur) {
+          cur.focus();
+          cur.setSelectionRange?.(pos, pos);
+        }
+      });
+    }
+  };
+
+  const triggerInsertChar = (kind: "@" | "/"): void => {
+    if (disabled || attachmentBusy) return;
+    setDismissedAnchor(null);
+    if (kind === "/") {
+      if (value.trimStart().startsWith("/")) {
+        const slashIdx = value.indexOf("/");
+        setCaretPos(slashIdx + 1);
+        focusWithCaret(slashIdx + 1);
+        return;
+      }
+      const next = value.trim().length > 0 ? `/ ${value.trimStart()}` : "/";
+      onChange(next);
+      setCaretPos(1);
+      focusWithCaret(1);
+      return;
+    }
+
+    const el = textareaRef.current;
+    const pos = el?.selectionStart ?? value.length;
+    const before = value.slice(0, pos);
+    const after = value.slice(pos);
+    const needSpaceBefore = before.length > 0 && !/\s$/.test(before);
+    const insert = `${needSpaceBefore ? " " : ""}@`;
+    const next = `${before}${insert}${after}`;
+    const nextCaret = before.length + insert.length;
+    onChange(next);
+    setCaretPos(nextCaret);
+    focusWithCaret(nextCaret);
+  };
+
+  const removeInlineMention = (chip: InlineMentionChip): void => {
+    if (disabled) return;
+    const before = value.slice(0, chip.start);
+    const after = value.slice(chip.end);
+    const merged = `${before.replace(/[ \t]+$/, "")}${before.trimEnd() && after.trimStart() ? " " : ""}${after.replace(/^[ \t]+/, "")}`;
+    onChange(merged);
+    setCaretPos(merged.length);
+  };
+
   const applySelection = (entry: PopupEntry, options?: { drillDir?: boolean }): void => {
     if (!trigger) return;
     if (entry.type === "command" && entry.item.action === "new_draft") {
@@ -483,16 +600,7 @@ export function ChatComposer({
     onChange(nextValue);
     setCaretPos(nextCaret);
     setDismissedAnchor(null);
-
-    if (typeof requestAnimationFrame === "function") {
-      requestAnimationFrame(() => {
-        const el = textareaRef.current;
-        if (el) {
-          el.focus();
-          el.setSelectionRange?.(nextCaret, nextCaret);
-        }
-      });
-    }
+    focusWithCaret(nextCaret);
   };
 
   const showPopup =
@@ -501,6 +609,12 @@ export function ChatComposer({
     (entries.length > 0 ||
       trigger.kind === "@" ||
       (trigger.kind === "/" && (commandsLoading || trigger.query.length > 0)));
+
+  const inlineMentions = useMemo(() => extractInlineMentions(value), [value]);
+  const hasContextChips = Boolean(
+    (attachments && attachments.length > 0) || inlineMentions.length > 0,
+  );
+  const showQuickBar = Boolean(quickPrompts && quickPrompts.length > 0 && !showPopup && !disabled);
 
   const kilnCommandEntries = useMemo(
     () =>
@@ -630,38 +744,32 @@ export function ChatComposer({
       }}
     >
       <div className="composer-stack">
-        {attachments && attachments.length > 0 ? (
-          <div className="composer-atts" aria-label="已附图片">
-            {attachments.map((att) => {
-              const url = attachmentUrlFor?.(att);
-              return (
-                <div key={att.id} className="att-chip">
-                  <button
-                    type="button"
-                    className="att-chip-preview"
-                    title={`预览 ${att.filename}`}
-                    onClick={() => onPreviewAttachment?.(att)}
-                  >
-                    {url ? <img src={url} alt={att.filename} /> : <ImageIcon />}
-                    <span className="att-chip-name">{att.filename}</span>
-                  </button>
-                  {onRemoveAttachment ? (
-                    <button
-                      type="button"
-                      className="att-chip-del"
-                      aria-label={`删除附件 ${att.filename}`}
-                      disabled={disabled || attachmentBusy}
-                      onClick={() => onRemoveAttachment(att.id)}
-                    >
-                      <CloseIcon />
-                    </button>
-                  ) : null}
-                </div>
-              );
-            })}
+        {showQuickBar ? (
+          <div className="composer-quickbar" aria-label="快捷操作">
+            {quickPrompts!.map((qp) => (
+              <button
+                key={`${qp.label}-${qp.text}`}
+                type="button"
+                className="composer-quick-chip"
+                disabled={disabled || attachmentBusy}
+                onClick={() => {
+                  if (qp.autoSend) {
+                    onSend(qp.text);
+                  } else {
+                    onChange(qp.text);
+                    const endPos = qp.text.length;
+                    setCaretPos(endPos);
+                    focusWithCaret(endPos);
+                  }
+                }}
+              >
+                {qp.label}
+              </button>
+            ))}
           </div>
         ) : null}
-        <div className="composer-inner">
+
+        <div className={`composer-card ${disabled ? "is-disabled" : ""}`}>
           {showPopup ? (
             <div
               className="composer-popup"
@@ -769,38 +877,61 @@ export function ChatComposer({
             </div>
           ) : null}
 
-          {onUploadImageFiles ? (
-            <>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/png,image/jpeg,image/webp,image/gif"
-                multiple
-                hidden
-                onChange={(e) => {
-                  const files = Array.from(e.currentTarget.files ?? []);
-                  e.currentTarget.value = "";
-                  if (files.length > 0) {
-                    onUploadImageFiles(files);
-                  }
-                }}
-              />
-              <button
-                type="button"
-                className="btn btn-sm composer-att-btn"
-                title="上传图片截图"
-                aria-label="上传图片截图"
-                disabled={disabled || attachmentBusy}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <ImageIcon />
-              </button>
-            </>
+          {hasContextChips ? (
+            <div className="composer-ctx-row">
+              {attachments && attachments.length > 0 ? (
+                <div className="composer-atts" aria-label="已附图片">
+                  {attachments.map((att) => {
+                    const url = attachmentUrlFor?.(att);
+                    return (
+                      <div key={att.id} className="att-chip">
+                        <button
+                          type="button"
+                          className="att-chip-preview"
+                          title={`预览 ${att.filename}`}
+                          onClick={() => onPreviewAttachment?.(att)}
+                        >
+                          {url ? <img src={url} alt={att.filename} /> : <ImageIcon />}
+                          <span className="att-chip-name">{att.filename}</span>
+                        </button>
+                        {onRemoveAttachment ? (
+                          <button
+                            type="button"
+                            className="att-chip-del"
+                            aria-label={`删除附件 ${att.filename}`}
+                            disabled={disabled || attachmentBusy}
+                            onClick={() => onRemoveAttachment(att.id)}
+                          >
+                            <CloseIcon />
+                          </button>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+
+              {inlineMentions.map((chip) => (
+                <span key={`${chip.start}-${chip.token}`} className="ctx-ref-chip">
+                  <span className="mono">{chip.label}</span>
+                  <button
+                    type="button"
+                    className="ctx-ref-del"
+                    aria-label={`移除引用 ${chip.token}`}
+                    disabled={disabled}
+                    onClick={() => removeInlineMention(chip)}
+                  >
+                    <CloseIcon />
+                  </button>
+                </span>
+              ))}
+            </div>
           ) : null}
+
           <textarea
             ref={textareaRef}
             id={id}
-            className="input"
+            className="composer-textarea"
             rows={2}
             placeholder={placeholder}
             value={value}
@@ -893,26 +1024,125 @@ export function ChatComposer({
                 }
               }
 
+              if (
+                e.key === "ArrowUp" &&
+                value.length === 0 &&
+                !showPopup &&
+                recentUserMessages &&
+                recentUserMessages.length > 0
+              ) {
+                e.preventDefault();
+                const lastText = recentUserMessages[recentUserMessages.length - 1]!;
+                onChange(lastText);
+                setCaretPos(lastText.length);
+                focusWithCaret(lastText.length);
+                return;
+              }
+
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                if (!disabled && !attachmentBusy) {
+                if (!disabled && !attachmentBusy && value.trim()) {
                   onSend();
                 }
               }
             }}
           />
-          <button
-            type="button"
-            className="btn btn-light"
-            disabled={disabled || attachmentBusy || !value.trim()}
-            onClick={() => onSend()}
-          >
-            发送
-          </button>
-        </div>
-        <div className="composer-hint">
-          输入 <span className="mono">/</span> 调用指令或技能 · <span className="mono">@</span>{" "}
-          选择当前目录文件、MCP 或任务 · Enter 发送，Shift+Enter 换行
+
+          <div className="composer-toolbar">
+            <div className="composer-tools-l">
+              {onUploadImageFiles ? (
+                <>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/gif"
+                    multiple
+                    hidden
+                    onChange={(e) => {
+                      const files = Array.from(e.currentTarget.files ?? []);
+                      e.currentTarget.value = "";
+                      if (files.length > 0) {
+                        onUploadImageFiles(files);
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="composer-tool-btn composer-att-btn"
+                    title="上传或粘贴图片截图"
+                    aria-label="上传图片截图"
+                    disabled={disabled || attachmentBusy}
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <ImageIcon />
+                  </button>
+                </>
+              ) : null}
+
+              <button
+                type="button"
+                className={`composer-tool-btn mono ${trigger?.kind === "@" ? "on" : ""}`}
+                title="引用文件、MCP 或任务 (@)"
+                aria-label="引用上下文"
+                disabled={disabled || attachmentBusy}
+                onClick={() => triggerInsertChar("@")}
+              >
+                @
+              </button>
+
+              <button
+                type="button"
+                className={`composer-tool-btn mono ${trigger?.kind === "/" ? "on" : ""}`}
+                title="调用快捷指令或技能 (/)"
+                aria-label="调用指令或技能"
+                disabled={disabled || attachmentBusy}
+                onClick={() => triggerInsertChar("/")}
+              >
+                /
+              </button>
+
+              {activeAgent && activeModel ? (
+                <button
+                  type="button"
+                  className="composer-model-pill"
+                  title="查看或切换当前对话所用的订阅与模型"
+                  onClick={() => onOpenWorkflow?.()}
+                >
+                  <ProviderAvatar providerId={activeAgent} size="xs" />
+                  <span className="mono">{activeModel}</span>
+                  {activeEffort ? <span className="composer-effort">{activeEffort}</span> : null}
+                </button>
+              ) : null}
+            </div>
+
+            <div className="composer-tools-r">
+              {value.length > 0 && !disabled ? (
+                <button
+                  type="button"
+                  className="composer-clear-btn"
+                  onClick={() => {
+                    onChange("");
+                    setCaretPos(0);
+                    textareaRef.current?.focus();
+                  }}
+                >
+                  清空
+                </button>
+              ) : (
+                <span className="composer-kbd-hint">⏎ 发送 · ⇧⏎ 换行</span>
+              )}
+
+              <button
+                type="button"
+                className={`btn btn-sm btn-light composer-send-btn ${busy ? "is-busy" : ""}`}
+                disabled={disabled || attachmentBusy || !value.trim()}
+                onClick={() => onSend()}
+              >
+                <SendIcon />
+                <span>{busy ? "生成中…" : "发送"}</span>
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
