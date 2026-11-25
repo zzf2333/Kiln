@@ -12,6 +12,7 @@ import {
   applyStartAction,
   decideStartupWindowAction,
   isTrayStateOnline,
+  resolveWorkbenchOrigin,
   shouldRestartStaleDaemon,
   type KilnHealth,
   type NormalizedKilndUrl,
@@ -48,6 +49,21 @@ try {
   process.stderr.write(`kiln-desktop: ${err instanceof Error ? err.message : String(err)}\n`);
   process.exit(2);
 }
+
+let workbenchUrl: NormalizedKilndUrl;
+try {
+  workbenchUrl = resolveWorkbenchOrigin({
+    kilndUrl,
+    uiDevUrlRaw: process.env.KILN_UI_DEV_URL,
+    isPackaged: app.isPackaged,
+  });
+} catch (err) {
+  process.stderr.write(
+    `kiln-desktop: invalid KILN_UI_DEV_URL (${err instanceof Error ? err.message : String(err)})\n`,
+  );
+  process.exit(2);
+}
+const isUiDevMode = workbenchUrl.baseUrl !== kilndUrl.baseUrl;
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
@@ -133,7 +149,7 @@ class KilnDesktopApp implements TrayCoordinator {
 
   openWorkbench(route?: WorkbenchRoute | null): void {
     if (hasMainWindow()) {
-      openOrFocusMainWindow(kilndUrl, route);
+      openOrFocusMainWindow(workbenchUrl, route);
       return;
     }
     if (this.isOpeningWindow) return;
@@ -168,9 +184,11 @@ class KilnDesktopApp implements TrayCoordinator {
 
     let online = health?.ok === true;
     const electronProc = process as NodeJS.Process & { resourcesPath?: string };
-    const expectedUiBuildId = resolveBundledUiBuildId({
-      resourcesPath: electronProc.resourcesPath ?? null,
-    });
+    const expectedUiBuildId = isUiDevMode
+      ? null
+      : resolveBundledUiBuildId({
+          resourcesPath: electronProc.resourcesPath ?? null,
+        });
     const needsUpgrade =
       health?.ok === true &&
       ((health.apiRevision ?? 0) < REQUIRED_KILND_API_REVISION ||
@@ -211,7 +229,7 @@ class KilnDesktopApp implements TrayCoordinator {
 
     const action = decideStartupWindowAction(online);
     if (action === "open_immediately") {
-      openOrFocusMainWindow(kilndUrl, route);
+      openOrFocusMainWindow(workbenchUrl, route);
       return;
     }
 
@@ -219,7 +237,7 @@ class KilnDesktopApp implements TrayCoordinator {
     try {
       await spawnKilnUp(kilndUrl);
       this.finishStartKilnd(null);
-      openOrFocusMainWindow(kilndUrl, route);
+      openOrFocusMainWindow(workbenchUrl, route);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(`kiln-desktop: ${msg}\n`);

@@ -319,6 +319,23 @@ export function validateKilndUrl(raw: string): NormalizedKilndUrl {
   };
 }
 
+export interface ResolveWorkbenchOriginOptions {
+  kilndUrl: NormalizedKilndUrl;
+  uiDevUrlRaw?: string | null;
+  isPackaged: boolean;
+}
+
+export function resolveWorkbenchOrigin(options: ResolveWorkbenchOriginOptions): NormalizedKilndUrl {
+  if (options.isPackaged) {
+    return options.kilndUrl;
+  }
+  const trimmed = nonEmptyTrimmed(options.uiDevUrlRaw);
+  if (!trimmed) {
+    return options.kilndUrl;
+  }
+  return validateKilndUrl(trimmed);
+}
+
 export function isAllowedKilndUrl(raw: string): boolean {
   try {
     validateKilndUrl(raw);

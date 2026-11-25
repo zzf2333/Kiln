@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "node scripts/dev.mjs --mode desktop",
+    "dev:desktop": "node scripts/dev.mjs --mode desktop",
+    "dev:web": "node scripts/dev.mjs --mode web",
     "build": "pnpm -r --if-present build",
     "build:binary": "node scripts/build-binary.mjs",
     "typecheck": "pnpm -r --if-present typecheck",

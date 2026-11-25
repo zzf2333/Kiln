@@ -7,7 +7,8 @@
   "type": "module",
   "main": "dist/main.js",
   "scripts": {
-    "dev": "pnpm build && electron .",
+    "dev": "node ../../scripts/dev.mjs --mode desktop",
+    "start": "pnpm build && electron .",
     "build": "vp pack && node scripts/stage-runtime.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vp test run --root ../.. apps/desktop/src",

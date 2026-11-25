@@ -42,6 +42,7 @@ import {
   pathContainsDir,
   renderPosixCliWrapper,
   renderWindowsCliShim,
+  resolveWorkbenchOrigin,
   shouldPreventExit,
   shouldRestartStaleDaemon,
   summarizeStartError,
@@ -451,5 +452,56 @@ describe("@kiln/desktop Electron core model & daemon client", () => {
     expect(() =>
       parseHealthJson('{"ok":true,"pid":1,"version":"0.0.5","ui_build_id":""}'),
     ).toThrow();
+  });
+
+  it("resolves workbench origin strictly for unpackaged dev mode and ignores dev override when packaged", () => {
+    const kilnd = validateKilndUrl(DEFAULT_KILND_URL);
+
+    // Empty / unset returns kilnd origin
+    expect(
+      resolveWorkbenchOrigin({ kilndUrl: kilnd, uiDevUrlRaw: undefined, isPackaged: false }),
+    ).toEqual(kilnd);
+    expect(
+      resolveWorkbenchOrigin({ kilndUrl: kilnd, uiDevUrlRaw: "   ", isPackaged: false }),
+    ).toEqual(kilnd);
+
+    // Unpackaged accepts validated loopback URL
+    const devUi = resolveWorkbenchOrigin({
+      kilndUrl: kilnd,
+      uiDevUrlRaw: " http://127.0.0.1:5173/ ",
+      isPackaged: false,
+    });
+    expect(devUi.baseUrl).toBe("http://127.0.0.1:5173");
+    expect(isAllowedNavigationUrl("http://127.0.0.1:5173/#view=intake", devUi)).toBe(true);
+    expect(isAllowedNavigationUrl("https://evil.example/", devUi)).toBe(false);
+
+    // Unpackaged still rejects non-loopback, https, file, userinfo, and suffixes
+    for (const bad of [
+      "https://127.0.0.1:5173",
+      "http://evil.com:5173",
+      "file:///tmp/index.html",
+      "http://user@127.0.0.1:5173",
+      "http://127.0.0.1:5173/app",
+    ]) {
+      expect(() =>
+        resolveWorkbenchOrigin({ kilndUrl: kilnd, uiDevUrlRaw: bad, isPackaged: false }),
+      ).toThrowError(UrlValidationError);
+    }
+
+    // Packaged app ALWAYS ignores KILN_UI_DEV_URL even if set (or invalid)
+    expect(
+      resolveWorkbenchOrigin({
+        kilndUrl: kilnd,
+        uiDevUrlRaw: "http://127.0.0.1:5173",
+        isPackaged: true,
+      }),
+    ).toEqual(kilnd);
+    expect(
+      resolveWorkbenchOrigin({
+        kilndUrl: kilnd,
+        uiDevUrlRaw: "https://evil.example",
+        isPackaged: true,
+      }),
+    ).toEqual(kilnd);
   });
 });
