@@ -4936,22 +4936,30 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       expect(document.getElementById("upTotalCost")?.textContent).toBe("$0.17");
     });
 
+    // UsagePanel sits cleanly in Statusbar while Sidebar remains pure navigation
+    const sideNav = container.querySelector(".side-nav");
+    const statusbar = container.querySelector("footer.statusbar");
+    expect(sideNav?.querySelector("#usagePanel")).toBeNull();
+    expect(statusbar?.querySelector("#usagePanel")).toBeTruthy();
+    expect(statusbar?.querySelector('button[aria-label="打开命令面板"]')).toBeTruthy();
+
     // 10080 mins renders as 7天窗口 and resets_at does not leak raw ISO timestamp
     expect(container.querySelector('[data-up-qtext="codex"]')?.textContent).toBe("7天窗口");
     const resetText = container.querySelector('[data-up-reset="codex"]')?.textContent ?? "";
     expect(resetText).toContain("后重置");
     expect(resetText).not.toContain("T");
 
-    // Toggle L2 monitor popover
-    const toggleBtn = container.querySelector('[data-up-pop-toggle="true"]') as HTMLButtonElement;
-    expect(toggleBtn).toBeTruthy();
-    fireEvent.click(toggleBtn);
+    // Hover UsagePanel in Statusbar to open L2 monitor popover (non-pinned)
+    const usageAnchor = container.querySelector("#usagePanel") as HTMLElement;
+    expect(usageAnchor).toBeTruthy();
+    fireEvent.mouseEnter(usageAnchor);
 
     const l2Dialog = await screen.findByRole("dialog", { name: "今日实时监控浮层" });
     expect(l2Dialog.textContent).toContain("运行中 Agent 与模型");
     expect(l2Dialog.textContent).toContain("Pi Agent");
+    expect(screen.queryByLabelText("固定浮层")).toBeNull();
 
-    // Open L3 detail popover for active running task (from makeBaseBootstrap) or Codex provider
+    // Open L3 detail popover for Codex provider
     const codexRow = Array.from(l2Dialog.querySelectorAll(".up-pop-row")).find((el) =>
       el.textContent?.includes("Codex CLI"),
     ) as HTMLElement;
@@ -4961,5 +4969,11 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     const l3Dialog = await screen.findByRole("dialog", { name: "详细明细浮层" });
     expect(l3Dialog.textContent).toContain("今日按模型消耗");
     expect(l3Dialog.textContent).toContain("gpt-5.4");
+
+    // Moving mouse away closes popovers cleanly
+    fireEvent.mouseLeave(usageAnchor);
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "今日实时监控浮层" })).toBeNull();
+    });
   });
 });

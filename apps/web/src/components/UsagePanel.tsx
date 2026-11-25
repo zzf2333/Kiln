@@ -21,7 +21,7 @@ import {
   formatModelPricingSummary,
   quotaClassName,
 } from "../state/pricing";
-import { ChevronRightIcon, CloseIcon, PinIcon } from "./Icons";
+import { CloseIcon } from "./Icons";
 import { ProviderAvatar, formatAdapterLabel } from "./ProviderAvatar";
 import { useKilnStore } from "../state/store";
 
@@ -37,24 +37,21 @@ interface SubscriptionSummaryItem {
   todayTokens: number;
 }
 
-const L2_WIDTH = 356;
+const L2_WIDTH = 368;
 const L3_WIDTH = 296;
 const VIEWPORT_MARGIN = 12;
 
-function clampPopoverCoords(
+function clampUpwardPopoverCoords(
   panelRect: DOMRect | null,
   l2Rect: DOMRect | null,
 ): { l2Left: number; l2Bottom: number; l3Left: number; l3Bottom: number } {
   const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
   const vh = typeof window !== "undefined" ? window.innerHeight : 900;
-  const anchorRight = panelRect && panelRect.right > 0 ? panelRect.right : 220;
-  const anchorBottom = panelRect && panelRect.bottom > 0 ? panelRect.bottom : vh - 16;
+  const anchorLeft = panelRect && panelRect.left > 0 ? panelRect.left : 96;
+  const anchorTop = panelRect && panelRect.top > 0 ? panelRect.top : vh - 32;
 
-  const l2Left = Math.max(
-    VIEWPORT_MARGIN,
-    Math.min(anchorRight + 10, vw - L2_WIDTH - VIEWPORT_MARGIN),
-  );
-  const l2Bottom = Math.max(VIEWPORT_MARGIN, Math.min(vh - anchorBottom, vh - 120));
+  const l2Left = Math.max(VIEWPORT_MARGIN, Math.min(anchorLeft, vw - L2_WIDTH - VIEWPORT_MARGIN));
+  const l2Bottom = Math.max(40, vh - anchorTop + 8);
 
   const l2RightEdge = l2Rect && l2Rect.width > 0 ? l2Rect.right : l2Left + L2_WIDTH;
   const l3Left = Math.max(
@@ -131,22 +128,17 @@ export function UsagePanel() {
     tasks,
     spaces,
     limits,
-    backends,
-    sseStatus,
   } = state;
 
   const [hovered, setHovered] = useState(false);
-  const [pinned, setPinned] = useState(false);
   const [l3Target, setL3Target] = useState<L3Target>(null);
-  const [coords, setCoords] = useState(() => clampPopoverCoords(null, null));
+  const [coords, setCoords] = useState(() => clampUpwardPopoverCoords(null, null));
 
   const panelRef = useRef<HTMLDivElement | null>(null);
   const l2Ref = useRef<HTMLDivElement | null>(null);
   const l3Ref = useRef<HTMLDivElement | null>(null);
   const openTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const isL2Visible = pinned || hovered;
 
   const clearTimers = useCallback(() => {
     if (openTimerRef.current !== null) {
@@ -161,7 +153,6 @@ export function UsagePanel() {
 
   const closeAll = useCallback(() => {
     clearTimers();
-    setPinned(false);
     setHovered(false);
     setL3Target(null);
   }, [clearTimers]);
@@ -172,38 +163,37 @@ export function UsagePanel() {
       clearTimeout(closeTimerRef.current);
       closeTimerRef.current = null;
     }
-    if (hovered || pinned) return;
+    if (hovered) return;
     openTimerRef.current = setTimeout(() => {
       openTimerRef.current = null;
       setHovered(true);
     }, 110);
-  }, [hovered, pinned]);
+  }, [hovered]);
 
   const scheduleHoverClose = useCallback(() => {
     if (openTimerRef.current !== null) {
       clearTimeout(openTimerRef.current);
       openTimerRef.current = null;
     }
-    if (pinned) return;
     closeTimerRef.current = setTimeout(() => {
       closeTimerRef.current = null;
       setHovered(false);
       setL3Target(null);
-    }, 200);
-  }, [pinned]);
+    }, 220);
+  }, []);
 
   const keepAliveEnter = useCallback(() => {
     clearTimers();
-    if (!hovered && !pinned) {
+    if (!hovered) {
       setHovered(true);
     }
-  }, [clearTimers, hovered, pinned]);
+  }, [clearTimers, hovered]);
 
   useEffect(() => clearTimers, [clearTimers]);
 
   const syncCoords = useCallback(() => {
     setCoords(
-      clampPopoverCoords(
+      clampUpwardPopoverCoords(
         panelRef.current?.getBoundingClientRect() ?? null,
         l2Ref.current?.getBoundingClientRect() ?? null,
       ),
@@ -211,7 +201,7 @@ export function UsagePanel() {
   }, []);
 
   useEffect(() => {
-    if (!isL2Visible) return;
+    if (!hovered) return;
     syncCoords();
     const raf = requestAnimationFrame(syncCoords);
     window.addEventListener("resize", syncCoords);
@@ -219,10 +209,10 @@ export function UsagePanel() {
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", syncCoords);
     };
-  }, [isL2Visible, l3Target, syncCoords]);
+  }, [hovered, l3Target, syncCoords]);
 
   useEffect(() => {
-    if (!isL2Visible) return;
+    if (!hovered) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") closeAll();
     };
@@ -244,7 +234,7 @@ export function UsagePanel() {
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("mousedown", onMouseDown);
     };
-  }, [isL2Visible, closeAll]);
+  }, [hovered, closeAll]);
 
   const parentIds = useMemo(() => {
     const ids = new Set<string>();
@@ -267,6 +257,8 @@ export function UsagePanel() {
   const totalRate = Math.round(
     Object.keys(ratesByTask).length > 0 ? ratesSum : (liveTotals?.tokPerSec ?? 0),
   );
+  const heatPct =
+    totalRate > 0 ? Math.min(100, Math.max(8, Math.round((totalRate / 600) * 100))) : 0;
 
   // Use true local-day todayUsage whenever backend provides it; preserve usage fallback for mock tests.
   const todaySnap = todayUsage ?? usage;
@@ -330,33 +322,12 @@ export function UsagePanel() {
       return score(b) - score(a);
     });
 
-  const maxL1Subs = Math.max(3, subscriptions.filter((s) => s.quota !== null).length);
-  const visibleL1Subs = subscriptions.slice(0, maxL1Subs);
-  const hiddenL1SubCount = Math.max(0, subscriptions.length - visibleL1Subs.length);
+  const quotaSubs = subscriptions.filter((s) => s.quota !== null);
+  const readyProvidersCount = providerStatuses.filter((p) => p.status === "ready").length;
+  const totalSubsCount = providerStatuses.length || subscriptions.length;
 
-  const dailyLimit = budget?.daily.limit_usd ?? null;
   const dailyRatio = budget?.daily.ratio ?? null;
   const dailyPct = dailyRatio !== null ? Math.min(999, Math.round(dailyRatio * 100)) : null;
-  const softWarningRatio = budget?.soft_warning_ratio ?? 0.8;
-
-  const readyProvidersCount = providerStatuses.filter((p) => p.status === "ready").length;
-  const paseoConnected = backends.some(
-    (b) => (b.backendId ?? b.id ?? "").toLowerCase().includes("paseo") && b.connected,
-  );
-  const connLabel =
-    readyProvidersCount > 0
-      ? providerStatuses.length > readyProvidersCount
-        ? `${readyProvidersCount}/${providerStatuses.length} 订阅就绪`
-        : `${readyProvidersCount} 份订阅就绪`
-      : backends.length > 0
-        ? paseoConnected
-          ? "Paseo 已连接"
-          : "底座离线"
-        : sseStatus === "connected"
-          ? "实时流已连接"
-          : sseStatus === "reconnecting"
-            ? "实时流重连中"
-            : "本地工作台";
 
   const activeTaskForL3 =
     l3Target?.kind === "task"
@@ -373,206 +344,126 @@ export function UsagePanel() {
     <div
       id="usagePanel"
       ref={panelRef}
-      className="side-bottom"
+      className="sb-usage-anchor"
       onMouseEnter={scheduleHoverOpen}
       onMouseLeave={scheduleHoverClose}
     >
       <div
         role="button"
         tabIndex={0}
-        className={`usage-panel ${isL2Visible ? "is-open" : ""}`}
-        onClick={() => store.go("usage")}
+        className={`usage-panel sb-telemetry ${hovered ? "is-open" : ""}`}
+        aria-expanded={hovered}
+        title="悬停查看今日实时监控 · 点击进入用量与费用"
+        onClick={() => {
+          closeAll();
+          store.go("usage");
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
+            closeAll();
             store.go("usage");
           }
         }}
       >
-        <div className="up-live-head">
-          <div className="up-live-status">
-            <span className={runningLeafTasks.length > 0 ? "dot live-dot" : "dot up-idle-dot"} />
-            <span className="up-live-title">
-              {runningLeafTasks.length > 0 ? `${runningLeafTasks.length} 运行中` : "待机"}
-            </span>
-            <span className="up-slot-pill mono" id="upSessions">
-              {runningLeafTasks.length}/{limits.max_concurrent_slots}
-            </span>
-          </div>
-          <div className="up-total-rate mono">
+        <span className="sb-seg sb-seg-live">
+          <span className={runningLeafTasks.length > 0 ? "dot live-dot" : "dot up-idle-dot"} />
+          <span className="sb-seg-label">
+            {runningLeafTasks.length > 0 ? `${runningLeafTasks.length} 运行` : "待机"}
+          </span>
+          <span className="sb-slot mono" id="upSessions">
+            {runningLeafTasks.length}/{limits.max_concurrent_slots}
+          </span>
+          <span className="furnace" aria-hidden="true">
+            <span className="furnace-bar" style={{ width: `${heatPct}%` }} />
+          </span>
+          <span className="sb-rate mono">
             <b id="upTotalRate">{totalRate}</b>
             <span>tok/s</span>
-          </div>
-        </div>
-
-        {runningLeafTasks.length > 0 ? (
-          <div className="up-active-list">
-            {runningLeafTasks.slice(0, 3).map((t) => {
-              const rate = Math.round(ratesByTask[t.id] ?? 0);
-              const cost = computeTaskCostUsd(t, pricing);
-              const modelLabel =
-                t.model ?? (t.agent ? `${t.agent} · 执行中` : `${stageMeta(t.stage).label}中`);
-              return (
-                <div key={t.id} className="up-active-row">
-                  <ProviderAvatar providerId={t.agent ?? "pm"} size="xs" />
-                  <span className="mono up-active-model" title={modelLabel}>
-                    {modelLabel}
+          </span>
+          {runningLeafTasks.length > 0 ? (
+            <span className="sb-active-models">
+              {runningLeafTasks.slice(0, 2).map((t) => {
+                const rate = Math.round(ratesByTask[t.id] ?? 0);
+                const modelLabel =
+                  t.model ?? (t.agent ? `${t.agent} · 运行中` : `${stageMeta(t.stage).label}中`);
+                return (
+                  <span key={t.id} className="sb-model-pill">
+                    <ProviderAvatar providerId={t.agent ?? "pm"} size="xs" />
+                    <span className="mono sb-model-name" title={modelLabel}>
+                      {modelLabel}
+                    </span>
+                    {rate > 0 ? <span className="mono sb-model-rate">{rate}t/s</span> : null}
                   </span>
-                  <span className="mono up-active-meta">
-                    {rate > 0 ? `${rate}t/s` : fmtUsd(cost)}
-                  </span>
-                </div>
-              );
-            })}
-            {runningLeafTasks.length > 3 ? (
-              <div className="up-active-more">+{runningLeafTasks.length - 3} 个运行中</div>
-            ) : null}
-          </div>
-        ) : null}
-
-        <div className="up-today-grid">
-          <div className="up-metric">
-            <span className="up-metric-lbl">今日标价</span>
-            <span className="mono up-metric-val" id="upTotalCost">
-              {fmtUsd(displayCostUsd)}
+                );
+              })}
+              {runningLeafTasks.length > 2 ? (
+                <span className="sb-more mono">+{runningLeafTasks.length - 2}</span>
+              ) : null}
             </span>
-            <span className="up-metric-sub">
-              {todaySavedUsd >= 0.01 ? `省 ${fmtUsd(todaySavedUsd)}` : "按 API 标价"}
-            </span>
-          </div>
-          <div className="up-metric">
-            <span className="up-metric-lbl">今日用量</span>
-            <span className="mono up-metric-val">{fmtTokens(todaySnap.totalTokens)}</span>
-            <span className="up-metric-sub">
-              {dailyPct !== null
-                ? `日限 ${dailyPct}%`
-                : todayHitRate > 0
-                  ? `命中 ${todayHitRate}%`
-                  : "今日累计"}
-            </span>
-          </div>
-        </div>
+          ) : null}
+        </span>
 
-        {dailyLimit !== null && dailyRatio !== null ? (
-          <div
-            className="up-budget-bar"
-            title={`今日预算 ${fmtUsd(displayCostUsd)} / ${fmtUsd(dailyLimit)}`}
-          >
-            <i
-              className={dailyRatio >= 1 ? "bad" : dailyRatio >= softWarningRatio ? "warn" : ""}
-              style={{ width: `${Math.min(100, Math.round(dailyRatio * 100))}%` }}
-            />
-          </div>
-        ) : null}
+        <span className="sb-sep" aria-hidden="true" />
 
-        {visibleL1Subs.length > 0 ? (
-          <div className="up-subs">
-            {visibleL1Subs.map((sub) => {
-              const statusBadge = renderProviderStatusText(sub.runtime);
-              const pct = sub.quota ? Math.round(sub.quota.usedRatio * 100) : null;
-              return (
-                <div key={sub.id} className="up-agent">
-                  <div className="up-row">
-                    <span className="up-agent-left">
-                      <ProviderAvatar providerId={sub.id} size="xs" />
-                      <span className="up-agent-name" title={sub.label}>
-                        {sub.label}
+        <span className="sb-seg sb-seg-today">
+          <span className="sb-seg-muted">今日</span>
+          <b className="mono" id="upTotalCost">
+            {fmtUsd(displayCostUsd)}
+          </b>
+          <span className="sb-dot-sep" aria-hidden="true">
+            ·
+          </span>
+          <span className="mono sb-tok">{fmtTokens(todaySnap.totalTokens)}</span>
+          {dailyPct !== null ? <span className="sb-budget-tag mono">日限{dailyPct}%</span> : null}
+        </span>
+
+        {quotaSubs.length > 0 ? (
+          <>
+            <span className="sb-sep" aria-hidden="true" />
+            <span className="sb-seg sb-seg-quotas">
+              {quotaSubs.map((sub) => {
+                const pct = Math.round(sub.quota!.usedRatio * 100);
+                return (
+                  <span key={sub.id} className="sb-quota-chip">
+                    <ProviderAvatar providerId={sub.id} size="xs" />
+                    <b className="mono">{pct}%</b>
+                    <span className="quota sb-mini-quota">
+                      <i
+                        data-up-bar={sub.id}
+                        className={quotaClassName(sub.quota!.usedRatio)}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </span>
+                    <span className="sb-qmeta" data-up-qtext={sub.id}>
+                      {sub.quota!.label}
+                    </span>
+                    {sub.quota!.resetAt ? (
+                      <span
+                        className="sb-qreset mono"
+                        data-up-reset={sub.id}
+                        title={`重置时刻 ${fmtResetLocalExact(sub.quota!.resetAt)}`}
+                      >
+                        {fmtResetShort(sub.quota!.resetAt)}
                       </span>
-                      {sub.liveRate > 0 ? (
-                        <span className="up-live" data-up-live={sub.id}>
-                          {sub.liveRate}t/s
-                        </span>
-                      ) : null}
-                    </span>
-                    <span className="up-agent-right">
-                      {sub.runtime?.status === "cooldown" ? (
-                        <span className="up-pill bad">{statusBadge.text}</span>
-                      ) : sub.runtime?.status === "auth_required" ||
-                        sub.runtime?.status === "unavailable" ? (
-                        <span className="up-pill muted">{statusBadge.text}</span>
-                      ) : pct !== null ? (
-                        <span className="mono up-pct-val" data-up-cost={sub.id}>
-                          {pct}%
-                        </span>
-                      ) : (
-                        <span className="mono up-cost-val" data-up-cost={sub.id}>
-                          {fmtUsd(sub.todayCost)}
-                        </span>
-                      )}
-                    </span>
-                  </div>
-                  {sub.quota ? (
-                    <>
-                      <div className="quota">
-                        <i
-                          data-up-bar={sub.id}
-                          className={quotaClassName(sub.quota.usedRatio)}
-                          style={{ width: `${pct}%` }}
-                        />
-                      </div>
-                      <div className="up-sub">
-                        <span data-up-qtext={sub.id}>{sub.quota.label}</span>
-                        <span
-                          data-up-reset={sub.id}
-                          title={
-                            sub.quota.resetAt
-                              ? `重置时刻 ${fmtResetLocalExact(sub.quota.resetAt)}`
-                              : undefined
-                          }
-                        >
-                          {fmtResetShort(sub.quota.resetAt)}
-                        </span>
-                      </div>
-                    </>
-                  ) : null}
-                </div>
-              );
-            })}
-            {hiddenL1SubCount > 0 ? (
-              <div className="up-active-more">+{hiddenL1SubCount} 份订阅在浮层查看</div>
-            ) : null}
-          </div>
+                    ) : null}
+                  </span>
+                );
+              })}
+            </span>
+          </>
         ) : null}
 
-        <div className="up-foot">
-          <span className="up-conn">{connLabel}</span>
-          <div className="up-foot-actions">
-            <button
-              type="button"
-              className={`up-pop-toggle ${pinned ? "on" : ""}`}
-              data-up-pop-toggle="true"
-              aria-label={pinned ? "收起实时监控浮层" : "展开实时监控浮层"}
-              aria-expanded={isL2Visible}
-              title="展开/固定实时监控浮层"
-              onClick={(e) => {
-                e.stopPropagation();
-                clearTimers();
-                setPinned((prev) => {
-                  const next = !prev;
-                  setHovered(next);
-                  if (!next) setL3Target(null);
-                  return next;
-                });
-              }}
-            >
-              <ChevronRightIcon />
-            </button>
-            <button
-              type="button"
-              className="key key-dark"
-              aria-label="打开命令面板"
-              onClick={(e) => {
-                e.stopPropagation();
-                store.setPaletteOpen(true);
-              }}
-            >
-              ⌘K
-            </button>
-          </div>
-        </div>
+        {totalSubsCount > 0 ? (
+          <span className="sb-seg sb-seg-ready mono">
+            {readyProvidersCount > 0
+              ? `${readyProvidersCount}/${totalSubsCount} 订阅`
+              : `${totalSubsCount} 订阅`}
+          </span>
+        ) : null}
       </div>
 
-      {isL2Visible && typeof document !== "undefined"
+      {hovered && typeof document !== "undefined"
         ? createPortal(
             <>
               <div
@@ -590,15 +481,6 @@ export function UsagePanel() {
                     <span className="up-pop-date mono">{todayDateText}</span>
                   </div>
                   <div className="up-pop-head-acts">
-                    <button
-                      type="button"
-                      className={`icon-btn ${pinned ? "on" : ""}`}
-                      aria-label={pinned ? "取消固定浮层" : "固定浮层"}
-                      title={pinned ? "取消固定" : "固定面板"}
-                      onClick={() => setPinned((p) => !p)}
-                    >
-                      <PinIcon />
-                    </button>
                     <button
                       type="button"
                       className="up-pop-link"
@@ -647,10 +529,7 @@ export function UsagePanel() {
                             type="button"
                             className={`up-pop-row ${selected ? "on" : ""}`}
                             onMouseEnter={() => setL3Target({ kind: "task", taskId: t.id })}
-                            onClick={() => {
-                              setPinned(true);
-                              setL3Target({ kind: "task", taskId: t.id });
-                            }}
+                            onClick={() => setL3Target({ kind: "task", taskId: t.id })}
                           >
                             <div className="up-pop-row-top">
                               <span
@@ -735,10 +614,7 @@ export function UsagePanel() {
                             onMouseEnter={() =>
                               setL3Target({ kind: "provider", providerId: sub.id })
                             }
-                            onClick={() => {
-                              setPinned(true);
-                              setL3Target({ kind: "provider", providerId: sub.id });
-                            }}
+                            onClick={() => setL3Target({ kind: "provider", providerId: sub.id })}
                           >
                             <div className="up-pop-row-top">
                               <ProviderAvatar providerId={sub.id} size="xs" />

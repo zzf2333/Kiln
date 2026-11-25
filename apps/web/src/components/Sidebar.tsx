@@ -14,7 +14,6 @@ import {
   SystemThemeIcon,
   UsageIcon,
 } from "./Icons";
-import { UsagePanel } from "./UsagePanel";
 
 export function Sidebar() {
   const { store, state } = useKilnStore();
@@ -288,8 +287,6 @@ export function Sidebar() {
           })}
         </div>
       </div>
-
-      <UsagePanel />
     </aside>
   );
 }

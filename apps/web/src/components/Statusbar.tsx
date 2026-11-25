@@ -1,13 +1,11 @@
 import { useKilnStore } from "../state/store";
 import { SidebarToggleIcon } from "./Icons";
+import { UsagePanel } from "./UsagePanel";
 
 export function Statusbar() {
   const { store, state } = useKilnStore();
   const {
     tasks,
-    limits,
-    ratesByTask,
-    liveTotals,
     sseStatus,
     networkOffline,
     authMode,
@@ -18,24 +16,7 @@ export function Statusbar() {
     sidebarCollapsed,
   } = state;
 
-  const parentIds = new Set<string>();
-  for (const t of tasks) {
-    if (t.parent_id) parentIds.add(t.parent_id);
-  }
-  const runningCount = tasks.filter(
-    (t) => t.status === "running" && !parentIds.has(t.id) && t.kind !== "epic",
-  ).length;
   const waitingCount = tasks.filter((t) => t.status === "waiting").length;
-
-  const ratesSum = Object.values(ratesByTask).reduce(
-    (sum, r) => sum + (Number.isFinite(r) ? r : 0),
-    0,
-  );
-  const totalRate = Math.round(
-    Object.keys(ratesByTask).length > 0 ? ratesSum : (liveTotals?.tokPerSec ?? 0),
-  );
-  const heatPct =
-    totalRate > 0 ? Math.min(100, Math.max(8, Math.round((totalRate / 600) * 100))) : 0;
 
   const cooldownProviders = providerStatuses.filter((p) => p.status === "cooldown");
   const isOffline = sseStatus === "reconnecting" || networkOffline;
@@ -79,29 +60,7 @@ export function Statusbar() {
 
       <span className="sb-sep" aria-hidden="true" />
 
-      <button
-        type="button"
-        className="sb-item"
-        onClick={() => store.go("board")}
-        title="查看看板任务"
-      >
-        <span>执行槽</span>
-        <b>
-          {runningCount}/{limits.max_concurrent_slots}
-        </b>
-      </button>
-
-      <button
-        type="button"
-        className="sb-item"
-        onClick={() => store.go("usage")}
-        title="查看用量与速率详情"
-      >
-        <span className="furnace" aria-hidden="true">
-          <span className="furnace-bar" style={{ width: `${heatPct}%` }} />
-        </span>
-        <b>{totalRate} tok/s</b>
-      </button>
+      <UsagePanel />
 
       {waitingCount > 0 ? (
         <button
@@ -146,6 +105,16 @@ export function Statusbar() {
       </button>
 
       {daemonVersion ? <span className="sb-item mono">v{daemonVersion}</span> : null}
+
+      <button
+        type="button"
+        className="key key-dark sb-cmd-key"
+        aria-label="打开命令面板"
+        title="打开命令面板 (⌘K)"
+        onClick={() => store.setPaletteOpen(true)}
+      >
+        ⌘K
+      </button>
     </footer>
   );
 }
