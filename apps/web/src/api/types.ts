@@ -19,6 +19,7 @@ import type {
   ChecklistItem,
   CheckpointRecord,
   DecisionAction,
+  DetectedTuiTerminal,
   DiscoveredGitRepo,
   DiscoverSpacesResponse,
   DraftCard,
@@ -92,6 +93,7 @@ import type {
   TaskRetroReport,
   TaskStatus,
   Track,
+  TuiTerminalId,
   UpdateTaskLimitsRequest,
   UpsertSpaceRequest,
   VerifierCapability,
@@ -282,6 +284,7 @@ export interface BootstrapResponse {
   limits: LimitsConfig | null;
   pricing: PricingConfig | null;
   providers?: ProviderRuntimeStatus[];
+  tuiTerminals?: DetectedTuiTerminal[];
   usage: UsageSnapshot;
   todayUsage?: UsageSnapshot;
   budget?: GlobalBudgetStatus;
@@ -411,6 +414,8 @@ export interface OpenRunTuiResponse {
   cwd: string;
   cwdFallback: boolean;
   commandPreview: string;
+  terminal?: string;
+  terminalId?: TuiTerminalId;
 }
 
 export interface ChatMessage {

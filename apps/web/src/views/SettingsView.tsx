@@ -6,6 +6,7 @@ import {
   type PricingSyncSource,
   type ProviderEntry,
   type ProvidersConfig,
+  type TuiTerminalId,
 } from "@kiln/protocol/web";
 import {
   ChevronRightIcon,
@@ -15,6 +16,7 @@ import {
   RefreshIcon,
   TrashIcon,
 } from "../components/Icons";
+import { KilnSelect, type KilnSelectOption } from "../components/KilnSelect";
 import { ProviderAvatar, formatAdapterLabel } from "../components/ProviderAvatar";
 import { RemoteSettingsPanel } from "../components/RemoteSettingsPanel";
 import { ViewFrame } from "../components/ViewFrame";
@@ -96,6 +98,7 @@ export function SettingsView() {
     providersConfig,
     providerStatuses,
     providerTestBusyId,
+    tuiTerminals,
     spaces,
     agents,
     backends,
@@ -1646,124 +1649,178 @@ export function SettingsView() {
     );
   };
 
-  const renderConnTab = () => (
-    <>
-      <div className="setting-row">
-        <div>
-          <span>Kiln 版本与运行模式</span>
-          <p>
-            当前接入：
-            {state.authMode === "remote" ? "远程认证访问" : "本机回环 / 桌面端"} · 与运行中 kilnd
-            实时同步
-          </p>
-        </div>
-        <span className="chip mono" style={{ justifySelf: "end" }}>
-          {state.daemonVersion ? `v${state.daemonVersion}` : "未获取"}
-        </span>
-      </div>
+  const renderConnTab = () => {
+    const availableTerminals = tuiTerminals.filter((t) => t.available);
+    const autoTarget = availableTerminals[0];
+    const currentPreferred = limits.preferred_tui_terminal ?? "auto";
+    const terminalOptions: KilnSelectOption[] = [
+      {
+        value: "auto",
+        label: autoTarget
+          ? `自动择优（当前命中：${autoTarget.label}）`
+          : "自动择优（优先现代终端）",
+      },
+      ...availableTerminals.map((t) => ({
+        value: t.id,
+        label: t.isDefaultFallback ? `${t.label}（系统默认）` : t.label,
+      })),
+    ];
+    if (
+      currentPreferred !== "auto" &&
+      !terminalOptions.some((opt) => opt.value === currentPreferred)
+    ) {
+      terminalOptions.push({
+        value: currentPreferred,
+        label: `${currentPreferred}（当前未检测到，自动降级）`,
+      });
+    }
 
-      <div className="setting-row setting-row-wide">
-        <div>
-          <span>外观主题</span>
-          <p>
-            支持浅色、深色或跟随系统自动切换（当前生效：
-            {state.resolvedTheme === "light" ? "浅色" : "深色"}）
-          </p>
-        </div>
-        <div
-          className="seg"
-          role="radiogroup"
-          aria-label="外观主题设置"
-          style={{ justifySelf: "end" }}
-        >
-          <button
-            type="button"
-            role="radio"
-            aria-checked={state.themePreference === "system"}
-            className={state.themePreference === "system" ? "on" : ""}
-            onClick={() => store.setThemePreference("system")}
-          >
-            跟随系统
-          </button>
-          <button
-            type="button"
-            role="radio"
-            aria-checked={state.themePreference === "light"}
-            className={state.themePreference === "light" ? "on" : ""}
-            onClick={() => store.setThemePreference("light")}
-          >
-            浅色
-          </button>
-          <button
-            type="button"
-            role="radio"
-            aria-checked={state.themePreference === "dark"}
-            className={state.themePreference === "dark" ? "on" : ""}
-            onClick={() => store.setThemePreference("dark")}
-          >
-            深色
-          </button>
-        </div>
-      </div>
-
-      {backends.length > 0 ? (
-        backends.map((b, idx) => (
-          <div key={b.backendId ?? b.id ?? idx} className="setting-row">
-            <div>
-              <span>{b.backendId ?? b.id ?? "ExecutionBackend"}</span>
-              <p>{b.detail ?? b.url ?? "包在自有 ExecutionBackend 接口之后"}</p>
-            </div>
-            <span
-              className={`chip ${b.connected ? "chip-ok" : "chip-bad"}`}
-              style={{ justifySelf: "end" }}
-            >
-              {b.connected ? "已连接" : (b.status ?? "未连接")}
-            </span>
-          </div>
-        ))
-      ) : (
+    return (
+      <>
         <div className="setting-row">
           <div>
-            <span>Paseo daemon（V1 自动执行底座）</span>
-            <p>当前未上报独立底座健康快照；所有派发经自有 ExecutionBackend 接口隔离</p>
+            <span>Kiln 版本与运行模式</span>
+            <p>
+              当前接入：
+              {state.authMode === "remote" ? "远程认证访问" : "本机回环 / 桌面端"} · 与运行中 kilnd
+              实时同步
+            </p>
           </div>
-          <span className="chip" style={{ justifySelf: "end" }}>
-            待检测
+          <span className="chip mono" style={{ justifySelf: "end" }}>
+            {state.daemonVersion ? `v${state.daemonVersion}` : "未获取"}
           </span>
         </div>
-      )}
 
-      <div className="setting-row">
-        <div>
-          <span>实时事件流（SSE /api/events）</span>
-          <p>支持单调递增 seq 与断线 Last-Event-ID 增量重放</p>
+        <div className="setting-row setting-row-wide">
+          <div>
+            <span>外观主题</span>
+            <p>
+              支持浅色、深色或跟随系统自动切换（当前生效：
+              {state.resolvedTheme === "light" ? "浅色" : "深色"}）
+            </p>
+          </div>
+          <div
+            className="seg"
+            role="radiogroup"
+            aria-label="外观主题设置"
+            style={{ justifySelf: "end" }}
+          >
+            <button
+              type="button"
+              role="radio"
+              aria-checked={state.themePreference === "system"}
+              className={state.themePreference === "system" ? "on" : ""}
+              onClick={() => store.setThemePreference("system")}
+            >
+              跟随系统
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={state.themePreference === "light"}
+              className={state.themePreference === "light" ? "on" : ""}
+              onClick={() => store.setThemePreference("light")}
+            >
+              浅色
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={state.themePreference === "dark"}
+              className={state.themePreference === "dark" ? "on" : ""}
+              onClick={() => store.setThemePreference("dark")}
+            >
+              深色
+            </button>
+          </div>
         </div>
-        <span
-          className={`chip ${sseStatus === "connected" ? "chip-ok" : ""}`}
-          style={{ justifySelf: "end" }}
-        >
-          {sseStatus === "connected"
-            ? "已连接"
-            : sseStatus === "reconnecting"
-              ? "重连中"
-              : "未连接"}
-        </span>
-      </div>
 
-      <div className="setting-row">
-        <div>
-          <span>外部只读巡检 / Passkey</span>
-          <p>
-            external_only 巡检与 Passkey / Web Push 属于后续版本；远程访问与 Bark/ntfy/Webhook
-            推送请在「远程访问」标签页管理
-          </p>
+        {authMode !== "remote" ? (
+          <div className="setting-row setting-row-wide">
+            <div>
+              <span>首选 TUI 终端</span>
+              <p>
+                自动优先使用本机已安装的现代高级终端（如 Ghostty / Warp / WezTerm / Windows
+                Terminal），拉起失败时自动回退系统默认
+              </p>
+            </div>
+            <div style={{ justifySelf: "end", minWidth: "240px" }}>
+              <KilnSelect
+                value={currentPreferred}
+                options={terminalOptions}
+                ariaLabel="首选 TUI 终端"
+                align="end"
+                onChange={(nextValue) => {
+                  const next = nextValue as TuiTerminalId;
+                  void store.saveSettingsSection("limits", {
+                    ...limits,
+                    preferred_tui_terminal: next,
+                  });
+                }}
+              />
+            </div>
+          </div>
+        ) : null}
+
+        {backends.length > 0 ? (
+          backends.map((b, idx) => (
+            <div key={b.backendId ?? b.id ?? idx} className="setting-row">
+              <div>
+                <span>{b.backendId ?? b.id ?? "ExecutionBackend"}</span>
+                <p>{b.detail ?? b.url ?? "包在自有 ExecutionBackend 接口之后"}</p>
+              </div>
+              <span
+                className={`chip ${b.connected ? "chip-ok" : "chip-bad"}`}
+                style={{ justifySelf: "end" }}
+              >
+                {b.connected ? "已连接" : (b.status ?? "未连接")}
+              </span>
+            </div>
+          ))
+        ) : (
+          <div className="setting-row">
+            <div>
+              <span>Paseo daemon（V1 自动执行底座）</span>
+              <p>当前未上报独立底座健康快照；所有派发经自有 ExecutionBackend 接口隔离</p>
+            </div>
+            <span className="chip" style={{ justifySelf: "end" }}>
+              待检测
+            </span>
+          </div>
+        )}
+
+        <div className="setting-row">
+          <div>
+            <span>实时事件流（SSE /api/events）</span>
+            <p>支持单调递增 seq 与断线 Last-Event-ID 增量重放</p>
+          </div>
+          <span
+            className={`chip ${sseStatus === "connected" ? "chip-ok" : ""}`}
+            style={{ justifySelf: "end" }}
+          >
+            {sseStatus === "connected"
+              ? "已连接"
+              : sseStatus === "reconnecting"
+                ? "重连中"
+                : "未连接"}
+          </span>
         </div>
-        <span className="chip" style={{ justifySelf: "end" }}>
-          后续规划
-        </span>
-      </div>
-    </>
-  );
+
+        <div className="setting-row">
+          <div>
+            <span>外部只读巡检 / Passkey</span>
+            <p>
+              external_only 巡检与 Passkey / Web Push 属于后续版本；远程访问与 Bark/ntfy/Webhook
+              推送请在「远程访问」标签页管理
+            </p>
+          </div>
+          <span className="chip" style={{ justifySelf: "end" }}>
+            后续规划
+          </span>
+        </div>
+      </>
+    );
+  };
 
   return (
     <ViewFrame left={<h1 className="tb-title">设置</h1>}>

@@ -187,6 +187,7 @@ import {
 } from "./static-files.js";
 import {
   buildRunOverviewSummary,
+  detectAvailableTuiTerminals,
   launchNativeAgentTui,
   resolveNativeTuiCommand,
 } from "./tui-launcher.js";
@@ -1673,6 +1674,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       agents: backendSnap.agents,
       backends: backendSnap.backends,
       providers,
+      ...(listenerMode === "local" ? { tuiTerminals: detectAvailableTuiTerminals() } : {}),
       providerUsage: backendSnap.providerUsage,
       liveRates: {
         rates: liveSnap.rates,
@@ -2739,6 +2741,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
 
     const card = store.readTaskCard(taskId);
     const spaceConfig = store.readSpace(card.space);
+    const preferredTerminal = store.readConfig("limits")?.preferred_tui_terminal;
     const launched = await launchNativeAgentTui({
       kilnHome: store.paths.home,
       taskId,
@@ -2748,6 +2751,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       providerSessionPath,
       cwd: meta.cwd ?? null,
       fallbackCwd: spaceConfig?.repo_path ?? null,
+      ...(preferredTerminal !== undefined ? { preferredTerminal } : {}),
     });
     return c.json(launched);
   });

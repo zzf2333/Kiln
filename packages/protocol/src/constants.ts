@@ -263,6 +263,27 @@ export type ImprovementProposalStatus = (typeof IMPROVEMENT_PROPOSAL_STATUSES)[n
 
 export const MAX_ACTIVE_LEDGER_INJECT = 20;
 
+export const TUI_TERMINAL_IDS = [
+  "auto",
+  "ghostty",
+  "warp",
+  "wezterm",
+  "kitty",
+  "iterm2",
+  "alacritty",
+  "terminal",
+  "windows_terminal",
+  "pwsh",
+  "powershell",
+  "foot",
+  "rio",
+  "konsole",
+  "gnome_terminal",
+  "x_terminal_emulator",
+  "xterm",
+] as const;
+export type TuiTerminalId = (typeof TUI_TERMINAL_IDS)[number];
+
 export function isReadOnlyRosterPermission(perm: RosterPermission): boolean {
   return perm === "read_only" || perm === "read_only_draft";
 }

@@ -5,9 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
+  DetectedTuiTerminalSchema,
   OpenRunTuiResponseSchema,
   RunAntiDriftSummarySchema,
   parseFrontmatterMarkdown,
+  type DetectedTuiTerminal,
   type GateReport,
   type OpenRunTuiResponse,
   type PricingConfig,
@@ -16,6 +18,7 @@ import {
   type RunMeta,
   type TaskCard,
   type TaskStatus,
+  type TuiTerminalId,
 } from "@kiln/protocol";
 import type { UsageTurnRow } from "../store/index.js";
 import { ServerHttpError } from "./errors.js";
@@ -245,19 +248,438 @@ function pruneOldTuiScripts(tuiDir: string): void {
   }
 }
 
-function findBinaryOnPath(binaryName: string): string | null {
+export interface TuiEnvironmentProbe {
+  platform?: NodeJS.Platform;
+  homedir?: string;
+  pathExists?: (candidatePath: string) => boolean;
+  findBinary?: (binaryName: string) => string | null;
+}
+
+interface TuiCommandSpec {
+  file: string;
+  args: string[];
+  execOptions: {
+    timeout?: number;
+    windowsHide?: boolean;
+    encoding?: "utf8";
+  };
+}
+
+interface ResolvedTuiTerminalCandidate {
+  id: Exclude<TuiTerminalId, "auto">;
+  label: string;
+  available: boolean;
+  isDefaultFallback?: boolean;
+  buildCommand: (ctx: { scriptPath: string; cwd: string }) => TuiCommandSpec;
+}
+
+function defaultPathExists(candidatePath: string): boolean {
+  try {
+    return fs.existsSync(candidatePath);
+  } catch {
+    return false;
+  }
+}
+
+function findBinaryOnSystem(
+  binaryName: string,
+  platform: NodeJS.Platform,
+  homedir: string,
+): string | null {
   const pathEnv = process.env.PATH ?? "";
-  for (const dir of pathEnv.split(path.delimiter)) {
-    if (!dir) continue;
-    const candidate = path.join(dir, binaryName);
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      return candidate;
-    } catch {
-      // Try next PATH entry.
+  const searchDirs = pathEnv.split(path.delimiter).filter(Boolean);
+  if (platform === "darwin") {
+    for (const extra of [
+      "/opt/homebrew/bin",
+      "/usr/local/bin",
+      path.join(homedir, ".local", "bin"),
+    ]) {
+      if (!searchDirs.includes(extra)) {
+        searchDirs.push(extra);
+      }
+    }
+  }
+
+  const names =
+    platform === "win32" && !binaryName.toLowerCase().endsWith(".exe")
+      ? [binaryName, `${binaryName}.exe`]
+      : [binaryName];
+
+  for (const dir of searchDirs) {
+    for (const name of names) {
+      const candidate = path.join(dir, name);
+      try {
+        if (platform === "win32") {
+          if (fs.statSync(candidate).isFile()) {
+            return candidate;
+          }
+        } else {
+          fs.accessSync(candidate, fs.constants.X_OK);
+          return candidate;
+        }
+      } catch {
+        // Try next candidate.
+      }
     }
   }
   return null;
+}
+
+function findFirstExistingPath(
+  candidates: readonly string[],
+  pathExists: (candidatePath: string) => boolean,
+): string | null {
+  for (const candidate of candidates) {
+    if (pathExists(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function resolvePlatformTerminalCandidates(
+  probe: TuiEnvironmentProbe = {},
+): ResolvedTuiTerminalCandidate[] {
+  const platform = probe.platform ?? process.platform;
+  const homedir = probe.homedir ?? os.homedir();
+  const pathExists = probe.pathExists ?? defaultPathExists;
+  const findBinary =
+    probe.findBinary ?? ((binaryName: string) => findBinaryOnSystem(binaryName, platform, homedir));
+
+  if (platform === "darwin") {
+    const macAppDirs = ["/Applications", path.join(homedir, "Applications")];
+    const findMacApp = (appName: string): string | null =>
+      findFirstExistingPath(
+        macAppDirs.map((dir) => path.join(dir, appName)),
+        pathExists,
+      );
+
+    const ghosttyApp = findMacApp("Ghostty.app");
+    const ghosttyBin = ghosttyApp ? null : findBinary("ghostty");
+    const warpApp = findMacApp("Warp.app");
+    const weztermApp = findMacApp("WezTerm.app");
+    const weztermBin = weztermApp ? null : findBinary("wezterm");
+    const kittyApp = findMacApp("kitty.app");
+    const kittyBin = kittyApp ? null : findBinary("kitty");
+    const itermApp = findMacApp("iTerm.app");
+    const alacrittyApp = findMacApp("Alacritty.app");
+    const alacrittyBin = alacrittyApp ? null : findBinary("alacritty");
+
+    return [
+      {
+        id: "ghostty",
+        label: "Ghostty",
+        available: ghosttyApp !== null || ghosttyBin !== null,
+        buildCommand: ({ scriptPath }) =>
+          ghosttyApp
+            ? {
+                file: "/usr/bin/open",
+                args: ["-na", ghosttyApp, "--args", "-e", scriptPath],
+                execOptions: { timeout: 10_000, encoding: "utf8" },
+              }
+            : {
+                file: ghosttyBin!,
+                args: ["-e", scriptPath],
+                execOptions: { timeout: 10_000, encoding: "utf8" },
+              },
+      },
+      {
+        id: "warp",
+        label: "Warp",
+        available: warpApp !== null,
+        buildCommand: ({ scriptPath }) => ({
+          file: "/usr/bin/open",
+          args: ["-a", warpApp!, scriptPath],
+          execOptions: { timeout: 10_000, encoding: "utf8" },
+        }),
+      },
+      {
+        id: "wezterm",
+        label: "WezTerm",
+        available: weztermApp !== null || weztermBin !== null,
+        buildCommand: ({ scriptPath }) =>
+          weztermApp
+            ? {
+                file: "/usr/bin/open",
+                args: ["-na", weztermApp, "--args", "start", "--", scriptPath],
+                execOptions: { timeout: 10_000, encoding: "utf8" },
+              }
+            : {
+                file: weztermBin!,
+                args: ["start", "--", scriptPath],
+                execOptions: { timeout: 10_000, encoding: "utf8" },
+              },
+      },
+      {
+        id: "kitty",
+        label: "Kitty",
+        available: kittyApp !== null || kittyBin !== null,
+        buildCommand: ({ scriptPath }) =>
+          kittyApp
+            ? {
+                file: "/usr/bin/open",
+                args: ["-na", kittyApp, "--args", scriptPath],
+                execOptions: { timeout: 10_000, encoding: "utf8" },
+              }
+            : {
+                file: kittyBin!,
+                args: [scriptPath],
+                execOptions: { timeout: 10_000, encoding: "utf8" },
+              },
+      },
+      {
+        id: "iterm2",
+        label: "iTerm2",
+        available: itermApp !== null,
+        buildCommand: ({ scriptPath }) => ({
+          file: "/usr/bin/open",
+          args: ["-a", itermApp!, scriptPath],
+          execOptions: { timeout: 10_000, encoding: "utf8" },
+        }),
+      },
+      {
+        id: "alacritty",
+        label: "Alacritty",
+        available: alacrittyApp !== null || alacrittyBin !== null,
+        buildCommand: ({ scriptPath }) =>
+          alacrittyApp
+            ? {
+                file: "/usr/bin/open",
+                args: ["-na", alacrittyApp, "--args", "-e", scriptPath],
+                execOptions: { timeout: 10_000, encoding: "utf8" },
+              }
+            : {
+                file: alacrittyBin!,
+                args: ["-e", scriptPath],
+                execOptions: { timeout: 10_000, encoding: "utf8" },
+              },
+      },
+      {
+        id: "terminal",
+        label: "系统默认终端",
+        available: true,
+        isDefaultFallback: true,
+        buildCommand: ({ scriptPath }) => ({
+          file: "/usr/bin/open",
+          args: [scriptPath],
+          execOptions: { timeout: 10_000, encoding: "utf8" },
+        }),
+      },
+    ];
+  }
+
+  if (platform === "win32") {
+    const localAppData = process.env.LOCALAPPDATA?.trim() ?? "";
+    const wtFromAppData = localAppData
+      ? path.join(localAppData, "Microsoft", "WindowsApps", "wt.exe")
+      : "";
+    const wtBin =
+      findBinary("wt.exe") ??
+      findBinary("wt") ??
+      (wtFromAppData && pathExists(wtFromAppData) ? wtFromAppData : null);
+    const weztermBin =
+      findBinary("wezterm-gui.exe") ?? findBinary("wezterm.exe") ?? findBinary("wezterm");
+    const alacrittyBin = findBinary("alacritty.exe") ?? findBinary("alacritty");
+    const pwshBin = findBinary("pwsh.exe") ?? findBinary("pwsh");
+    const preferredShell = pwshBin ?? "powershell.exe";
+    const winExecOptions = { timeout: 10_000, windowsHide: true, encoding: "utf8" as const };
+
+    return [
+      {
+        id: "windows_terminal",
+        label: "Windows Terminal",
+        available: wtBin !== null,
+        buildCommand: ({ scriptPath, cwd }) => ({
+          file: wtBin!,
+          args: [
+            "-d",
+            cwd,
+            preferredShell,
+            "-NoExit",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            scriptPath,
+          ],
+          execOptions: winExecOptions,
+        }),
+      },
+      {
+        id: "wezterm",
+        label: "WezTerm",
+        available: weztermBin !== null,
+        buildCommand: ({ scriptPath, cwd }) => ({
+          file: weztermBin!,
+          args: [
+            "start",
+            "--cwd",
+            cwd,
+            "--",
+            preferredShell,
+            "-NoExit",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            scriptPath,
+          ],
+          execOptions: winExecOptions,
+        }),
+      },
+      {
+        id: "alacritty",
+        label: "Alacritty",
+        available: alacrittyBin !== null,
+        buildCommand: ({ scriptPath, cwd }) => ({
+          file: alacrittyBin!,
+          args: [
+            "--working-directory",
+            cwd,
+            "-e",
+            preferredShell,
+            "-NoExit",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            scriptPath,
+          ],
+          execOptions: winExecOptions,
+        }),
+      },
+      {
+        id: "pwsh",
+        label: "PowerShell 7",
+        available: pwshBin !== null,
+        buildCommand: ({ scriptPath }) => ({
+          file: "cmd.exe",
+          args: [
+            "/c",
+            "start",
+            "",
+            pwshBin!,
+            "-NoExit",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            scriptPath,
+          ],
+          execOptions: winExecOptions,
+        }),
+      },
+      {
+        id: "powershell",
+        label: "Windows PowerShell（系统默认）",
+        available: true,
+        isDefaultFallback: true,
+        buildCommand: ({ scriptPath }) => ({
+          file: "cmd.exe",
+          args: [
+            "/c",
+            "start",
+            "",
+            "powershell.exe",
+            "-NoExit",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            scriptPath,
+          ],
+          execOptions: winExecOptions,
+        }),
+      },
+    ];
+  }
+
+  if (platform === "linux") {
+    const linuxSpecs: Array<{
+      id: Exclude<TuiTerminalId, "auto">;
+      label: string;
+      bin: string;
+      isDefaultFallback?: boolean;
+      makeArgs: (scriptPath: string) => string[];
+    }> = [
+      { id: "ghostty", label: "Ghostty", bin: "ghostty", makeArgs: (s) => ["-e", s] },
+      { id: "wezterm", label: "WezTerm", bin: "wezterm", makeArgs: (s) => ["start", "--", s] },
+      { id: "kitty", label: "Kitty", bin: "kitty", makeArgs: (s) => [s] },
+      { id: "alacritty", label: "Alacritty", bin: "alacritty", makeArgs: (s) => ["-e", s] },
+      { id: "foot", label: "Foot", bin: "foot", makeArgs: (s) => [s] },
+      { id: "rio", label: "Rio", bin: "rio", makeArgs: (s) => ["-e", s] },
+      { id: "konsole", label: "Konsole", bin: "konsole", makeArgs: (s) => ["-e", s] },
+      {
+        id: "gnome_terminal",
+        label: "GNOME Terminal",
+        bin: "gnome-terminal",
+        makeArgs: (s) => ["--", s],
+      },
+      {
+        id: "x_terminal_emulator",
+        label: "系统默认终端",
+        bin: "x-terminal-emulator",
+        isDefaultFallback: true,
+        makeArgs: (s) => ["-e", s],
+      },
+      {
+        id: "xterm",
+        label: "XTerm",
+        bin: "xterm",
+        isDefaultFallback: true,
+        makeArgs: (s) => ["-e", s],
+      },
+    ];
+
+    return linuxSpecs.map((spec) => {
+      const resolvedBin = findBinary(spec.bin);
+      return {
+        id: spec.id,
+        label: spec.label,
+        available: resolvedBin !== null,
+        ...(spec.isDefaultFallback ? { isDefaultFallback: true } : {}),
+        buildCommand: ({ scriptPath }) => ({
+          file: resolvedBin ?? spec.bin,
+          args: spec.makeArgs(scriptPath),
+          execOptions: { timeout: 10_000, encoding: "utf8" },
+        }),
+      };
+    });
+  }
+
+  return [];
+}
+
+/**
+ * Returns the prioritized list of TUI terminal emulators for the current (or probed) platform
+ * with live availability status.
+ */
+export function detectAvailableTuiTerminals(probe?: TuiEnvironmentProbe): DetectedTuiTerminal[] {
+  return resolvePlatformTerminalCandidates(probe).map((candidate) =>
+    DetectedTuiTerminalSchema.parse({
+      id: candidate.id,
+      label: candidate.label,
+      available: candidate.available,
+      ...(candidate.isDefaultFallback ? { isDefaultFallback: true } : {}),
+    }),
+  );
+}
+
+function orderTerminalAttempts(
+  candidates: readonly ResolvedTuiTerminalCandidate[],
+  preferredTerminal?: TuiTerminalId,
+): ResolvedTuiTerminalCandidate[] {
+  const available = candidates.filter((c) => c.available);
+  if (available.length === 0) {
+    return [];
+  }
+  if (!preferredTerminal || preferredTerminal === "auto") {
+    return available;
+  }
+  const preferred = available.find((c) => c.id === preferredTerminal);
+  if (!preferred) {
+    return available;
+  }
+  if (preferred.isDefaultFallback) {
+    return [preferred];
+  }
+  const fallbacks = available.filter((c) => c.isDefaultFallback && c.id !== preferred.id);
+  return [preferred, ...fallbacks];
 }
 
 export interface LaunchNativeAgentTuiOptions {
@@ -269,6 +691,8 @@ export interface LaunchNativeAgentTuiOptions {
   providerSessionPath?: string | null;
   cwd?: string | null;
   fallbackCwd?: string | null;
+  preferredTerminal?: TuiTerminalId;
+  probe?: TuiEnvironmentProbe;
   platform?: NodeJS.Platform;
   homedir?: string;
   execFileFn?: PickLocalDirectoryExecFn;
@@ -293,14 +717,19 @@ export async function launchNativeAgentTui(
     });
   }
 
-  const homedir = options.homedir ?? os.homedir();
+  const probe: TuiEnvironmentProbe = {
+    ...options.probe,
+    platform: options.platform ?? options.probe?.platform ?? process.platform,
+    homedir: options.homedir ?? options.probe?.homedir ?? os.homedir(),
+  };
+  const platform = probe.platform!;
+  const homedir = probe.homedir!;
   const { cwd, cwdFallback } = resolveLaunchCwd({
     cwd: options.cwd,
     fallbackCwd: options.fallbackCwd,
     homedir,
   });
 
-  const platform = options.platform ?? process.platform;
   const tuiDir = path.join(options.kilnHome, "run", "tui");
   fs.mkdirSync(tuiDir, { recursive: true, mode: 0o700 });
   if (platform !== "win32") {
@@ -324,103 +753,90 @@ export async function launchNativeAgentTui(
       };
     });
 
-  const nonce = `${Date.now()}-${randomUUID().slice(0, 6)}`;
-  try {
-    if (platform === "darwin") {
-      const scriptPath = path.join(tuiDir, `kiln-tui-${nonce}.command`);
-      const script = [
-        "#!/bin/sh",
-        "set -eu",
-        'export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/share/mise/shims:$PATH"',
-        `cd -- ${quotePosixArg(cwd)}`,
-        'rm -f -- "$0"',
-        `exec ${[resolved.binary, ...resolved.args].map(quotePosixArg).join(" ")}`,
-        "",
-      ].join("\n");
-      fs.writeFileSync(scriptPath, script, { mode: 0o700 });
-      fs.chmodSync(scriptPath, 0o700);
-      pruneOldTuiScripts(tuiDir);
-      await execFn("/usr/bin/open", [scriptPath], {
-        timeout: 10_000,
-        encoding: "utf8",
-      });
-    } else if (platform === "win32") {
-      const scriptPath = path.join(tuiDir, `kiln-tui-${nonce}.ps1`);
-      const script = [
-        `$env:Path = "$HOME\\.local\\bin;$env:LOCALAPPDATA\\Kiln\\bin;$env:Path"`,
-        `Set-Location -LiteralPath ${quotePowerShellArg(cwd)}`,
-        `& ${quotePowerShellArg(resolved.binary)} ${resolved.args.map(quotePowerShellArg).join(" ")}`,
-        "",
-      ].join("\r\n");
-      fs.writeFileSync(scriptPath, script, { encoding: "utf8" });
-      pruneOldTuiScripts(tuiDir);
-      await execFn(
-        "cmd.exe",
-        [
-          "/c",
-          "start",
-          "",
-          "powershell.exe",
-          "-NoExit",
-          "-ExecutionPolicy",
-          "Bypass",
-          "-File",
-          scriptPath,
-        ],
-        {
-          timeout: 10_000,
-          windowsHide: true,
-          encoding: "utf8",
-        },
-      );
-    } else if (platform === "linux") {
-      const scriptPath = path.join(tuiDir, `kiln-tui-${nonce}.sh`);
-      const script = [
-        "#!/bin/sh",
-        "set -eu",
-        'export PATH="$HOME/.local/bin:/usr/local/bin:$HOME/.local/share/mise/shims:$PATH"',
-        `cd -- ${quotePosixArg(cwd)}`,
-        'rm -f -- "$0"',
-        `exec ${[resolved.binary, ...resolved.args].map(quotePosixArg).join(" ")}`,
-        "",
-      ].join("\n");
-      fs.writeFileSync(scriptPath, script, { mode: 0o700 });
-      fs.chmodSync(scriptPath, 0o700);
-      pruneOldTuiScripts(tuiDir);
+  if (platform !== "darwin" && platform !== "win32" && platform !== "linux") {
+    throw new ServerHttpError(400, {
+      error: "unsupported_platform",
+      message: `Platform "${platform}" is not supported for native TUI launch`,
+    });
+  }
 
-      const terminalCandidates: Array<{ bin: string; makeArgs: (s: string) => string[] }> = [
-        { bin: "x-terminal-emulator", makeArgs: (s) => ["-e", s] },
-        { bin: "gnome-terminal", makeArgs: (s) => ["--", s] },
-        { bin: "konsole", makeArgs: (s) => ["-e", s] },
-        { bin: "kitty", makeArgs: (s) => [s] },
-        { bin: "alacritty", makeArgs: (s) => ["-e", s] },
-        { bin: "xterm", makeArgs: (s) => ["-e", s] },
-      ];
-      const availableTerm = terminalCandidates.find((t) => findBinaryOnPath(t.bin) !== null);
-      if (!availableTerm && !options.execFileFn) {
-        throw new ServerHttpError(500, {
-          error: "tui_terminal_not_found",
-          message: "未检测到可用的桌面终端程序（gnome-terminal / konsole / kitty / xterm）",
-        });
-      }
-      const chosen = availableTerm ?? terminalCandidates[0]!;
-      await execFn(chosen.bin, chosen.makeArgs(scriptPath), {
-        timeout: 10_000,
-        encoding: "utf8",
-      });
-    } else {
-      throw new ServerHttpError(400, {
-        error: "unsupported_platform",
-        message: `Platform "${platform}" is not supported for native TUI launch`,
+  const nonce = `${Date.now()}-${randomUUID().slice(0, 6)}`;
+  let scriptPath: string;
+  if (platform === "darwin") {
+    scriptPath = path.join(tuiDir, `kiln-tui-${nonce}.command`);
+    const script = [
+      "#!/bin/sh",
+      "set -eu",
+      'export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/share/mise/shims:$PATH"',
+      `cd -- ${quotePosixArg(cwd)}`,
+      'rm -f -- "$0"',
+      `exec ${[resolved.binary, ...resolved.args].map(quotePosixArg).join(" ")}`,
+      "",
+    ].join("\n");
+    fs.writeFileSync(scriptPath, script, { mode: 0o700 });
+    fs.chmodSync(scriptPath, 0o700);
+  } else if (platform === "win32") {
+    scriptPath = path.join(tuiDir, `kiln-tui-${nonce}.ps1`);
+    const script = [
+      `$env:Path = "$HOME\\.local\\bin;$env:LOCALAPPDATA\\Kiln\\bin;$env:Path"`,
+      `Set-Location -LiteralPath ${quotePowerShellArg(cwd)}`,
+      `& ${quotePowerShellArg(resolved.binary)} ${resolved.args.map(quotePowerShellArg).join(" ")}`,
+      "",
+    ].join("\r\n");
+    fs.writeFileSync(scriptPath, script, { encoding: "utf8" });
+  } else {
+    scriptPath = path.join(tuiDir, `kiln-tui-${nonce}.sh`);
+    const script = [
+      "#!/bin/sh",
+      "set -eu",
+      'export PATH="$HOME/.local/bin:/usr/local/bin:$HOME/.local/share/mise/shims:$PATH"',
+      `cd -- ${quotePosixArg(cwd)}`,
+      'rm -f -- "$0"',
+      `exec ${[resolved.binary, ...resolved.args].map(quotePosixArg).join(" ")}`,
+      "",
+    ].join("\n");
+    fs.writeFileSync(scriptPath, script, { mode: 0o700 });
+    fs.chmodSync(scriptPath, 0o700);
+  }
+  pruneOldTuiScripts(tuiDir);
+
+  const allCandidates = resolvePlatformTerminalCandidates(probe);
+  let attempts = orderTerminalAttempts(allCandidates, options.preferredTerminal);
+  if (attempts.length === 0 && platform === "linux") {
+    if (!options.execFileFn) {
+      throw new ServerHttpError(500, {
+        error: "tui_terminal_not_found",
+        message:
+          "未检测到可用的桌面终端程序（ghostty / wezterm / kitty / alacritty / gnome-terminal / konsole / xterm）",
       });
     }
-  } catch (err) {
-    if (err instanceof ServerHttpError) {
-      throw err;
+    const fallback = allCandidates.find((c) => c.id === "x_terminal_emulator") ?? allCandidates[0];
+    if (fallback) {
+      attempts = [fallback];
+    }
+  }
+
+  let launchedTerminal: ResolvedTuiTerminalCandidate | null = null;
+  let lastError: unknown = null;
+  for (const candidate of attempts) {
+    const cmdSpec = candidate.buildCommand({ scriptPath, cwd });
+    try {
+      await execFn(cmdSpec.file, cmdSpec.args, cmdSpec.execOptions);
+      launchedTerminal = candidate;
+      break;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  if (!launchedTerminal) {
+    if (lastError instanceof ServerHttpError) {
+      throw lastError;
     }
     throw new ServerHttpError(500, {
       error: "tui_launch_failed",
-      message: err instanceof Error ? err.message : String(err),
+      message:
+        lastError instanceof Error ? lastError.message : String(lastError ?? "TUI launch failed"),
     });
   }
 
@@ -433,6 +849,8 @@ export async function launchNativeAgentTui(
     cwd,
     cwdFallback,
     commandPreview: resolved.commandPreview,
+    terminal: launchedTerminal.label,
+    terminalId: launchedTerminal.id,
   });
 }
 

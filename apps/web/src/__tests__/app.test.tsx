@@ -1011,9 +1011,11 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     expect(await screen.findByRole("heading", { name: "设置" })).toBeTruthy();
     expect(screen.queryByRole("tab", { name: "角色与模型" })).toBeNull();
 
-    // Verify backends snapshot updated on 连接与底座 tab
+    // Verify backends snapshot & preferred TUI terminal selector on 连接与底座 tab
     fireEvent.click(screen.getByRole("tab", { name: "连接与底座" }));
     expect(screen.getByText("4 agent(s) available")).toBeTruthy();
+    const tuiSelectTrigger = screen.getByRole("combobox", { name: "首选 TUI 终端" });
+    expect(tuiSelectTrigger.textContent).toContain("自动择优");
 
     // Switch to pricing tab and change gpt-5.4 input price from 1.25 -> 10
     expect(document.getElementById("upTotalCost")?.textContent).toBe("$1.80");
@@ -4662,6 +4664,8 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
           cwd: "/repos/kiln/.worktrees/t-s4-ui",
           cwdFallback: false,
           commandPreview: "codex resume 0195a3f1-native-sess",
+          terminal: "Warp",
+          terminalId: "warp",
         });
       }
       return jsonResponse({});
@@ -4694,6 +4698,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     fireEvent.click(tuiBtn);
     await waitFor(() => {
       expect(openTuiCalls).toEqual(["/api/tasks/t-s4-ui/runs/001-implement/open-tui"]);
+      expect(screen.getByText(/已拉起 codex 原生 TUI（Warp）/)).toBeTruthy();
     });
 
     first.unmount();

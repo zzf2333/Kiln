@@ -12,6 +12,7 @@ import {
 import {
   KilndServer,
   buildRunOverviewSummary,
+  detectAvailableTuiTerminals,
   launchNativeAgentTui,
   resolveNativeTuiCommand,
 } from "../index.js";
@@ -171,6 +172,11 @@ describe("Native TUI launcher, run overview I/O summary & local-only open-tui en
     fs.mkdirSync(fallbackRepo, { recursive: true });
     fs.mkdirSync(quotedCwd, { recursive: true });
 
+    const emptyProbe = {
+      pathExists: () => false,
+      findBinary: () => null,
+    };
+
     const macCalls: Array<{ file: string; args: readonly string[] }> = [];
     const macRes = await launchNativeAgentTui({
       kilnHome,
@@ -182,6 +188,7 @@ describe("Native TUI launcher, run overview I/O summary & local-only open-tui en
       fallbackCwd: fallbackRepo,
       homedir: homeDir,
       platform: "darwin",
+      probe: emptyProbe,
       execFileFn: async (file, args) => {
         macCalls.push({ file, args });
         return { stdout: "", stderr: "" };
@@ -193,6 +200,8 @@ describe("Native TUI launcher, run overview I/O summary & local-only open-tui en
         : path.resolve(quotedCwd),
     );
     expect(macRes.cwdFallback).toBe(false);
+    expect(macRes.terminalId).toBe("terminal");
+    expect(macRes.terminal).toBe("系统默认终端");
     expect(macCalls).toHaveLength(1);
     expect(macCalls[0]!.file).toBe("/usr/bin/open");
     const macScript = macCalls[0]!.args[0]!;
@@ -222,6 +231,7 @@ describe("Native TUI launcher, run overview I/O summary & local-only open-tui en
       fallbackCwd: fallbackRepo,
       homedir: homeDir,
       platform: "win32",
+      probe: emptyProbe,
       execFileFn: async (file, args, opts) => {
         winCalls.push({ file, args, options: opts });
         return { stdout: "", stderr: "" };
@@ -229,6 +239,7 @@ describe("Native TUI launcher, run overview I/O summary & local-only open-tui en
     });
     expect(winRes.cwd).toBe(path.resolve(fallbackRepo));
     expect(winRes.cwdFallback).toBe(true);
+    expect(winRes.terminalId).toBe("powershell");
     expect(winCalls).toHaveLength(1);
     expect(winCalls[0]!.file).toBe("cmd.exe");
     expect(winCalls[0]!.options?.windowsHide).toBe(true);
@@ -248,10 +259,202 @@ describe("Native TUI launcher, run overview I/O summary & local-only open-tui en
       fallbackCwd: path.join(root, "missing-fallback"),
       homedir: homeDir,
       platform: "linux",
+      probe: emptyProbe,
       execFileFn: async () => ({ stdout: "", stderr: "" }),
     });
     expect(linuxRes.cwd).toBe(path.resolve(homeDir));
     expect(linuxRes.cwdFallback).toBe(true);
+    expect(linuxRes.terminalId).toBe("x_terminal_emulator");
+  });
+
+  it("prioritizes modern terminals across darwin/win32/linux, honors preferredTerminal, and falls back on launch error", async () => {
+    const root = makeTempDir();
+    tempDirs.push(root);
+    const kilnHome = path.join(root, "kiln-home");
+    const homeDir = path.join(root, "home");
+    const cwd = path.join(root, "repo");
+    fs.mkdirSync(homeDir, { recursive: true });
+    fs.mkdirSync(cwd, { recursive: true });
+
+    // 1. macOS priority: Ghostty > Warp > WezTerm > Kitty > iTerm2 > Alacritty > Terminal
+    const macDetected = detectAvailableTuiTerminals({
+      platform: "darwin",
+      homedir: homeDir,
+      pathExists: (p) => p === "/Applications/Warp.app" || p === "/Applications/iTerm.app",
+      findBinary: () => null,
+    });
+    expect(macDetected.map((t) => [t.id, t.available])).toEqual([
+      ["ghostty", false],
+      ["warp", true],
+      ["wezterm", false],
+      ["kitty", false],
+      ["iterm2", true],
+      ["alacritty", false],
+      ["terminal", true],
+    ]);
+
+    const warpCalls: Array<{ file: string; args: readonly string[] }> = [];
+    const warpRes = await launchNativeAgentTui({
+      kilnHome,
+      taskId: "t-warp",
+      runDir: "001-implement",
+      agent: "codex",
+      providerSessionId: "codex-warp-1",
+      cwd,
+      homedir: homeDir,
+      platform: "darwin",
+      probe: {
+        pathExists: (p) => p === "/Applications/Warp.app" || p === "/Applications/iTerm.app",
+        findBinary: () => null,
+      },
+      execFileFn: async (file, args) => {
+        warpCalls.push({ file, args });
+        return { stdout: "", stderr: "" };
+      },
+    });
+    expect(warpRes.terminalId).toBe("warp");
+    expect(warpRes.terminal).toBe("Warp");
+    expect(warpCalls[0]!.file).toBe("/usr/bin/open");
+    expect(warpCalls[0]!.args[0]).toBe("-a");
+    expect(warpCalls[0]!.args[1]).toBe("/Applications/Warp.app");
+
+    // Ghostty takes precedence over Warp when installed
+    const ghosttyCalls: Array<{ file: string; args: readonly string[] }> = [];
+    const ghosttyRes = await launchNativeAgentTui({
+      kilnHome,
+      taskId: "t-ghostty",
+      runDir: "001-implement",
+      agent: "codex",
+      providerSessionId: "codex-ghostty-1",
+      cwd,
+      homedir: homeDir,
+      platform: "darwin",
+      probe: {
+        pathExists: (p) => p === "/Applications/Ghostty.app" || p === "/Applications/Warp.app",
+        findBinary: () => null,
+      },
+      execFileFn: async (file, args) => {
+        ghosttyCalls.push({ file, args });
+        return { stdout: "", stderr: "" };
+      },
+    });
+    expect(ghosttyRes.terminalId).toBe("ghostty");
+    expect(ghosttyRes.terminal).toBe("Ghostty");
+    expect(ghosttyCalls[0]!.args.slice(0, 4)).toEqual([
+      "-na",
+      "/Applications/Ghostty.app",
+      "--args",
+      "-e",
+    ]);
+
+    // Explicit preferredTerminal overrides auto priority; unavailable preference degrades to auto
+    const itermCalls: Array<{ file: string; args: readonly string[] }> = [];
+    const itermRes = await launchNativeAgentTui({
+      kilnHome,
+      taskId: "t-iterm",
+      runDir: "001-implement",
+      agent: "codex",
+      providerSessionId: "codex-iterm-1",
+      cwd,
+      homedir: homeDir,
+      platform: "darwin",
+      preferredTerminal: "iterm2",
+      probe: {
+        pathExists: (p) => p === "/Applications/Warp.app" || p === "/Applications/iTerm.app",
+        findBinary: () => null,
+      },
+      execFileFn: async (file, args) => {
+        itermCalls.push({ file, args });
+        return { stdout: "", stderr: "" };
+      },
+    });
+    expect(itermRes.terminalId).toBe("iterm2");
+    expect(itermCalls[0]!.args[1]).toBe("/Applications/iTerm.app");
+
+    // If preferred modern terminal fails to open, automatically falls back to system default terminal
+    const fallbackCalls: Array<{ file: string; args: readonly string[] }> = [];
+    const fallbackRes = await launchNativeAgentTui({
+      kilnHome,
+      taskId: "t-fallback",
+      runDir: "001-implement",
+      agent: "codex",
+      providerSessionId: "codex-fb-1",
+      cwd,
+      homedir: homeDir,
+      platform: "darwin",
+      preferredTerminal: "warp",
+      probe: {
+        pathExists: (p) => p === "/Applications/Warp.app",
+        findBinary: () => null,
+      },
+      execFileFn: async (file, args) => {
+        fallbackCalls.push({ file, args });
+        if (args[0] === "-a" && args[1] === "/Applications/Warp.app") {
+          throw new Error("Warp failed to launch");
+        }
+        return { stdout: "", stderr: "" };
+      },
+    });
+    expect(fallbackCalls).toHaveLength(2);
+    expect(fallbackRes.terminalId).toBe("terminal");
+    expect(fallbackCalls[1]!.args).toHaveLength(1);
+
+    // 2. Windows priority: Windows Terminal (with pwsh) > WezTerm > Alacritty > pwsh > PowerShell
+    const wtCalls: Array<{ file: string; args: readonly string[] }> = [];
+    const wtRes = await launchNativeAgentTui({
+      kilnHome,
+      taskId: "t-wt",
+      runDir: "001-implement",
+      agent: "codex",
+      providerSessionId: "codex-wt-1",
+      cwd,
+      homedir: homeDir,
+      platform: "win32",
+      probe: {
+        pathExists: () => false,
+        findBinary: (bin) => {
+          if (bin === "wt.exe")
+            return "C:\\Users\\dev\\AppData\\Local\\Microsoft\\WindowsApps\\wt.exe";
+          if (bin === "pwsh.exe") return "C:\\Program Files\\PowerShell\\7\\pwsh.exe";
+          return null;
+        },
+      },
+      execFileFn: async (file, args) => {
+        wtCalls.push({ file, args });
+        return { stdout: "", stderr: "" };
+      },
+    });
+    expect(wtRes.terminalId).toBe("windows_terminal");
+    expect(wtRes.terminal).toBe("Windows Terminal");
+    expect(wtCalls[0]!.file).toBe("C:\\Users\\dev\\AppData\\Local\\Microsoft\\WindowsApps\\wt.exe");
+    expect(wtCalls[0]!.args.slice(0, 3)).toEqual([
+      "-d",
+      path.resolve(cwd),
+      "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+    ]);
+
+    // 3. Linux priority: ghostty > wezterm > kitty > ... > xterm
+    const linuxModernCalls: Array<{ file: string; args: readonly string[] }> = [];
+    const linuxModernRes = await launchNativeAgentTui({
+      kilnHome,
+      taskId: "t-linux-modern",
+      runDir: "001-implement",
+      agent: "codex",
+      providerSessionId: "codex-linux-modern-1",
+      cwd,
+      homedir: homeDir,
+      platform: "linux",
+      probe: {
+        pathExists: () => false,
+        findBinary: (bin) => (bin === "kitty" || bin === "xterm" ? `/usr/bin/${bin}` : null),
+      },
+      execFileFn: async (file, args) => {
+        linuxModernCalls.push({ file, args });
+        return { stdout: "", stderr: "" };
+      },
+    });
+    expect(linuxModernRes.terminalId).toBe("kitty");
+    expect(linuxModernCalls[0]!.file).toBe("/usr/bin/kitty");
   });
 
   it("buildRunOverviewSummary prefers RUN.yaml session and extracts compact I/O overview", () => {
@@ -557,5 +760,29 @@ describe("Native TUI launcher, run overview I/O summary & local-only open-tui en
       taskId: "t-tui-1",
       runDir: "001-implement",
     });
+
+    // Local bootstrap exposes detected tuiTerminals while remote :4311 omits host terminal list
+    const localBootstrapRes = await server.app.request(
+      new Request("http://127.0.0.1:4310/api/bootstrap"),
+    );
+    expect(localBootstrapRes.status).toBe(200);
+    const localBootstrap = (await localBootstrapRes.json()) as {
+      tuiTerminals?: Array<{ id: string; available: boolean }>;
+    };
+    expect(Array.isArray(localBootstrap.tuiTerminals)).toBe(true);
+    expect(localBootstrap.tuiTerminals!.length).toBeGreaterThan(0);
+
+    const remoteBootstrapRes = await server.remoteApp.request(
+      new Request("http://127.0.0.1:4311/api/bootstrap", {
+        headers: {
+          Cookie: `kiln_session=${sessionToken}`,
+        },
+      }),
+    );
+    expect(remoteBootstrapRes.status).toBe(200);
+    const remoteBootstrap = (await remoteBootstrapRes.json()) as {
+      tuiTerminals?: unknown;
+    };
+    expect(remoteBootstrap.tuiTerminals).toBeUndefined();
   });
 });

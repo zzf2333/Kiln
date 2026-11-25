@@ -13,6 +13,7 @@ import {
   PublicPairedDeviceSchema,
   RemoteNotificationChannelSchema,
   RoleIdSchema,
+  TuiTerminalIdSchema,
 } from "./config.js";
 import { SPACE_SCRIPT_KEYS } from "./constants.js";
 import { McpToolNameSchema } from "./mcp.js";
@@ -241,6 +242,14 @@ export const SpaceFilesResponseSchema = z.object({
 });
 export type SpaceFilesResponse = z.infer<typeof SpaceFilesResponseSchema>;
 
+export const DetectedTuiTerminalSchema = z.object({
+  id: TuiTerminalIdSchema,
+  label: z.string().min(1),
+  available: z.boolean(),
+  isDefaultFallback: z.boolean().optional(),
+});
+export type DetectedTuiTerminal = z.infer<typeof DetectedTuiTerminalSchema>;
+
 export const OpenRunTuiResponseSchema = z.object({
   ok: z.literal(true),
   taskId: z.string().min(1),
@@ -250,6 +259,8 @@ export const OpenRunTuiResponseSchema = z.object({
   cwd: z.string().min(1),
   cwdFallback: z.boolean().default(false),
   commandPreview: z.string().min(1),
+  terminal: z.string().min(1).optional(),
+  terminalId: TuiTerminalIdSchema.optional(),
 });
 export type OpenRunTuiResponse = z.infer<typeof OpenRunTuiResponseSchema>;
 

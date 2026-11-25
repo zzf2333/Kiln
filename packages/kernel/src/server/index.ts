@@ -313,6 +313,7 @@ export {
 export {
   NATIVE_TUI_SUPPORTED_AGENTS,
   buildRunOverviewSummary,
+  detectAvailableTuiTerminals,
   launchNativeAgentTui,
   resolveNativeTuiCommand,
   type BuildRunOverviewInput,
@@ -323,4 +324,5 @@ export {
   type ResolveNativeTuiCommandResult,
   type RunIoSummary,
   type RunSessionInfo,
+  type TuiEnvironmentProbe,
 } from "./tui-launcher.js";

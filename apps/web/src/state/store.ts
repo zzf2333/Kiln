@@ -15,6 +15,7 @@ import {
   validateWorkflowBlueprint,
   type AttachmentMimeType,
   type ComposableWorkflowOptions,
+  type DetectedTuiTerminal,
   type DraftCard,
   type GlobalBudgetStatus,
   type LedgerEntry,
@@ -358,6 +359,7 @@ export interface KilnStoreState {
   providersConfigLoaded: boolean;
   providerStatuses: ProviderRuntimeStatus[];
   providerTestBusyId: string | null;
+  tuiTerminals: DetectedTuiTerminal[];
   limits: LimitsConfig;
   pricing: PricingConfig;
   usage: UsageSnapshot;
@@ -1089,6 +1091,7 @@ export class KilnWebStore {
       providersConfigLoaded: false,
       providerStatuses: [],
       providerTestBusyId: null,
+      tuiTerminals: [],
       limits: { ...DEFAULT_LIMITS },
       pricing: { ...DEFAULT_PRICING, models: {} },
       usage: { ...EMPTY_USAGE },
@@ -1282,6 +1285,7 @@ export class KilnWebStore {
       tasks: [],
       pendingDecisions: [],
       drafts: [],
+      tuiTerminals: [],
       taskDetails: {},
       ledgers: {},
       resolveMessagesByTask: {},
@@ -1650,6 +1654,7 @@ export class KilnWebStore {
           providersConfig,
           providersConfigLoaded,
           ...(data.providers !== undefined ? { providerStatuses: data.providers } : {}),
+          ...(data.tuiTerminals !== undefined ? { tuiTerminals: data.tuiTerminals } : {}),
           limits,
           pricing,
           usage: data.usage ?? { ...EMPTY_USAGE },
@@ -2411,7 +2416,8 @@ export class KilnWebStore {
     try {
       const res = await apiOpenRunTui(taskId, runDir);
       const shortId = res.providerSessionId.slice(0, 12);
-      this.showToast(`已拉起 ${res.agent} 原生 TUI (${shortId})`);
+      const via = res.terminal ? `（${res.terminal}）` : "";
+      this.showToast(`已拉起 ${res.agent} 原生 TUI${via} (${shortId})`);
     } catch (err) {
       this.showToast(err instanceof Error ? err.message : "打开原生 TUI 失败");
     }

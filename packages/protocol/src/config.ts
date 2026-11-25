@@ -26,6 +26,7 @@ import {
   ROSTER_TIER_HINTS,
   SHA256_HEX_RE,
   STAGE_IDS,
+  TUI_TERMINAL_IDS,
   VERIFIER_CAPABILITIES,
   isReadOnlyRosterPermission,
   isWriteCapableRosterPermission,
@@ -42,6 +43,7 @@ import {
   type RosterPermission,
   type RosterTierHint,
   type StageId,
+  type TuiTerminalId,
   type VerifierCapability,
 } from "./constants.js";
 
@@ -62,6 +64,7 @@ export {
   ROSTER_PERMISSIONS,
   ROSTER_TIER_HINTS,
   SHA256_HEX_RE,
+  TUI_TERMINAL_IDS,
   VERIFIER_CAPABILITIES,
   isReadOnlyRosterPermission,
   isWriteCapableRosterPermission,
@@ -76,8 +79,11 @@ export {
   type RosterGroup,
   type RosterPermission,
   type RosterTierHint,
+  type TuiTerminalId,
   type VerifierCapability,
 };
+
+export const TuiTerminalIdSchema = z.enum(TUI_TERMINAL_IDS);
 
 export const VerifierCapabilitySchema = z.enum(VERIFIER_CAPABILITIES);
 
@@ -140,6 +146,7 @@ export const LimitsConfigSchema = z.object({
   budget_soft_warning_ratio: z.number().finite().min(0.1).max(0.99).optional(),
   budget_exclude_subscription_providers: z.boolean().optional(),
   stall_timeout_sec: z.number().int().min(0).max(86_400).optional(),
+  preferred_tui_terminal: TuiTerminalIdSchema.optional(),
 });
 export type LimitsConfig = z.infer<typeof LimitsConfigSchema>;
 
