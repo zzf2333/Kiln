@@ -124,6 +124,14 @@ export class KilnPaths {
     return path.join(this.home, "cache");
   }
 
+  get agentHomesDir(): string {
+    return path.join(this.home, "agent-homes");
+  }
+
+  agentHome(name: string): string {
+    return joinUnder(this.agentHomesDir, name, "agentHome");
+  }
+
   get usageDir(): string {
     return path.join(this.home, "usage");
   }

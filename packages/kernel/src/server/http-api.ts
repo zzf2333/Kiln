@@ -2742,6 +2742,10 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     const card = store.readTaskCard(taskId);
     const spaceConfig = store.readSpace(card.space);
     const preferredTerminal = store.readConfig("limits")?.preferred_tui_terminal;
+    const rawCodexHome =
+      meta.agent.trim().toLowerCase() === "codex"
+        ? meta.session_ref.meta?.codexHome?.trim() || undefined
+        : undefined;
     const launched = await launchNativeAgentTui({
       kilnHome: store.paths.home,
       taskId,
@@ -2749,6 +2753,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       agent: meta.agent,
       providerSessionId,
       providerSessionPath,
+      ...(rawCodexHome !== undefined ? { codexHome: rawCodexHome } : {}),
       cwd: meta.cwd ?? null,
       fallbackCwd: spaceConfig?.repo_path ?? null,
       ...(preferredTerminal !== undefined ? { preferredTerminal } : {}),

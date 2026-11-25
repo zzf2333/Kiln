@@ -9,7 +9,11 @@ import { createDefaultProvidersConfig, type ProvidersConfig, type RunEvent } fro
 import { verifyBackendContract } from "./contract.suite.js";
 import { AcpBackend } from "../acp/index.js";
 import { ClaudeDirectBackend } from "../claude-direct.js";
-import { CodexAppServerBackend } from "../codex-app-server.js";
+import {
+  CodexAppServerBackend,
+  prepareIsolatedCodexHome,
+  resolveIsolatedCodexHome,
+} from "../codex-app-server.js";
 import { CompositeBackend } from "../composite-backend.js";
 import { PiRpcBackend } from "../pi-rpc.js";
 import { ProviderHealthTracker } from "../provider-health.js";
@@ -46,6 +50,7 @@ beforeAll(() => {
     codexScript,
     `
 import fs from "node:fs";
+import path from "node:path";
 
 if (process.argv.includes("--version")) {
   console.log("codex-cli 0.170.0-test");
@@ -73,6 +78,7 @@ function appendLog(rec) {
 
 appendLog({
   type: "env",
+  CODEX_HOME: process.env.CODEX_HOME ?? null,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? null,
   KILN_RUN_TOKEN: process.env.KILN_RUN_TOKEN ?? null,
   GIT_TERMINAL_PROMPT: process.env.GIT_TERMINAL_PROMPT ?? null,
@@ -127,7 +133,18 @@ process.stdin.on("data", (chunk) => {
       });
     } else if (msg.method === "thread/start") {
       appendLog({ type: "thread_start", params: msg.params });
-      send({ id: msg.id, result: { thread: { id: "thread-codex-1" } } });
+      const rolloutPath = process.env.CODEX_HOME
+        ? path.join(process.env.CODEX_HOME, "sessions", "rollout-thread-codex-1.jsonl")
+        : undefined;
+      send({
+        id: msg.id,
+        result: {
+          thread: {
+            id: "thread-codex-1",
+            ...(rolloutPath ? { path: rolloutPath } : {}),
+          },
+        },
+      });
     } else if (msg.method === "turn/start") {
       turnCount += 1;
       const turnId = "turn-" + turnCount;
@@ -1823,6 +1840,197 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
     } finally {
       await composite.dispose();
       fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("prepareIsolatedCodexHome mirrors shared auth/config/skills only, prunes stale links, and preserves fresher auth.json", () => {
+    const tmpRoot = makeTempWs("kiln-codex-home-iso-");
+    const kilnHome = path.join(tmpRoot, "kiln-home");
+    const sourceHome = path.join(tmpRoot, "user-codex");
+    fs.mkdirSync(sourceHome, { recursive: true });
+
+    try {
+      fs.writeFileSync(path.join(sourceHome, "auth.json"), '{"token":"src-old"}', { mode: 0o600 });
+      fs.writeFileSync(path.join(sourceHome, "config.toml"), 'model = "gpt-5.4"\n', "utf8");
+      fs.writeFileSync(path.join(sourceHome, "instructions.md"), "# rules\n", "utf8");
+      fs.mkdirSync(path.join(sourceHome, "skills", "demo"), { recursive: true });
+      fs.writeFileSync(path.join(sourceHome, "skills", "demo", "SKILL.md"), "# skill", "utf8");
+      fs.mkdirSync(path.join(sourceHome, "agents"), { recursive: true });
+
+      // Conversation history & SQLite state in user's ~/.codex MUST NEVER be mirrored
+      fs.mkdirSync(path.join(sourceHome, "sessions", "2026"), { recursive: true });
+      fs.writeFileSync(path.join(sourceHome, "history.jsonl"), '{"msg":"private"}\n', "utf8");
+      fs.writeFileSync(path.join(sourceHome, "session_index.jsonl"), "{}\n", "utf8");
+      fs.writeFileSync(path.join(sourceHome, "state_5.sqlite"), "sqlite", "utf8");
+      fs.writeFileSync(path.join(sourceHome, "thread_history_1.sqlite"), "sqlite", "utf8");
+      fs.writeFileSync(path.join(sourceHome, ".codex-global-state.json"), "{}", "utf8");
+
+      const isolated = prepareIsolatedCodexHome(kilnHome, { sourceCodexHome: sourceHome });
+      expect(isolated).toBe(resolveIsolatedCodexHome(kilnHome));
+
+      expect(fs.existsSync(path.join(isolated, "auth.json"))).toBe(true);
+      expect(fs.existsSync(path.join(isolated, "config.toml"))).toBe(true);
+      expect(fs.existsSync(path.join(isolated, "instructions.md"))).toBe(true);
+      expect(fs.existsSync(path.join(isolated, "skills", "demo", "SKILL.md"))).toBe(true);
+      expect(fs.existsSync(path.join(isolated, "agents"))).toBe(true);
+
+      expect(fs.existsSync(path.join(isolated, "sessions"))).toBe(false);
+      expect(fs.existsSync(path.join(isolated, "history.jsonl"))).toBe(false);
+      expect(fs.existsSync(path.join(isolated, "session_index.jsonl"))).toBe(false);
+      expect(fs.existsSync(path.join(isolated, "state_5.sqlite"))).toBe(false);
+      expect(fs.existsSync(path.join(isolated, "thread_history_1.sqlite"))).toBe(false);
+      expect(fs.existsSync(path.join(isolated, ".codex-global-state.json"))).toBe(false);
+
+      // Simulate OAuth refresh replacing symlink with a fresher regular auth.json in isolated home
+      fs.rmSync(path.join(isolated, "auth.json"), { force: true });
+      fs.writeFileSync(path.join(isolated, "auth.json"), '{"token":"refreshed-newer"}', {
+        mode: 0o600,
+      });
+      const nowSec = Date.now() / 1000;
+      fs.utimesSync(path.join(sourceHome, "auth.json"), nowSec - 60, nowSec - 60);
+      fs.utimesSync(path.join(isolated, "auth.json"), nowSec + 10, nowSec + 10);
+
+      // Delete instructions.md from sourceHome -> stale symlink in isolated must be pruned
+      fs.rmSync(path.join(sourceHome, "instructions.md"));
+      prepareIsolatedCodexHome(kilnHome, { sourceCodexHome: sourceHome });
+
+      expect(fs.readFileSync(path.join(isolated, "auth.json"), "utf8")).toBe(
+        '{"token":"refreshed-newer"}',
+      );
+      expect(fs.existsSync(path.join(isolated, "instructions.md"))).toBe(false);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("CodexAppServerBackend & CompositeBackend inject isolated CODEX_HOME, record codexHome & providerSessionPath, and honor explicit override", async () => {
+    const tmpRoot = makeTempWs("kiln-codex-iso-run-");
+    const kilnHome = path.join(tmpRoot, "kiln-home");
+    const sourceHome = path.join(tmpRoot, "source-codex");
+    const explicitHome = path.join(tmpRoot, "explicit-codex");
+    const cwd = path.join(tmpRoot, "ws");
+    const logFile = path.join(tmpRoot, "codex.log");
+    fs.mkdirSync(sourceHome, { recursive: true });
+    fs.mkdirSync(explicitHome, { recursive: true });
+    fs.mkdirSync(cwd, { recursive: true });
+    fs.writeFileSync(path.join(sourceHome, "config.toml"), 'model = "gpt-5.4"\n', "utf8");
+
+    const backend = new CodexAppServerBackend({
+      provider: {
+        id: "codex",
+        label: "Codex",
+        adapter: "codex_app_server",
+        enabled: true,
+        command: process.execPath,
+        args: [codexScript],
+        env: { TEST_CODEX_LOG: logFile },
+        custom_models: [],
+      },
+      kilnHome,
+      sourceCodexHome: sourceHome,
+    });
+
+    const composite = new CompositeBackend({
+      kilnHome,
+      initialConfig: {
+        schema_version: 1,
+        providers: [
+          {
+            id: "codex",
+            label: "Codex",
+            adapter: "codex_app_server",
+            enabled: true,
+            command: process.execPath,
+            args: [codexScript],
+            env: { TEST_CODEX_LOG: logFile },
+            custom_models: [],
+          },
+        ],
+      },
+    });
+
+    const overrideBackend = new CodexAppServerBackend({
+      provider: {
+        id: "codex",
+        label: "Codex",
+        adapter: "codex_app_server",
+        enabled: true,
+        command: process.execPath,
+        args: [codexScript],
+        env: { TEST_CODEX_LOG: logFile, CODEX_HOME: explicitHome },
+        custom_models: [],
+      },
+      kilnHome,
+      sourceCodexHome: sourceHome,
+    });
+
+    try {
+      const expectedIso = resolveIsolatedCodexHome(kilnHome);
+
+      await backend.probeProvider();
+      const ref1 = await backend.start({
+        runId: "r-iso-1",
+        taskId: "t-iso-1",
+        role: "worker",
+        agent: "codex",
+        model: "gpt-5.4",
+        cwd,
+        prompt: "hello",
+        freshContext: true,
+      });
+      const ev1 = await collectAllEvents(backend, ref1);
+      const bound1 = ev1.find(
+        (e): e is Extract<RunEvent, { kind: "session_bound" }> => e.kind === "session_bound",
+      );
+      expect(ref1.meta?.codexHome).toBe(expectedIso);
+      expect(ref1.meta?.providerSessionPath).toBe(
+        path.join(expectedIso, "sessions", "rollout-thread-codex-1.jsonl"),
+      );
+      expect(bound1?.providerSessionPath).toBe(
+        path.join(expectedIso, "sessions", "rollout-thread-codex-1.jsonl"),
+      );
+
+      const compositeRef = await composite.start({
+        runId: "r-iso-2",
+        taskId: "t-iso-2",
+        role: "worker",
+        agent: "codex",
+        model: "gpt-5.4",
+        cwd,
+        prompt: "hello",
+        freshContext: true,
+      });
+      await collectAllEvents(composite, compositeRef);
+      expect(compositeRef.meta?.codexHome).toBe(expectedIso);
+
+      const overrideRef = await overrideBackend.start({
+        runId: "r-iso-3",
+        taskId: "t-iso-3",
+        role: "worker",
+        agent: "codex",
+        model: "gpt-5.4",
+        cwd,
+        prompt: "hello",
+        freshContext: true,
+      });
+      await collectAllEvents(overrideBackend, overrideRef);
+      expect(overrideRef.meta?.codexHome).toBe(explicitHome);
+
+      const envLogs = fs
+        .readFileSync(logFile, "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l) as Record<string, unknown>)
+        .filter((l) => l.type === "env");
+      expect(envLogs[0]?.CODEX_HOME).toBe(expectedIso);
+      expect(envLogs[1]?.CODEX_HOME).toBe(expectedIso);
+      expect(envLogs[2]?.CODEX_HOME).toBe(expectedIso);
+      expect(envLogs[3]?.CODEX_HOME).toBe(explicitHome);
+    } finally {
+      await backend.dispose();
+      await composite.dispose();
+      await overrideBackend.dispose();
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
   });
 });

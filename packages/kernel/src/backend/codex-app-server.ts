@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   type BackendCapabilities,
   type ProviderEntry,
@@ -76,11 +79,222 @@ const GRANULAR_APPROVAL_POLICY = {
 
 export interface CodexAppServerBackendOptions {
   provider: ProviderEntry;
+  kilnHome?: string;
+  sourceCodexHome?: string;
   healthTracker?: ProviderHealthTracker;
   cancelTimeoutMs?: number;
   rpcTimeoutMs?: number;
   spawnFn?: SpawnProcessFn;
   probeOptions?: ProbeCliBinaryOptions;
+}
+
+const CODEX_SHARED_FILES = [
+  "auth.json",
+  "config.toml",
+  "instructions.md",
+  "AGENTS.md",
+  "hooks.json",
+] as const;
+
+const CODEX_SHARED_DIRS = ["skills", "agents", "rules", "plugins", "vendor_imports"] as const;
+
+/**
+ * Resolves Kiln's isolated `CODEX_HOME` directory under `<kilnHome>/agent-homes/codex`
+ * so Kiln background runs never pollute the user's personal `~/.codex` session list.
+ */
+export function resolveIsolatedCodexHome(kilnHome: string): string {
+  return path.join(path.resolve(kilnHome), "agent-homes", "codex");
+}
+
+function isPathWithinDir(candidatePath: string, parentDir: string): boolean {
+  const resolvedCandidate = path.resolve(candidatePath);
+  const resolvedParent = path.resolve(parentDir);
+  if (resolvedCandidate === resolvedParent) {
+    return true;
+  }
+  const prefix = resolvedParent.endsWith(path.sep) ? resolvedParent : resolvedParent + path.sep;
+  return resolvedCandidate.startsWith(prefix);
+}
+
+function removeStaleMirrorSymlink(dstPath: string, targetDir: string, sourceDir: string): void {
+  let lst: fs.Stats;
+  try {
+    lst = fs.lstatSync(dstPath);
+  } catch {
+    return;
+  }
+  if (!lst.isSymbolicLink()) {
+    return;
+  }
+  try {
+    const rawLink = fs.readlinkSync(dstPath);
+    const resolvedLink = path.resolve(targetDir, rawLink);
+    if (isPathWithinDir(resolvedLink, sourceDir)) {
+      fs.rmSync(dstPath, { force: true });
+    }
+  } catch {
+    fs.rmSync(dstPath, { force: true });
+  }
+}
+
+/**
+ * Prepares an isolated `CODEX_HOME` under `<kilnHome>/agent-homes/codex` by mirroring
+ * shared auth/config/extensions from `sourceCodexHome` (defaulting to `$CODEX_HOME` or `~/.codex`)
+ * while excluding all conversation history, session indexes, and SQLite state files.
+ */
+export function prepareIsolatedCodexHome(
+  kilnHome: string,
+  options?: {
+    sourceCodexHome?: string;
+    platform?: NodeJS.Platform;
+  },
+): string {
+  const platform = options?.platform ?? process.platform;
+  const targetDir = resolveIsolatedCodexHome(kilnHome);
+  fs.mkdirSync(targetDir, { recursive: true, mode: 0o700 });
+  if (platform !== "win32") {
+    try {
+      fs.chmodSync(targetDir, 0o700);
+    } catch {
+      // Ignore chmod failure on unsupported filesystems.
+    }
+  }
+
+  const explicitSource = options?.sourceCodexHome?.trim();
+  const envSource = process.env.CODEX_HOME?.trim();
+  const rawSource =
+    explicitSource && explicitSource.length > 0
+      ? explicitSource
+      : envSource && envSource.length > 0 && path.resolve(envSource) !== targetDir
+        ? envSource
+        : path.join(os.homedir(), ".codex");
+  const sourceDir = path.resolve(rawSource);
+
+  if (sourceDir === targetDir || !fs.existsSync(sourceDir)) {
+    return targetDir;
+  }
+
+  for (const name of CODEX_SHARED_FILES) {
+    const srcPath = path.join(sourceDir, name);
+    const dstPath = path.join(targetDir, name);
+    let srcStat: fs.Stats | null = null;
+    try {
+      const st = fs.statSync(srcPath);
+      if (st.isFile()) {
+        srcStat = st;
+      }
+    } catch {
+      srcStat = null;
+    }
+
+    if (!srcStat) {
+      removeStaleMirrorSymlink(dstPath, targetDir, sourceDir);
+      continue;
+    }
+
+    let dstLstat: fs.Stats | null = null;
+    try {
+      dstLstat = fs.lstatSync(dstPath);
+    } catch {
+      dstLstat = null;
+    }
+
+    if (dstLstat) {
+      if (dstLstat.isSymbolicLink()) {
+        try {
+          const resolvedLink = path.resolve(targetDir, fs.readlinkSync(dstPath));
+          if (resolvedLink === srcPath) {
+            continue;
+          }
+          if (isPathWithinDir(resolvedLink, sourceDir)) {
+            fs.rmSync(dstPath, { force: true });
+          } else {
+            continue;
+          }
+        } catch {
+          fs.rmSync(dstPath, { force: true });
+        }
+      } else if (dstLstat.isFile()) {
+        if (name === "auth.json" && dstLstat.mtimeMs >= srcStat.mtimeMs) {
+          // Preserve fresher OAuth tokens refreshed by Codex inside the isolated home.
+          continue;
+        }
+        if (dstLstat.mtimeMs >= srcStat.mtimeMs) {
+          continue;
+        }
+      } else {
+        continue;
+      }
+    }
+
+    try {
+      fs.symlinkSync(srcPath, dstPath, "file");
+    } catch {
+      try {
+        fs.copyFileSync(srcPath, dstPath);
+        if (platform !== "win32" && name === "auth.json") {
+          try {
+            fs.chmodSync(dstPath, 0o600);
+          } catch {
+            // Ignore chmod failure.
+          }
+        }
+      } catch {
+        // Non-fatal mirror failure; Codex can still boot with defaults.
+      }
+    }
+  }
+
+  for (const dirName of CODEX_SHARED_DIRS) {
+    const srcPath = path.join(sourceDir, dirName);
+    const dstPath = path.join(targetDir, dirName);
+    let srcIsDir = false;
+    try {
+      srcIsDir = fs.statSync(srcPath).isDirectory();
+    } catch {
+      srcIsDir = false;
+    }
+
+    if (!srcIsDir) {
+      removeStaleMirrorSymlink(dstPath, targetDir, sourceDir);
+      continue;
+    }
+
+    let dstLstat: fs.Stats | null = null;
+    try {
+      dstLstat = fs.lstatSync(dstPath);
+    } catch {
+      dstLstat = null;
+    }
+
+    if (dstLstat) {
+      if (dstLstat.isSymbolicLink()) {
+        try {
+          const resolvedLink = path.resolve(targetDir, fs.readlinkSync(dstPath));
+          if (resolvedLink === srcPath) {
+            continue;
+          }
+          if (isPathWithinDir(resolvedLink, sourceDir)) {
+            fs.rmSync(dstPath, { force: true });
+          } else {
+            continue;
+          }
+        } catch {
+          fs.rmSync(dstPath, { force: true });
+        }
+      } else {
+        continue;
+      }
+    }
+
+    try {
+      fs.symlinkSync(srcPath, dstPath, platform === "win32" ? "junction" : "dir");
+    } catch {
+      // Ignore unsupported directory symlink permissions gracefully.
+    }
+  }
+
+  return targetDir;
 }
 
 interface PendingCodexApproval {
@@ -266,6 +480,8 @@ export class CodexAppServerBackend implements ProviderTelemetryBackend {
   readonly backendId: string;
 
   private readonly provider: ProviderEntry;
+  private readonly kilnHome: string | undefined;
+  private readonly sourceCodexHome: string | undefined;
   private readonly healthTracker: ProviderHealthTracker | undefined;
   private readonly cancelTimeoutMs: number;
   private readonly rpcTimeoutMs: number;
@@ -281,11 +497,43 @@ export class CodexAppServerBackend implements ProviderTelemetryBackend {
   constructor(options: CodexAppServerBackendOptions) {
     this.provider = options.provider;
     this.backendId = options.provider.id;
+    this.kilnHome = options.kilnHome;
+    this.sourceCodexHome = options.sourceCodexHome;
     this.healthTracker = options.healthTracker;
     this.cancelTimeoutMs = options.cancelTimeoutMs ?? DEFAULT_CANCEL_TIMEOUT_MS;
     this.rpcTimeoutMs = options.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
     this.spawnFn = options.spawnFn;
     this.probeOptions = options.probeOptions;
+  }
+
+  private resolveCodexProcessEnv(runEnv?: Record<string, string>): {
+    env: NodeJS.ProcessEnv;
+    codexHome: string | undefined;
+  } {
+    const explicitCodexHome =
+      runEnv?.CODEX_HOME?.trim() || this.provider.env?.CODEX_HOME?.trim() || undefined;
+    if (explicitCodexHome) {
+      return {
+        env: buildProcessEnv(this.provider.env, runEnv),
+        codexHome: explicitCodexHome,
+      };
+    }
+    if (this.kilnHome) {
+      const isolatedCodexHome = prepareIsolatedCodexHome(this.kilnHome, {
+        ...(this.sourceCodexHome !== undefined ? { sourceCodexHome: this.sourceCodexHome } : {}),
+      });
+      return {
+        env: buildProcessEnv(this.provider.env, {
+          ...(runEnv ?? {}),
+          CODEX_HOME: isolatedCodexHome,
+        }),
+        codexHome: isolatedCodexHome,
+      };
+    }
+    return {
+      env: buildProcessEnv(this.provider.env, runEnv),
+      codexHome: undefined,
+    };
   }
 
   private getCommandAndArgs(): { command: string; args: string[] } {
@@ -297,7 +545,7 @@ export class CodexAppServerBackend implements ProviderTelemetryBackend {
   async probeProvider(): Promise<ProviderProbeSnapshot> {
     this.assertNotDisposed();
     const { command, args } = this.getCommandAndArgs();
-    const env = buildProcessEnv(this.provider.env);
+    const { env } = this.resolveCodexProcessEnv();
     const binaryProbe = await probeCliBinary(command, {
       env,
       ...(this.probeOptions ?? {}),
@@ -489,7 +737,7 @@ export class CodexAppServerBackend implements ProviderTelemetryBackend {
         }) ?? "workspace-write");
 
     const { command, args } = this.getCommandAndArgs();
-    const env = buildProcessEnv(this.provider.env, runSpec.env);
+    const { env, codexHome } = this.resolveCodexProcessEnv(runSpec.env);
     const resolvedCmd = resolveCliBinary(command, { env, ...(this.probeOptions ?? {}) }) ?? command;
 
     const sessionId = `codex-${randomUUID()}`;
@@ -499,6 +747,7 @@ export class CodexAppServerBackend implements ProviderTelemetryBackend {
       meta: {
         agent: this.provider.id,
         modeId: selectedModeId,
+        ...(codexHome ? { codexHome } : {}),
       },
     };
 
@@ -597,9 +846,13 @@ export class CodexAppServerBackend implements ProviderTelemetryBackend {
             : {}),
         },
         { includeJsonRpcField: false, timeoutMs: this.rpcTimeoutMs },
-      )) as { thread?: { id?: string } };
+      )) as { thread?: { id?: string; path?: string | null } };
 
       const threadId = threadRes?.thread?.id?.trim();
+      const threadPath =
+        typeof threadRes?.thread?.path === "string" && threadRes.thread.path.trim().length > 0
+          ? threadRes.thread.path.trim()
+          : undefined;
       if (!threadId) {
         throw new Error("Codex app-server thread/start did not return thread.id");
       }
@@ -607,6 +860,7 @@ export class CodexAppServerBackend implements ProviderTelemetryBackend {
       sessionRef.meta = {
         ...sessionRef.meta,
         providerSessionId: threadId,
+        ...(threadPath ? { providerSessionPath: threadPath } : {}),
       };
 
       const initialPrompt = runSpec.systemPrompt
@@ -617,6 +871,7 @@ export class CodexAppServerBackend implements ProviderTelemetryBackend {
         kind: "session_bound",
         at: new Date().toISOString(),
         providerSessionId: threadId,
+        ...(threadPath ? { providerSessionPath: threadPath } : {}),
       });
 
       const startTurnRes = (await proc.request(

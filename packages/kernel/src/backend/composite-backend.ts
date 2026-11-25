@@ -36,6 +36,7 @@ export type AdapterFactoryFn = (
 
 export interface CompositeBackendOptions {
   backendId?: string;
+  kilnHome?: string;
   initialConfig?: ProvidersConfig;
   healthTracker?: ProviderHealthTracker;
   adapterFactories?: Partial<Record<ProviderAdapterKind, AdapterFactoryFn>>;
@@ -170,10 +171,15 @@ export async function detectProvidersConfigOnHost(
 function createDefaultAdapter(
   entry: ProviderEntry,
   healthTracker: ProviderHealthTracker,
+  kilnHome?: string,
 ): ProviderTelemetryBackend {
   switch (entry.adapter) {
     case "codex_app_server":
-      return new CodexAppServerBackend({ provider: entry, healthTracker });
+      return new CodexAppServerBackend({
+        provider: entry,
+        healthTracker,
+        ...(kilnHome !== undefined ? { kilnHome } : {}),
+      });
     case "pi_rpc":
       return new PiRpcBackend({ provider: entry, healthTracker });
     case "acp":
@@ -203,6 +209,7 @@ export class CompositeBackend implements ProviderTelemetryBackend {
     | (() => { localTurns: readonly UsageTurnRow[]; pricing: PricingConfig | null })
     | undefined;
   private readonly queryTimeoutMs: number;
+  private readonly kilnHome: string | undefined;
 
   private config: ProvidersConfig;
   private readonly children = new Map<string, ChildBinding>();
@@ -222,6 +229,7 @@ export class CompositeBackend implements ProviderTelemetryBackend {
     this.onProviderStatusChanged = options.onProviderStatusChanged;
     this.getUsageContext = options.getUsageContext;
     this.queryTimeoutMs = options.queryTimeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS;
+    this.kilnHome = options.kilnHome;
     this.config = options.initialConfig ?? createDefaultProvidersConfig();
 
     this.applyProvidersConfigSync(this.config, []);
@@ -268,8 +276,10 @@ export class CompositeBackend implements ProviderTelemetryBackend {
         toDispose.push(existing.adapter);
       }
 
-      const factory = this.adapterFactories[entry.adapter] ?? createDefaultAdapter;
-      const adapter = factory(entry, this.healthTracker);
+      const customFactory = this.adapterFactories[entry.adapter];
+      const adapter = customFactory
+        ? customFactory(entry, this.healthTracker)
+        : createDefaultAdapter(entry, this.healthTracker, this.kilnHome);
       const unsubApproval = adapter.onApproval((req) => {
         const wrappedSessionId =
           this.childKeyToWrappedId.get(`${entry.id}:${req.sessionRef.sessionId}`) ??

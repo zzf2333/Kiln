@@ -785,4 +785,165 @@ describe("Native TUI launcher, run overview I/O summary & local-only open-tui en
     };
     expect(remoteBootstrap.tuiTerminals).toBeUndefined();
   });
+
+  it("injects CODEX_HOME into native TUI launch scripts when provided and validates unsafe values", async () => {
+    const root = makeTempDir("kiln-tui-codex-home-");
+    tempDirs.push(root);
+    const kilnHome = path.join(root, "kiln-home");
+    const isolatedCodexHome = path.join(kilnHome, "agent-homes", "codex");
+    const repoDir = path.join(root, "repo");
+    fs.mkdirSync(isolatedCodexHome, { recursive: true });
+    fs.mkdirSync(repoDir, { recursive: true });
+
+    const emptyProbe = {
+      pathExists: () => false,
+      findBinary: () => null,
+    };
+
+    const macCalls: Array<{ file: string; args: readonly string[] }> = [];
+    await launchNativeAgentTui({
+      kilnHome,
+      taskId: "t-iso-tui",
+      runDir: "001-implement",
+      agent: "codex",
+      providerSessionId: "0195a3f1-iso",
+      codexHome: isolatedCodexHome,
+      cwd: repoDir,
+      homedir: root,
+      platform: "darwin",
+      probe: emptyProbe,
+      execFileFn: async (file, args) => {
+        macCalls.push({ file, args });
+        return { stdout: "", stderr: "" };
+      },
+    });
+    const macScriptContent = fs.readFileSync(macCalls[0]!.args[0]!, "utf8");
+    expect(macScriptContent).toContain(`export CODEX_HOME='${isolatedCodexHome}'`);
+    expect(macScriptContent).toContain("exec 'codex' 'resume' '0195a3f1-iso'");
+
+    const winCalls: Array<{ file: string; args: readonly string[] }> = [];
+    await launchNativeAgentTui({
+      kilnHome,
+      taskId: "t-iso-win",
+      runDir: "001-implement",
+      agent: "codex",
+      providerSessionId: "0195a3f1-win",
+      codexHome: "C:\\Users\\dev\\.kiln\\agent-homes\\codex",
+      cwd: repoDir,
+      fallbackCwd: repoDir,
+      homedir: root,
+      platform: "win32",
+      probe: emptyProbe,
+      execFileFn: async (file, args) => {
+        winCalls.push({ file, args });
+        return { stdout: "", stderr: "" };
+      },
+    });
+    const winScriptPath = winCalls[0]!.args[winCalls[0]!.args.length - 1]!;
+    const winScriptContent = fs.readFileSync(winScriptPath, "utf8");
+    expect(winScriptContent).toContain(
+      "$env:CODEX_HOME = 'C:\\Users\\dev\\.kiln\\agent-homes\\codex'",
+    );
+
+    await expect(
+      launchNativeAgentTui({
+        kilnHome,
+        taskId: "t-bad-codex-home",
+        runDir: "001-implement",
+        agent: "codex",
+        providerSessionId: "0195a3f1-bad",
+        codexHome: "relative/codex-home",
+        cwd: repoDir,
+        homedir: root,
+        platform: "darwin",
+        probe: emptyProbe,
+        execFileFn: async () => ({ stdout: "", stderr: "" }),
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      payload: { error: "invalid_tui_target" },
+    });
+
+    // Verify POST .../open-tui reads session_ref.meta.codexHome from RUN.yaml and forwards it to launchNativeAgentTui
+    const server = new KilndServer({
+      kilnHome,
+      publicDir: null,
+      tokenSecret: "tui-codex-home-secret-0123456789",
+    });
+    servers.push(server);
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "proj",
+      name: "Proj",
+      repo_path: repoDir,
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    });
+    server.stateMachine.createTask(
+      TaskCardSchema.parse({
+        schema_version: 1,
+        id: "t-tui-codex-meta",
+        title: "Open TUI codexHome propagation",
+        space: "proj",
+        priority: "P1",
+        track: "L2",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        workflow: buildWorkflowPreset("quick"),
+        contract_version: 1,
+        contract: {
+          goal: "Open TUI test",
+          end: "Done",
+          accept_cmd: "pnpm test",
+          accept_files_hash: "sha256:tui-codex",
+          scope: ["src/**"],
+          deliver: { mode: "merge_main", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 1_000_000 },
+        created_at: "2026-11-22T09:10:00.000Z",
+        updated_at: "2026-11-22T09:10:00.000Z",
+      }),
+      "# Brief",
+    );
+    const metaRunDir = server.store.paths.runDir("t-tui-codex-meta", "001-implement");
+    fs.mkdirSync(metaRunDir, { recursive: true });
+    fs.writeFileSync(
+      server.store.paths.runYaml("t-tui-codex-meta", "001-implement"),
+      [
+        "run_id: r-codex-home",
+        "task_id: t-tui-codex-meta",
+        "stage: implement",
+        "round: 1",
+        "role: worker",
+        "agent: codex",
+        "model: gpt-5.4",
+        "backend_id: composite",
+        `cwd: ${repoDir}`,
+        "session_ref:",
+        "  backendId: composite",
+        "  sessionId: codex-1",
+        "  meta:",
+        "    agent: codex",
+        "    providerSessionId: 0195a3f1-meta",
+        "    codexHome: relative/bad-codex-home",
+        "contract_version: 1",
+        "started_at: 2026-11-22T09:10:01.000Z",
+      ].join("\n"),
+    );
+
+    const httpForwardedRes = await server.app.request(
+      new Request("http://127.0.0.1:4310/api/tasks/t-tui-codex-meta/runs/001-implement/open-tui", {
+        method: "POST",
+      }),
+    );
+    expect(httpForwardedRes.status).toBe(400);
+    expect((await httpForwardedRes.json()) as { error: string }).toMatchObject({
+      error: "invalid_tui_target",
+    });
+  });
 });

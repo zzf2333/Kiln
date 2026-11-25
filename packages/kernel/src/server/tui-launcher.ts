@@ -689,6 +689,7 @@ export interface LaunchNativeAgentTuiOptions {
   agent: string;
   providerSessionId?: string | null;
   providerSessionPath?: string | null;
+  codexHome?: string | null;
   cwd?: string | null;
   fallbackCwd?: string | null;
   preferredTerminal?: TuiTerminalId;
@@ -724,6 +725,19 @@ export async function launchNativeAgentTui(
   };
   const platform = probe.platform!;
   const homedir = probe.homedir!;
+  const rawCodexHome = typeof options.codexHome === "string" ? options.codexHome.trim() : "";
+  if (rawCodexHome.length > 0) {
+    const isAbsCodexHome =
+      platform === "win32"
+        ? path.win32.isAbsolute(rawCodexHome)
+        : path.posix.isAbsolute(rawCodexHome);
+    if (hasControlChars(rawCodexHome) || !isAbsCodexHome) {
+      throw new ServerHttpError(400, {
+        error: "invalid_tui_target",
+        message: "CODEX_HOME 必须为合法绝对路径且不能包含控制字符",
+      });
+    }
+  }
   const { cwd, cwdFallback } = resolveLaunchCwd({
     cwd: options.cwd,
     fallbackCwd: options.fallbackCwd,
@@ -768,6 +782,7 @@ export async function launchNativeAgentTui(
       "#!/bin/sh",
       "set -eu",
       'export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/share/mise/shims:$PATH"',
+      ...(rawCodexHome ? [`export CODEX_HOME=${quotePosixArg(rawCodexHome)}`] : []),
       `cd -- ${quotePosixArg(cwd)}`,
       'rm -f -- "$0"',
       `exec ${[resolved.binary, ...resolved.args].map(quotePosixArg).join(" ")}`,
@@ -779,6 +794,7 @@ export async function launchNativeAgentTui(
     scriptPath = path.join(tuiDir, `kiln-tui-${nonce}.ps1`);
     const script = [
       `$env:Path = "$HOME\\.local\\bin;$env:LOCALAPPDATA\\Kiln\\bin;$env:Path"`,
+      ...(rawCodexHome ? [`$env:CODEX_HOME = ${quotePowerShellArg(rawCodexHome)}`] : []),
       `Set-Location -LiteralPath ${quotePowerShellArg(cwd)}`,
       `& ${quotePowerShellArg(resolved.binary)} ${resolved.args.map(quotePowerShellArg).join(" ")}`,
       "",
@@ -790,6 +806,7 @@ export async function launchNativeAgentTui(
       "#!/bin/sh",
       "set -eu",
       'export PATH="$HOME/.local/bin:/usr/local/bin:$HOME/.local/share/mise/shims:$PATH"',
+      ...(rawCodexHome ? [`export CODEX_HOME=${quotePosixArg(rawCodexHome)}`] : []),
       `cd -- ${quotePosixArg(cwd)}`,
       'rm -f -- "$0"',
       `exec ${[resolved.binary, ...resolved.args].map(quotePosixArg).join(" ")}`,

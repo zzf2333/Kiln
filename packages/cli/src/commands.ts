@@ -894,6 +894,7 @@ async function handleUp(
         }
         const compositeOpts: CompositeBackendOptions = {
           backendId: "composite",
+          kilnHome,
           initialConfig: initialProviders,
           healthTracker: providerHealth,
           onProviderStatusChanged: (status) => {
