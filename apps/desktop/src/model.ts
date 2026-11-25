@@ -6,13 +6,14 @@ export const KILN_BIN_NAME_POSIX = "kiln";
 export const KILN_BIN_NAME_WINDOWS = "kiln.exe";
 export const MAX_JSON_DEPTH = 128;
 
-export const REQUIRED_KILND_API_REVISION = 2;
+export const REQUIRED_KILND_API_REVISION = 3;
 
 export interface KilnHealth {
   ok: boolean;
   pid: number | null;
   version: string | null;
   apiRevision?: number | null;
+  uiBuildId?: string | null;
 }
 
 export interface KilnLiveRatesTotals {
@@ -180,8 +181,12 @@ export function shouldRestartStaleDaemon(
   health: KilnHealth,
   requiredRevision: number,
   runningCount: number,
+  expectedUiBuildId: string | null = null,
 ): boolean {
-  return health.ok && (health.apiRevision ?? 0) < requiredRevision && runningCount === 0;
+  if (!health.ok || runningCount !== 0) return false;
+  if ((health.apiRevision ?? 0) < requiredRevision) return true;
+  if (expectedUiBuildId !== null && health.uiBuildId !== expectedUiBuildId) return true;
+  return false;
 }
 
 export function shouldPreventExit(exitCode: number | null, allowExit: boolean): boolean {
@@ -806,11 +811,19 @@ export function parseHealthJson(body: string): KilnHealth {
     }
     apiRevision = obj.api_revision;
   }
+  let uiBuildId: string | null = null;
+  if (obj.ui_build_id !== undefined && obj.ui_build_id !== null) {
+    if (typeof obj.ui_build_id !== "string" || obj.ui_build_id.trim().length === 0) {
+      throw new Error("JSON schema mismatch: health.ui_build_id must be non-empty string");
+    }
+    uiBuildId = obj.ui_build_id.trim();
+  }
   return {
     ok: obj.ok,
     pid,
     version,
     ...(apiRevision !== null ? { apiRevision } : {}),
+    ...(uiBuildId !== null ? { uiBuildId } : {}),
   };
 }
 

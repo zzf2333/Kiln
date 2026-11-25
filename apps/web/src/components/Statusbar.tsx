@@ -1,5 +1,5 @@
 import { useKilnStore } from "../state/store";
-import { SidebarToggleIcon } from "./Icons";
+import { BrandIcon, SidebarToggleIcon } from "./Icons";
 import { UsagePanel } from "./UsagePanel";
 
 export function Statusbar() {
@@ -44,18 +44,21 @@ export function Statusbar() {
     <footer className="statusbar" aria-label="状态栏">
       <button
         type="button"
-        className="sb-item"
+        className="sb-item sb-brand-btn"
         onClick={() =>
           store.go("settings", {
             settingsTab: authMode === "remote" ? "remote" : "conn",
           })
         }
-        title="查看连接与底座状态"
+        title={`后台连接状态：${isOffline ? "正在重连" : authMode === "remote" ? "远程已连接" : "本地已连接"}（点击查看连接与底座设置）`}
       >
+        <span className="sb-brand-logo" aria-hidden="true">
+          <BrandIcon />
+        </span>
         <span
           className={`dot ${isOffline ? "dot-ask" : sseStatus === "connected" ? "dot-ok" : ""}`}
         />
-        <span>kilnd {isOffline ? "重连中" : authMode === "remote" ? "远程" : "本机"}</span>
+        <span>{isOffline ? "重连中" : authMode === "remote" ? "Kiln 远程" : "Kiln"}</span>
       </button>
 
       <span className="sb-sep" aria-hidden="true" />

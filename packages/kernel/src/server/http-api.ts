@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { Hono, type Context } from "hono";
@@ -632,6 +632,39 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
   const remoteNotifier = deps.remoteNotifier ?? new RemoteNotifier({ store });
   const scriptRunner = deps.scriptRunner ?? new KilnScriptRunner({ store, sseHub });
   const version = deps.version ?? "0.0.5";
+  const uiBuildId = (() => {
+    try {
+      const hasEmbedded =
+        deps.embeddedPublicAssets !== undefined &&
+        deps.embeddedPublicAssets !== null &&
+        deps.embeddedPublicAssets.size > 0;
+      const resolvedDir =
+        deps.publicDir === null
+          ? null
+          : deps.publicDir !== undefined
+            ? deps.publicDir
+            : hasEmbedded
+              ? null
+              : resolveDefaultPublicDir();
+      if (resolvedDir) {
+        const indexPath = path.join(resolvedDir, "index.html");
+        if (fs.existsSync(indexPath)) {
+          return createHash("sha256").update(fs.readFileSync(indexPath)).digest("hex").slice(0, 16);
+        }
+      }
+      if (hasEmbedded && deps.embeddedPublicAssets) {
+        const asset =
+          deps.embeddedPublicAssets.get("index.html") ??
+          deps.embeddedPublicAssets.get("/index.html");
+        if (asset) {
+          return createHash("sha256").update(asset.readBytes()).digest("hex").slice(0, 16);
+        }
+      }
+    } catch {
+      // Non-fatal: omit ui_build_id if index.html is unavailable
+    }
+    return null;
+  })();
   const app = new Hono();
   const authenticatedDevicesByRequest = new WeakMap<Request, PublicPairedDevice>();
 
@@ -861,7 +894,8 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       ok: true,
       pid: process.pid,
       version,
-      api_revision: 2,
+      api_revision: 3,
+      ...(uiBuildId ? { ui_build_id: uiBuildId } : {}),
       mode: "local",
     });
   });

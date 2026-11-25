@@ -51,7 +51,7 @@ function clampUpwardPopoverCoords(
   const anchorTop = panelRect && panelRect.top > 0 ? panelRect.top : vh - 32;
 
   const l2Left = Math.max(VIEWPORT_MARGIN, Math.min(anchorLeft, vw - L2_WIDTH - VIEWPORT_MARGIN));
-  const l2Bottom = Math.max(40, vh - anchorTop + 8);
+  const l2Bottom = Math.max(36, vh - anchorTop + 4);
 
   const l2RightEdge = l2Rect && l2Rect.width > 0 ? l2Rect.right : l2Left + L2_WIDTH;
   const l3Left = Math.max(
@@ -163,11 +163,11 @@ export function UsagePanel() {
       clearTimeout(closeTimerRef.current);
       closeTimerRef.current = null;
     }
-    if (hovered) return;
+    if (hovered || openTimerRef.current !== null) return;
     openTimerRef.current = setTimeout(() => {
       openTimerRef.current = null;
       setHovered(true);
-    }, 110);
+    }, 60);
   }, [hovered]);
 
   const scheduleHoverClose = useCallback(() => {
@@ -175,11 +175,14 @@ export function UsagePanel() {
       clearTimeout(openTimerRef.current);
       openTimerRef.current = null;
     }
+    if (closeTimerRef.current !== null) {
+      clearTimeout(closeTimerRef.current);
+    }
     closeTimerRef.current = setTimeout(() => {
       closeTimerRef.current = null;
       setHovered(false);
       setL3Target(null);
-    }, 220);
+    }, 240);
   }, []);
 
   const keepAliveEnter = useCallback(() => {
@@ -346,6 +349,7 @@ export function UsagePanel() {
       ref={panelRef}
       className="sb-usage-anchor"
       onMouseEnter={scheduleHoverOpen}
+      onMouseMove={scheduleHoverOpen}
       onMouseLeave={scheduleHoverClose}
     >
       <div

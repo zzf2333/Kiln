@@ -1,6 +1,7 @@
 import { app, globalShortcut } from "electron";
 import {
   KilndClient,
+  resolveBundledUiBuildId,
   resolveDesktopVersion,
   resolveKilndUrl,
   runKilnDown,
@@ -166,7 +167,16 @@ class KilnDesktopApp implements TrayCoordinator {
     }
 
     let online = health?.ok === true;
-    if (health?.ok && (health.apiRevision ?? 0) < REQUIRED_KILND_API_REVISION) {
+    const electronProc = process as NodeJS.Process & { resourcesPath?: string };
+    const expectedUiBuildId = resolveBundledUiBuildId({
+      resourcesPath: electronProc.resourcesPath ?? null,
+    });
+    const needsUpgrade =
+      health?.ok === true &&
+      ((health.apiRevision ?? 0) < REQUIRED_KILND_API_REVISION ||
+        (expectedUiBuildId !== null && health.uiBuildId !== expectedUiBuildId));
+
+    if (health?.ok && needsUpgrade) {
       let runningCount = 0;
       try {
         const summary = await this.client.fetchBootstrap();
@@ -174,9 +184,16 @@ class KilnDesktopApp implements TrayCoordinator {
       } catch {
         runningCount = 0;
       }
-      if (shouldRestartStaleDaemon(health, REQUIRED_KILND_API_REVISION, runningCount)) {
+      if (
+        shouldRestartStaleDaemon(
+          health,
+          REQUIRED_KILND_API_REVISION,
+          runningCount,
+          expectedUiBuildId,
+        )
+      ) {
         process.stderr.write(
-          `kiln-desktop: restarting stale kilnd (api_revision=${health.apiRevision ?? 0} < ${REQUIRED_KILND_API_REVISION}, runningCount=0)\n`,
+          `kiln-desktop: restarting stale kilnd (api_revision=${health.apiRevision ?? 0}, ui_build_id=${health.uiBuildId ?? "none"} -> ${expectedUiBuildId ?? "any"}, runningCount=0)\n`,
         );
         try {
           await runKilnDown();

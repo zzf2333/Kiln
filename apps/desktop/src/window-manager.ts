@@ -76,6 +76,12 @@ export function openOrFocusMainWindow(
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#101113" : "#fbfbfc",
     show: false,
     center: true,
+    ...(process.platform === "darwin"
+      ? {
+          titleBarStyle: "hiddenInset" as const,
+          trafficLightPosition: { x: 14, y: 16 },
+        }
+      : {}),
     ...(iconPath ? { icon: iconPath } : {}),
     webPreferences: {
       contextIsolation: true,
@@ -90,6 +96,21 @@ export function openOrFocusMainWindow(
   if (process.platform === "darwin") {
     applyMacDockIcon();
     void app.dock?.show();
+    const ua = win.webContents.getUserAgent();
+    if (!ua.includes("KilnDesktop/mac")) {
+      win.webContents.setUserAgent(`${ua} KilnDesktop/mac`);
+    }
+    const syncFullscreen = (isFs: boolean): void => {
+      if (!win.isDestroyed()) {
+        void win.webContents
+          .executeJavaScript(
+            `document.documentElement.classList.toggle("is-mac-fullscreen", ${JSON.stringify(isFs)})`,
+          )
+          .catch(() => {});
+      }
+    };
+    win.on("enter-full-screen", () => syncFullscreen(true));
+    win.on("leave-full-screen", () => syncFullscreen(false));
   }
 
   win.once("ready-to-show", () => {

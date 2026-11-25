@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
@@ -141,6 +142,30 @@ export function resolveBundledRuntimeCliPath(options?: {
     try {
       if (fs.statSync(candidate).isFile()) {
         return candidate;
+      }
+    } catch {
+      // Try next candidate
+    }
+  }
+  return null;
+}
+
+export function resolveBundledUiBuildId(options?: {
+  resourcesPath?: string | null;
+  moduleDir?: string;
+}): string | null {
+  const candidates: string[] = [];
+  if (options?.resourcesPath) {
+    candidates.push(path.join(options.resourcesPath, "kiln-runtime", "public", "index.html"));
+  }
+  const modDir = options?.moduleDir ?? import.meta.dirname;
+  candidates.push(path.resolve(modDir, "../runtime/public/index.html"));
+  candidates.push(path.resolve(modDir, "../../runtime/public/index.html"));
+
+  for (const candidate of candidates) {
+    try {
+      if (fs.statSync(candidate).isFile()) {
+        return createHash("sha256").update(fs.readFileSync(candidate)).digest("hex").slice(0, 16);
       }
     } catch {
       // Try next candidate

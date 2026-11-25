@@ -413,9 +413,10 @@ describe("@kiln/desktop Electron core model & daemon client", () => {
     expect(fs.existsSync(path.join(assetsDir, "icon.ico"))).toBe(true);
   });
 
-  it("parses health api_revision and restarts stale kilnd only when idle", () => {
+  it("parses health api_revision and ui_build_id and restarts stale kilnd only when idle", () => {
     const legacy = parseHealthJson('{"ok":true,"pid":101,"version":"0.0.5"}');
     expect(legacy.apiRevision).toBeUndefined();
+    expect(legacy.uiBuildId).toBeUndefined();
     expect(shouldRestartStaleDaemon(legacy, REQUIRED_KILND_API_REVISION, 0)).toBe(true);
     expect(shouldRestartStaleDaemon(legacy, REQUIRED_KILND_API_REVISION, 2)).toBe(false);
 
@@ -424,10 +425,19 @@ describe("@kiln/desktop Electron core model & daemon client", () => {
     expect(shouldRestartStaleDaemon(oldRevision, REQUIRED_KILND_API_REVISION, 0)).toBe(true);
 
     const current = parseHealthJson(
-      `{"ok":true,"pid":103,"version":"0.0.5","api_revision":${REQUIRED_KILND_API_REVISION}}`,
+      `{"ok":true,"pid":103,"version":"0.0.5","api_revision":${REQUIRED_KILND_API_REVISION},"ui_build_id":"abc123def4567890"}`,
     );
     expect(current.apiRevision).toBe(REQUIRED_KILND_API_REVISION);
-    expect(shouldRestartStaleDaemon(current, REQUIRED_KILND_API_REVISION, 0)).toBe(false);
+    expect(current.uiBuildId).toBe("abc123def4567890");
+    expect(
+      shouldRestartStaleDaemon(current, REQUIRED_KILND_API_REVISION, 0, "abc123def4567890"),
+    ).toBe(false);
+    expect(
+      shouldRestartStaleDaemon(current, REQUIRED_KILND_API_REVISION, 0, "newbuild99999999"),
+    ).toBe(true);
+    expect(
+      shouldRestartStaleDaemon(current, REQUIRED_KILND_API_REVISION, 1, "newbuild99999999"),
+    ).toBe(false);
 
     const offline = parseHealthJson('{"ok":false,"pid":null,"version":null,"api_revision":1}');
     expect(shouldRestartStaleDaemon(offline, REQUIRED_KILND_API_REVISION, 0)).toBe(false);
@@ -437,6 +447,9 @@ describe("@kiln/desktop Electron core model & daemon client", () => {
     ).toThrow();
     expect(() =>
       parseHealthJson('{"ok":true,"pid":1,"version":"0.0.5","api_revision":"2"}'),
+    ).toThrow();
+    expect(() =>
+      parseHealthJson('{"ok":true,"pid":1,"version":"0.0.5","ui_build_id":""}'),
     ).toThrow();
   });
 });
