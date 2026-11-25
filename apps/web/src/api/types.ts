@@ -15,6 +15,8 @@ import type {
   ChatCommandsResponse,
   ChatCommandSource,
   ChatMcpServerItem,
+  ChatOptionItem,
+  ChatOptionQuestion,
   ChecklistDisposition,
   ChecklistItem,
   CheckpointRecord,
@@ -426,6 +428,7 @@ export interface ChatMessage {
   text: string;
   at?: string;
   toolName?: string;
+  questions?: ChatOptionQuestion[];
 }
 
 export interface TaskDetailResponse {
@@ -809,6 +812,8 @@ export type {
   ChatCommandsResponse,
   ChatCommandSource,
   ChatMcpServerItem,
+  ChatOptionItem,
+  ChatOptionQuestion,
   ChecklistDisposition,
   ChecklistItem,
   CheckpointRecord,

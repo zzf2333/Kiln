@@ -55,6 +55,7 @@ export {
 export {
   ChatMessageRecordSchema,
   KilnChatEngine,
+  extractChatOptionsFromReply,
   isCompiledKilnBinary,
   resolveMcpServerCommand,
   snapshotBackends,

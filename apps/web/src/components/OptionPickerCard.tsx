@@ -37,13 +37,16 @@ export function OptionPickerCard({
   const sig = useMemo(
     () =>
       questions
-        .map((q) => `${q.number}:${q.title}:${q.options.map((o) => o.key).join(",")}`)
+        .map(
+          (q) =>
+            `${q.number}:${q.multiSelect ? "M" : "S"}:${q.title}:${q.options.map((o) => o.key).join(",")}`,
+        )
         .join("|"),
     [questions],
   );
 
   const [step, setStep] = useState(0);
-  const [selections, setSelections] = useState<Record<string, string>>({});
+  const [selections, setSelections] = useState<Record<string, string[]>>({});
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [openNotes, setOpenNotes] = useState<Record<string, boolean>>({});
   const [internalCollapsed, setInternalCollapsed] = useState(false);
@@ -89,22 +92,33 @@ export function OptionPickerCard({
   const currentQuestion = !isSummary ? questions[clampedStep] : undefined;
 
   const hasAnyRecommended = questions.some((q) => q.options.some((o) => o.recommended));
-  const selectedCount = questions.filter((q) => Boolean(selections[q.number])).length;
+  const selectedCount = questions.filter((q) => (selections[q.number]?.length ?? 0) > 0).length;
   const replyText = useMemo(
     () => formatSelectedOptionsReply(questions, selections, notes),
     [questions, selections, notes],
   );
 
   const pickOption = useCallback(
-    (qNumber: string, optKey: string, needsInput: boolean): void => {
-      setSelections((prev) => ({ ...prev, [qNumber]: optKey }));
-      const noteAlreadyOpen = Boolean(openNotes[qNumber]) || Boolean(notes[qNumber]?.trim());
-      if (needsInput) {
-        setOpenNotes((prev) => ({ ...prev, [qNumber]: true }));
+    (q: ParsedQuestion, optKey: string, needsInput: boolean): void => {
+      const isMulti = Boolean(q.multiSelect);
+      let nextSelected = true;
+      setSelections((prev) => {
+        const cur = prev[q.number] ?? [];
+        if (isMulti) {
+          const exists = cur.includes(optKey);
+          nextSelected = !exists;
+          const nextList = exists ? cur.filter((k) => k !== optKey) : [...cur, optKey];
+          return { ...prev, [q.number]: nextList };
+        }
+        return { ...prev, [q.number]: [optKey] };
+      });
+      const noteAlreadyOpen = Boolean(openNotes[q.number]) || Boolean(notes[q.number]?.trim());
+      if (needsInput && nextSelected) {
+        setOpenNotes((prev) => ({ ...prev, [q.number]: true }));
         requestAnimationFrame(() => noteInputRef.current?.focus());
         return;
       }
-      if (!noteAlreadyOpen) {
+      if (!isMulti && !noteAlreadyOpen) {
         setStep((cur) => Math.min(totalSteps, cur + 1));
       }
     },
@@ -113,12 +127,12 @@ export function OptionPickerCard({
 
   const pickAllRecommended = useCallback((): void => {
     setSelections((prev) => {
-      const next: Record<string, string> = {};
+      const next: Record<string, string[]> = {};
       for (const q of questions) {
-        const rec = q.options.find((o) => o.recommended);
-        if (rec) {
-          next[q.number] = rec.key;
-        } else if (prev[q.number]) {
+        const recs = q.options.filter((o) => o.recommended);
+        if (recs.length > 0) {
+          next[q.number] = q.multiSelect ? recs.map((r) => r.key) : [recs[0]!.key];
+        } else if (prev[q.number] && prev[q.number]!.length > 0) {
           next[q.number] = prev[q.number]!;
         }
       }
@@ -165,7 +179,7 @@ export function OptionPickerCard({
         const opt = currentQuestion.options.find((o) => o.key === keyUpper);
         if (opt) {
           e.preventDefault();
-          pickOption(currentQuestion.number, opt.key, opt.needsInput);
+          pickOption(currentQuestion, opt.key, opt.needsInput);
         }
       }
     };
@@ -215,7 +229,8 @@ export function OptionPickerCard({
     );
   }
 
-  const pickedCurrent = currentQuestion ? selections[currentQuestion.number] : undefined;
+  const pickedCurrent = currentQuestion ? (selections[currentQuestion.number] ?? []) : [];
+  const hasPickedCurrent = pickedCurrent.length > 0;
   const noteOpen = currentQuestion
     ? Boolean(openNotes[currentQuestion.number]) || Boolean(notes[currentQuestion.number]?.trim())
     : false;
@@ -231,7 +246,7 @@ export function OptionPickerCard({
             </span>
             <div ref={stepperRef} className="opt-stepper" role="tablist" aria-label="向导步骤">
               {questions.map((q, idx) => {
-                const picked = selections[q.number];
+                const picked = selections[q.number] ?? [];
                 const isCurr = clampedStep === idx;
                 return (
                   <button
@@ -240,14 +255,16 @@ export function OptionPickerCard({
                     role="tab"
                     aria-selected={isCurr}
                     aria-current={isCurr ? "step" : undefined}
-                    className={`opt-step-pill ${isCurr ? "is-current" : ""} ${picked ? "is-done" : ""}`}
+                    className={`opt-step-pill ${isCurr ? "is-current" : ""} ${picked.length > 0 ? "is-done" : ""}`}
                     onClick={() => setStep(idx)}
                     title={`${q.number}. ${q.title}`}
                   >
                     <span className="opt-step-pill-label">
                       {q.number}. {q.title}
                     </span>
-                    {picked ? <span className="opt-step-pick mono">✓ {picked}</span> : null}
+                    {picked.length > 0 ? (
+                      <span className="opt-step-pick mono">✓ {picked.join(",")}</span>
+                    ) : null}
                   </button>
                 );
               })}
@@ -300,6 +317,9 @@ export function OptionPickerCard({
                       {String(totalSteps).padStart(2, "0")}
                     </span>
                     <h4 className="opt-step-qtitle">{currentQuestion.title}</h4>
+                    {currentQuestion.multiSelect ? (
+                      <span className="opt-multi-tag">可多选</span>
+                    ) : null}
                   </div>
                   <button
                     type="button"
@@ -316,18 +336,22 @@ export function OptionPickerCard({
                   </button>
                 </div>
 
-                <div className="opt-tui-list" role="radiogroup" aria-label={currentQuestion.title}>
+                <div
+                  className="opt-tui-list"
+                  role={currentQuestion.multiSelect ? "group" : "radiogroup"}
+                  aria-label={currentQuestion.title}
+                >
                   {currentQuestion.options.map((opt) => {
-                    const isOn = pickedCurrent === opt.key;
+                    const isOn = pickedCurrent.includes(opt.key);
                     return (
                       <button
                         key={opt.key}
                         type="button"
-                        role="radio"
+                        role={currentQuestion.multiSelect ? "checkbox" : "radio"}
                         aria-checked={isOn}
                         disabled={disabled}
                         className={`opt-tui-row ${isOn ? "on" : ""} ${opt.recommended ? "is-rec" : ""}`}
-                        onClick={() => pickOption(currentQuestion.number, opt.key, opt.needsInput)}
+                        onClick={() => pickOption(currentQuestion, opt.key, opt.needsInput)}
                       >
                         <span className="opt-tui-cursor mono" aria-hidden="true">
                           {isOn ? "›" : " "}
@@ -388,16 +412,16 @@ export function OptionPickerCard({
 
                 <div className="opt-summary-list">
                   {questions.map((q, idx) => {
-                    const pickedKey = selections[q.number];
-                    const pickedOpt = pickedKey
-                      ? q.options.find((o) => o.key === pickedKey)
-                      : undefined;
+                    const pickedKeys = selections[q.number] ?? [];
+                    const pickedOpts = pickedKeys
+                      .map((k) => q.options.find((o) => o.key === k))
+                      .filter((o): o is NonNullable<typeof o> => Boolean(o));
                     const noteText = (notes[q.number] ?? "").trim();
                     return (
                       <button
                         key={q.number}
                         type="button"
-                        className={`opt-summary-row ${pickedOpt ? "" : "is-missing"}`}
+                        className={`opt-summary-row ${pickedOpts.length > 0 ? "" : "is-missing"}`}
                         disabled={disabled}
                         onClick={() => setStep(idx)}
                       >
@@ -405,11 +429,13 @@ export function OptionPickerCard({
                         <div className="opt-summary-content">
                           <div className="opt-summary-q">{q.title}</div>
                           <div className="opt-summary-a">
-                            {pickedOpt ? (
-                              <>
-                                <span className="opt-key mono">{pickedOpt.key}</span>
-                                <span>{pickedOpt.label}</span>
-                              </>
+                            {pickedOpts.length > 0 ? (
+                              pickedOpts.map((pickedOpt) => (
+                                <span key={pickedOpt.key} className="opt-summary-chip">
+                                  <span className="opt-key mono">{pickedOpt.key}</span>
+                                  <span>{pickedOpt.label}</span>
+                                </span>
+                              ))
                             ) : (
                               <span className="opt-summary-empty">未选择</span>
                             )}
@@ -418,7 +444,9 @@ export function OptionPickerCard({
                             <div className="opt-summary-note">补充：{noteText}</div>
                           ) : null}
                         </div>
-                        <span className="opt-summary-edit">{pickedOpt ? "修改" : "去选择"}</span>
+                        <span className="opt-summary-edit">
+                          {pickedOpts.length > 0 ? "修改" : "去选择"}
+                        </span>
                       </button>
                     );
                   })}
@@ -449,14 +477,14 @@ export function OptionPickerCard({
             {!isSummary ? (
               <button
                 type="button"
-                className={`btn btn-sm ${pickedCurrent ? "btn-light" : ""}`}
+                className={`btn btn-sm ${hasPickedCurrent ? "btn-light" : ""}`}
                 disabled={disabled}
                 onClick={() => setStep((cur) => Math.min(totalSteps, cur + 1))}
               >
                 <span>
                   {clampedStep === totalSteps - 1
                     ? "查看汇总"
-                    : pickedCurrent
+                    : hasPickedCurrent
                       ? "下一步"
                       : "跳过此题"}
                 </span>

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
+  ChatOptionQuestionSchema,
   DeliverConfigSchema,
   DecisionOptionSchema,
   DraftCardSchema,
@@ -16,6 +17,8 @@ import {
   hasCompleteHostTwoPhaseWorkflow,
   type ChatCommandItem,
   type ChatCommandsResponse,
+  type ChatOptionItem,
+  type ChatOptionQuestion,
   type DraftCard,
   type PendingDecision,
   type ReasoningEffort,
@@ -183,6 +186,155 @@ function extractLabeledJsonPatchBlock(
   return { displayText, rawJson };
 }
 
+const OPTION_KEYS_POOL = ["A", "B", "C", "D", "E", "F"] as const;
+const OPTION_REC_TAG_RE = /\s*[（(]\s*(?:推荐|建议|recommended)\s*[）)]\s*/gi;
+const OPTION_NEEDS_INPUT_RE = /指定|列出|补充|其他|自定义|名称|填入|请写|说明/;
+
+const KILN_OPTIONS_PROMPT_INSTRUCTION = [
+  `选项组件协议（重要）：正文可自由使用对比表格或要点阐述利弊，但**只要本轮回复需要用户做选择或确认**（包括多方案 A/B/C 对比、多题澄清、或“同意并继续 / 有补充说明”这类二选一确认），**必须**在回复最末尾附一个 \`\`\`kiln-options\\n{...}\\n\`\`\` JSON 代码块（即使前面或末尾已附 \`kiln-draft-patch\` / \`kiln-decision-patch\` / \`kiln-contract-patch\`，只要同时需要用户点选或确认，也一并附带；纯信息汇报无需用户选答时不要附带）。`,
+  `格式：\`\`\`kiln-options\n{"questions":[{"number":"1","title":"<简短问题标题>","multi_select":false,"options":[{"key":"A","label":"<简短选项标题>","detail":"<收益与代价说明>","recommended":true,"needs_input":false},{"key":"B","label":"<备选或补充说明选项>","detail":"<适用条件与代价>","needs_input":false}]}]}\n\`\`\`（最多 6 个选项 \`A\`–\`F\`，推荐项设 \`recommended: true\`，需用户补充具体名称/原因的选项设 \`needs_input: true\`，多选题设 \`multi_select: true\`；系统会自动剥离此块并弹出底部选择向导）。`,
+].join("\n");
+
+function firstTrimmedString(candidates: unknown[]): string | undefined {
+  for (const candidate of candidates) {
+    if (typeof candidate === "string") {
+      const trimmed = candidate.trim();
+      if (trimmed.length > 0) return trimmed;
+    }
+  }
+  return undefined;
+}
+
+function normalizeStructuredChatQuestions(parsed: unknown): ChatOptionQuestion[] | null {
+  let rawQuestions: unknown[];
+  if (Array.isArray(parsed)) {
+    rawQuestions = parsed;
+  } else if (parsed && typeof parsed === "object") {
+    const record = parsed as Record<string, unknown>;
+    if (Array.isArray(record.questions)) {
+      rawQuestions = record.questions;
+    } else if (Array.isArray(record.options)) {
+      rawQuestions = [record];
+    } else {
+      return null;
+    }
+  } else {
+    return null;
+  }
+
+  const normalizedQuestions: ChatOptionQuestion[] = [];
+  const usedQuestionNumbers = new Set<string>();
+
+  rawQuestions.forEach((rawQ, qIdx) => {
+    if (!rawQ || typeof rawQ !== "object") return;
+    const qObj = rawQ as Record<string, unknown>;
+    const title = firstTrimmedString([qObj.title, qObj.question, qObj.prompt]);
+    if (!title || !Array.isArray(qObj.options)) return;
+
+    let num =
+      typeof qObj.number === "string" && qObj.number.trim().length > 0
+        ? qObj.number.trim().slice(0, 16)
+        : typeof qObj.number === "number" && Number.isFinite(qObj.number)
+          ? String(Math.trunc(qObj.number))
+          : typeof qObj.id === "string" && /^\d+$/.test(qObj.id.trim())
+            ? qObj.id.trim()
+            : String(qIdx + 1);
+    if (usedQuestionNumbers.has(num)) {
+      let fallback = qIdx + 1;
+      while (usedQuestionNumbers.has(String(fallback))) {
+        fallback += 1;
+      }
+      num = String(fallback);
+    }
+    usedQuestionNumbers.add(num);
+
+    const usedOptKeys = new Set<string>();
+    const options: ChatOptionItem[] = [];
+    for (const rawOpt of qObj.options) {
+      if (options.length >= OPTION_KEYS_POOL.length) break;
+      if (!rawOpt || typeof rawOpt !== "object") continue;
+      const optObj = rawOpt as Record<string, unknown>;
+      const rawLabel = firstTrimmedString([optObj.label, optObj.title, optObj.text]);
+      if (!rawLabel) continue;
+
+      const requestedKey = typeof optObj.key === "string" ? optObj.key.trim().toUpperCase() : "";
+      const key =
+        /^[A-F]$/.test(requestedKey) && !usedOptKeys.has(requestedKey)
+          ? requestedKey
+          : OPTION_KEYS_POOL.find((k) => !usedOptKeys.has(k));
+      if (!key) continue;
+      usedOptKeys.add(key);
+
+      const recommended = optObj.recommended === true || OPTION_REC_TAG_RE.test(rawLabel);
+      OPTION_REC_TAG_RE.lastIndex = 0;
+      const cleanedLabel = rawLabel.replace(OPTION_REC_TAG_RE, " ").replace(/\s+/g, " ").trim();
+      const label = cleanedLabel.length > 0 ? cleanedLabel : rawLabel;
+      const detail = firstTrimmedString([
+        optObj.detail,
+        optObj.description,
+        optObj.note,
+        optObj.summary,
+      ]);
+      const needsInput =
+        optObj.needs_input === true ||
+        optObj.needsInput === true ||
+        optObj.requires_input === true ||
+        OPTION_NEEDS_INPUT_RE.test(detail ? `${label} ${detail}` : label);
+
+      options.push({
+        key,
+        label,
+        ...(detail ? { detail } : {}),
+        ...(recommended ? { recommended: true } : {}),
+        ...(needsInput ? { needs_input: true } : {}),
+      });
+    }
+
+    if (options.length < 2) return;
+    const multiSelect =
+      typeof qObj.multi_select === "boolean"
+        ? qObj.multi_select
+        : typeof qObj.multiSelect === "boolean"
+          ? qObj.multiSelect
+          : undefined;
+    normalizedQuestions.push({
+      number: num,
+      title,
+      ...(multiSelect !== undefined ? { multi_select: multiSelect } : {}),
+      options,
+    });
+  });
+
+  if (normalizedQuestions.length === 0) return null;
+  const validated = z.array(ChatOptionQuestionSchema).min(1).safeParse(normalizedQuestions);
+  return validated.success ? validated.data : null;
+}
+
+export function extractChatOptionsFromReply(rawText: string): {
+  displayText: string;
+  questions?: ChatOptionQuestion[];
+} {
+  const extracted = extractLabeledJsonPatchBlock(rawText, "kiln-options");
+  if (extracted.rawJson === null) {
+    return { displayText: rawText };
+  }
+  try {
+    const parsed: unknown = JSON.parse(extracted.rawJson);
+    const questions = normalizeStructuredChatQuestions(parsed);
+    if (questions) {
+      return {
+        displayText: extracted.displayText || "请通过下方快捷选项向导确认方案。",
+        questions,
+      };
+    }
+  } catch {
+    // Fall through cleanly: strip broken block if prose remains so fallback parser can inspect prose/table.
+  }
+  return {
+    displayText: extracted.displayText.trim().length > 0 ? extracted.displayText : rawText,
+  };
+}
+
 const KILN_BUILTIN_CHAT_COMMANDS: Readonly<Record<"intake" | "resolver", ChatCommandItem[]>> = {
   intake: [
     {
@@ -250,6 +402,7 @@ export const ChatMessageRecordSchema = z.object({
   text: z.string(),
   at: z.string().min(1).optional(),
   toolName: z.string().optional(),
+  questions: z.array(ChatOptionQuestionSchema).min(1).optional(),
 });
 export type ChatMessageRecord = z.infer<typeof ChatMessageRecordSchema>;
 
@@ -1850,6 +2003,7 @@ export class KilnChatEngine {
       pmWorkflowProtocol,
       modeSummary,
       protocolInstruction,
+      KILN_OPTIONS_PROMPT_INSTRUCTION,
       `当前待命 Agent 阵容池（enabled=true，严禁点将禁用角色或将 read_only 角色点将至 implement）：\n${rosterLines}`,
       `已登记项目空间列表：\n${registeredSpacesText}`,
       draftSummary,
@@ -1897,10 +2051,8 @@ export class KilnChatEngine {
 
     const uxFormattingSection = [
       `回复格式与交互指引：`,
-      `1) 当需要用户做 1～3 项边界抉择或方案选型时，请严格按下方结构化选项格式输出（每题 \`1. <问题>\` 后紧跟 \`A（推荐）：...\` / \`B：...\`，**不要**给分析小标题使用 \`1.\` + 无 A/B 混排），前端会自动弹出底部步进向导（Stepper）供用户逐题点选：`,
-      `   1. <决策问题标题>`,
-      `   A（推荐）：<推荐方案核心做法与收益>`,
-      `   B：<备选方案核心做法与代价>`,
+      KILN_OPTIONS_PROMPT_INSTRUCTION,
+      `1) 若除 \`kiln-options\` 块外还需在正文中列举选项，可使用 \`1. <问题>\` + \`A（推荐）：...\` / \`B：...\` 或 Markdown 对比表；分析性小标题不要与 \`A/B\` 选项混排。`,
       `2) 若已确定具体可行方案并同步更新了右侧「需要你决定」卡片，请在正文末尾用一句话明确告诉用户：「已为你同步右侧待决方案，点击输入框上方 **按推荐方案立即执行** 或右侧 **确认执行** 即可立即恢复推进。」`,
     ].join("\n");
 
@@ -2302,6 +2454,9 @@ export class KilnChatEngine {
         }
       }
 
+      const optionsExtracted = extractChatOptionsFromReply(replyText);
+      replyText = optionsExtracted.displayText;
+
       for (const toolMsg of toolMessages) {
         appendNdjsonLine(chatFile, toolMsg);
       }
@@ -2312,6 +2467,7 @@ export class KilnChatEngine {
         name: "intake",
         text: replyText,
         at: new Date().toISOString(),
+        ...(optionsExtracted.questions ? { questions: optionsExtracted.questions } : {}),
       };
       appendNdjsonLine(chatFile, replyRecord);
 
@@ -2605,6 +2761,9 @@ export class KilnChatEngine {
         }
       }
 
+      const optionsExtracted = extractChatOptionsFromReply(replyText);
+      replyText = optionsExtracted.displayText;
+
       for (const toolMsg of toolMessages) {
         appendNdjsonLine(chatFile, toolMsg);
       }
@@ -2615,6 +2774,7 @@ export class KilnChatEngine {
         name: "resolver",
         text: replyText,
         at: new Date().toISOString(),
+        ...(optionsExtracted.questions ? { questions: optionsExtracted.questions } : {}),
       };
       appendNdjsonLine(chatFile, replyRecord);
 

@@ -6037,4 +6037,183 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     expect(preview).toContain("验真·仅暂存");
     expect(preview).toContain("交付(落盘+终验)");
   });
+
+  it("renders OptionPickerCard from structured ChatMessage.questions (binary confirmation & multi_select) and submits combined reply", async () => {
+    const sentResolveMsgs: string[] = [];
+    const pendingDecision = {
+      id: "dec-ui-1",
+      task_id: "t-opt-ui",
+      contract_version: 1,
+      reason: "max_tokens_exceeded" as const,
+      category: "gate_failure_escalation" as const,
+      question: "是否按 v2 重扫？",
+      options: [
+        { id: "opt-rec", label: "重扫", action: "resume" as const, recommended: true },
+        { id: "opt-cancel", label: "取消", action: "cancel" as const, recommended: false },
+      ],
+      created_at: "2026-11-25T05:00:00.000Z",
+    };
+    const baseBootstrap = makeBaseBootstrap({
+      tasks: [
+        {
+          id: "t-opt-ui",
+          space: "local",
+          parent_id: null,
+          title: "清理应用残留",
+          priority: "P2",
+          effective_priority: "P2",
+          track: "L2",
+          workspace_mode: "host_scoped",
+          status: "waiting",
+          stage: "implement",
+          round: 1,
+          active_run_id: null,
+          contract_version: 1,
+          depends_on: [],
+          created_at: "2026-11-25T05:00:00.000Z",
+          updated_at: "2026-11-25T05:00:00.000Z",
+          tokens: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+          cost_usd: 0,
+        },
+      ],
+      pendingDecisions: [pendingDecision],
+    });
+
+    const structuredReply = {
+      id: "msg-structured",
+      role: "assistant",
+      who: "agent",
+      name: "resolver",
+      text: "请确认契约 v2 方案与需要保留的便携软件（下方表格仅为对照参考）：\n| 项 | 说明 |\n| :--- | :--- |\n| v2 | 放开安装回执 |",
+      at: "2026-11-25T05:01:00.000Z",
+      questions: [
+        {
+          number: "1",
+          title: "是否确认升级契约至 v2？",
+          options: [
+            { key: "A", label: "同意并立即升级", recommended: true },
+            { key: "B", label: "补充例外后继续", needs_input: true },
+          ],
+        },
+        {
+          number: "2",
+          title: "需要额外保护哪些目录？",
+          multi_select: true,
+          options: [
+            { key: "A", label: "保留 Raycast", recommended: true },
+            { key: "B", label: "保留 OrbStack" },
+            { key: "C", label: "都不需要" },
+          ],
+        },
+      ],
+    };
+
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof Request ? input.url : "";
+      if (url === "/api/bootstrap") return jsonResponse(baseBootstrap);
+      if (url === "/api/tasks/t-opt-ui") {
+        return jsonResponse({
+          card: {
+            schema_version: 1,
+            id: "t-opt-ui",
+            title: "清理应用残留",
+            space: "local",
+            priority: "P2",
+            track: "L2",
+            workspace_mode: "host_scoped",
+            parent: null,
+            depends_on: [],
+            contract_version: 1,
+            contract: {
+              goal: "清理",
+              end: "完成",
+              accept_cmd: "echo ok",
+              scope: ["/tmp/cleanup"],
+              deliver: { mode: "manual", cmd: null },
+              human_accept: false,
+              external_actions: "ask",
+            },
+            limits: {
+              retries_per_stage: 2,
+              review_rounds: 2,
+              advisor_calls: 1,
+              max_tokens: 250000,
+            },
+            created_at: "2026-11-25T05:00:00.000Z",
+            updated_at: "2026-11-25T05:00:00.000Z",
+          },
+          state: {
+            status: "waiting",
+            stage: "implement",
+            round: 1,
+            activeRunId: null,
+            priority: "P2",
+            effectivePriority: "P2",
+            track: "L2",
+            contractVersion: 1,
+            updatedAt: "2026-11-25T05:00:00.000Z",
+          },
+          brief: "# Brief",
+          decisions: "",
+          pendingDecision,
+          ledgerProposals: [],
+          runs: [],
+          usageTurns: [],
+          usage: {
+            totals: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+            byModel: {},
+            todayCostUsd: 0,
+            totalCostUsd: 0,
+          },
+          chatMessages: [structuredReply],
+        });
+      }
+      if (url === "/api/tasks/t-opt-ui/chat" && (!init?.method || init.method === "GET")) {
+        return jsonResponse({ messages: [structuredReply] });
+      }
+      if (url === "/api/tasks/t-opt-ui/chat" && init?.method === "POST") {
+        const body = JSON.parse(String(init.body ?? "{}")) as { message?: string };
+        sentResolveMsgs.push(body.message ?? "");
+        return jsonResponse({
+          reply: { who: "agent", name: "resolver", text: "已收到确认。" },
+          messages: [
+            structuredReply,
+            { who: "me", text: body.message ?? "" },
+            { who: "agent", name: "resolver", text: "已收到确认。" },
+          ],
+          pendingDecision,
+        });
+      }
+      if (url.includes("/api/chat/commands")) {
+        return jsonResponse({ commands: [], mcpServers: [] });
+      }
+      return jsonResponse({});
+    });
+
+    window.location.hash = "#resolve=t-opt-ui";
+    render(<App />);
+
+    expect(await screen.findByRole("region", { name: "快捷方案选择向导" })).toBeTruthy();
+    expect(screen.getByText("是否确认升级契约至 v2？")).toBeTruthy();
+
+    // Pick step 1 radio -> advances to step 2 (multi_select checkbox group)
+    fireEvent.click(screen.getByRole("radio", { name: /同意并立即升级/ }));
+    expect(screen.getByText("需要额外保护哪些目录？")).toBeTruthy();
+    expect(screen.getByText("可多选")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /保留 Raycast/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /保留 OrbStack/ }));
+
+    fireEvent.click(screen.getByRole("button", { name: "查看汇总" }));
+    expect(screen.getByRole("heading", { name: "汇总确认" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "确认并发送" }));
+    await waitFor(() => {
+      expect(sentResolveMsgs).toHaveLength(1);
+    });
+    expect(sentResolveMsgs[0]).toContain("1. 是否确认升级契约至 v2？：选 A（同意并立即升级）");
+    expect(sentResolveMsgs[0]).toContain(
+      "2. 需要额外保护哪些目录？：选 A、B（保留 Raycast；保留 OrbStack）",
+    );
+  });
 });

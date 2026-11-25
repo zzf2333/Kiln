@@ -226,6 +226,23 @@ export const ChatCommandsResponseSchema = z.object({
 });
 export type ChatCommandsResponse = z.infer<typeof ChatCommandsResponseSchema>;
 
+export const ChatOptionItemSchema = z.object({
+  key: z.string().trim().min(1).max(8),
+  label: z.string().trim().min(1),
+  detail: z.string().trim().optional(),
+  recommended: z.boolean().optional(),
+  needs_input: z.boolean().optional(),
+});
+export type ChatOptionItem = z.infer<typeof ChatOptionItemSchema>;
+
+export const ChatOptionQuestionSchema = z.object({
+  number: z.string().trim().min(1).max(16),
+  title: z.string().trim().min(1),
+  multi_select: z.boolean().optional(),
+  options: z.array(ChatOptionItemSchema).min(2).max(6),
+});
+export type ChatOptionQuestion = z.infer<typeof ChatOptionQuestionSchema>;
+
 export const SpaceFileEntrySchema = z.object({
   path: z.string().min(1),
   kind: z.enum(["file", "dir"]),

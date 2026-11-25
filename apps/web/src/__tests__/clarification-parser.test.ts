@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   formatSelectedOptionsReply,
+  normalizeStructuredQuestions,
   parseClarificationQuestions,
 } from "../state/clarification-parser";
 
@@ -101,5 +102,94 @@ describe("clarification-parser", () => {
       { key: "B", label: "直接按现有结果转入审查", recommended: false },
       { key: "C", label: "取消任务", recommended: false },
     ]);
+  });
+
+  it("parses Markdown comparison tables and heading-style options while ignoring ordinary tables", () => {
+    const ordinaryTable = [
+      "| 模块 | 职责 |",
+      "| :--- | :--- |",
+      "| store | SQLite 派生索引 |",
+      "| gate | 范围检查 |",
+    ].join("\n");
+    expect(parseClarificationQuestions(ordinaryTable)).toEqual([]);
+
+    const decisionTable = [
+      "### 3. 下一步怎么处理？（建议选方案 A）",
+      "",
+      "| 方案 | 做法 | 收益与代价 |",
+      "| :--- | :--- | :--- |",
+      "| **A. 更新契约放宽取证规则 → 退回重扫（推荐）** | 用 `wb_plan` 更新契约 v2：<br>1. 放开安装回执读取 | **收益**：识别真实残留。<br>**代价**：重跑一轮。 |",
+      "| **B. 不改契约，直接送审** | 跳过清单补全 | 最快结束，但不隔离任何目录。 |",
+      "| **C. 取消并重开任务卡** | 取消 `t-101` 重建 | 可重设编号，代价是丢弃当前记录。 |",
+    ].join("\n");
+
+    const parsedTable = parseClarificationQuestions(decisionTable);
+    expect(parsedTable).toHaveLength(1);
+    expect(parsedTable[0]!.number).toBe("3");
+    expect(parsedTable[0]!.title).toContain("下一步怎么处理？");
+    expect(
+      parsedTable[0]!.options.map((o) => ({
+        key: o.key,
+        label: o.label,
+        recommended: o.recommended,
+      })),
+    ).toEqual([
+      { key: "A", label: "更新契约放宽取证规则 → 退回重扫", recommended: true },
+      { key: "B", label: "不改契约，直接送审", recommended: false },
+      { key: "C", label: "取消并重开任务卡", recommended: false },
+    ]);
+    expect(parsedTable[0]!.options[0]!.detail).toContain("收益：识别真实残留");
+
+    const unnumberedTable = [
+      "请从下表中选择清理策略：",
+      "",
+      "| 选项 | 说明 |",
+      "| :--- | :--- |",
+      "| A（推荐）：安全隔离 | 先移入隔离区 |",
+      "| B：直接删除 | 不可恢复 |",
+    ].join("\n");
+    const parsedUnnumbered = parseClarificationQuestions(unnumberedTable);
+    expect(parsedUnnumbered).toHaveLength(1);
+    expect(parsedUnnumbered[0]!.number).toBe("1");
+    expect(parsedUnnumbered[0]!.title).toBe("请从下表中选择清理策略");
+    expect(parsedUnnumbered[0]!.options.map((o) => o.key)).toEqual(["A", "B"]);
+
+    const headingOptions = [
+      "1. 部署策略",
+      "### 方案 A（推荐）：灰度发布",
+      "### 方案 B：全量发布",
+    ].join("\n");
+    const parsedHeadings = parseClarificationQuestions(headingOptions);
+    expect(parsedHeadings).toHaveLength(1);
+    expect(parsedHeadings[0]!.options.map((o) => o.key)).toEqual(["A", "B"]);
+    expect(parsedHeadings[0]!.options[0]!.recommended).toBe(true);
+  });
+
+  it("normalizes structured ChatOptionQuestion payloads and formats multi-select replies", () => {
+    const normalized = normalizeStructuredQuestions([
+      {
+        number: "1",
+        title: "要补充保护哪些目录？",
+        multi_select: true,
+        options: [
+          { key: "a", label: "保留 Raycast 插件", recommended: true },
+          { key: "B", label: "保留 OrbStack 数据", detail: "包含容器镜像" },
+          { key: "C", label: "其他自定义应用", needs_input: true },
+        ],
+      },
+    ]);
+    expect(normalized).toHaveLength(1);
+    expect(normalized[0]!.multiSelect).toBe(true);
+    expect(normalized[0]!.options.map((o) => o.key)).toEqual(["A", "B", "C"]);
+    expect(normalized[0]!.options[2]!.needsInput).toBe(true);
+
+    const formatted = formatSelectedOptionsReply(
+      normalized,
+      { "1": ["A", "C"] },
+      { "1": "iTerm2" },
+    );
+    expect(formatted).toBe(
+      "1. 要补充保护哪些目录？：选 A、C（保留 Raycast 插件；其他自定义应用），补充：iTerm2",
+    );
   });
 });

@@ -1,7 +1,10 @@
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage } from "../api/types";
-import { parseClarificationQuestions } from "../state/clarification-parser";
+import {
+  normalizeStructuredQuestions,
+  parseClarificationQuestions,
+} from "../state/clarification-parser";
 import { fmtTime } from "../state/format";
 import type { IntakeProgressItem } from "../state/store";
 import { CornerUpLeftIcon } from "./Icons";
@@ -422,18 +425,23 @@ export function ChatTimeline({
   }
 
   const lastChatSeg = lastChatSegIdx >= 0 ? segments[lastChatSegIdx] : undefined;
-  const latestAgentText =
+  const lastAgentMsg =
     !busy && lastChatSeg && lastChatSeg.kind === "message" && lastChatSeg.who === "agent"
-      ? lastChatSeg.msg.text
-      : "";
-  const activeQuestions = useMemo(
-    () => (latestAgentText ? parseClarificationQuestions(latestAgentText) : []),
-    [latestAgentText],
-  );
+      ? lastChatSeg.msg
+      : undefined;
+  const activeQuestions = useMemo(() => {
+    if (!lastAgentMsg) return [];
+    const structured = normalizeStructuredQuestions(lastAgentMsg.questions);
+    if (structured.length > 0) return structured;
+    return lastAgentMsg.text ? parseClarificationQuestions(lastAgentMsg.text) : [];
+  }, [lastAgentMsg]);
   const activeQuestionsSig = useMemo(
     () =>
       activeQuestions
-        .map((q) => `${q.number}:${q.title}:${q.options.map((o) => o.key).join(",")}`)
+        .map(
+          (q) =>
+            `${q.number}:${q.multiSelect ? "M" : "S"}:${q.title}:${q.options.map((o) => o.key).join(",")}`,
+        )
         .join("|"),
     [activeQuestions],
   );

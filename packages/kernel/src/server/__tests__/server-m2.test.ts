@@ -13,6 +13,7 @@ import {
   LiveRateTracker,
   approximateCharsTokens,
   approximateDeltaTokens,
+  extractChatOptionsFromReply,
   type RateTickPayload,
 } from "../index.js";
 
@@ -2655,5 +2656,218 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     expect(server.store.readTaskCard("t-resolve-sync")!.limits.max_tokens).toBeGreaterThanOrEqual(
       1_210_000,
     );
+  });
+
+  it("extracts and persists structured kiln-options for both intake and resolver chats and degrades safely on malformed JSON", async () => {
+    const unit = extractChatOptionsFromReply(
+      [
+        "请确认方案：",
+        "```kiln-options",
+        JSON.stringify([
+          {
+            question: "确认继续吗？",
+            multiSelect: true,
+            options: [
+              { key: "a", label: "同意并继续（推荐）", description: "立即执行 v2" },
+              { key: "b", label: "我有补充应用名称" },
+            ],
+          },
+        ]),
+        "```",
+      ].join("\n"),
+    );
+    expect(unit.displayText).toBe("请确认方案：");
+    expect(unit.questions).toEqual([
+      {
+        number: "1",
+        title: "确认继续吗？",
+        multi_select: true,
+        options: [
+          { key: "A", label: "同意并继续", detail: "立即执行 v2", recommended: true },
+          { key: "B", label: "我有补充应用名称", needs_input: true },
+        ],
+      },
+    ]);
+
+    const broken = extractChatOptionsFromReply("正文保留\n```kiln-options\n{ bad json }\n```");
+    expect(broken.displayText).toBe("正文保留");
+    expect(broken.questions).toBeUndefined();
+
+    const kilnHome = makeTempDir("kiln-options-home-");
+    const fakeBackend = new FakeBackend({ defaultTurnScript: [] });
+    const server = new KilndServer({
+      kilnHome,
+      host: "127.0.0.1",
+      port: 0,
+      publicDir: null,
+      tokenSecret: "m2-options-sync-secret-0123456789",
+      enableOrchestrator: false,
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    await server.start();
+
+    const card: TaskCard = {
+      schema_version: 1,
+      id: "t-opt-sync",
+      title: "结构化选项同步",
+      space: "local",
+      priority: "P2",
+      track: "L2",
+      workspace_mode: "scratch_dir",
+      parent: null,
+      depends_on: [],
+      contract_version: 1,
+      contract: {
+        goal: "验证 resolver kiln-options",
+        end: "持久化 questions",
+        accept_cmd: "echo ok",
+        accept_files_hash: "sha256:init",
+        scope: ["staged/**"],
+        deliver: { mode: "manual", cmd: null },
+        human_accept: false,
+        external_actions: "ask",
+      },
+      limits: {
+        retries_per_stage: 2,
+        review_rounds: 2,
+        advisor_calls: 1,
+        max_tokens: 250_000,
+      },
+      created_at: "2026-11-25T10:00:00.000Z",
+      updated_at: "2026-11-25T10:00:00.000Z",
+    };
+    server.stateMachine.createTask(card, "# 结构化选项同步");
+    const optDecision = {
+      id: "dec-opt-1",
+      task_id: "t-opt-sync",
+      contract_version: 1,
+      reason: "ambiguous_spec" as const,
+      category: "decision" as const,
+      question: "如何处理？",
+      options: [{ id: "opt-1", label: "继续", action: "resume" as const, recommended: true }],
+      created_at: "2026-11-25T10:00:01.000Z",
+    };
+    server.pendingDecisions.set(optDecision);
+    server.stateMachine.requestDecision("t-opt-sync", optDecision, "2026-11-25T10:00:01.000Z");
+
+    const rolesCfg: RolesConfig = {
+      schema_version: 1,
+      heterogeneous_review: true,
+      roles: {
+        intake: {
+          backend_id: "fake",
+          agent: "pi",
+          model: "magpie/group/fast",
+          allow_full_access_fallback: false,
+        },
+        resolver: {
+          backend_id: "fake",
+          agent: "pi",
+          model: "magpie/group/fast",
+          allow_full_access_fallback: false,
+        },
+      },
+    };
+    server.store.writeConfig("roles", rolesCfg);
+
+    // 1. Intake chat strips kiln-options and persists reply.questions
+    const draftRes = await server.app.request(
+      new Request("http://127.0.0.1/api/drafts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ space: "local", workspace_mode: "scratch_dir" }),
+      }),
+    );
+    const { draft } = (await draftRes.json()) as { draft: { id: string } };
+    fakeBackend.enqueueScript(
+      [
+        {
+          kind: "message",
+          text: [
+            "请确认两个需求细节：",
+            "```kiln-options",
+            JSON.stringify({
+              questions: [
+                {
+                  number: "1",
+                  title: "支持范围",
+                  options: [
+                    { key: "A", label: "全部范围", recommended: true },
+                    { key: "B", label: "仅核心模块" },
+                  ],
+                },
+              ],
+            }),
+            "```",
+          ].join("\n"),
+          delta: false,
+        },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "intake" },
+    );
+
+    const intakeRes = await server.app.request(
+      new Request(`http://127.0.0.1/api/drafts/${draft.id}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "帮我做个脚本" }),
+      }),
+    );
+    expect(intakeRes.status).toBe(200);
+    const intakeJson = (await intakeRes.json()) as {
+      reply: { text: string; questions?: unknown[] };
+      messages: Array<{ text: string; questions?: unknown[] }>;
+    };
+    expect(intakeJson.reply.text).toBe("请确认两个需求细节：");
+    expect(intakeJson.reply.questions).toHaveLength(1);
+    expect(intakeJson.messages.at(-1)?.questions).toHaveLength(1);
+
+    // 2. Resolver chat strips kiln-options and persists reply.questions
+    fakeBackend.enqueueScript(
+      [
+        {
+          kind: "message",
+          text: [
+            "请审阅契约修订：",
+            "```kiln-options",
+            JSON.stringify({
+              questions: [
+                {
+                  number: "1",
+                  title: "是否确认按契约 v2 继续？",
+                  options: [
+                    { key: "A", label: "同意并继续", recommended: true },
+                    { key: "B", label: "补充例外应用", needs_input: true },
+                  ],
+                },
+              ],
+            }),
+            "```",
+          ].join("\n"),
+          delta: false,
+        },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "resolver" },
+    );
+
+    const resolveRes = await server.app.request(
+      new Request("http://127.0.0.1/api/tasks/t-opt-sync/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "给出可选方案" }),
+      }),
+    );
+    expect(resolveRes.status).toBe(200);
+    const resolveJson = (await resolveRes.json()) as {
+      reply: { text: string; questions?: unknown[] };
+    };
+    expect(resolveJson.reply.text).toBe("请审阅契约修订：");
+    expect(resolveJson.reply.questions).toHaveLength(1);
+
+    const persistedChat = server.chatEngine.getTaskChatMessages("t-opt-sync");
+    expect(persistedChat.at(-1)?.questions).toHaveLength(1);
   });
 });
