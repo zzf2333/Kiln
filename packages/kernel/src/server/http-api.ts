@@ -632,7 +632,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
   const remoteAuth = deps.remoteAuth ?? new RemoteAuthManager({ store, sseHub });
   const remoteNotifier = deps.remoteNotifier ?? new RemoteNotifier({ store });
   const scriptRunner = deps.scriptRunner ?? new KilnScriptRunner({ store, sseHub });
-  const version = deps.version ?? "0.0.5";
+  const version = deps.version ?? "0.0.6";
   const uiBuildId = (() => {
     try {
       const hasEmbedded =

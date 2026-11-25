@@ -56,7 +56,7 @@ export interface CliInstallOutcome {
   inPath: boolean;
 }
 
-export function resolveDesktopVersion(fallback = "0.0.5"): string {
+export function resolveDesktopVersion(fallback = "0.0.6"): string {
   for (const rel of ["../package.json", "../../package.json"]) {
     try {
       const candidate = path.resolve(import.meta.dirname, rel);

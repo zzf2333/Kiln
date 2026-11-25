@@ -80,7 +80,7 @@
 
 ## 安装方式
 
-> **版本状态说明**：当前源码与本地构建指向预发布版本 **`0.0.5`**（包含完整 V3 多订阅编排及 `v0.0.6` Vite+ / TypeScript 7 / Electron 架构迁移；**`0.1.0`** 预留给完成代码签名与公证后的首个正式对外版本）。各通道安装包会在发布对应 Release Tag 后激活，当前也可随时通过「源码构建」在本地打包或运行。
+> **版本状态说明**：当前源码与本地构建指向预发布版本 **`0.0.6`**（包含完整 V3 多订阅编排、Vite+ / TypeScript 7 / Electron E1 架构迁移、现代高级终端 TUI 优先拉起，以及实机 QA 问题修复 `#11`–`#18`；**`0.1.0`** 预留给完成代码签名与公证后的首个正式对外版本）。各通道安装包会在发布对应 Release Tag 后激活，当前也可随时通过「源码构建」在本地打包或运行。
 
 ### 方式 1：Electron 桌面应用（macOS `.dmg` / Windows NSIS `.exe`，零前置依赖）
 
@@ -174,7 +174,7 @@ ruby -c packaging/homebrew/Formula/kiln.rb && ruby -c packaging/homebrew/Casks/k
 | `kiln doctor [--json]`                                                                                                                  | 巡检运行环境、Git/APFS、Agent 探测与服务状态                                                              |
 | `kiln service <install\|uninstall\|status>`                                                                                             | 显式安装或清理系统用户级开机自启（macOS `LaunchAgent` / Linux `systemd --user` / Windows `HKCU\...\Run`） |
 | `kiln uninstall [--purge-data]`                                                                                                         | 停止服务、清除自启并巡检工作树（默认保留 `~/.kiln` 数据，加 `--purge-data` 一并清理）                     |
-| `kiln -h, --help` / `kiln -v, --version`                                                                                                | 打印帮助或当前版本号（`0.0.5`）                                                                           |
+| `kiln -h, --help` / `kiln -v, --version`                                                                                                | 打印帮助或当前版本号（`0.0.6`）                                                                           |
 
 ---
 
