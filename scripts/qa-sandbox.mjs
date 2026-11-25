@@ -189,6 +189,7 @@ function ensureFixtureRepo(fixtureRepoDir) {
         type: "module",
         scripts: {
           test: "node --test test/*.test.mjs",
+          lint: "node --check src/math.mjs src/server.mjs",
           start: "node src/server.mjs",
         },
       },
@@ -298,6 +299,26 @@ function ensureFixtureRepo(fixtureRepoDir) {
   runCommandSync("git", ["checkout", "main"], fixtureRepoDir);
 }
 
+function ensureHostTargetDir(hostTargetDir) {
+  fs.mkdirSync(hostTargetDir, { recursive: true });
+  const confPath = path.join(hostTargetDir, "sample.conf");
+  if (!fs.existsSync(confPath)) {
+    fs.writeFileSync(
+      confPath,
+      "# Kiln QA Host Target Config\nmode=sandbox\nmax_retries=2\n",
+      "utf8",
+    );
+  }
+  const notesPath = path.join(hostTargetDir, "notes.txt");
+  if (!fs.existsSync(notesPath)) {
+    fs.writeFileSync(
+      notesPath,
+      "Kiln QA isolated host_scoped target file.\nLine 1: initial baseline.\n",
+      "utf8",
+    );
+  }
+}
+
 function ensureReportSkeleton(meta) {
   fs.mkdirSync(path.join(meta.reportDir, "issues"), { recursive: true });
   fs.mkdirSync(path.join(meta.reportDir, "screenshots"), { recursive: true });
@@ -313,6 +334,7 @@ function ensureReportSkeleton(meta) {
     `- **Kilnd URL**: \`${meta.kilndUrl}\``,
     `- **KILN_HOME**: \`${meta.kilnHome}\``,
     `- **Fixture Repo**: \`${meta.fixtureRepoDir}\``,
+    `- **Host Target Dir**: \`${meta.hostTargetDir}\``,
     `- **Artifacts Dir**: \`${meta.artifactsDir}\``,
     `- **创建时间**: ${meta.createdAt}`,
     "",
@@ -320,8 +342,28 @@ function ensureReportSkeleton(meta) {
     "",
     "| 剧本 | 状态 | 发现问题数 | 备注 |",
     "| :--- | :--- | :--- | :--- |",
-    "| M1 · 桌面壳与初始化配置 | 待测 | 0 | |",
-    "| M2 · 立项到自动交付闭环 | 待测 | 0 | |",
+    "| M1 · 桌面壳、全局框架与 SettingsView 6 Tab | 待测 | 0 | |",
+    "| M2 · WorkflowView 与 IntakeView 全功能 | 待测 | 0 | |",
+    "| M3 · BoardView、DetailView 与真实交付 | 待测 | 0 | |",
+    "| M4 · 深度编排、审查清单与 accept_entry 真实验收 | 待测 | 0 | |",
+    "| M5 · Inbox、Resolve、host_scoped、Ledger、Usage 与删库重建 | 待测 | 0 | |",
+    "| M6 · 远程 :4311、双端口安全、移动端适配与 CLI 全校验 | 待测 | 0 | |",
+    "",
+    "## 逐页 / 模块覆盖矩阵（严禁漏页）",
+    "",
+    "| 页面 / 模块 | 覆盖剧本 | 实测状态 | 关键截图路径 | 备注 / 问题编号 |",
+    "| :--- | :--- | :--- | :--- | :--- |",
+    "| Electron 桌面壳 & 托盘 | M1 | 待测 | | |",
+    "| 全局框架（Sidebar / Statusbar / UsagePanel / CommandPalette） | M1 | 待测 | | |",
+    "| SettingsView（6 Tabs + 自定义 ACP + SpaceModal） | M1 | 待测 | | |",
+    "| WorkflowView（模板 / 阶段 / Inspector / RosterRolePicker） | M2 | 待测 | | |",
+    "| IntakeView（双模式 / ChatComposer / OptionPickerCard / SplitCardsPanel） | M2 | 待测 | | |",
+    "| BoardView（列流转 / MiniRail / FlameCanvas / 筛选） | M3 | 待测 | | |",
+    "| DetailView（Pause/Resume / Steer / ScriptDrawer / CheckpointPopover） | M3 / M4 | 待测 | | |",
+    "| InboxView & ResolveView（含 HostStagedDiffSection / DecisionBox） | M5 | 待测 | | |",
+    "| LedgerView（3 Tabs：决策账本 / 复盘建议 / 策略调优） | M5 | 待测 | | |",
+    "| UsageView（全区间 / 缓存命中 / USD 预算熔断） | M5 | 待测 | | |",
+    "| RemoteAuthView & 移动端 `<= 820px` & CLI | M6 | 待测 | | |",
     "",
     "## 缺陷草稿清单",
     "",
@@ -392,6 +434,7 @@ async function main() {
   const electronUserDataDir = path.join(sandboxRoot, "electron-user-data");
   const artifactsDir = path.join(sandboxRoot, "artifacts");
   const fixtureRepoDir = path.join(sandboxRoot, "fixture-repo");
+  const hostTargetDir = path.join(sandboxRoot, "host-target");
   const reportDir = path.join(ROOT_DIR, "docs", "qa", "reports", runId);
 
   fs.mkdirSync(kilnHome, { recursive: true });
@@ -399,6 +442,7 @@ async function main() {
   fs.mkdirSync(artifactsDir, { recursive: true });
 
   ensureFixtureRepo(fixtureRepoDir);
+  ensureHostTargetDir(hostTargetDir);
 
   const kilndPort = mode === "prepare" ? preferredPort : await findAvailablePort(preferredPort);
   const kilndUrl = `http://127.0.0.1:${kilndPort}`;
@@ -413,6 +457,7 @@ async function main() {
     kilndUrl,
     electronUserDataDir,
     fixtureRepoDir,
+    hostTargetDir,
     artifactsDir,
     reportDir,
     createdAt: new Date().toISOString(),
@@ -433,6 +478,7 @@ async function main() {
         `  gitCommit:       ${gitCommit}`,
         `  kilnHome:        ${kilnHome}`,
         `  fixtureRepoDir:  ${fixtureRepoDir}`,
+        `  hostTargetDir:   ${hostTargetDir}`,
         `  artifactsDir:    ${artifactsDir}`,
         `  reportDir:       ${reportDir}`,
         `  metaFile:        ${path.join(artifactsDir, "sandbox-meta.json")}`,
@@ -494,6 +540,7 @@ async function main() {
       `  kilndUrl:        ${kilndUrl}`,
       `  kilnHome:        ${kilnHome}`,
       `  fixtureRepoDir:  ${fixtureRepoDir}`,
+      `  hostTargetDir:   ${hostTargetDir}`,
       `  artifactsDir:    ${artifactsDir}`,
       `  reportDir:       ${reportDir}`,
       `  metaFile:        ${path.join(artifactsDir, "sandbox-meta.json")}`,
