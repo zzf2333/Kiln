@@ -5,9 +5,11 @@ import {
   PRIORITY_RANK,
   PendingDecisionSchema,
   RoleIdSchema,
+  TaskCardSchema,
   calculateCacheNetSavedUsd,
   calculateOrthogonalTurnCostUsd,
   type CardLimits,
+  type DecisionOption,
   type PendingDecision,
   type PricingConfig,
   type StateEvent,
@@ -17,6 +19,7 @@ import {
   KilnStore,
   assertSafeSegment,
   writeFileAtomic,
+  writeYamlAtomic,
   type UsageTurnRow,
 } from "../store/index.js";
 
@@ -595,6 +598,82 @@ export class PendingDecisionStore {
 
     return items;
   }
+}
+
+export interface UpdatePendingDecisionPatch {
+  taskId: string;
+  question: string;
+  options: readonly DecisionOption[];
+  resolutionSummary?: string;
+  maxTokens?: number;
+  now?: string;
+}
+
+/**
+ * Updates an active `waiting` task's pending decision options/summary (and optional `max_tokens` ceiling)
+ * cleanly from resolver discussions or MCP `wb_plan(mode: "update_decision")`.
+ */
+export function applyPendingDecisionUpdate(
+  deps: {
+    store: KilnStore;
+    pendingDecisions: PendingDecisionStore;
+    sseHub?: { publish: (ev: any) => unknown };
+  },
+  patch: UpdatePendingDecisionPatch,
+): { decision: PendingDecision; card: TaskCard; maxTokensUpdated: boolean } {
+  const safeTaskId = assertSafeSegment(patch.taskId, "taskId");
+  const card = deps.store.readTaskCard(safeTaskId);
+  const existing = deps.pendingDecisions.get(safeTaskId);
+  if (!existing) {
+    throw new Error(`Task "${safeTaskId}" has no active pending decision`);
+  }
+
+  const now = patch.now ?? new Date().toISOString();
+  let nextCard = card;
+  let maxTokensUpdated = false;
+  if (patch.maxTokens !== undefined && patch.maxTokens !== card.limits.max_tokens) {
+    nextCard = TaskCardSchema.parse({
+      ...card,
+      limits: {
+        ...card.limits,
+        max_tokens: patch.maxTokens,
+      },
+      updated_at: now,
+    });
+    writeYamlAtomic(deps.store.paths.cardYaml(safeTaskId), nextCard, TaskCardSchema);
+    maxTokensUpdated = true;
+  }
+
+  const nextDecision = deps.pendingDecisions.set({
+    ...existing,
+    question: patch.question,
+    options: patch.options.map((o) => ({ ...o })),
+    ...(patch.resolutionSummary !== undefined
+      ? { resolution_summary: patch.resolutionSummary }
+      : existing.resolution_summary !== undefined
+        ? { resolution_summary: existing.resolution_summary }
+        : {}),
+    updated_at: now,
+  });
+
+  deps.sseHub?.publish({
+    type: "decision.requested",
+    taskId: safeTaskId,
+    priority: deps.store.getTaskIndex(safeTaskId)?.priority ?? card.priority,
+    question: nextDecision.question,
+  });
+  deps.sseHub?.publish({
+    type: "resolve.progress",
+    taskId: safeTaskId,
+    kind: "decision_updated",
+    toolName: "wb_plan",
+    text: maxTokensUpdated
+      ? `已同步右侧待决方案并调整 max_tokens 至 ${patch.maxTokens!.toLocaleString()}`
+      : "已同步右侧待决方案与执行指令，可直接点击确认执行",
+    at: now,
+  });
+
+  return { decision: nextDecision, card: nextCard, maxTokensUpdated };
 }
 
 /**

@@ -214,9 +214,10 @@ describe("@kiln/mcp server & client", () => {
     expect(Array.isArray(wbPlanTool?.inputSchema.anyOf)).toBe(true);
     expect(
       Array.isArray(wbPlanTool?.inputSchema.anyOf) ? wbPlanTool.inputSchema.anyOf.length : -1,
-    ).toBe(4);
+    ).toBe(5);
     const modeProp = wbPlanTool?.inputSchema.properties?.mode as { enum?: string[] } | undefined;
     expect(modeProp?.enum).toContain("commit_split_cards");
+    expect(modeProp?.enum).toContain("update_decision");
   });
 
   it("forwards all 7 valid tool calls with Bearer KILN_RUN_TOKEN to /rpc/mcp/:tool", async () => {

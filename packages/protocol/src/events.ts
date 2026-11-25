@@ -194,6 +194,15 @@ export const SseEventSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     seq: z.number().int().positive(),
+    type: z.literal("resolve.progress"),
+    taskId: z.string().min(1),
+    kind: z.enum(["thinking", "tool", "decision_updated"]),
+    text: z.string().min(1),
+    toolName: z.string().min(1).optional(),
+    at: z.string().min(1),
+  }),
+  z.object({
+    seq: z.number().int().positive(),
     type: z.literal("script.output"),
     spaceId: z.string().min(1),
     taskId: z.string().min(1).optional(),

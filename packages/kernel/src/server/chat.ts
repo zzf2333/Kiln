@@ -4,6 +4,7 @@ import path from "node:path";
 import { z } from "zod";
 import {
   DeliverConfigSchema,
+  DecisionOptionSchema,
   DraftCardSchema,
   PrioritySchema,
   SessionRefSchema,
@@ -54,6 +55,7 @@ import type { CaffeinateController } from "./caffeinate.js";
 import { ServerHttpError } from "./errors.js";
 import { discoverMcpServers, discoverSkills } from "./extensions.js";
 import {
+  applyPendingDecisionUpdate,
   countRunningLeafTasks,
   PendingDecisionStore,
   readOptionalText,
@@ -137,6 +139,13 @@ const NonMcpContractPatchSchema = z.object({
     .optional(),
   affected_stages: z.array(StageIdSchema).min(1),
   rationale: z.string().min(1),
+});
+
+const NonMcpDecisionPatchSchema = z.object({
+  question: z.string().trim().min(1),
+  options: z.array(DecisionOptionSchema).min(1),
+  resolution_summary: optionalTrimmedString,
+  max_tokens: z.number().int().min(50_000).max(50_000_000).optional(),
 });
 
 function extractLabeledJsonPatchBlock(
@@ -1585,6 +1594,52 @@ export class KilnChatEngine {
     }
   }
 
+  private applyNonMcpDecisionPatch(params: { safeTaskId: string; rawJson: string }): {
+    applied: boolean;
+    message: string;
+  } {
+    try {
+      const parsedJson = JSON.parse(params.rawJson) as unknown;
+      const patch = NonMcpDecisionPatchSchema.parse(parsedJson);
+      const card = this.store.readTaskCard(params.safeTaskId);
+      const derived = deriveTaskStatus(card, this.store.readStateEvents(params.safeTaskId));
+      if (derived.status !== "waiting" || !this.pendingDecisions.get(params.safeTaskId)) {
+        return {
+          applied: false,
+          message: "decision_patch · 当前任务未处于待决状态，已跳过待决方案更新",
+        };
+      }
+      const updated = applyPendingDecisionUpdate(
+        {
+          store: this.store,
+          pendingDecisions: this.pendingDecisions,
+          ...(this.sseHub ? { sseHub: this.sseHub } : {}),
+        },
+        {
+          taskId: params.safeTaskId,
+          question: patch.question,
+          options: patch.options,
+          ...(patch.resolution_summary !== undefined
+            ? { resolutionSummary: patch.resolution_summary }
+            : {}),
+          ...(patch.max_tokens !== undefined ? { maxTokens: patch.max_tokens } : {}),
+        },
+      );
+      return {
+        applied: true,
+        message: updated.maxTokensUpdated
+          ? `decision_patch · 已同步右侧待决方案并提升 max_tokens 至 ${updated.card.limits.max_tokens.toLocaleString()}`
+          : "decision_patch · 已同步更新右侧「需要你决定」方案与执行指令",
+      };
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      return {
+        applied: false,
+        message: `decision_patch · 自动更新失败（${detail}）`,
+      };
+    }
+  }
+
   private buildIntakeSystemPrompt(params: {
     draft: DraftCard;
     spaceConfig: SpaceConfig | null;
@@ -1787,15 +1842,29 @@ export class KilnChatEngine {
           .join("\n")}`
       : "(当前无激活的待决项)";
     const protocolSection = mcpEnabled
-      ? `可使用 wb_get_context / wb_list_tasks / wb_read_ledger / wb_plan(mode: "update_contract")。`
+      ? [
+          `可使用 wb_get_context / wb_list_tasks / wb_read_ledger / wb_plan(mode: "update_contract") / wb_plan(mode: "update_decision")。`,
+          `一旦分析出新方案、收敛了用户诉求或需要把「当前默认待决选项」替换为具体执行方案，**必须立刻调用 \`wb_plan({ mode: "update_decision", task_id: "${card.id}", question, options, resolution_summary, max_tokens? })\`** 同步更新右侧「需要你决定」卡片（为推荐项设 \`recommended: true\`、指明 \`target_stage\`，并将给下一阶段执行 Agent 的详细动作指令写入 \`resolution_summary\`），不要只口头给出建议。`,
+        ].join("\n")
       : [
           `当前对话运行在无 MCP 模式，请仅做只读分析与方案讨论，严禁直接修改文件。`,
-          `仅当用户明确要求修改当前任务契约（goal、end、scope 或 accept_cmd）时，在回复末尾附一个 \`\`\`kiln-contract-patch\\n{...}\\n\`\`\` JSON 代码块（含 affected_stages 阶段数组、rationale 修改原因与 contract 变更字段；若改 accept_cmd 须同步提供新 accept_files_hash）。`,
+          `当提出可具体落地的方案或收敛了用户选择时，请在回复末尾附一个 \`\`\`kiln-decision-patch\\n{"question": "...", "options": [{"id": "opt-1", "label": "...", "action": "resume", "target_stage": "implement", "recommended": true}], "resolution_summary": "给下一阶段的具体执行指令", "max_tokens": 500000}\\n\`\`\` JSON 代码块同步更新右侧「需要你决定」卡片。`,
+          `仅当用户明确要求修改当前任务契约（goal、end、scope 或 accept_cmd）时，才另附 \`\`\`kiln-contract-patch\\n{...}\\n\`\`\` 代码块（含 affected_stages、rationale 与 contract 变更字段；若改 accept_cmd 须同步提供新 accept_files_hash）。`,
         ].join("\n");
+
+    const uxFormattingSection = [
+      `回复格式与交互指引：`,
+      `1) 当需要用户做 1～3 项边界抉择或方案选型时，请严格按下方结构化选项格式输出（每题 \`1. <问题>\` 后紧跟 \`A（推荐）：...\` / \`B：...\`，**不要**给分析小标题使用 \`1.\` + 无 A/B 混排），前端会自动弹出底部步进向导（Stepper）供用户逐题点选：`,
+      `   1. <决策问题标题>`,
+      `   A（推荐）：<推荐方案核心做法与收益>`,
+      `   B：<备选方案核心做法与代价>`,
+      `2) 若已确定具体可行方案并同步更新了右侧「需要你决定」卡片，请在正文末尾用一句话明确告诉用户：「已为你同步右侧待决方案，点击输入框上方 **按推荐方案立即执行** 或右侧 **确认执行** 即可立即恢复推进。」`,
+    ].join("\n");
 
     return [
       `你是 Kiln 的 resolver 讨论角色，负责协助用户讨论任务 "${card.id}"（${card.title}，契约 v${card.contract_version}）。`,
       protocolSection,
+      uxFormattingSection,
       `当前契约：\n- goal: ${card.contract.goal}\n- end: ${card.contract.end}\n- accept_cmd: ${card.contract.accept_cmd}\n- scope: ${card.contract.scope.join(", ")}`,
       decisionSection,
       ledgerLines ? `空间 ${card.space} 长期决策账本：\n${ledgerLines}` : "",
@@ -2403,11 +2472,35 @@ export class KilnChatEngine {
         }
 
         appendNdjsonLine(chatFile, userRecord);
+        let lastProgressKind: "thinking" | "tool" | null = null;
         const consumed = await this.consumeTurnEvents(
           executor.backend,
           sessionRef,
           "resolver",
-          undefined,
+          (ev) => {
+            if (!this.sseHub) return;
+            if (ev.kind === "thinking") {
+              if (lastProgressKind === "thinking") return;
+              lastProgressKind = "thinking";
+              this.sseHub.publish({
+                type: "resolve.progress",
+                taskId: safeTaskId,
+                kind: "thinking",
+                text: "正在结合任务契约与现场产物分析方案…",
+                at: ev.at,
+              });
+            } else if (ev.kind === "tool") {
+              lastProgressKind = "tool";
+              this.sseHub.publish({
+                type: "resolve.progress",
+                taskId: safeTaskId,
+                kind: "tool",
+                toolName: ev.name,
+                text: ev.target ? `正在读取/调用 ${ev.name} · ${ev.target}` : `正在调用 ${ev.name}`,
+                at: ev.at,
+              });
+            }
+          },
           {
             rateKey: `resolver:${safeTaskId}`,
             usageMeta: {
@@ -2423,6 +2516,24 @@ export class KilnChatEngine {
         toolMessages = consumed.toolMessages;
 
         if (!executor.mcpEnabled) {
+          const decisionExtracted = extractLabeledJsonPatchBlock(replyText, "kiln-decision-patch");
+          replyText = decisionExtracted.displayText;
+          if (decisionExtracted.rawJson !== null) {
+            const decPatchRes = this.applyNonMcpDecisionPatch({
+              safeTaskId,
+              rawJson: decisionExtracted.rawJson,
+            });
+            toolMessages.push({
+              id: `msg-${randomUUID().slice(0, 8)}`,
+              role: "tool",
+              who: "tool",
+              name: "resolver",
+              toolName: "decision_patch",
+              text: decPatchRes.message,
+              at: new Date().toISOString(),
+            });
+          }
+
           const extracted = extractLabeledJsonPatchBlock(replyText, "kiln-contract-patch");
           replyText = extracted.displayText;
           if (extracted.rawJson !== null) {
@@ -2444,6 +2555,9 @@ export class KilnChatEngine {
                 ? "已按讨论更新当前任务契约。"
                 : "已记录讨论回复（契约未自动变更，请核对后在右侧拍板）。";
             }
+          }
+          if (!replyText) {
+            replyText = "已按讨论同步右侧待决方案，请确认后点击执行推进。";
           }
         }
       }

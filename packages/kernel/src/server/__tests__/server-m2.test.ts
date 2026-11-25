@@ -2350,4 +2350,310 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     expect(boot.todayUsage.totalTokens).toBe(1820);
     expect(boot.todayUsage.byAgentModel?.pi?.["magpie/group/fast"]?.totalTokens).toBe(1820);
   });
+
+  it("supports resolver decision synchronization (wb_plan update_decision & kiln-decision-patch), streams resolve.progress, excludes cache reads from max_tokens_exceeded, and auto-bumps max_tokens on resume", async () => {
+    const kilnHome = makeTempDir("kiln-resolve-sync-");
+    const fakeBackend = new FakeBackend({ defaultTurnScript: [] });
+    const server = new KilndServer({
+      kilnHome,
+      host: "127.0.0.1",
+      port: 0,
+      publicDir: null,
+      tokenSecret: "m2-resolve-sync-secret-0123456789",
+      enableOrchestrator: false,
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    await server.start();
+
+    server.store.writeConfig("roles", {
+      schema_version: 1,
+      heterogeneous_review: true,
+      roles: {
+        resolver: {
+          backend_id: "fake",
+          agent: "pi",
+          model: "magpie/group/fast",
+          allow_full_access_fallback: false,
+        },
+      },
+    });
+
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-resolve-sync",
+        title: "Resolver Sync Task",
+        space: "local",
+        priority: "P1",
+        track: "L2",
+        workspace_mode: "host_scoped",
+        parent: null,
+        depends_on: [],
+        contract_version: 1,
+        contract: {
+          goal: "生成清理清单并执行",
+          end: "清单非空",
+          accept_cmd: "echo ok",
+          accept_files_hash: "sha256:init",
+          scope: ["workspaces/t-resolve-sync/**"],
+          deliver: { mode: "manual", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 250_000 },
+        created_at: "2026-11-25T00:00:00.000Z",
+        updated_at: "2026-11-25T00:00:00.000Z",
+      },
+      "# Resolver Sync",
+    );
+
+    const initialDecision = {
+      id: "dec-max-1",
+      task_id: "t-resolve-sync",
+      contract_version: 1,
+      reason: "max_tokens_exceeded" as const,
+      category: "budget" as const,
+      question: "任务触发 max_tokens_exceeded，请选择后续处理方式。",
+      options: [
+        {
+          id: "retry_implement",
+          label: "退回实施阶段修复",
+          action: "resume" as const,
+          recommended: true,
+        },
+        { id: "cancel_task", label: "取消任务", action: "cancel" as const, recommended: false },
+      ],
+      created_at: "2026-11-25T00:01:00.000Z",
+    };
+    server.pendingDecisions.set(initialDecision);
+    server.stateMachine.requestDecision(
+      "t-resolve-sync",
+      initialDecision,
+      "2026-11-25T00:01:00.000Z",
+    );
+
+    // 1. Prompt cache reads (2.8M cached of 2.9M total) are excluded from effective tokens (130k < 250k)
+    server.store.recordChatUsage(
+      { runId: "run-cache-test", taskId: "t-resolve-sync", stage: "implement" },
+      {
+        kind: "usage",
+        at: "2026-11-25T00:01:30.000Z",
+        turnId: "turn-cache-1",
+        agent: "codex",
+        model: "gpt-5.4",
+        inputTokens: 2_900_000,
+        cachedInputTokens: 2_800_000,
+        outputTokens: 30_000,
+        reasoningTokens: 0,
+      },
+    );
+    const countersBefore = (
+      server.orchestrator as unknown as {
+        computeStageCounters: (
+          taskId: string,
+          card: TaskCard,
+          stage: "implement",
+          runId?: string,
+        ) => { counters: { totalTokens: number } };
+      }
+    ).computeStageCounters(
+      "t-resolve-sync",
+      server.store.readTaskCard("t-resolve-sync")!,
+      "implement",
+    );
+    expect(countersBefore.counters.totalTokens).toBe(130_000);
+
+    // 2. wb_plan(mode: "update_decision") enforces role & task scope, updates pending decision + max_tokens
+    const workerToken = server.issueRunToken({
+      taskId: "t-resolve-sync",
+      runId: "run-w-1",
+      role: "worker",
+      contractVersion: 1,
+    });
+    const roleForbidden = await server.invokeMcpRpc({
+      method: "POST",
+      url: "/rpc/mcp/wb_plan",
+      headers: { Authorization: `Bearer ${workerToken}` },
+      rawBody: JSON.stringify({
+        mode: "update_decision",
+        task_id: "t-resolve-sync",
+        question: "越权更新",
+        options: [{ id: "resume", label: "继续", action: "resume", recommended: true }],
+      }),
+    });
+    expect(roleForbidden.status).toBe(403);
+    expect((roleForbidden.body as { code: string }).code).toBe("role_forbidden");
+
+    const intakeToken = server.issueRunToken({
+      taskId: "t-resolve-sync",
+      runId: "run-in-1",
+      role: "intake",
+      contractVersion: 1,
+    });
+    const intakeForbidden = await server.invokeMcpRpc({
+      method: "POST",
+      url: "/rpc/mcp/wb_plan",
+      headers: { Authorization: `Bearer ${intakeToken}` },
+      rawBody: JSON.stringify({
+        mode: "update_decision",
+        task_id: "t-resolve-sync",
+        question: "越权更新",
+        options: [{ id: "resume", label: "继续", action: "resume", recommended: true }],
+      }),
+    });
+    expect(intakeForbidden.status).toBe(403);
+    expect((intakeForbidden.body as { error: string }).error).toBe("role_forbidden");
+
+    const resolverToken = server.issueRunToken({
+      taskId: "t-resolve-sync",
+      runId: "run-res-1",
+      role: "resolver",
+      contractVersion: 1,
+    });
+    const crossTaskForbidden = await server.invokeMcpRpc({
+      method: "POST",
+      url: "/rpc/mcp/wb_plan",
+      headers: { Authorization: `Bearer ${resolverToken}` },
+      rawBody: JSON.stringify({
+        mode: "update_decision",
+        task_id: "t-other-task",
+        question: "跨任务更新",
+        options: [{ id: "resume", label: "继续", action: "resume", recommended: true }],
+      }),
+    });
+    expect(crossTaskForbidden.status).toBe(403);
+    expect((crossTaskForbidden.body as { error: string }).error).toBe("task_scope_forbidden");
+
+    const capturedEvents: SseEvent[] = [];
+    const unsubscribe = server.sseHub.subscribe((ev) => {
+      capturedEvents.push(ev);
+    });
+    try {
+      const mcpUpdateRes = await server.invokeMcpRpc({
+        method: "POST",
+        url: "/rpc/mcp/wb_plan",
+        headers: { Authorization: `Bearer ${resolverToken}` },
+        rawBody: JSON.stringify({
+          mode: "update_decision",
+          task_id: "t-resolve-sync",
+          question: "请确认已商定的恢复方案：",
+          options: [
+            { id: "opt-a", label: "放宽预算并补全 manifest", action: "resume", recommended: true },
+            { id: "opt-b", label: "取消任务", action: "cancel" },
+          ],
+          resolution_summary: "1. 放宽 max_tokens 到 600000\n2. 退回 implement 补写 manifest",
+          max_tokens: 600_000,
+        }),
+      });
+      expect(mcpUpdateRes.status).toBe(200);
+      expect(server.store.readTaskCard("t-resolve-sync")?.limits.max_tokens).toBe(600_000);
+      expect(server.pendingDecisions.get("t-resolve-sync")?.resolution_summary).toContain(
+        "放宽 max_tokens 到 600000",
+      );
+      expect(server.pendingDecisions.get("t-resolve-sync")?.updated_at).toBeTruthy();
+
+      // 3. sendTaskChat streams resolve.progress (thinking + tool) and applies kiln-decision-patch
+      fakeBackend.enqueueScript(
+        [
+          { kind: "thinking", chars: 200 },
+          {
+            kind: "tool",
+            name: "read_file",
+            target: "staged/manifest.json",
+          },
+          {
+            kind: "message",
+            text: [
+              "已确定最终方案：",
+              "1. 恢复方案",
+              "方案 A（推荐）：补全 manifest 并重启实施",
+              "方案 B：终止任务",
+              "```kiln-decision-patch",
+              JSON.stringify({
+                question: "最终拍板：按方案 A 补全 manifest？",
+                options: [
+                  {
+                    id: "apply-a",
+                    label: "按方案 A 补全 manifest",
+                    action: "resume",
+                    recommended: true,
+                  },
+                  { id: "cancel", label: "终止任务", action: "cancel" },
+                ],
+                resolution_summary: "按已讨论方案 A 补全 manifest.json",
+                max_tokens: 800_000,
+              }),
+              "```",
+            ].join("\n"),
+            delta: false,
+          },
+          { kind: "exit", reason: "completed" },
+        ],
+        { role: "resolver" },
+      );
+
+      const chatRes = await server.app.request(
+        new Request("http://127.0.0.1/api/tasks/t-resolve-sync/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: "为什么 manifest 为空？请给出方案并同步右侧拍板" }),
+        }),
+      );
+      expect(chatRes.status).toBe(200);
+      const chatJson = (await chatRes.json()) as {
+        reply: { text: string };
+        pendingDecision: { question: string; resolution_summary?: string; updated_at?: string };
+        card: { limits: { max_tokens: number } };
+      };
+      expect(chatJson.card.limits.max_tokens).toBe(800_000);
+      expect(chatJson.pendingDecision.question).toBe("最终拍板：按方案 A 补全 manifest？");
+      expect(chatJson.pendingDecision.resolution_summary).toBe("按已讨论方案 A 补全 manifest.json");
+      expect(chatJson.pendingDecision.updated_at).toBeTruthy();
+
+      const resolveProgressEvents = capturedEvents.filter(
+        (ev): ev is Extract<SseEvent, { type: "resolve.progress" }> =>
+          ev.type === "resolve.progress",
+      );
+      expect(resolveProgressEvents.some((e) => e.kind === "thinking")).toBe(true);
+      expect(
+        resolveProgressEvents.some((e) => e.kind === "tool" && e.toolName === "read_file"),
+      ).toBe(true);
+      expect(resolveProgressEvents.some((e) => e.kind === "decision_updated")).toBe(true);
+    } finally {
+      unsubscribe();
+    }
+
+    // 4. Resuming a max_tokens_exceeded decision when effectiveTokens >= limits.max_tokens auto-bumps max_tokens
+    server.store.recordChatUsage(
+      { runId: "run-eff-high", taskId: "t-resolve-sync", stage: "implement" },
+      {
+        kind: "usage",
+        at: "2026-11-25T00:02:00.000Z",
+        turnId: "turn-eff-high",
+        agent: "codex",
+        model: "gpt-5.4",
+        inputTokens: 820_000,
+        cachedInputTokens: 0,
+        outputTokens: 10_000,
+        reasoningTokens: 0,
+      },
+    );
+    const decideRes = await server.app.request(
+      new Request("http://127.0.0.1/api/tasks/t-resolve-sync/decide", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          decision_id: "dec-max-1",
+          option_id: "apply-a",
+          note: "按讨论推进",
+        }),
+      }),
+    );
+    expect(decideRes.status).toBe(200);
+    // effectiveTokens = 130_000 + 830_000 = 960_000 (>= 800_000) -> auto-bumped >= 960_000 + 250_000
+    expect(server.store.readTaskCard("t-resolve-sync")!.limits.max_tokens).toBeGreaterThanOrEqual(
+      1_210_000,
+    );
+  });
 });

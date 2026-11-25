@@ -365,6 +365,8 @@ export function ChatTimeline({
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const liveRailRef = useRef<HTMLUListElement | null>(null);
   const stickBottomRef = useRef(true);
+  const prevBusyRef = useRef(busy);
+  const prevMsgCountRef = useRef(messages.length);
   const [showJumpBottom, setShowJumpBottom] = useState(false);
 
   const scrollToBottom = (smooth = false): void => {
@@ -389,10 +391,20 @@ export function ChatTimeline({
   };
 
   useEffect(() => {
+    const justStartedBusy = busy && !prevBusyRef.current;
+    const hasNewUserMsg =
+      messages.length > prevMsgCountRef.current && messages[messages.length - 1]?.who === "me";
+    prevBusyRef.current = busy;
+    prevMsgCountRef.current = messages.length;
+
+    if (justStartedBusy || hasNewUserMsg) {
+      stickBottomRef.current = true;
+      setShowJumpBottom(false);
+    }
     if (stickBottomRef.current && scrollerRef.current) {
       scrollerRef.current.scrollTop = scrollerRef.current.scrollHeight;
     }
-  }, [messages.length, busy, progressLogs.length]);
+  }, [messages, busy, progressLogs.length]);
 
   useEffect(() => {
     if (busy && liveRailRef.current) {

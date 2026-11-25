@@ -2950,6 +2950,30 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
 
     await Promise.resolve(onBeforeDecisionApply?.(taskId));
 
+    const isTokenLimitExceeded =
+      pending.reason === "max_tokens_exceeded" || pending.question.includes("max_tokens_exceeded");
+    if (isTokenLimitExceeded && selectedOption.action === "resume") {
+      const card = store.readTaskCard(taskId);
+      const totals = store.getTaskTotalTokens(taskId);
+      const effectiveTokens =
+        Math.max(0, totals.input_tokens - totals.cached_input_tokens) + totals.output_tokens;
+      if (card.limits.max_tokens <= effectiveTokens) {
+        const nextMaxTokens = Math.min(
+          50_000_000,
+          Math.max(card.limits.max_tokens * 2, effectiveTokens + 250_000),
+        );
+        const updatedCard = TaskCardSchema.parse({
+          ...card,
+          limits: {
+            ...card.limits,
+            max_tokens: nextMaxTokens,
+          },
+          updated_at: new Date().toISOString(),
+        });
+        writeYamlAtomic(store.paths.cardYaml(taskId), updatedCard, TaskCardSchema);
+      }
+    }
+
     if (pending.reason === "budget_exceeded" && selectedOption.action === "resume") {
       const card = store.readTaskCard(taskId);
       const spent = computeTaskSpentUsd(store, taskId);

@@ -88,6 +88,10 @@ export function ResolveView() {
   };
 
   const recentUserMessages = messages.filter((m) => m.who === "me").map((m) => m.text);
+  const progressLogs = state.resolveProgressLogsByTask[taskId] ?? [];
+  const recommendedOption =
+    pendingDecision.options.find((o) => o.recommended) ?? pendingDecision.options[0] ?? null;
+  const [quickExecuting, setQuickExecuting] = useState(false);
 
   return (
     <ViewFrame
@@ -125,12 +129,46 @@ export function ResolveView() {
           <ChatTimeline
             messages={messages}
             busy={state.resolveBusy}
-            busyLabel="正在整理上下文并思考回应…"
+            busyLabel="正在结合任务契约与现场产物分析方案…"
+            progressLogs={progressLogs}
             roleLabel="讨论助手"
             defaultAgentName="resolver"
             onQuickReply={(text) => void handleSend(text)}
             onFillComposer={(text) => setChatInput(text)}
           />
+
+          {!state.resolveBusy && pendingDecision.updated_at && recommendedOption ? (
+            <div className="resolve-ready-bar" role="region" aria-label="讨论方案已就绪">
+              <div className="resolve-ready-info">
+                <span className="decision-sync-tag">已同步方案</span>
+                <span className="resolve-ready-label" title={recommendedOption.label}>
+                  {recommendedOption.label}
+                </span>
+              </div>
+              <button
+                type="button"
+                className="btn btn-sm btn-light"
+                disabled={quickExecuting}
+                onClick={async () => {
+                  setQuickExecuting(true);
+                  try {
+                    const summary = pendingDecision.resolution_summary?.trim();
+                    await store.submitDecision(taskId, {
+                      decision_id: pendingDecision.id,
+                      option_id: recommendedOption.id,
+                      action: recommendedOption.action,
+                      ...(summary ? { rationale: summary } : {}),
+                      apply_ledger_rule: false,
+                    });
+                  } finally {
+                    setQuickExecuting(false);
+                  }
+                }}
+              >
+                {quickExecuting ? "提交中..." : "按推荐方案立即执行"}
+              </button>
+            </div>
+          ) : null}
 
           <ChatComposer
             role="resolver"

@@ -123,6 +123,14 @@ const WbPlanBaseUnionSchema = z.discriminatedUnion("mode", [
     rationale: z.string().min(1),
   }),
   z.object({
+    mode: z.literal("update_decision"),
+    task_id: z.string().min(1),
+    question: z.string().min(1),
+    options: z.array(DecisionOptionSchema).min(1),
+    resolution_summary: z.string().min(1).optional(),
+    max_tokens: z.number().int().min(50_000).max(50_000_000).optional(),
+  }),
+  z.object({
     mode: z.literal("commit_split_cards"),
     draft_id: z.string().min(1).optional(),
     cards: z.array(SplitCardPlanItemSchema).min(2).max(12),

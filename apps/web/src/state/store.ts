@@ -407,6 +407,7 @@ export interface KilnStoreState {
   pickDirBusy: boolean;
 
   resolveMessagesByTask: Record<string, ChatMessage[]>;
+  resolveProgressLogsByTask: Record<string, IntakeProgressItem[]>;
   resolveBusy: boolean;
   pricingSyncBusy: boolean;
 }
@@ -1137,6 +1138,7 @@ export class KilnWebStore {
       pickDirBusy: false,
 
       resolveMessagesByTask: {},
+      resolveProgressLogsByTask: {},
       resolveBusy: false,
       pricingSyncBusy: false,
     };
@@ -1795,6 +1797,34 @@ export class KilnWebStore {
           },
         ].slice(-8);
         this.setState({ intakeProgressLogs: nextLogs });
+      }
+      return;
+    }
+
+    if (event.type === "resolve.progress") {
+      if (this.state.resolveBusy || event.kind === "decision_updated") {
+        const prevLogs = this.state.resolveProgressLogsByTask[event.taskId] ?? [];
+        const nextLogs = [
+          ...prevLogs,
+          {
+            kind: event.kind === "decision_updated" ? "draft_updated" : event.kind,
+            text: event.text,
+            ...(event.toolName ? { toolName: event.toolName } : {}),
+            at: event.at,
+          } satisfies IntakeProgressItem,
+        ].slice(-8);
+        this.setState({
+          resolveProgressLogsByTask: {
+            ...this.state.resolveProgressLogsByTask,
+            [event.taskId]: nextLogs,
+          },
+        });
+      }
+      if (event.kind === "decision_updated") {
+        void this.bootstrap();
+        if (this.state.taskId === event.taskId) {
+          void this.loadTaskDetail(event.taskId);
+        }
       }
       return;
     }
@@ -3822,6 +3852,10 @@ export class KilnWebStore {
         ...this.state.resolveMessagesByTask,
         [taskId]: [...prev, { who: "me", text: trimmed }],
       },
+      resolveProgressLogsByTask: {
+        ...this.state.resolveProgressLogsByTask,
+        [taskId]: [],
+      },
       resolveBusy: true,
     });
     try {
@@ -3842,6 +3876,10 @@ export class KilnWebStore {
           ...this.state.resolveMessagesByTask,
           [taskId]: nextMsgs,
         },
+        resolveProgressLogsByTask: {
+          ...this.state.resolveProgressLogsByTask,
+          [taskId]: [],
+        },
         resolveBusy: false,
       });
       void this.bootstrap();
@@ -3852,6 +3890,10 @@ export class KilnWebStore {
       const current = this.state.resolveMessagesByTask[taskId] ?? [];
       this.setState({
         resolveBusy: false,
+        resolveProgressLogsByTask: {
+          ...this.state.resolveProgressLogsByTask,
+          [taskId]: [],
+        },
         resolveMessagesByTask: {
           ...this.state.resolveMessagesByTask,
           [taskId]: [

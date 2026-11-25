@@ -409,6 +409,8 @@ export const PendingDecisionSchema = z.object({
   category: z.string().min(1),
   question: z.string().min(1),
   options: z.array(DecisionOptionSchema).min(1),
+  resolution_summary: z.string().min(1).optional(),
+  updated_at: z.string().min(1).optional(),
   created_at: z.string().min(1),
 });
 export type PendingDecision = z.infer<typeof PendingDecisionSchema>;

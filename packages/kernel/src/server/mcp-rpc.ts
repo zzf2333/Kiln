@@ -52,6 +52,7 @@ import {
 } from "./ipc-http.js";
 import {
   appendLedgerProposal,
+  applyPendingDecisionUpdate,
   countRunningLeafTasks,
   PendingDecisionStore,
   readOptionalText,
@@ -1109,6 +1110,61 @@ export class McpRpcServer {
           contractVersion: updated.newVersion,
           archivedReceipts: updated.archivedReceipts,
           rationale: input.rationale,
+        };
+      }
+
+      case "update_decision": {
+        assertSafeSegment(input.task_id, "task_id");
+        if (claims.role !== "resolver" && claims.role !== "triage") {
+          throw new ServerHttpError(403, {
+            error: "role_forbidden",
+            role: claims.role,
+            mode: "update_decision",
+            message: `Role "${claims.role}" is not allowed to update pending decisions`,
+          });
+        }
+        if (input.task_id !== claims.taskId) {
+          throw new ServerHttpError(403, {
+            error: "task_scope_forbidden",
+            message: `Role "${claims.role}" bound to task "${claims.taskId}" cannot update decision of "${input.task_id}"`,
+          });
+        }
+
+        const card = this.requireCard(input.task_id);
+        const derived = deriveTaskStatus(card, this.store.readStateEvents(input.task_id));
+        if (derived.status !== "waiting" || !this.pendingDecisions.get(input.task_id)) {
+          throw new ServerHttpError(409, {
+            error: "no_pending_decision",
+            taskId: input.task_id,
+            message: `Task "${input.task_id}" has no active pending decision`,
+          });
+        }
+
+        const updated = applyPendingDecisionUpdate(
+          {
+            store: this.store,
+            pendingDecisions: this.pendingDecisions,
+            sseHub: this.sseHub,
+          },
+          {
+            taskId: input.task_id,
+            question: input.question,
+            options: input.options,
+            ...(input.resolution_summary !== undefined
+              ? { resolutionSummary: input.resolution_summary }
+              : {}),
+            ...(input.max_tokens !== undefined ? { maxTokens: input.max_tokens } : {}),
+            now,
+          },
+        );
+
+        return {
+          ok: true,
+          mode: "update_decision",
+          taskId: input.task_id,
+          decisionId: updated.decision.id,
+          maxTokensUpdated: updated.maxTokensUpdated,
+          maxTokens: updated.card.limits.max_tokens,
         };
       }
     }

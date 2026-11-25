@@ -937,6 +937,7 @@ export function subscribeSseEvents(handlers: SseSubscriptionHandlers): () => voi
     "decision.requested",
     "run.event",
     "intake.progress",
+    "resolve.progress",
     "script.output",
     "provider.status",
   ];

@@ -69,4 +69,37 @@ describe("clarification-parser", () => {
 
     expect(parseClarificationQuestions(plain)).toEqual([]);
   });
+
+  it("supports 方案/选项/Option prefixes and does not misparse analytical section headers", () => {
+    const analyticalOnly = [
+      "结论先行：当前卡在预算阈值与空清单。",
+      "1. 表层卡点：为什么停在 max_tokens_exceeded？",
+      "已确认事实：缓存命中占了 278.3 万。",
+      "2. 实质问题：为什么 staged/manifest.json 为空？",
+      "已确认事实：报告里其实有 281 项。",
+    ].join("\n");
+    expect(parseClarificationQuestions(analyticalOnly)).toEqual([]);
+
+    const mixedWithPicker = [
+      analyticalOnly,
+      "",
+      "请直接选择后续处理方案：",
+      "1. 下一步处理方案",
+      "方案 A（推荐）：放宽 max_tokens 到 800k 并退回实施阶段补全清单",
+      "选项 B：直接按现有结果转入审查",
+      "Option C：取消任务",
+    ].join("\n");
+
+    const parsed = parseClarificationQuestions(mixedWithPicker);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]!.number).toBe("1");
+    expect(parsed[0]!.title).toBe("下一步处理方案");
+    expect(
+      parsed[0]!.options.map((o) => ({ key: o.key, label: o.label, recommended: o.recommended })),
+    ).toEqual([
+      { key: "A", label: "放宽 max_tokens 到 800k 并退回实施阶段补全清单", recommended: true },
+      { key: "B", label: "直接按现有结果转入审查", recommended: false },
+      { key: "C", label: "取消任务", recommended: false },
+    ]);
+  });
 });

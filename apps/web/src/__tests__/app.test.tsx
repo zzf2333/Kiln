@@ -5187,4 +5187,174 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     expect(sentMessages[1]).toContain("1. 清理范围：选 A");
     expect(sentMessages[1]).toContain("2. 处置方式：选 A");
   });
+
+  it("ResolveView renders resolve.progress logs, syncs DecisionBox on decision_updated, and executes via one-click ready bar", async () => {
+    const decidePayloads: Array<{ optionId?: string; note?: string }> = [];
+    const baseBootstrap = makeBaseBootstrap({
+      tasks: [
+        {
+          id: "t-wait",
+          space: "local",
+          parent_id: null,
+          title: "清理残留目录",
+          priority: "P1",
+          effective_priority: "P1",
+          track: "L2",
+          workspace_mode: "host_scoped",
+          status: "waiting",
+          stage: "implement",
+          round: 1,
+          active_run_id: null,
+          contract_version: 1,
+          depends_on: [],
+          created_at: "2026-11-25T05:00:00.000Z",
+          updated_at: "2026-11-25T05:00:00.000Z",
+          tokens: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+          cost_usd: 0,
+        },
+      ],
+    });
+    let updatedDecision = {
+      id: "dec-sync-1",
+      task_id: "t-wait",
+      contract_version: 1,
+      reason: "max_tokens_exceeded",
+      category: "budget",
+      question: "请确认后续处理方式：",
+      options: [
+        { id: "retry_implement", label: "退回实施阶段修复", action: "resume", recommended: true },
+        { id: "cancel_task", label: "取消任务", action: "cancel" },
+      ],
+      created_at: "2026-11-25T05:00:00.000Z",
+      resolution_summary: undefined as string | undefined,
+      updated_at: undefined as string | undefined,
+    };
+
+    const taskDetail = {
+      task: {
+        id: "t-wait",
+        title: "清理残留目录",
+        space: "local",
+        status: "waiting",
+        stage: "implement",
+        priority: "P1",
+        track: "L2",
+        workspace_mode: "host_scoped",
+        contract_version: 1,
+        contract: {
+          goal: "扫描并清理残留",
+          end: "生成有效 manifest",
+          accept_cmd: "echo ok",
+          scope: ["workspaces/t-wait/**"],
+          deliver: { mode: "manual", cmd: null },
+        },
+        limits: { max_tokens: 250_000 },
+        tokens: 130_000,
+        cost_usd: 0.45,
+        updated_at: "2026-11-25T05:00:00.000Z",
+      },
+      brief: "# 任务说明",
+      pendingDecision: updatedDecision,
+      runs: [],
+      decisionsMd: null,
+      hostStagedDiffs: [],
+      gate: null,
+      receipt: null,
+      chat: {
+        messages: [
+          {
+            id: "m-init",
+            role: "assistant",
+            text: "请先选择讨论方向。",
+            at: "2026-11-25T05:00:01.000Z",
+          },
+        ],
+      },
+    };
+
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith("/api/bootstrap")) {
+        return jsonResponse({
+          ...baseBootstrap,
+          pendingDecisions: [updatedDecision],
+        });
+      }
+      if (url.includes("/api/tasks/t-wait/decide") && init?.method === "POST") {
+        decidePayloads.push(
+          JSON.parse(String(init.body ?? "{}")) as { optionId?: string; note?: string },
+        );
+        return jsonResponse({ ok: true });
+      }
+      if (url.includes("/api/tasks/t-wait")) {
+        return jsonResponse({
+          ...taskDetail,
+          pendingDecision: updatedDecision,
+        });
+      }
+      if (url.includes("/api/chat/commands")) {
+        return jsonResponse({ commands: [], mcpServers: [] });
+      }
+      return jsonResponse({});
+    });
+
+    window.location.hash = "#resolve=t-wait";
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("拍板与契约")).toBeTruthy();
+    });
+    expect(screen.queryByRole("button", { name: "按推荐方案立即执行" })).toBeNull();
+
+    // Emit resolve.progress thinking/tool + decision_updated via SSE
+    const es = MockEventSource.instances.at(-1)!;
+    updatedDecision = {
+      ...updatedDecision,
+      question: "最终拍板：放宽预算并补全 manifest",
+      options: [
+        { id: "opt-rec", label: "放宽预算并退回实施", action: "resume", recommended: true },
+        { id: "cancel_task", label: "取消任务", action: "cancel" },
+      ],
+      resolution_summary: "按推荐方案：放宽 max_tokens 到 800k 并补写 manifest",
+      updated_at: "2026-11-25T05:02:00.000Z",
+    };
+
+    es.emit("resolve.progress", {
+      seq: 101,
+      type: "resolve.progress",
+      taskId: "t-wait",
+      kind: "thinking",
+      text: "正在检查 manifest.json",
+      at: "2026-11-25T05:01:58.000Z",
+    });
+    es.emit("resolve.progress", {
+      seq: 102,
+      type: "resolve.progress",
+      taskId: "t-wait",
+      kind: "decision_updated",
+      text: "已同步最新拍板方案到右侧「需要你决定」",
+      at: "2026-11-25T05:02:00.000Z",
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("已按讨论同步")).toBeTruthy();
+    });
+    expect(screen.getByText("最终拍板：放宽预算并补全 manifest")).toBeTruthy();
+    const noteInput = screen.getByLabelText("补充说明（可选）") as HTMLTextAreaElement;
+    expect(noteInput.value).toBe("按推荐方案：放宽 max_tokens 到 800k 并补写 manifest");
+
+    const readyBtn = screen.getByRole("button", { name: "按推荐方案立即执行" });
+    fireEvent.click(readyBtn);
+
+    await waitFor(() => {
+      expect(decidePayloads).toHaveLength(1);
+    });
+    expect(decidePayloads[0]).toMatchObject({
+      decision_id: "dec-sync-1",
+      option_id: "opt-rec",
+      action: "resume",
+      rationale: "按推荐方案：放宽 max_tokens 到 800k 并补写 manifest",
+    });
+  });
 });

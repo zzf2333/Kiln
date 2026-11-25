@@ -55,7 +55,7 @@ const TOOL_DESCRIPTIONS: Record<McpToolName, string> = {
     "Read-only list of tasks and associated space configurations, optionally filtered by space or status.",
   wb_read_ledger: "Read long-term engineering constraint entries from the space ledger.",
   wb_plan:
-    "Create or update a task draft (upsert_draft), commit a formal task card (commit_card), commit split dependent cards (commit_split_cards), or bump contract_version with affected stages (update_contract).",
+    "Create or update a task draft (upsert_draft), commit a formal task card (commit_card), commit split dependent cards (commit_split_cards), bump contract_version with affected stages (update_contract), or update a waiting task's pending decision options/instructions (update_decision).",
   wb_ask_decision:
     "Suspend execution into waiting state and submit a structured pending decision with explicit action options.",
   wb_submit_receipt:
@@ -102,7 +102,13 @@ function buildToolInputSchema(tool: McpToolName): ToolInputSchema {
     }
     mergedProperties.mode = {
       type: "string",
-      enum: ["upsert_draft", "commit_card", "update_contract", "commit_split_cards"],
+      enum: [
+        "upsert_draft",
+        "commit_card",
+        "update_contract",
+        "update_decision",
+        "commit_split_cards",
+      ],
     };
 
     return {

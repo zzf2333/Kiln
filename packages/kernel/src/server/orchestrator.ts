@@ -3515,7 +3515,12 @@ export class KilnOrchestrator {
       }
     }
 
-    const totalTokens = this.store.getTaskTotalTokens(taskId).total_tokens;
+    const taskTotals = this.store.getTaskTotalTokens(taskId);
+    // Exclude cache-read input tokens from the circuit-breaker budget so repeated multi-turn
+    // prompt-cache hits do not falsely trip max_tokens_exceeded.
+    const totalTokens =
+      Math.max(0, taskTotals.input_tokens - taskTotals.cached_input_tokens) +
+      taskTotals.output_tokens;
     const totalCostUsd = computeTaskSpentUsd(this.store, taskId);
     return {
       counters: {
