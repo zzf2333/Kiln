@@ -228,6 +228,7 @@ describe("WorkflowView animated flowchart, custom slots, same-model reuse & Inta
     expect(tplDialog.classList.contains("modal-card")).toBe(true);
     expect(tplDialog.parentElement?.classList.contains("palette-mask")).toBe(true);
     expect(tplDialog.parentElement?.classList.contains("open")).toBe(true);
+    expect(tplDialog.parentElement?.classList.contains("centered")).toBe(true);
     fireEvent.change(within(tplDialog).getByLabelText("新模板名称"), {
       target: { value: "安全发布流" },
     });

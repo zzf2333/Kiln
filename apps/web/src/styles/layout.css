@@ -4672,6 +4672,14 @@
   .palette-mask.open {
     display: flex;
   }
+  .palette-mask.centered {
+    align-items: center;
+    padding: 24px 16px;
+    overflow-y: auto;
+  }
+  .palette-mask.centered > .modal-card {
+    margin: auto;
+  }
   .palette {
     width: min(540px, 92vw);
     background: var(--surface);
@@ -8159,6 +8167,9 @@
     }
     .palette-mask {
       padding-top: 8vh;
+    }
+    .palette-mask.centered {
+      padding: 16px 12px;
     }
 
     /* 编排与阵容 & Providers 响应式 */

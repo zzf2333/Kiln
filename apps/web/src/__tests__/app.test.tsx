@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildCustomWorkflow, buildWorkflowPreset } from "@kiln/protocol/web";
 import type { BootstrapResponse, TaskDetailResponse } from "../api/types";
 import { App } from "../app";
 import { detectComposerTrigger } from "../components/ChatComposer";
@@ -5853,5 +5854,187 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       expect(document.getElementById("paletteInput")).toBeNull();
       expect(window.location.hash).toContain("view=settings");
     });
+  });
+
+  it("重新打开已就绪的两阶段 host_scoped 草稿直接提交时不带 git_worktree (Issue #16)", async () => {
+    let commitPayload: Record<string, unknown> | null = null;
+    const readyHostDraft = {
+      schema_version: 1 as const,
+      id: "d-host-ready",
+      title: "宿主两阶段重开直投",
+      space: "kiln",
+      priority: "P1" as const,
+      track: "L1" as const,
+      workspace_mode: "host_scoped" as const,
+      depends_on: [],
+      intake_open: false,
+      workflow: buildWorkflowPreset("host_op"),
+      contract: {
+        goal: "修改 ~/.config/demo.conf 并核验",
+        end: "配置文件更新并通过校验",
+        accept_cmd: "test -f /tmp/ok",
+        scope: ["/tmp/host-target"],
+        deliver: { mode: "manual" as const, cmd: null },
+        human_accept: false,
+        external_actions: "ask" as const,
+      },
+      open_questions: [],
+      brief_markdown: "# 方案\n\n两阶段宿主配置变更。",
+      created_at: "2026-11-25T10:00:00.000Z",
+      updated_at: "2026-11-25T10:00:00.000Z",
+    };
+
+    fetchMock.mockImplementation(async (url, init) => {
+      if (url === "/api/bootstrap") {
+        return jsonResponse(makeBaseBootstrap({ drafts: [readyHostDraft] }));
+      }
+      if (url === "/api/drafts/d-host-ready/chat") {
+        return jsonResponse({ ok: true, draftId: "d-host-ready", messages: [] });
+      }
+      if (url === "/api/drafts" && init?.method === "POST") {
+        return jsonResponse({ ok: true, draft: readyHostDraft });
+      }
+      if (url === "/api/drafts/d-host-ready/commit" && init?.method === "POST") {
+        commitPayload = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return jsonResponse(
+          {
+            ok: true,
+            card: {
+              schema_version: 1,
+              id: "t-101",
+              title: readyHostDraft.title,
+              space: "local",
+              priority: "P1",
+              track: "L1",
+              workspace_mode: "host_scoped",
+              parent: null,
+              depends_on: [],
+              contract_version: 1,
+              contract: readyHostDraft.contract,
+              limits: {
+                retries_per_stage: 2,
+                review_rounds: 2,
+                advisor_calls: 1,
+                max_tokens: 100_000,
+              },
+              created_at: "2026-11-25T10:01:00.000Z",
+              updated_at: "2026-11-25T10:01:00.000Z",
+            },
+            state: {
+              status: "queued",
+              stage: null,
+              round: null,
+              activeRunId: null,
+              effectivePriority: "P1",
+              contractVersion: 1,
+            },
+          },
+          201,
+        );
+      }
+      return jsonResponse({});
+    });
+
+    window.location.hash = "#view=intake";
+    render(<App />);
+
+    const draftBtn = await screen.findByRole("button", { name: /^宿主两阶段重开直投/ });
+    fireEvent.click(draftBtn);
+
+    await waitFor(() => {
+      const hostRadio = screen.getByRole("radio", { name: "本机配置修改" });
+      expect(hostRadio.getAttribute("aria-checked")).toBe("true");
+    });
+
+    const startBtn = await screen.findByRole("button", { name: "开始推进" });
+    await waitFor(() => {
+      expect((startBtn as HTMLButtonElement).disabled).toBe(false);
+    });
+    fireEvent.click(startBtn);
+
+    await waitFor(() => {
+      expect(commitPayload).not.toBeNull();
+    });
+
+    expect(commitPayload!.space).toBe("local");
+    expect(commitPayload!.workspace_mode).toBe("host_scoped");
+    const serializedWf = JSON.stringify(commitPayload!.workflow);
+    expect(serializedWf).toContain("dry_run_only");
+    expect(serializedWf).toContain("staged_only");
+    expect(serializedWf).toContain("apply_staged");
+    expect(serializedWf).toContain("final_accept_gate");
+  });
+
+  it("应用自定义两阶段模板时同步切换表单至 local / host_scoped (Issue #16)", async () => {
+    const customHostBlueprint = buildCustomWorkflow({
+      preset: "custom",
+      includeResearch: false,
+      includePlan: false,
+      includeReview: true,
+      includeAccept: true,
+      acceptMode: "approval",
+      deliverApproval: true,
+      hostTwoPhase: true,
+      hasDeliverCmd: false,
+      maxRounds: 3,
+      stuckThreshold: 2,
+    });
+    const bootstrap = makeBaseBootstrap();
+    bootstrap.workflows = {
+      schema_version: 1,
+      default_template_id: "tpl-standard-dev",
+      heterogeneous_review: false,
+      stage_bindings: {},
+      stage_fallbacks: {},
+      allow_full_access_fallback: {},
+      verifier_capabilities: ["cli"],
+      deliver_mode: "kernel",
+      templates: [
+        {
+          id: "tpl-standard-dev",
+          name: "标准研发交付",
+          description: "默认研发模板",
+          builtin: true,
+          blueprint: buildWorkflowPreset("standard_dev"),
+        },
+        {
+          id: "tpl-custom-host",
+          name: "自定义宿主变更",
+          description: "带审查的两阶段宿主模板",
+          builtin: false,
+          blueprint: customHostBlueprint,
+        },
+      ],
+    };
+
+    fetchMock.mockImplementation(async (url) => {
+      if (url === "/api/bootstrap") {
+        return jsonResponse(bootstrap);
+      }
+      return jsonResponse({});
+    });
+
+    window.location.hash = "#view=intake";
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: /立项设置/ }));
+    const tplSelect = await screen.findByLabelText("流程模板");
+    fireEvent.click(tplSelect);
+
+    const tplList = await screen.findByRole("listbox", { name: "流程模板" });
+    const targetOption = within(tplList)
+      .getAllByRole("option")
+      .find((o) => o.textContent?.includes("自定义宿主变更"));
+    expect(targetOption).toBeTruthy();
+    fireEvent.click(targetOption!);
+
+    await waitFor(() => {
+      const hostRadio = screen.getByRole("radio", { name: "本机配置修改" });
+      expect(hostRadio.getAttribute("aria-checked")).toBe("true");
+    });
+
+    const preview = screen.getByLabelText("流程预览").textContent ?? "";
+    expect(preview).toContain("验真·仅暂存");
+    expect(preview).toContain("交付(落盘+终验)");
   });
 });

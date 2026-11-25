@@ -2909,7 +2909,7 @@ export function WorkflowView() {
       <Dialog.Root open={newTplOpen} onOpenChange={setNewTplOpen}>
         <Dialog.Portal>
           <Dialog.Overlay
-            className="palette-mask open"
+            className="palette-mask open centered"
             onClick={(e) => {
               if (e.target === e.currentTarget) setNewTplOpen(false);
             }}

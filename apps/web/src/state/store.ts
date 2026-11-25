@@ -275,17 +275,26 @@ function preserveWorkflowAssignments(
 
 export function resolveFormEffectiveWorkflow(form: IntakeFormState): WorkflowBlueprint {
   const hasDeliverCmd = form.deliver_cmd.trim().length > 0;
+  const effectiveWorkspaceMode: Exclude<WorkspaceMode, "external_only"> =
+    form.mode === "project"
+      ? "git_worktree"
+      : form.workspace_mode === "host_scoped"
+        ? "host_scoped"
+        : "scratch_dir";
   const base: WorkflowBlueprint = form.workflow
     ? form.workflow
-    : form.workspace_mode === "host_scoped"
+    : effectiveWorkspaceMode === "host_scoped"
       ? buildWorkflowPreset("host_op", { hasDeliverCmd })
       : form.track === "L1"
         ? buildWorkflowPreset("quick", { hasDeliverCmd })
         : buildWorkflowPreset("standard_dev", { hasDeliverCmd });
 
   const toggles = extractWorkflowToggles(base);
+  if (effectiveWorkspaceMode !== "host_scoped" && toggles.hostTwoPhase) {
+    return stripHostTwoPhaseWorkflow(base, hasDeliverCmd);
+  }
   const needsHostTwoPhaseRepair =
-    form.workspace_mode === "host_scoped" && !hasCompleteHostTwoPhaseWorkflow(base);
+    effectiveWorkspaceMode === "host_scoped" && !hasCompleteHostTwoPhaseWorkflow(base);
   if (toggles.hasDeliverCmd === hasDeliverCmd && !needsHostTwoPhaseRepair) {
     return base;
   }
@@ -730,9 +739,36 @@ function removeStorageItem(key: string): void {
   }
 }
 
+function resolveDraftTarget(
+  space: string,
+  workspaceMode: WorkspaceMode | "" | undefined,
+  workflow: WorkflowBlueprint | undefined,
+): {
+  mode: IntakeMode;
+  space: string;
+  workspace_mode: Exclude<WorkspaceMode, "external_only">;
+} {
+  const hasHostWorkflow = workflow ? extractWorkflowToggles(workflow).hostTwoPhase : false;
+  const isHostScoped = workspaceMode === "host_scoped" || hasHostWorkflow;
+  const isLocal = space === "local" || isHostScoped || workspaceMode === "scratch_dir";
+  return {
+    mode: isLocal ? "local" : "project",
+    space: isLocal ? "local" : space,
+    workspace_mode: isHostScoped ? "host_scoped" : isLocal ? "scratch_dir" : "git_worktree",
+  };
+}
+
 function normalizeIntakeForm(form: IntakeFormState): IntakeFormState {
+  const shouldAlignTarget =
+    form.mode === "local" ||
+    form.workspace_mode === "host_scoped" ||
+    Boolean(form.workflow && extractWorkflowToggles(form.workflow).hostTwoPhase);
+  const alignedTarget = shouldAlignTarget
+    ? resolveDraftTarget(form.space, form.workspace_mode, form.workflow)
+    : {};
   return {
     ...form,
+    ...alignedTarget,
     deliver_cmd: typeof form.deliver_cmd === "string" ? form.deliver_cmd : "",
     non_goals: Array.isArray(form.non_goals) ? form.non_goals : [],
     attachments: Array.isArray(form.attachments) ? form.attachments : [],
@@ -778,18 +814,14 @@ function clearActiveIntakePersistence(): void {
 }
 
 function draftToIntakeForm(draft: DraftCardWithBrief): IntakeFormState {
-  const isLocal = draft.space === "local";
+  const target = resolveDraftTarget(draft.space, draft.workspace_mode, draft.workflow);
   return {
-    mode: isLocal ? "local" : "project",
+    mode: target.mode,
     title: draft.title,
     priority: draft.priority,
-    space: draft.space,
+    space: target.space,
     track: draft.track === "L3" ? "L2" : draft.track,
-    workspace_mode: isLocal
-      ? draft.workspace_mode === "host_scoped"
-        ? "host_scoped"
-        : "scratch_dir"
-      : "git_worktree",
+    workspace_mode: target.workspace_mode,
     ...(draft.workflow !== undefined ? { workflow: draft.workflow } : {}),
     end: draft.contract.end ?? "",
     accept_cmd: draft.contract.accept_cmd ?? "",
@@ -2807,6 +2839,8 @@ export class KilnWebStore {
         : stripHostTwoPhaseWorkflow(currentWorkflow, hasDeliverCmd, this.getHostStagedRoleIds());
     const nextForm: IntakeFormState = {
       ...cur,
+      mode: "local",
+      space: "local",
       workspace_mode: ws,
       track: extractWorkflowToggles(nextWorkflow).includeReview ? "L2" : "L1",
       workflow: nextWorkflow,
@@ -2904,15 +2938,16 @@ export class KilnWebStore {
       ...preserved,
       steps,
     };
-    const nextWs: Exclude<WorkspaceMode, "external_only"> =
-      nextWorkflow.preset === "host_op"
-        ? "host_scoped"
-        : cur.mode === "project"
-          ? "git_worktree"
-          : "scratch_dir";
+    const isHostTwoPhase =
+      nextWorkflow.preset === "host_op" || extractWorkflowToggles(nextWorkflow).hostTwoPhase;
+    const nextWs: Exclude<WorkspaceMode, "external_only"> = isHostTwoPhase
+      ? "host_scoped"
+      : cur.mode === "project"
+        ? "git_worktree"
+        : "scratch_dir";
     const nextForm: IntakeFormState = {
       ...cur,
-      ...(nextWorkflow.preset === "host_op" ? { mode: "local" as const, space: "local" } : {}),
+      ...(isHostTwoPhase ? { mode: "local" as const, space: "local" } : {}),
       workspace_mode: nextWs,
       track: extractWorkflowToggles(nextWorkflow).includeReview ? "L2" : "L1",
       workflow: nextWorkflow,
@@ -3926,18 +3961,17 @@ export class KilnWebStore {
 
       const nextForm = { ...this.state.intakeForm };
       if (res.draft) {
-        const resIsLocal = res.draft.space === "local";
-        nextForm.mode = resIsLocal ? "local" : "project";
+        const target = resolveDraftTarget(
+          res.draft.space || nextForm.space,
+          res.draft.workspace_mode ?? nextForm.workspace_mode,
+          res.draft.workflow ?? nextForm.workflow,
+        );
+        nextForm.mode = target.mode;
+        nextForm.space = target.space;
+        nextForm.workspace_mode = target.workspace_mode;
         if (res.draft.title) nextForm.title = res.draft.title;
         if (res.draft.priority) nextForm.priority = res.draft.priority;
-        if (res.draft.space) nextForm.space = res.draft.space;
         if (res.draft.track && res.draft.track !== "L3") nextForm.track = res.draft.track;
-        if (res.draft.workspace_mode && resIsLocal) {
-          nextForm.workspace_mode =
-            res.draft.workspace_mode === "host_scoped" ? "host_scoped" : "scratch_dir";
-        } else {
-          nextForm.workspace_mode = resIsLocal ? "scratch_dir" : "git_worktree";
-        }
         if (res.draft.workflow) nextForm.workflow = res.draft.workflow;
         if (res.draft.contract.end) nextForm.end = res.draft.contract.end;
         if (res.draft.contract.accept_cmd) {
