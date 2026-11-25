@@ -12,6 +12,7 @@ import {
   applyStartAction,
   decideStartupWindowAction,
   isTrayStateOnline,
+  resolveDevUserDataPath,
   resolveWorkbenchOrigin,
   shouldRestartStaleDaemon,
   type KilnHealth,
@@ -64,6 +65,11 @@ try {
   process.exit(2);
 }
 const isUiDevMode = workbenchUrl.baseUrl !== kilndUrl.baseUrl;
+
+const devUserDataPath = resolveDevUserDataPath(app.getPath("appData"), isUiDevMode);
+if (devUserDataPath) {
+  app.setPath("userData", devUserDataPath);
+}
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {

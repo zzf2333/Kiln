@@ -1,6 +1,8 @@
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildKilnChildEnv,
@@ -42,6 +44,7 @@ import {
   pathContainsDir,
   renderPosixCliWrapper,
   renderWindowsCliShim,
+  resolveDevUserDataPath,
   resolveWorkbenchOrigin,
   shouldPreventExit,
   shouldRestartStaleDaemon,
@@ -503,5 +506,114 @@ describe("@kiln/desktop Electron core model & daemon client", () => {
         isPackaged: true,
       }),
     ).toEqual(kilnd);
+  });
+
+  it("isolates Electron dev userData directory from packaged Kiln.app", () => {
+    expect(resolveDevUserDataPath("/Users/dev/Library/Application Support", true)).toBe(
+      path.join("/Users/dev/Library/Application Support", "Kiln-Dev"),
+    );
+    expect(resolveDevUserDataPath("/Users/dev/Library/Application Support", false)).toBeNull();
+    expect(resolveDevUserDataPath("   ", true)).toBeNull();
+  });
+
+  it("dev.mjs parses --reuse-kilnd, detects cascading stale workspace packages, and cleans stale PIDs cleanly", async () => {
+    const devScriptPath = path.resolve(import.meta.dirname, "../../../../scripts/dev.mjs");
+    const devMod = (await import(pathToFileURL(devScriptPath).href)) as {
+      parseArgs: (argv: string[]) => { mode: string; reuseKilnd: boolean; kilndPort: number };
+      detectStaleWorkspacePackages: (rootDir: string, mode: string) => string[];
+      collectStaleDevPids: (state: Record<string, unknown>, currentPid?: number) => number[];
+      cleanupExistingDevAndKilnd: (opts: {
+        rootDir: string;
+        kilnHome: string;
+        kilndUrl: string;
+        kilndPort: number;
+        reuseKilnd?: boolean;
+        cliBinPath: string;
+      }) => Promise<{ stoppedPids: number[]; kilndWasRunning: boolean }>;
+    };
+
+    expect(devMod.parseArgs([])).toMatchObject({ mode: "desktop", reuseKilnd: false });
+    expect(devMod.parseArgs(["--mode=web", "--reuse-kilnd"])).toMatchObject({
+      mode: "web",
+      reuseKilnd: true,
+    });
+
+    expect(
+      devMod.collectStaleDevPids(
+        {
+          devPid: process.pid,
+          kilndPid: 1001,
+          vitePid: 1002,
+          electronPid: 1001,
+        },
+        process.pid,
+      ),
+    ).toEqual([1001, 1002]);
+
+    // Cascading stale package detection: touch protocol/src newer than protocol/dist -> downstream kernel/mcp/cli/desktop all marked stale
+    const fakeRoot = makeTempDir("kiln-dev-root-");
+    const pkgEntries: ReadonlyArray<readonly [string, string]> = [
+      ["packages/protocol", "dist/index.js"],
+      ["packages/kernel", "dist/index.js"],
+      ["packages/mcp", "dist/bin.js"],
+      ["packages/cli", "dist/bin.js"],
+      ["apps/desktop", "dist/main.js"],
+    ];
+    for (const [rel, out] of pkgEntries) {
+      fs.mkdirSync(path.join(fakeRoot, rel, "src"), { recursive: true });
+      fs.mkdirSync(path.join(fakeRoot, rel, "dist"), { recursive: true });
+      fs.writeFileSync(path.join(fakeRoot, rel, "package.json"), '{"name":"x"}\n');
+      fs.writeFileSync(path.join(fakeRoot, rel, "src", "index.ts"), "export const a = 1;\n");
+      fs.writeFileSync(path.join(fakeRoot, rel, out), "// built\n");
+      const baseSec = Date.now() / 1000 - 120;
+      fs.utimesSync(path.join(fakeRoot, rel, "package.json"), baseSec, baseSec);
+      fs.utimesSync(path.join(fakeRoot, rel, "src", "index.ts"), baseSec, baseSec);
+      fs.utimesSync(path.join(fakeRoot, rel, out), baseSec + 10, baseSec + 10);
+    }
+
+    expect(devMod.detectStaleWorkspacePackages(fakeRoot, "desktop")).toEqual([]);
+
+    const newerSec = Date.now() / 1000 + 30;
+    fs.utimesSync(path.join(fakeRoot, "packages/protocol/src/index.ts"), newerSec, newerSec);
+    expect(devMod.detectStaleWorkspacePackages(fakeRoot, "desktop")).toEqual([
+      "@kiln/protocol",
+      "@kiln/kernel",
+      "@kiln/mcp",
+      "@zzf2333/kiln",
+      "@kiln/desktop",
+    ]);
+    expect(devMod.detectStaleWorkspacePackages(fakeRoot, "web")).toEqual([
+      "@kiln/protocol",
+      "@kiln/kernel",
+      "@kiln/mcp",
+      "@zzf2333/kiln",
+    ]);
+
+    // Real cleanup of stale state file & stale kilnd.pid / sock without touching real ~/.kiln
+    const tmpHome = makeTempDir("kiln-dev-home-");
+    fs.mkdirSync(path.join(tmpHome, "run"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpHome, "run", "kiln-dev-state.json"),
+      JSON.stringify({ devPid: 99999999, kilndPid: 99999998 }),
+    );
+
+    const freePort = await new Promise<number>((resolve, reject) => {
+      const s = net.createServer();
+      s.listen(0, "127.0.0.1", () => {
+        const addr = s.address();
+        const port = typeof addr === "object" && addr ? addr.port : 0;
+        s.close(() => (port ? resolve(port) : reject(new Error("no port"))));
+      });
+    });
+
+    const cleanRes = await devMod.cleanupExistingDevAndKilnd({
+      rootDir: fakeRoot,
+      kilnHome: tmpHome,
+      kilndUrl: `http://127.0.0.1:${freePort}`,
+      kilndPort: freePort,
+      cliBinPath: path.join(fakeRoot, "missing-bin.js"),
+    });
+    expect(cleanRes.kilndWasRunning).toBe(false);
+    expect(fs.existsSync(path.join(tmpHome, "run", "kiln-dev-state.json"))).toBe(false);
   });
 });

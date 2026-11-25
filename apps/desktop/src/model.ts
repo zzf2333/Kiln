@@ -193,6 +193,13 @@ export function shouldPreventExit(exitCode: number | null, allowExit: boolean): 
   return exitCode === null && !allowExit;
 }
 
+export function resolveDevUserDataPath(appDataDir: string, isUiDevMode: boolean): string | null {
+  if (!isUiDevMode) return null;
+  const trimmed = appDataDir.trim();
+  if (trimmed.length === 0) return null;
+  return path.join(trimmed, "Kiln-Dev");
+}
+
 export function routeHashFragment(route: WorkbenchRoute): string {
   return `view=${route}`;
 }
