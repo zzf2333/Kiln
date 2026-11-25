@@ -10,6 +10,7 @@ import {
   createDefaultWorkflowTemplates,
   extractLocalPreviewUrls,
   extractWorkflowToggles,
+  hasCompleteHostTwoPhaseWorkflow,
   normalizeWorkflowBlueprintSafety,
   validateSplitCardsDag,
   validateWorkflowBlueprint,
@@ -282,15 +283,22 @@ export function resolveFormEffectiveWorkflow(form: IntakeFormState): WorkflowBlu
         : buildWorkflowPreset("standard_dev", { hasDeliverCmd });
 
   const toggles = extractWorkflowToggles(base);
-  if (toggles.hasDeliverCmd === hasDeliverCmd) {
+  const needsHostTwoPhaseRepair =
+    form.workspace_mode === "host_scoped" && !hasCompleteHostTwoPhaseWorkflow(base);
+  if (toggles.hasDeliverCmd === hasDeliverCmd && !needsHostTwoPhaseRepair) {
     return base;
   }
   const rebuilt = buildCustomWorkflow({
     ...toggles,
-    preset: base.preset,
+    preset: needsHostTwoPhaseRepair
+      ? base.preset === "custom"
+        ? "custom"
+        : "host_op"
+      : base.preset,
+    ...(needsHostTwoPhaseRepair ? { hostTwoPhase: true, deliverApproval: true } : {}),
     hasDeliverCmd,
   });
-  return preserveWorkflowAssignments(form.workflow, rebuilt, {
+  return preserveWorkflowAssignments(base, rebuilt, {
     preserveResearch: true,
   });
 }

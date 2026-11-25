@@ -5362,4 +5362,158 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       rationale: "按推荐方案：放宽 max_tokens 到 800k 并补写 manifest",
     });
   });
+
+  it("repairs host_scoped draft missing implement.mode=dry_run_only before committing (Issue #16)", async () => {
+    let commitPayload: Record<string, unknown> | null = null;
+    const hostDraft = {
+      schema_version: 1 as const,
+      id: "d-host-missing-mode",
+      title: "追加宿主机备注行",
+      space: "local",
+      priority: "P2" as const,
+      track: "L1" as const,
+      workspace_mode: "host_scoped" as const,
+      depends_on: [],
+      intake_open: true,
+      workflow: {
+        schema_version: 1 as const,
+        preset: "host_op" as const,
+        pm_rationale: "使用安全两阶段落盘",
+        steps: [
+          {
+            kind: "agent" as const,
+            stage: "implement" as const,
+            role: "worker" as const,
+            fresh_context: false,
+            roster_role: "ops_sec",
+            rationale: "宿主机受限暂存角色",
+          },
+          { kind: "gate" as const, stage: "verify" as const, check: "staged_only" as const },
+          {
+            kind: "approval" as const,
+            stage: "deliver" as const,
+            show: ["staged_diff" as const, "sha256" as const],
+          },
+          {
+            kind: "command" as const,
+            stage: "deliver" as const,
+            apply_staged: true,
+            run_deliver_cmd: false,
+            verify_sha256: true,
+            final_accept_gate: true,
+          },
+        ],
+      },
+      contract: {
+        goal: "追加宿主机备注行",
+        end: "notes.txt 新增一行",
+        accept_cmd: "grep -q verified /tmp/host-target/notes.txt",
+        scope: ["/tmp/host-target/notes.txt"],
+        deliver: { mode: "manual" as const, cmd: null },
+        human_accept: false,
+        external_actions: "ask" as const,
+      },
+      open_questions: [],
+      brief_markdown: "# 方案\n\n两阶段落盘。",
+      created_at: "2026-11-25T10:00:00.000Z",
+      updated_at: "2026-11-25T10:00:00.000Z",
+    };
+
+    fetchMock.mockImplementation(async (url, init) => {
+      if (url === "/api/bootstrap") {
+        return jsonResponse(
+          makeBaseBootstrap({
+            drafts: [hostDraft],
+            roster: {
+              schema_version: 2 as const,
+              pm_orchestration: {
+                enabled: true,
+                allow_auto_tester: false,
+                prefer_unthrottled: true,
+                require_review_for_core: true,
+              },
+              heterogeneous_review: true,
+              roster: {
+                main_dev: {
+                  group: "core",
+                  enabled: true,
+                  name: "主力开发",
+                  stage: "implement",
+                  secondary_stages: [],
+                  perm: "workspace_write",
+                  traits: "全栈开发",
+                  mode: "agent",
+                  primary: { provider: "pi", model: "claude-sonnet-4-6" },
+                  fallbacks: [],
+                  allow_full_access_fallback: false,
+                  builtin: true,
+                },
+                ops_sec: {
+                  group: "specialist",
+                  enabled: true,
+                  name: "本机运维安全",
+                  stage: "implement",
+                  secondary_stages: [],
+                  perm: "host_staged",
+                  traits: "仅写 host_scoped staged/",
+                  mode: "agent",
+                  primary: { provider: "codex", model: "gpt-5.4" },
+                  fallbacks: [],
+                  allow_full_access_fallback: false,
+                  builtin: true,
+                },
+              },
+            },
+          }),
+        );
+      }
+      if (url === `/api/drafts/${hostDraft.id}/chat`) {
+        return jsonResponse({ ok: true, draftId: hostDraft.id, messages: [] });
+      }
+      if (url === "/api/drafts" && init?.method === "POST") {
+        return jsonResponse({ ok: true, draft: hostDraft });
+      }
+      if (url === `/api/drafts/${hostDraft.id}/commit` && init?.method === "POST") {
+        commitPayload = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return jsonResponse({ ok: true, card: { id: "t-host-repaired" } }, 201);
+      }
+      return jsonResponse({});
+    });
+
+    window.location.hash = "#view=intake";
+    render(<App />);
+
+    const startBtn = await screen.findByRole("button", { name: "开始推进" });
+    await waitFor(() => {
+      expect((startBtn as HTMLButtonElement).disabled).toBe(false);
+    });
+    fireEvent.click(startBtn);
+
+    await waitFor(() => {
+      expect(commitPayload).not.toBeNull();
+    });
+    const wf = commitPayload!.workflow as {
+      preset: string;
+      pm_rationale?: string;
+      steps: Array<{
+        kind: string;
+        stage?: string;
+        mode?: string;
+        check?: string;
+        roster_role?: string;
+        apply_staged?: boolean;
+        final_accept_gate?: boolean;
+      }>;
+    };
+    expect(wf.preset).toBe("host_op");
+    expect(wf.pm_rationale).toBe("使用安全两阶段落盘");
+    const implNode = wf.steps.find((s) => s.kind === "agent" && s.stage === "implement");
+    const gateNode = wf.steps.find((s) => s.kind === "gate");
+    const cmdNode = wf.steps.find((s) => s.kind === "command" && s.stage === "deliver");
+    expect(implNode?.mode).toBe("dry_run_only");
+    expect(implNode?.roster_role).toBe("ops_sec");
+    expect(gateNode?.check).toBe("staged_only");
+    expect(cmdNode?.apply_staged).toBe(true);
+    expect(cmdNode?.final_accept_gate).toBe(true);
+  });
 });

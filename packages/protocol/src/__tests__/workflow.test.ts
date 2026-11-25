@@ -14,6 +14,7 @@ import {
   getWorkflowFlatSteps,
   getWorkflowLoopPolicy,
   getWorkflowStages,
+  hasCompleteHostTwoPhaseWorkflow,
   nextWorkflowStepAfter,
   normalizeWorkflowBlueprintSafety,
   resolveTaskWorkflow,
@@ -535,5 +536,26 @@ describe("workflow composable blueprint schemas & helpers", () => {
       on_fail: "loop_back",
       binding: { provider: "claude", model: "claude-opus-4-6", effort: "high" },
     });
+  });
+
+  it("hasCompleteHostTwoPhaseWorkflow rejects host_op workflow missing implement mode=dry_run_only", () => {
+    const complete = WorkflowBlueprintSchema.parse(buildWorkflowPreset("host_op"));
+    expect(hasCompleteHostTwoPhaseWorkflow(complete)).toBe(true);
+
+    const incomplete: typeof complete = {
+      ...complete,
+      steps: complete.steps.map((s) =>
+        s.kind === "agent" && s.stage === "implement"
+          ? {
+              kind: "agent",
+              stage: "implement",
+              role: "worker",
+              fresh_context: s.fresh_context,
+              roster_role: "ops_sec",
+            }
+          : s,
+      ),
+    };
+    expect(hasCompleteHostTwoPhaseWorkflow(incomplete)).toBe(false);
   });
 });

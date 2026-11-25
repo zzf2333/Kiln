@@ -13,6 +13,7 @@ import {
   buildCustomWorkflow,
   buildWorkflowPreset,
   extractWorkflowToggles,
+  hasCompleteHostTwoPhaseWorkflow,
   type ChatCommandItem,
   type ChatCommandsResponse,
   type DraftCard,
@@ -24,6 +25,7 @@ import {
   type SpaceConfig,
   type StageId,
   type TaskCard,
+  type WorkflowAgentNode,
   type WorkflowBlueprint,
 } from "@kiln/protocol";
 import {
@@ -1405,14 +1407,55 @@ export class KilnChatEngine {
       const hasDeliverCmd = nextContract.deliver?.mode === "run_cmd";
       if (nextWorkflow !== undefined) {
         const toggles = extractWorkflowToggles(nextWorkflow);
-        if (nextWorkspaceMode === "host_scoped" && !toggles.hostTwoPhase) {
-          nextWorkflow = buildCustomWorkflow({
+        if (nextWorkspaceMode === "host_scoped" && !hasCompleteHostTwoPhaseWorkflow(nextWorkflow)) {
+          const prevWorkflow = nextWorkflow;
+          const prevByStage = new Map<string, WorkflowAgentNode>();
+          for (const step of prevWorkflow.steps) {
+            if (step.kind === "agent") {
+              prevByStage.set(step.stage, step);
+            } else if (step.kind === "loop") {
+              for (const inner of step.steps) {
+                if (inner.kind === "agent") {
+                  prevByStage.set(inner.stage, inner);
+                }
+              }
+            }
+          }
+          const rebuilt = buildCustomWorkflow({
             ...toggles,
-            preset: nextWorkflow.preset === "custom" ? "custom" : "host_op",
+            preset: prevWorkflow.preset === "custom" ? "custom" : "host_op",
             hostTwoPhase: true,
             deliverApproval: true,
             hasDeliverCmd,
           });
+          const mergeNode = (node: WorkflowAgentNode): WorkflowAgentNode => {
+            const old = prevByStage.get(node.stage);
+            const rosterRole = node.roster_role ?? old?.roster_role;
+            const rationale = node.rationale ?? old?.rationale;
+            return {
+              ...node,
+              ...(rosterRole !== undefined ? { roster_role: rosterRole } : {}),
+              ...(rationale !== undefined ? { rationale } : {}),
+            };
+          };
+          nextWorkflow = {
+            ...rebuilt,
+            steps: rebuilt.steps.map((step) =>
+              step.kind === "agent"
+                ? mergeNode(step)
+                : step.kind === "loop"
+                  ? {
+                      ...step,
+                      steps: step.steps.map((inner) =>
+                        inner.kind === "agent" ? mergeNode(inner) : inner,
+                      ),
+                    }
+                  : step,
+            ),
+            ...(prevWorkflow.pm_rationale !== undefined
+              ? { pm_rationale: prevWorkflow.pm_rationale }
+              : {}),
+          };
           if (!updatedFields.includes("workflow")) updatedFields.push("workflow");
         } else if (nextWorkspaceMode !== "host_scoped" && toggles.hostTwoPhase) {
           nextWorkflow = buildCustomWorkflow({

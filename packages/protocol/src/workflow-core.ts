@@ -551,6 +551,27 @@ export function flattenWorkflowSteps(blueprint: WorkflowBlueprint): WorkflowAtom
 }
 
 /**
+ * Returns true only when `blueprint` satisfies all four invariants required for `host_scoped`
+ * two-phase execution (`dry_run_only` + `staged_only` + `apply_staged` + `final_accept_gate`).
+ */
+export function hasCompleteHostTwoPhaseWorkflow(blueprint: WorkflowBlueprint): boolean {
+  const flat = flattenWorkflowSteps(blueprint);
+  const implNode = flat.find((n) => n.kind === "agent" && n.stage === "implement");
+  const gateNode = flat.find((n) => n.kind === "gate");
+  const cmdNode = flat.find(
+    (n): n is WorkflowCommandNode => n.kind === "command" && n.stage === "deliver",
+  );
+  return (
+    implNode?.kind === "agent" &&
+    implNode.mode === "dry_run_only" &&
+    gateNode?.kind === "gate" &&
+    gateNode.check === "staged_only" &&
+    Boolean(cmdNode?.apply_staged) &&
+    Boolean(cmdNode?.final_accept_gate)
+  );
+}
+
+/**
  * Extracts high-level UI toggles back from an arbitrary `WorkflowBlueprint`.
  */
 export function extractWorkflowToggles(blueprint: WorkflowBlueprint): ComposableWorkflowOptions {

@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import {
   extractWorkflowToggles,
   flattenWorkflowSteps,
+  hasCompleteHostTwoPhaseWorkflow,
   validateBlueprintAgainstRoster,
   type AcceptEntryConfig,
   type DiscoveredGitRepo,
@@ -16,7 +17,6 @@ import {
   type SpaceConfig,
   type SpaceFileEntry,
   type WorkflowBlueprint,
-  type WorkflowCommandNode,
   type WorkspaceMode,
 } from "@kiln/protocol";
 import { buildSanitizedEnv } from "../gate/command-runner.js";
@@ -1070,11 +1070,6 @@ export function validateCommitWorkflow(
   }
   const toggles = extractWorkflowToggles(workflow);
   const flat = flattenWorkflowSteps(workflow);
-  const implNode = flat.find((n) => n.kind === "agent" && n.stage === "implement");
-  const gateNode = flat.find((n) => n.kind === "gate");
-  const cmdNode = flat.find(
-    (n): n is WorkflowCommandNode => n.kind === "command" && n.stage === "deliver",
-  );
 
   if (workspaceMode !== "host_scoped" && toggles.hostTwoPhase) {
     throw new ServerHttpError(400, {
@@ -1085,14 +1080,7 @@ export function validateCommitWorkflow(
   }
 
   if (workspaceMode === "host_scoped") {
-    const hasFullTwoPhase =
-      implNode?.kind === "agent" &&
-      implNode.mode === "dry_run_only" &&
-      gateNode?.kind === "gate" &&
-      gateNode.check === "staged_only" &&
-      Boolean(cmdNode?.apply_staged) &&
-      Boolean(cmdNode?.final_accept_gate);
-    if (!hasFullTwoPhase) {
+    if (!hasCompleteHostTwoPhaseWorkflow(workflow)) {
       throw new ServerHttpError(400, {
         error: "invalid_workflow_workspace",
         workspaceMode,
