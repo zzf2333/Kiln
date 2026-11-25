@@ -5516,4 +5516,303 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     expect(cmdNode?.apply_staged).toBe(true);
     expect(cmdNode?.final_accept_gate).toBe(true);
   });
+
+  it("navigates to BoardView and shows committed card immediately before post-commit bootstrap resolves (Issue #14)", async () => {
+    const delayedBootstrapBox: { resolve: ((res: Response) => void) | null } = { resolve: null };
+    let bootstrapCount = 0;
+    const readyDraft = {
+      schema_version: 1 as const,
+      id: "d-fast-nav",
+      title: "立即跳转看板卡片",
+      space: "kiln",
+      priority: "P1" as const,
+      track: "L2" as const,
+      workspace_mode: "git_worktree" as const,
+      depends_on: [],
+      intake_open: true,
+      contract: {
+        goal: "立即跳转看板卡片",
+        end: "单测通过",
+        accept_cmd: "pnpm test",
+        scope: ["src/**"],
+        deliver: { mode: "merge_main" as const, cmd: null },
+        human_accept: false,
+        external_actions: "ask" as const,
+      },
+      open_questions: [],
+      brief_markdown: "# 方案\n\n测试即时跳转。",
+      created_at: "2026-11-25T10:00:00.000Z",
+      updated_at: "2026-11-25T10:00:00.000Z",
+    };
+
+    fetchMock.mockImplementation(async (url, init) => {
+      if (url === "/api/bootstrap") {
+        bootstrapCount += 1;
+        if (bootstrapCount === 1) {
+          return jsonResponse(makeBaseBootstrap({ drafts: [readyDraft] }));
+        }
+        return await new Promise<Response>((resolve) => {
+          delayedBootstrapBox.resolve = resolve;
+        });
+      }
+      if (url === `/api/drafts/${readyDraft.id}/chat`) {
+        return jsonResponse({ ok: true, draftId: readyDraft.id, messages: [] });
+      }
+      if (url === "/api/drafts" && init?.method === "POST") {
+        return jsonResponse({ ok: true, draft: readyDraft });
+      }
+      if (url === `/api/drafts/${readyDraft.id}/commit` && init?.method === "POST") {
+        return jsonResponse(
+          {
+            ok: true,
+            card: {
+              schema_version: 1,
+              id: "t-nav-now",
+              title: "立即跳转看板卡片",
+              space: "kiln",
+              priority: "P1",
+              track: "L2",
+              workspace_mode: "git_worktree",
+              parent: null,
+              depends_on: [],
+              contract_version: 1,
+              contract: readyDraft.contract,
+              limits: {
+                retries_per_stage: 2,
+                review_rounds: 2,
+                advisor_calls: 1,
+                max_tokens: 100_000,
+              },
+              created_at: "2026-11-25T10:01:00.000Z",
+              updated_at: "2026-11-25T10:01:00.000Z",
+            },
+            state: {
+              status: "queued",
+              stage: null,
+              round: null,
+              activeRunId: null,
+              effectivePriority: "P1",
+              contractVersion: 1,
+            },
+          },
+          201,
+        );
+      }
+      return jsonResponse({});
+    });
+
+    window.location.hash = "#view=intake";
+    render(<App />);
+
+    const startBtn = await screen.findByRole("button", { name: "开始推进" });
+    await waitFor(() => {
+      expect((startBtn as HTMLButtonElement).disabled).toBe(false);
+    });
+    fireEvent.click(startBtn);
+
+    // Even while the second /api/bootstrap is still pending, BoardView and the new card must be visible
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "总览" })).toBeTruthy();
+      expect(screen.getAllByText("立即跳转看板卡片").length).toBeGreaterThan(0);
+    });
+
+    delayedBootstrapBox.resolve?.(
+      jsonResponse(
+        makeBaseBootstrap({
+          tasks: [
+            {
+              id: "t-nav-now",
+              space: "kiln",
+              parent_id: null,
+              title: "立即跳转看板卡片",
+              priority: "P1",
+              effective_priority: "P1",
+              track: "L2",
+              workspace_mode: "git_worktree",
+              status: "running",
+              stage: "research",
+              round: 1,
+              active_run_id: "r-1",
+              contract_version: 1,
+              depends_on: [],
+              created_at: "2026-11-25T10:01:00.000Z",
+              updated_at: "2026-11-25T10:01:01.000Z",
+              tokens: {
+                input_tokens: 0,
+                cached_input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+              },
+              cost_usd: 0,
+            },
+          ],
+          runningCount: 1,
+        }),
+      ),
+    );
+    await waitFor(() => {
+      expect(screen.getByText("1 个任务在跑")).toBeTruthy();
+    });
+  });
+
+  it("queues concurrent bootstrap refreshes on SSE done and syncs board state from loadTaskDetail (Issue #15)", async () => {
+    const baseTask = {
+      id: "t-race-done",
+      space: "kiln",
+      parent_id: null,
+      title: "交付终态同步验证",
+      priority: "P1" as const,
+      effective_priority: "P1" as const,
+      track: "L2" as const,
+      workspace_mode: "git_worktree" as const,
+      status: "running" as const,
+      stage: "deliver" as const,
+      round: 1,
+      active_run_id: "r-del-1",
+      contract_version: 1,
+      depends_on: [],
+      created_at: "2026-11-25T10:00:00.000Z",
+      updated_at: "2026-11-25T10:00:00.000Z",
+      tokens: { input_tokens: 100, cached_input_tokens: 0, output_tokens: 20, total_tokens: 120 },
+      cost_usd: 0.01,
+    };
+
+    let bootstrapCalls = 0;
+    let resolveInFlightBootstrap: ((res: Response) => void) | null = null;
+    let serverStatus: "running" | "done" = "running";
+
+    fetchMock.mockImplementation(async (url) => {
+      if (url === "/api/bootstrap") {
+        bootstrapCalls += 1;
+        if (bootstrapCalls === 2) {
+          // Stale running snapshot held in-flight while SSE done arrives
+          return await new Promise<Response>((resolve) => {
+            resolveInFlightBootstrap = resolve;
+          });
+        }
+        const tasks =
+          serverStatus === "done"
+            ? [
+                {
+                  ...baseTask,
+                  status: "done" as const,
+                  active_run_id: null,
+                  delivered_ref: "abc1234",
+                },
+              ]
+            : [baseTask];
+        return jsonResponse(
+          makeBaseBootstrap({
+            tasks,
+            runningCount: serverStatus === "done" ? 0 : 1,
+          }),
+        );
+      }
+      if (url === "/api/tasks/t-race-done") {
+        return jsonResponse({
+          card: {
+            schema_version: 1,
+            id: "t-race-done",
+            title: "交付终态同步验证",
+            space: "kiln",
+            priority: "P1",
+            track: "L2",
+            workspace_mode: "git_worktree",
+            parent: null,
+            depends_on: [],
+            contract_version: 1,
+            contract: {
+              goal: "交付终态同步验证",
+              end: "合并 main",
+              accept_cmd: "pnpm test",
+              accept_files_hash: "sha256:0",
+              scope: ["src/**"],
+              deliver: { mode: "merge_main", cmd: null },
+              human_accept: false,
+              external_actions: "ask",
+            },
+            limits: {
+              retries_per_stage: 2,
+              review_rounds: 2,
+              advisor_calls: 1,
+              max_tokens: 100_000,
+            },
+            created_at: baseTask.created_at,
+            updated_at: "2026-11-25T10:02:00.000Z",
+          },
+          state: {
+            status: "done",
+            stage: "deliver",
+            round: 1,
+            activeRunId: null,
+            priority: "P1",
+            effectivePriority: "P1",
+            track: "L2",
+            contractVersion: 1,
+            updatedAt: "2026-11-25T10:02:00.000Z",
+          },
+          brief: "# 交付终态同步验证",
+          decisions: "",
+          pendingDecision: null,
+          ledgerProposals: [],
+          runs: [],
+          usageTurns: [],
+          usage: {
+            inputTokens: 100,
+            cachedInputTokens: 0,
+            outputTokens: 20,
+            totalTokens: 120,
+            costUsd: 0.01,
+            byAgent: {},
+            byModel: {},
+          },
+        } satisfies TaskDetailResponse);
+      }
+      return jsonResponse({});
+    });
+
+    const { container } = render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("1 个任务在跑")).toBeTruthy();
+    });
+
+    // Trigger an in-flight bootstrap (call #2) by clicking 总览 nav or waiting
+    fireEvent.click(container.querySelector('[data-nav="board"]')!);
+    await waitFor(() => {
+      expect(resolveInFlightBootstrap).not.toBeNull();
+    });
+
+    // While call #2 is still in-flight with stale running state, server completes and emits SSE task.updated(done)
+    serverStatus = "done";
+    const es = MockEventSource.instances.at(-1)!;
+    es.emit("task.updated", {
+      seq: 201,
+      type: "task.updated",
+      taskId: "t-race-done",
+      patch: { status: "done", stage: "deliver", contractVersion: 1 },
+    });
+
+    // Resolve call #2 with STALE running payload; queued call #3 must automatically run and move card to done
+    resolveInFlightBootstrap!(
+      jsonResponse(
+        makeBaseBootstrap({
+          tasks: [baseTask],
+          runningCount: 1,
+        }),
+      ),
+    );
+
+    await waitFor(() => {
+      expect(bootstrapCalls).toBeGreaterThanOrEqual(3);
+      expect(screen.getByText("0 个任务在跑")).toBeTruthy();
+    });
+
+    // Also verify opening DetailView syncs stale board state immediately via loadTaskDetail
+    fireEvent.click(screen.getByText("交付终态同步验证"));
+    await waitFor(() => {
+      expect(screen.getByText("已完成")).toBeTruthy();
+      expect(container.textContent).toContain("待机");
+      expect(container.textContent).toContain("0/5");
+    });
+  });
 });

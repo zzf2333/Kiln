@@ -30,6 +30,7 @@ import {
   type SpaceConfig,
   type SseEvent,
   type StageId,
+  type TaskCard,
   type Track,
   type WorkflowAgentNode,
   type WorkflowAgentStage,
@@ -1041,12 +1042,95 @@ function stripHostTwoPhaseWorkflow(
   });
 }
 
+function computeRunningLeafCount(tasks: readonly BootstrapTask[]): number {
+  const parentIds = new Set<string>();
+  for (const t of tasks) {
+    if (t.parent_id) parentIds.add(t.parent_id);
+  }
+  return tasks.filter((t) => t.status === "running" && !parentIds.has(t.id)).length;
+}
+
+function buildOptimisticBootstrapTask(
+  rawCard: Partial<TaskCard> | undefined,
+  rawState: Record<string, unknown> | undefined,
+  fallback: {
+    id: string;
+    title: string;
+    space: string;
+    priority: Priority;
+    track: Track;
+    workspace_mode: WorkspaceMode;
+    depends_on: string[];
+    workflow?: WorkflowBlueprint;
+    summary?: string;
+  },
+): BootstrapTask {
+  const now = new Date().toISOString();
+  const status =
+    typeof rawState?.status === "string" ? (rawState.status as BootstrapTask["status"]) : "queued";
+  const stage =
+    typeof rawState?.stage === "string" ? (rawState.stage as BootstrapTask["stage"]) : null;
+  const round = typeof rawState?.round === "number" ? rawState.round : null;
+  const activeRunId = typeof rawState?.activeRunId === "string" ? rawState.activeRunId : null;
+  const effectivePriority =
+    typeof rawState?.effectivePriority === "string"
+      ? (rawState.effectivePriority as Priority)
+      : (rawCard?.priority ?? fallback.priority);
+  const contractVersion =
+    typeof rawState?.contractVersion === "number"
+      ? rawState.contractVersion
+      : (rawCard?.contract_version ?? 1);
+  const workflow = rawCard?.workflow ?? fallback.workflow;
+
+  return {
+    id: rawCard?.id ?? fallback.id,
+    space: rawCard?.space ?? fallback.space,
+    parent_id: rawCard?.parent ?? null,
+    title: rawCard?.title ?? fallback.title,
+    priority: rawCard?.priority ?? fallback.priority,
+    effective_priority: effectivePriority,
+    track: rawCard?.track ?? fallback.track,
+    workspace_mode: rawCard?.workspace_mode ?? fallback.workspace_mode,
+    ...(workflow !== undefined ? { workflow } : {}),
+    status,
+    stage,
+    round,
+    active_run_id: activeRunId,
+    contract_version: contractVersion,
+    depends_on: rawCard?.depends_on ?? fallback.depends_on,
+    created_at: rawCard?.created_at ?? now,
+    updated_at: rawCard?.updated_at ?? now,
+    tokens: {
+      input_tokens: 0,
+      cached_input_tokens: 0,
+      output_tokens: 0,
+      total_tokens: 0,
+    },
+    cost_usd: 0,
+    summary: rawCard?.contract?.goal ?? fallback.summary ?? fallback.title,
+  };
+}
+
+function mergeOptimisticTasks(
+  existing: readonly BootstrapTask[],
+  incoming: readonly BootstrapTask[],
+): BootstrapTask[] {
+  const map = new Map(existing.map((t) => [t.id, t]));
+  for (const task of incoming) {
+    if (!map.has(task.id)) {
+      map.set(task.id, task);
+    }
+  }
+  return Array.from(map.values());
+}
+
 export class KilnWebStore {
   private state: KilnStoreState;
   private readonly listeners = new Set<() => void>();
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
   private sseCleanup: (() => void) | null = null;
   private refreshInFlight: Promise<void> | null = null;
+  private refreshQueued = false;
   private authProbeInFlight: Promise<void> | null = null;
   private systemThemeCleanup: (() => void) | null = null;
   private intakeRestoredOnce = false;
@@ -1534,179 +1618,191 @@ export class KilnWebStore {
 
   async bootstrap(): Promise<void> {
     if (this.refreshInFlight) {
+      this.refreshQueued = true;
       return await this.refreshInFlight;
     }
     this.setState({ bootstrapping: true, bootstrapError: null });
     const run = (async () => {
       try {
-        const data = await apiFetchBootstrap();
-        const roles = data.settings?.roles ?? data.roles ?? { ...DEFAULT_ROLES, roles: {} };
-        const rawRoster = data.settings?.roster ?? data.roster;
-        const roster =
-          rawRoster &&
-          typeof rawRoster === "object" &&
-          rawRoster.roster &&
-          typeof rawRoster.roster === "object"
-            ? rawRoster
-            : this.state.roster;
-        const rawWorkflows = data.settings?.workflows ?? data.workflows;
-        const workflows =
-          rawWorkflows && typeof rawWorkflows === "object" && Array.isArray(rawWorkflows.templates)
-            ? rawWorkflows
-            : createFallbackWorkflowsConfig(roster, roles);
-        const providersConfig = data.settings?.providers ?? this.state.providersConfig;
-        const providersConfigLoaded =
-          data.settings?.providers !== undefined ? true : this.state.providersConfigLoaded;
-        const limits = data.settings?.limits ?? data.limits ?? { ...DEFAULT_LIMITS };
-        const pricing = data.settings?.pricing ??
-          data.pricing ?? { ...DEFAULT_PRICING, models: {} };
-        const nextRates = data.liveRates?.rates
-          ? { ...this.state.ratesByTask, ...data.liveRates.rates }
-          : this.state.ratesByTask;
+        do {
+          this.refreshQueued = false;
+          const data = await apiFetchBootstrap();
+          const roles = data.settings?.roles ?? data.roles ?? { ...DEFAULT_ROLES, roles: {} };
+          const rawRoster = data.settings?.roster ?? data.roster;
+          const roster =
+            rawRoster &&
+            typeof rawRoster === "object" &&
+            rawRoster.roster &&
+            typeof rawRoster.roster === "object"
+              ? rawRoster
+              : this.state.roster;
+          const rawWorkflows = data.settings?.workflows ?? data.workflows;
+          const workflows =
+            rawWorkflows &&
+            typeof rawWorkflows === "object" &&
+            Array.isArray(rawWorkflows.templates)
+              ? rawWorkflows
+              : createFallbackWorkflowsConfig(roster, roles);
+          const providersConfig = data.settings?.providers ?? this.state.providersConfig;
+          const providersConfigLoaded =
+            data.settings?.providers !== undefined ? true : this.state.providersConfigLoaded;
+          const limits = data.settings?.limits ?? data.limits ?? { ...DEFAULT_LIMITS };
+          const pricing = data.settings?.pricing ??
+            data.pricing ?? { ...DEFAULT_PRICING, models: {} };
+          const nextRates = data.liveRates?.rates
+            ? { ...this.state.ratesByTask, ...data.liveRates.rates }
+            : this.state.ratesByTask;
 
-        const nextSpaces = data.spaces ?? {};
-        const nextDrafts = data.drafts ?? [];
-        let nextIntakeForm = this.state.intakeForm;
-        let nextIntakeDraftId = this.state.intakeDraftId;
-        let nextIntakeMessages = this.state.intakeMessages;
-        let nextIntakeActiveOpen = this.state.intakeActiveOpen;
-        let nextIntakeHasUnread = this.state.intakeHasUnreadReply;
-        let restoredDraftIdForChat: string | null = null;
+          const nextSpaces = data.spaces ?? {};
+          const nextDrafts = data.drafts ?? [];
+          let nextIntakeForm = this.state.intakeForm;
+          let nextIntakeDraftId = this.state.intakeDraftId;
+          let nextIntakeMessages = this.state.intakeMessages;
+          let nextIntakeActiveOpen = this.state.intakeActiveOpen;
+          let nextIntakeHasUnread = this.state.intakeHasUnreadReply;
+          let restoredDraftIdForChat: string | null = null;
 
-        if (!this.intakeRestoredOnce && !this.state.intakeActiveOpen) {
-          this.intakeRestoredOnce = true;
-          const storedId = readStorageItem(ACTIVE_INTAKE_DRAFT_KEY);
-          const matched =
-            (storedId ? nextDrafts.find((d) => d.id === storedId) : undefined) ??
-            nextDrafts.find((d) => d.intake_open === true) ??
-            null;
-          if (matched) {
-            writeStorageItem(ACTIVE_INTAKE_DRAFT_KEY, matched.id);
-            nextIntakeDraftId = matched.id;
-            nextIntakeForm = draftToIntakeForm(matched);
-            nextIntakeActiveOpen = true;
-            nextIntakeHasUnread = false;
-            restoredDraftIdForChat = matched.id;
-          } else {
-            if (storedId) {
-              removeStorageItem(ACTIVE_INTAKE_DRAFT_KEY);
-            }
-            const localSnap = readLocalIntakeSnapshot();
-            if (localSnap && localSnap.messages.length > 1) {
-              nextIntakeDraftId = null;
-              nextIntakeForm = localSnap.form;
-              nextIntakeMessages = localSnap.messages;
+          if (!this.intakeRestoredOnce && !this.state.intakeActiveOpen) {
+            this.intakeRestoredOnce = true;
+            const storedId = readStorageItem(ACTIVE_INTAKE_DRAFT_KEY);
+            const matched =
+              (storedId ? nextDrafts.find((d) => d.id === storedId) : undefined) ??
+              nextDrafts.find((d) => d.intake_open === true) ??
+              null;
+            if (matched) {
+              writeStorageItem(ACTIVE_INTAKE_DRAFT_KEY, matched.id);
+              nextIntakeDraftId = matched.id;
+              nextIntakeForm = draftToIntakeForm(matched);
               nextIntakeActiveOpen = true;
               nextIntakeHasUnread = false;
+              restoredDraftIdForChat = matched.id;
+            } else {
+              if (storedId) {
+                removeStorageItem(ACTIVE_INTAKE_DRAFT_KEY);
+              }
+              const localSnap = readLocalIntakeSnapshot();
+              if (localSnap && localSnap.messages.length > 1) {
+                nextIntakeDraftId = null;
+                nextIntakeForm = localSnap.form;
+                nextIntakeMessages = localSnap.messages;
+                nextIntakeActiveOpen = true;
+                nextIntakeHasUnread = false;
+              }
             }
           }
-        }
 
-        if (
-          !nextIntakeDraftId &&
-          !nextIntakeActiveOpen &&
-          nextIntakeForm.mode === "project" &&
-          !isProjectSpace(nextSpaces[nextIntakeForm.space])
-        ) {
-          const defaultTpl =
-            workflows.templates.find((t) => t.id === workflows.default_template_id) ??
-            workflows.templates[0];
-          const preferred = this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
-          const projects = getProjectSpaces(nextSpaces);
-          const chosen =
-            (preferred && isProjectSpace(nextSpaces[preferred])
-              ? nextSpaces[preferred]
-              : undefined) ?? projects[0];
-          if (chosen) {
-            nextIntakeForm = {
-              ...nextIntakeForm,
-              space: chosen.id,
-              workspace_mode: "git_worktree",
-              ...(defaultTpl && !this.state.intakeForm.title.trim()
-                ? {
-                    workflow: normalizeWorkflowBlueprintSafety(defaultTpl.blueprint),
-                    track: extractWorkflowToggles(defaultTpl.blueprint).includeReview ? "L2" : "L1",
-                  }
-                : {}),
-              ...(nextIntakeForm.accept_cmd.trim() === "" && chosen.default_accept_cmd
-                ? { accept_cmd: chosen.default_accept_cmd }
-                : {}),
-            };
-          } else if (nextIntakeForm.space && !nextSpaces[nextIntakeForm.space]) {
-            nextIntakeForm = {
-              ...nextIntakeForm,
-              space: "",
-            };
+          if (
+            !nextIntakeDraftId &&
+            !nextIntakeActiveOpen &&
+            nextIntakeForm.mode === "project" &&
+            !isProjectSpace(nextSpaces[nextIntakeForm.space])
+          ) {
+            const defaultTpl =
+              workflows.templates.find((t) => t.id === workflows.default_template_id) ??
+              workflows.templates[0];
+            const preferred = this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
+            const projects = getProjectSpaces(nextSpaces);
+            const chosen =
+              (preferred && isProjectSpace(nextSpaces[preferred])
+                ? nextSpaces[preferred]
+                : undefined) ?? projects[0];
+            if (chosen) {
+              nextIntakeForm = {
+                ...nextIntakeForm,
+                space: chosen.id,
+                workspace_mode: "git_worktree",
+                ...(defaultTpl && !this.state.intakeForm.title.trim()
+                  ? {
+                      workflow: normalizeWorkflowBlueprintSafety(defaultTpl.blueprint),
+                      track: extractWorkflowToggles(defaultTpl.blueprint).includeReview
+                        ? "L2"
+                        : "L1",
+                    }
+                  : {}),
+                ...(nextIntakeForm.accept_cmd.trim() === "" && chosen.default_accept_cmd
+                  ? { accept_cmd: chosen.default_accept_cmd }
+                  : {}),
+              };
+            } else if (nextIntakeForm.space && !nextSpaces[nextIntakeForm.space]) {
+              nextIntakeForm = {
+                ...nextIntakeForm,
+                space: "",
+              };
+            }
           }
-        }
 
-        this.setState({
-          bootstrapping: false,
-          bootstrapLoaded: true,
-          bootstrapError: null,
-          daemonVersion: data.version ?? null,
-          lastConnectedAt: new Date().toISOString(),
-          ...(this.state.sseStatus !== "reconnecting" ? { networkOffline: false } : {}),
-          tasks: data.tasks ?? [],
-          pendingDecisions: data.pendingDecisions ?? [],
-          drafts: nextDrafts,
-          spaces: nextSpaces,
-          intakeDraftId: nextIntakeDraftId,
-          intakeForm: nextIntakeForm,
-          intakeMessages: nextIntakeMessages,
-          intakeActiveOpen: nextIntakeActiveOpen,
-          intakeHasUnreadReply: nextIntakeHasUnread,
-          roles,
-          roster,
-          workflows,
-          providersConfig,
-          providersConfigLoaded,
-          ...(data.providers !== undefined ? { providerStatuses: data.providers } : {}),
-          ...(data.tuiTerminals !== undefined ? { tuiTerminals: data.tuiTerminals } : {}),
-          limits,
-          pricing,
-          usage: data.usage ?? { ...EMPTY_USAGE },
-          todayUsage: data.todayUsage ?? null,
-          budget: data.budget ?? null,
-          runningCount: data.runningCount ?? 0,
-          mergeQueue: data.mergeQueue ?? [],
-          ...(data.ledgers !== undefined ? { ledgers: normalizeLedgers(data.ledgers) } : {}),
-          ...(data.agents !== undefined ? { agents: data.agents } : {}),
-          ...(data.backends !== undefined ? { backends: data.backends } : {}),
-          ...(data.providerUsage !== undefined ? { providerUsage: data.providerUsage } : {}),
-          ratesByTask: nextRates,
-          ...(data.liveRates?.totals !== undefined ? { liveTotals: data.liveRates.totals } : {}),
-        });
+          this.setState({
+            bootstrapping: false,
+            bootstrapLoaded: true,
+            bootstrapError: null,
+            daemonVersion: data.version ?? null,
+            lastConnectedAt: new Date().toISOString(),
+            ...(this.state.sseStatus !== "reconnecting" ? { networkOffline: false } : {}),
+            tasks: data.tasks ?? [],
+            pendingDecisions: data.pendingDecisions ?? [],
+            drafts: nextDrafts,
+            spaces: nextSpaces,
+            intakeDraftId: nextIntakeDraftId,
+            intakeForm: nextIntakeForm,
+            intakeMessages: nextIntakeMessages,
+            intakeActiveOpen: nextIntakeActiveOpen,
+            intakeHasUnreadReply: nextIntakeHasUnread,
+            roles,
+            roster,
+            workflows,
+            providersConfig,
+            providersConfigLoaded,
+            ...(data.providers !== undefined ? { providerStatuses: data.providers } : {}),
+            ...(data.tuiTerminals !== undefined ? { tuiTerminals: data.tuiTerminals } : {}),
+            limits,
+            pricing,
+            usage: data.usage ?? { ...EMPTY_USAGE },
+            todayUsage: data.todayUsage ?? null,
+            budget: data.budget ?? null,
+            runningCount: data.runningCount ?? 0,
+            mergeQueue: data.mergeQueue ?? [],
+            ...(data.ledgers !== undefined ? { ledgers: normalizeLedgers(data.ledgers) } : {}),
+            ...(data.agents !== undefined ? { agents: data.agents } : {}),
+            ...(data.backends !== undefined ? { backends: data.backends } : {}),
+            ...(data.providerUsage !== undefined ? { providerUsage: data.providerUsage } : {}),
+            ratesByTask: nextRates,
+            ...(data.liveRates?.totals !== undefined ? { liveTotals: data.liveRates.totals } : {}),
+          });
 
-        this.enforceRouteGuard();
+          this.enforceRouteGuard();
 
-        if (restoredDraftIdForChat) {
-          void this.hydrateRestoredDraftChat(restoredDraftIdForChat);
-        }
-
-        if ((this.state.view === "detail" || this.state.view === "resolve") && this.state.taskId) {
-          void this.loadTaskDetail(this.state.taskId);
-          if (this.state.view === "resolve") {
-            void this.loadResolveChat(this.state.taskId);
+          if (restoredDraftIdForChat) {
+            void this.hydrateRestoredDraftChat(restoredDraftIdForChat);
           }
-        } else if (this.state.view === "ledger" && Object.keys(this.state.ledgers).length === 0) {
-          void this.refreshLedgers();
-        } else if (
-          (this.state.view === "settings" || this.state.view === "lineup") &&
-          this.state.agents.length === 0
-        ) {
-          void this.refreshAgents();
-        }
 
-        if (
-          (this.state.view === "lineup" ||
-            (this.state.view === "settings" && this.state.settingsTab === "providers")) &&
-          this.state.authMode === "local" &&
-          !this.state.providersConfigLoaded
-        ) {
-          void this.refreshProvidersConfig();
-        }
+          if (
+            (this.state.view === "detail" || this.state.view === "resolve") &&
+            this.state.taskId
+          ) {
+            void this.loadTaskDetail(this.state.taskId);
+            if (this.state.view === "resolve") {
+              void this.loadResolveChat(this.state.taskId);
+            }
+          } else if (this.state.view === "ledger" && Object.keys(this.state.ledgers).length === 0) {
+            void this.refreshLedgers();
+          } else if (
+            (this.state.view === "settings" || this.state.view === "lineup") &&
+            this.state.agents.length === 0
+          ) {
+            void this.refreshAgents();
+          }
+
+          if (
+            (this.state.view === "lineup" ||
+              (this.state.view === "settings" && this.state.settingsTab === "providers")) &&
+            this.state.authMode === "local" &&
+            !this.state.providersConfigLoaded
+          ) {
+            void this.refreshProvidersConfig();
+          }
+        } while (this.refreshQueued);
       } catch (err) {
+        this.refreshQueued = false;
         if (err instanceof ApiError && err.status === 401 && this.state.authMode === "remote") {
           return;
         }
@@ -1768,7 +1864,10 @@ export class KilnWebStore {
         };
       });
       if (found) {
-        this.setState({ tasks: nextTasks });
+        this.setState({
+          tasks: nextTasks,
+          runningCount: computeRunningLeafCount(nextTasks),
+        });
       }
       if (
         !found ||
@@ -1998,7 +2097,9 @@ export class KilnWebStore {
     };
     this.setState(patch);
     this.syncHashFromState();
-    if (view === "ledger" && Object.keys(this.state.ledgers).length === 0) {
+    if (view === "board" && this.state.bootstrapLoaded) {
+      void this.bootstrap();
+    } else if (view === "ledger" && Object.keys(this.state.ledgers).length === 0) {
       void this.refreshLedgers();
     } else if ((view === "settings" || view === "lineup") && this.state.agents.length === 0) {
       void this.refreshAgents();
@@ -2345,6 +2446,39 @@ export class KilnWebStore {
         taskDetailLoading: false,
         taskDetailError: null,
       };
+      let taskStatusChanged = false;
+      const existingIdx = this.state.tasks.findIndex((t) => t.id === taskId);
+      if (existingIdx >= 0) {
+        const cur = this.state.tasks[existingIdx]!;
+        const st = detail.state;
+        const needsSync =
+          cur.status !== st.status ||
+          cur.stage !== st.stage ||
+          cur.round !== st.round ||
+          cur.active_run_id !== st.activeRunId ||
+          cur.contract_version !== st.contractVersion ||
+          cur.effective_priority !== st.effectivePriority;
+        if (needsSync) {
+          taskStatusChanged = cur.status !== st.status;
+          const nextTasks = this.state.tasks.map((t, i) =>
+            i === existingIdx
+              ? {
+                  ...t,
+                  status: st.status,
+                  stage: st.stage,
+                  round: st.round,
+                  active_run_id: st.activeRunId,
+                  priority: st.priority,
+                  effective_priority: st.effectivePriority,
+                  contract_version: st.contractVersion,
+                  updated_at: st.updatedAt,
+                }
+              : t,
+          );
+          patch.tasks = nextTasks;
+          patch.runningCount = computeRunningLeafCount(nextTasks);
+        }
+      }
       if (detail.chatMessages && detail.chatMessages.length > 0) {
         patch.resolveMessagesByTask = {
           ...this.state.resolveMessagesByTask,
@@ -2352,6 +2486,9 @@ export class KilnWebStore {
         };
       }
       this.setState(patch);
+      if (taskStatusChanged) {
+        void this.bootstrap();
+      }
     } catch (err) {
       this.setState({
         taskDetailLoading: false,
@@ -3278,9 +3415,27 @@ export class KilnWebStore {
         return false;
       }
       const res = await apiCommitSplitDraft(draftId, cards);
+      const optimisticCards = (res.cards ?? []).map((card, idx) =>
+        buildOptimisticBootstrapTask(card, res.states?.[idx], {
+          id: card.id,
+          title: card.title,
+          space: card.space,
+          priority: card.priority,
+          track: card.track,
+          workspace_mode: card.workspace_mode,
+          depends_on: card.depends_on,
+          ...(card.workflow !== undefined ? { workflow: card.workflow } : {}),
+          summary: card.contract?.goal ?? card.title,
+        }),
+      );
+      const nextTasks = mergeOptimisticTasks(this.state.tasks, optimisticCards);
+      const nextDrafts = this.state.drafts.filter((d) => d.id !== draftId);
       clearActiveIntakePersistence();
       const preferred = this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
       this.setState({
+        tasks: nextTasks,
+        drafts: nextDrafts,
+        runningCount: computeRunningLeafCount(nextTasks),
         intakeBusy: false,
         intakeDraftId: null,
         intakeForm: createDefaultIntakeForm(this.state.spaces, preferred),
@@ -3291,9 +3446,9 @@ export class KilnWebStore {
         intakeActiveOpen: false,
         intakeHasUnreadReply: false,
       });
-      await this.bootstrap();
       this.go("board");
       this.showToast(`已批量立项 ${res.cards.length} 张依赖任务卡`);
+      await this.bootstrap();
       return true;
     } catch (err) {
       this.setState({ intakeBusy: false });
@@ -3600,9 +3755,25 @@ export class KilnWebStore {
       };
 
       const committed = await apiCommitDraft(draftId, payload);
+      const optimisticTask = buildOptimisticBootstrapTask(committed.card, committed.state, {
+        id: taskId,
+        title: f.title.trim(),
+        space: effectiveSpace,
+        priority: f.priority,
+        track: f.track,
+        workspace_mode: effectiveWorkspaceMode,
+        depends_on,
+        workflow: effectiveWorkflow,
+        summary: f.title.trim(),
+      });
+      const nextTasks = mergeOptimisticTasks(this.state.tasks, [optimisticTask]);
+      const nextDrafts = this.state.drafts.filter((d) => d.id !== draftId);
       clearActiveIntakePersistence();
       const preferred = this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
       this.setState({
+        tasks: nextTasks,
+        drafts: nextDrafts,
+        runningCount: computeRunningLeafCount(nextTasks),
         intakeBusy: false,
         intakeDraftId: null,
         intakeForm: createDefaultIntakeForm(this.state.spaces, preferred),
@@ -3613,9 +3784,9 @@ export class KilnWebStore {
         intakeActiveOpen: false,
         intakeHasUnreadReply: false,
       });
-      await this.bootstrap();
       this.go("board");
-      this.showToast(`已立项 ${committed.card.id}`);
+      this.showToast(`已立项 ${optimisticTask.id}`);
+      await this.bootstrap();
       return true;
     } catch (err) {
       this.setState({ intakeBusy: false });
