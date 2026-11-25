@@ -5083,13 +5083,38 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     fireEvent.change(document.getElementById("chatIn")!, { target: { value: "帮我清理 Mac" } });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
 
-    // OptionPickerCard appears automatically below the 2-question reply
-    const recBtn = await screen.findByRole("button", { name: "一键选推荐" });
+    // OptionPickerCard mounts as bottom floating TUI wizard on step 1
+    expect(await screen.findByRole("region", { name: "快捷方案选择向导" })).toBeTruthy();
     expect(draftCreated).toBe(true);
-    fireEvent.click(recBtn);
+    expect(screen.getByText(/STEP 01 \/ 02/)).toBeTruthy();
 
-    const submitOptsBtn = screen.getByRole("button", { name: "发送所选方案" });
-    fireEvent.click(submitOptsBtn);
+    // Pick step 1 option A -> advances automatically to step 2
+    fireEvent.click(screen.getByRole("radio", { name: /仅扫描已卸载应用残留/ }));
+    expect(screen.getByText(/STEP 02 \/ 02/)).toBeTruthy();
+
+    // Click "上一步" -> goes back to step 1 while preserving checked state
+    fireEvent.click(screen.getByRole("button", { name: "上一步" }));
+    expect(screen.getByText(/STEP 01 \/ 02/)).toBeTruthy();
+    expect(
+      screen.getByRole("radio", { name: /仅扫描已卸载应用残留/ }).getAttribute("aria-checked"),
+    ).toBe("true");
+
+    // Jump to summary via stepper pill -> click "修改" on question 1 -> back to step 1
+    fireEvent.click(screen.getByRole("tab", { name: "汇总确认" }));
+    expect(screen.getByRole("heading", { name: "汇总确认" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /清理范围.*修改/ }));
+    expect(screen.getByText(/STEP 01 \/ 02/)).toBeTruthy();
+
+    // Collapse wizard to bottom pill and expand back
+    fireEvent.click(screen.getByRole("button", { name: "收起向导" }));
+    expect(screen.getByRole("region", { name: "快捷方案选择向导（已收起）" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "展开继续" }));
+    expect(screen.getByRole("region", { name: "快捷方案选择向导" })).toBeTruthy();
+
+    // Click "一键选推荐" -> jumps straight to summary -> click "确认并发送"
+    fireEvent.click(screen.getByRole("button", { name: "一键选推荐" }));
+    expect(screen.getByRole("heading", { name: "汇总确认" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "确认并发送" }));
 
     await waitFor(() => {
       expect(sentMessages).toHaveLength(2);

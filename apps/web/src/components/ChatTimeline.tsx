@@ -311,24 +311,12 @@ function AgentMessageCard({
   msg,
   roleLabel,
   defaultAgentName,
-  showOptionPicker,
-  disabled,
-  onQuickReply,
-  onFillComposer,
 }: {
   msg: ChatMessage;
   roleLabel: string;
   defaultAgentName: string;
-  showOptionPicker: boolean;
-  disabled: boolean;
-  onQuickReply?: (text: string) => void;
-  onFillComposer?: (text: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
-  const questions = useMemo(
-    () => (showOptionPicker ? parseClarificationQuestions(msg.text) : []),
-    [showOptionPicker, msg.text],
-  );
 
   const handleCopy = async (): Promise<void> => {
     try {
@@ -359,14 +347,6 @@ function AgentMessageCard({
         </button>
       </header>
       <MarkdownContent text={msg.text} className="msg-md" />
-      {questions.length > 0 && onQuickReply && onFillComposer ? (
-        <OptionPickerCard
-          questions={questions}
-          disabled={disabled}
-          onSubmit={onQuickReply}
-          onFill={onFillComposer}
-        />
-      ) : null}
     </article>
   );
 }
@@ -429,9 +409,38 @@ export function ChatTimeline({
     }
   }
 
+  const lastChatSeg = lastChatSegIdx >= 0 ? segments[lastChatSegIdx] : undefined;
+  const latestAgentText =
+    !busy && lastChatSeg && lastChatSeg.kind === "message" && lastChatSeg.who === "agent"
+      ? lastChatSeg.msg.text
+      : "";
+  const activeQuestions = useMemo(
+    () => (latestAgentText ? parseClarificationQuestions(latestAgentText) : []),
+    [latestAgentText],
+  );
+  const activeQuestionsSig = useMemo(
+    () =>
+      activeQuestions
+        .map((q) => `${q.number}:${q.title}:${q.options.map((o) => o.key).join(",")}`)
+        .join("|"),
+    [activeQuestions],
+  );
+  const [wizardCollapsed, setWizardCollapsed] = useState(false);
+
+  useEffect(() => {
+    setWizardCollapsed(false);
+  }, [activeQuestionsSig]);
+
+  const showWizard = activeQuestions.length > 0 && Boolean(onQuickReply) && Boolean(onFillComposer);
+
   return (
     <div className="msgs-wrap">
-      <div className="msgs" id="msgs" ref={scrollerRef} onScroll={handleScroll}>
+      <div
+        className={`msgs ${showWizard ? (wizardCollapsed ? "has-wizard-min" : "has-wizard-open") : ""}`}
+        id="msgs"
+        ref={scrollerRef}
+        onScroll={handleScroll}
+      >
         <div className="msgs-track">
           {emptySlot}
 
@@ -448,17 +457,12 @@ export function ChatTimeline({
                 />
               );
             }
-            const isLatestAgent = idx === lastChatSegIdx && !busy;
             return (
               <AgentMessageCard
                 key={seg.msg.id ?? `ag-${idx}`}
                 msg={seg.msg}
                 roleLabel={roleLabel}
                 defaultAgentName={defaultAgentName}
-                showOptionPicker={isLatestAgent}
-                disabled={busy}
-                onQuickReply={onQuickReply}
-                onFillComposer={onFillComposer}
               />
             );
           })}
@@ -505,8 +509,23 @@ export function ChatTimeline({
         </div>
       </div>
 
-      {showJumpBottom ? (
-        <button type="button" className="scroll-bottom-btn" onClick={() => scrollToBottom(true)}>
+      {showWizard && onQuickReply && onFillComposer ? (
+        <OptionPickerCard
+          questions={activeQuestions}
+          disabled={busy}
+          collapsed={wizardCollapsed}
+          onCollapsedChange={setWizardCollapsed}
+          onSubmit={onQuickReply}
+          onFill={onFillComposer}
+        />
+      ) : null}
+
+      {showJumpBottom && (!showWizard || wizardCollapsed) ? (
+        <button
+          type="button"
+          className={`scroll-bottom-btn ${showWizard && wizardCollapsed ? "is-above-pill" : ""}`}
+          onClick={() => scrollToBottom(true)}
+        >
           ↓ 回到底部
         </button>
       ) : null}
