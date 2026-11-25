@@ -19,7 +19,7 @@ import {
 } from "./types.js";
 
 export type FakeScriptStep =
-  | { kind: "thinking"; delayMs?: number }
+  | { kind: "thinking"; chars?: number; delayMs?: number }
   | { kind: "message"; text: string; delta?: boolean; delayMs?: number }
   | { kind: "tool"; name: string; target?: string; delayMs?: number }
   | { kind: "file_write"; path: string; delayMs?: number }
@@ -663,7 +663,11 @@ export class FakeBackend implements ExecutionBackend {
 
         switch (step.kind) {
           case "thinking": {
-            this.pushEvent(turn, { kind: "thinking", at: new Date().toISOString() });
+            this.pushEvent(turn, {
+              kind: "thinking",
+              at: new Date().toISOString(),
+              ...(step.chars !== undefined ? { chars: step.chars } : {}),
+            });
             break;
           }
           case "message": {

@@ -579,7 +579,13 @@ export class ClaudeDirectBackend implements ProviderTelemetryBackend {
         if (b.type === "text" && typeof b.text === "string" && b.text.length > 0) {
           turn.queue.push({ kind: "message", at, text: b.text, delta: true });
         } else if (b.type === "thinking") {
-          turn.queue.push({ kind: "thinking", at });
+          const thinkingText =
+            typeof b.thinking === "string" ? b.thinking : typeof b.text === "string" ? b.text : "";
+          turn.queue.push(
+            thinkingText.length > 0
+              ? { kind: "thinking", at, chars: thinkingText.length }
+              : { kind: "thinking", at },
+          );
         } else if (b.type === "tool_use") {
           const name = typeof b.name === "string" ? b.name : "tool";
           const input = (b.input && typeof b.input === "object" ? b.input : {}) as Record<

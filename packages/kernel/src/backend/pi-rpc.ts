@@ -676,7 +676,11 @@ export class PiRpcBackend implements ProviderTelemetryBackend {
         ) {
           turn.queue.push({ kind: "message", at, text: inner.delta, delta: true });
         } else if (inner?.type === "thinking_delta" || inner?.type === "thinking_start") {
-          turn.queue.push({ kind: "thinking", at });
+          const chars =
+            inner.type === "thinking_delta" && typeof inner.delta === "string"
+              ? inner.delta.length
+              : 0;
+          turn.queue.push(chars > 0 ? { kind: "thinking", at, chars } : { kind: "thinking", at });
         }
         break;
       }

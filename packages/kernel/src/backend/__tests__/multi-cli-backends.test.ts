@@ -1781,4 +1781,48 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
       await backend.dispose();
     }
   });
+
+  it("emits non-zero thinking char counts on ACP agent_thought_chunk and Claude thinking blocks", async () => {
+    const cwd = makeTempWs("kiln-thinking-chars-");
+    const composite = new CompositeBackend({
+      initialConfig: makeProvidersConfig(),
+      queryTimeoutMs: 4_000,
+    });
+    try {
+      const acpRef = await composite.start({
+        runId: "r-think-acp",
+        taskId: "t-think-1",
+        role: "worker",
+        agent: "agy",
+        model: "gemini-3-flash",
+        cwd,
+        prompt: "hello",
+        freshContext: false,
+      });
+      const acpEvents = await collectAllEvents(composite, acpRef);
+      const acpThinking = acpEvents.find(
+        (e): e is Extract<RunEvent, { kind: "thinking" }> => e.kind === "thinking",
+      );
+      expect(acpThinking?.chars).toBe("thinking".length);
+
+      const claudeRef = await composite.start({
+        runId: "r-think-claude",
+        taskId: "t-think-2",
+        role: "worker",
+        agent: "claude",
+        model: "claude-sonnet",
+        cwd,
+        prompt: "hello",
+        freshContext: false,
+      });
+      const claudeEvents = await collectAllEvents(composite, claudeRef);
+      const claudeThinking = claudeEvents.find(
+        (e): e is Extract<RunEvent, { kind: "thinking" }> => e.kind === "thinking",
+      );
+      expect(claudeThinking?.chars).toBe("pondering".length);
+    } finally {
+      await composite.dispose();
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });

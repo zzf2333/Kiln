@@ -3844,8 +3844,8 @@ export class KilnWebStore {
         },
         resolveBusy: false,
       });
+      void this.bootstrap();
       if (res.pendingDecision || res.card) {
-        await this.bootstrap();
         await this.loadTaskDetail(taskId);
       }
     } catch (err) {

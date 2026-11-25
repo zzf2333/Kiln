@@ -238,6 +238,25 @@ describe("KilnStore disk rebuild after deleting index.sqlite", () => {
 
     const expectedRunningTokens = store1.getTaskTotalTokens("t-running");
     const expectedDoneTokens = store1.getTaskTotalTokens("t-done");
+    store1.recordChatUsage(
+      {
+        runId: "chat-intake-rec1",
+        taskId: "draft:d-chat-1",
+        stage: "intake",
+        rosterRole: "pm",
+        sessionReused: false,
+      },
+      {
+        kind: "usage",
+        at: "2026-11-19T09:09:40.000Z",
+        turnId: "chat-turn-1",
+        agent: "agy",
+        model: "gemini-pro",
+        inputTokens: 1200,
+        cachedInputTokens: 800,
+        outputTokens: 250,
+      },
+    );
     store1.close();
 
     // Physically wipe index.sqlite + WAL + SHM
@@ -295,10 +314,24 @@ describe("KilnStore disk rebuild after deleting index.sqlite", () => {
         meta: { modeId: "auto", host: "local-daemon" },
       });
 
-      // Usage turns restored idempotently
+      // Usage turns restored idempotently (both task runs and interactive chat-usage.ndjson)
       expect(store2.getTaskTotalTokens("t-running")).toEqual(expectedRunningTokens);
       expect(store2.getTaskTotalTokens("t-done")).toEqual(expectedDoneTokens);
       expect(store2.listUsageTurns({ taskId: "t-running" })).toHaveLength(2);
+      const restoredChatTurns = store2.listUsageTurns({ taskId: "draft:d-chat-1" });
+      expect(restoredChatTurns).toHaveLength(1);
+      expect(restoredChatTurns[0]).toMatchObject({
+        run_id: "chat-intake-rec1",
+        turn_id: "chat-turn-1",
+        task_id: "draft:d-chat-1",
+        agent: "agy",
+        model: "gemini-pro",
+        input_tokens: 1200,
+        cached_input_tokens: 800,
+        output_tokens: 250,
+        stage: "intake",
+        roster_role: "pm",
+      });
 
       // Stale/loser run_id and paused task's old run_id are rejected after rebuild
       const loserAttempt = store2.submitReceipt({

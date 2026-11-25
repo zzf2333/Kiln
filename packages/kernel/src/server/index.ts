@@ -143,7 +143,9 @@ export {
 } from "./pricing-sync.js";
 export {
   LiveRateTracker,
+  approximateCharsTokens,
   approximateDeltaTokens,
+  type LiveCharSampleInput,
   type LiveRateSampleInput,
   type LiveRateSnapshot,
   type LiveRateTrackerOptions,

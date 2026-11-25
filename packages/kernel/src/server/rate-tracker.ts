@@ -4,6 +4,12 @@ export interface LiveRateSampleInput {
   timestampMs?: number;
 }
 
+export interface LiveCharSampleInput {
+  taskId: string;
+  chars: number;
+  timestampMs?: number;
+}
+
 export interface LiveRateSnapshot {
   tokPerSec: number;
   rates: Record<string, number>;
@@ -40,13 +46,20 @@ function roundOneDecimal(value: number): number {
 }
 
 /**
+ * Estimates incremental token count from character count (`Math.max(1, Math.ceil(chars / 4))` when positive).
+ */
+export function approximateCharsTokens(chars: number): number {
+  if (!Number.isFinite(chars) || chars <= 0) {
+    return 0;
+  }
+  return Math.max(1, Math.ceil(chars / 4));
+}
+
+/**
  * Estimates incremental token count from delta text (`Math.max(1, Math.ceil(len / 4))` for non-empty chunks).
  */
 export function approximateDeltaTokens(text: string): number {
-  if (text.length === 0) {
-    return 0;
-  }
-  return Math.max(1, Math.ceil(text.length / 4));
+  return approximateCharsTokens(text.length);
 }
 
 /**
@@ -94,22 +107,25 @@ export class LiveRateTracker {
   }
 
   recordDelta(input: LiveRateSampleInput): number {
-    if (this.stopped) {
+    return this.recordTokens(input.taskId, approximateDeltaTokens(input.text), input.timestampMs);
+  }
+
+  recordCharDelta(input: LiveCharSampleInput): number {
+    return this.recordTokens(input.taskId, approximateCharsTokens(input.chars), input.timestampMs);
+  }
+
+  private recordTokens(taskId: string, tokens: number, timestampMs?: number): number {
+    if (this.stopped || tokens <= 0) {
       return 0;
     }
 
-    const tokens = approximateDeltaTokens(input.text);
-    if (tokens <= 0) {
-      return 0;
-    }
-
-    const ts = input.timestampMs ?? this.now();
+    const ts = timestampMs ?? this.now();
     this.pruneExpired(ts);
 
-    let list = this.samplesByTask.get(input.taskId);
+    let list = this.samplesByTask.get(taskId);
     if (!list) {
       list = [];
-      this.samplesByTask.set(input.taskId, list);
+      this.samplesByTask.set(taskId, list);
     }
     list.push({ timestampMs: ts, tokens });
     this.hasEmittedNonZero = true;

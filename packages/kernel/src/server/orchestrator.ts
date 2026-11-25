@@ -2868,6 +2868,8 @@ export class KilnOrchestrator {
 
             if (ev.kind === "message" && ev.delta) {
               this.rateTracker.recordDelta({ taskId, text: ev.text });
+            } else if (ev.kind === "thinking" && ev.chars && ev.chars > 0) {
+              this.rateTracker.recordCharDelta({ taskId, chars: ev.chars });
             }
 
             if (ev.kind === "context_window") {

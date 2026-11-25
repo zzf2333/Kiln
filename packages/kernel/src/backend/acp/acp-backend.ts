@@ -1160,7 +1160,9 @@ export class AcpBackend implements ProviderTelemetryBackend {
         break;
       }
       case "agent_thought_chunk": {
-        turn.queue.push({ kind: "thinking", at });
+        const content = update.content as { type?: unknown; text?: unknown } | undefined;
+        const chars = typeof content?.text === "string" ? content.text.length : 0;
+        turn.queue.push(chars > 0 ? { kind: "thinking", at, chars } : { kind: "thinking", at });
         break;
       }
       case "tool_call":

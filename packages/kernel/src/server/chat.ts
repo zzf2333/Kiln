@@ -21,6 +21,7 @@ import {
   type RunEvent,
   type SessionRef,
   type SpaceConfig,
+  type StageId,
   type TaskCard,
   type WorkflowBlueprint,
 } from "@kiln/protocol";
@@ -57,6 +58,7 @@ import {
   PendingDecisionStore,
   readOptionalText,
 } from "./pending-decisions.js";
+import type { LiveRateTracker } from "./rate-tracker.js";
 import type { SseHub } from "./sse.js";
 
 const DEFAULT_BACKEND_QUERY_TIMEOUT_MS = 5_000;
@@ -679,6 +681,7 @@ export interface KilnChatEngineOptions {
   providerHealth?: ProviderHealthTracker;
   sseHub?: SseHub;
   caffeinate?: CaffeinateController;
+  rateTracker?: LiveRateTracker;
   socketPath: string;
   issueRunToken: (input: {
     taskId: string;
@@ -715,6 +718,7 @@ export class KilnChatEngine {
   private readonly providerHealth: ProviderHealthTracker | undefined;
   private readonly sseHub: SseHub | undefined;
   private readonly caffeinate: CaffeinateController | undefined;
+  private readonly rateTracker: LiveRateTracker | undefined;
   private readonly socketPath: string;
   private readonly issueRunToken: KilnChatEngineOptions["issueRunToken"];
   private readonly mcpServerCommand: McpCommandSpec;
@@ -731,6 +735,7 @@ export class KilnChatEngine {
     this.providerHealth = options.providerHealth;
     this.sseHub = options.sseHub;
     this.caffeinate = options.caffeinate;
+    this.rateTracker = options.rateTracker;
     this.socketPath = options.socketPath;
     this.issueRunToken = options.issueRunToken;
     this.mcpServerCommand = resolveMcpServerCommand(options.mcpServerCommand);
@@ -1207,34 +1212,60 @@ export class KilnChatEngine {
     sessionRef: SessionRef,
     roleName: "intake" | "resolver",
     onProgress?: (ev: RunEvent) => void,
+    tracking?: {
+      rateKey: string;
+      usageMeta: {
+        runId: string;
+        taskId: string;
+        stage: StageId | null;
+        rosterRole: string;
+        sessionReused: boolean;
+      };
+    },
   ): Promise<{ replyText: string; toolMessages: ChatMessageRecord[] }> {
     const fullMessages: string[] = [];
     const deltaChunks: string[] = [];
     const toolMessages: ChatMessageRecord[] = [];
     let exitEvent: Extract<RunEvent, { kind: "exit" }> | null = null;
 
-    for await (const ev of backend.events(sessionRef)) {
-      if (ev.kind === "thinking") {
-        onProgress?.(ev);
-      } else if (ev.kind === "message") {
-        if (ev.delta) {
-          deltaChunks.push(ev.text);
-        } else if (ev.text.trim().length > 0) {
-          fullMessages.push(ev.text);
+    try {
+      for await (const ev of backend.events(sessionRef)) {
+        if (ev.kind === "thinking") {
+          onProgress?.(ev);
+          if (tracking && ev.chars && ev.chars > 0) {
+            this.rateTracker?.recordCharDelta({ taskId: tracking.rateKey, chars: ev.chars });
+          }
+        } else if (ev.kind === "message") {
+          if (ev.delta) {
+            deltaChunks.push(ev.text);
+            if (tracking) {
+              this.rateTracker?.recordDelta({ taskId: tracking.rateKey, text: ev.text });
+            }
+          } else if (ev.text.trim().length > 0) {
+            fullMessages.push(ev.text);
+          }
+        } else if (ev.kind === "tool") {
+          onProgress?.(ev);
+          toolMessages.push({
+            id: `msg-${randomUUID().slice(0, 8)}`,
+            role: "tool",
+            who: "tool",
+            name: roleName,
+            toolName: ev.name,
+            text: ev.target ? `${ev.name} · ${ev.target}` : ev.name,
+            at: ev.at,
+          });
+        } else if (ev.kind === "usage") {
+          if (tracking) {
+            this.store.recordChatUsage(tracking.usageMeta, ev);
+          }
+        } else if (ev.kind === "exit") {
+          exitEvent = ev;
         }
-      } else if (ev.kind === "tool") {
-        onProgress?.(ev);
-        toolMessages.push({
-          id: `msg-${randomUUID().slice(0, 8)}`,
-          role: "tool",
-          who: "tool",
-          name: roleName,
-          toolName: ev.name,
-          text: ev.target ? `${ev.name} · ${ev.target}` : ev.name,
-          at: ev.at,
-        });
-      } else if (ev.kind === "exit") {
-        exitEvent = ev;
+      }
+    } finally {
+      if (tracking) {
+        this.rateTracker?.clearTask(tracking.rateKey);
       }
     }
 
@@ -1857,7 +1888,16 @@ export class KilnChatEngine {
 
       let timer: ReturnType<typeof setTimeout> | null = null;
       const result = await Promise.race([
-        this.consumeTurnEvents(backend, sessionRef, "intake"),
+        this.consumeTurnEvents(backend, sessionRef, "intake", undefined, {
+          rateKey: `intake:${safeDraftId}`,
+          usageMeta: {
+            runId,
+            taskId: `draft:${safeDraftId}`,
+            stage: "research",
+            rosterRole: "researcher",
+            sessionReused: false,
+          },
+        }),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new Error("draft recon timeout")), timeoutMs);
           if (typeof timer === "object" && timer !== null && "unref" in timer) {
@@ -1993,6 +2033,7 @@ export class KilnChatEngine {
         const reusable = await this.canReuseSession(draft.session_ref);
         let activeBackend = executor.backend;
         let sessionRef: SessionRef;
+        let sessionReused = false;
         const reusableMeta = reusable?.sessionRef.meta;
 
         if (
@@ -2005,6 +2046,7 @@ export class KilnChatEngine {
           (reusableMeta?.kiln_chat_attachments_sig ?? "") === attachmentsSig
         ) {
           sessionRef = reusable.sessionRef;
+          sessionReused = true;
           const contextLines: string[] = [];
           if (!executor.mcpEnabled) {
             contextLines.push(this.formatDraftSnapshotLine(draft));
@@ -2070,32 +2112,47 @@ export class KilnChatEngine {
 
         appendNdjsonLine(chatFile, userRecord);
         let lastProgressKind: "thinking" | "tool" | null = null;
-        const consumed = await this.consumeTurnEvents(activeBackend, sessionRef, "intake", (ev) => {
-          if (!this.sseHub) return;
-          if (ev.kind === "thinking") {
-            if (lastProgressKind === "thinking") return;
-            lastProgressKind = "thinking";
-            this.sseHub.publish({
-              type: "intake.progress",
-              draftId: safeDraftId,
-              kind: "thinking",
-              text: resolvedWorkspace.isProjectRepo
-                ? "正在分析项目结构与方案可行性…"
-                : "正在梳理需求并整理方案…",
-              at: ev.at,
-            });
-          } else if (ev.kind === "tool") {
-            lastProgressKind = "tool";
-            this.sseHub.publish({
-              type: "intake.progress",
-              draftId: safeDraftId,
-              kind: "tool",
-              toolName: ev.name,
-              text: ev.target ? `正在读取/调用 ${ev.name} · ${ev.target}` : `正在调用 ${ev.name}`,
-              at: ev.at,
-            });
-          }
-        });
+        const consumed = await this.consumeTurnEvents(
+          activeBackend,
+          sessionRef,
+          "intake",
+          (ev) => {
+            if (!this.sseHub) return;
+            if (ev.kind === "thinking") {
+              if (lastProgressKind === "thinking") return;
+              lastProgressKind = "thinking";
+              this.sseHub.publish({
+                type: "intake.progress",
+                draftId: safeDraftId,
+                kind: "thinking",
+                text: resolvedWorkspace.isProjectRepo
+                  ? "正在分析项目结构与方案可行性…"
+                  : "正在梳理需求并整理方案…",
+                at: ev.at,
+              });
+            } else if (ev.kind === "tool") {
+              lastProgressKind = "tool";
+              this.sseHub.publish({
+                type: "intake.progress",
+                draftId: safeDraftId,
+                kind: "tool",
+                toolName: ev.name,
+                text: ev.target ? `正在读取/调用 ${ev.name} · ${ev.target}` : `正在调用 ${ev.name}`,
+                at: ev.at,
+              });
+            }
+          },
+          {
+            rateKey: `intake:${safeDraftId}`,
+            usageMeta: {
+              runId,
+              taskId: `draft:${safeDraftId}`,
+              stage: "intake",
+              rosterRole: "pm",
+              sessionReused,
+            },
+          },
+        );
         replyText = consumed.replyText;
         toolMessages = consumed.toolMessages;
 
@@ -2279,6 +2336,7 @@ export class KilnChatEngine {
 
         const reusable = await this.canReuseSession(existingSessionRef);
         let sessionRef: SessionRef;
+        let sessionReused = false;
         const reusableMeta = reusable?.sessionRef.meta;
 
         if (
@@ -2288,6 +2346,7 @@ export class KilnChatEngine {
           reusableMeta?.kiln_chat_model === executor.model
         ) {
           sessionRef = reusable.sessionRef;
+          sessionReused = true;
           const contextLines: string[] = [];
           if (!executor.mcpEnabled) {
             contextLines.push(
@@ -2344,7 +2403,22 @@ export class KilnChatEngine {
         }
 
         appendNdjsonLine(chatFile, userRecord);
-        const consumed = await this.consumeTurnEvents(executor.backend, sessionRef, "resolver");
+        const consumed = await this.consumeTurnEvents(
+          executor.backend,
+          sessionRef,
+          "resolver",
+          undefined,
+          {
+            rateKey: `resolver:${safeTaskId}`,
+            usageMeta: {
+              runId,
+              taskId: safeTaskId,
+              stage: null,
+              rosterRole: "resolver",
+              sessionReused,
+            },
+          },
+        );
         replyText = consumed.replyText;
         toolMessages = consumed.toolMessages;
 

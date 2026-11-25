@@ -281,6 +281,7 @@ export class KilndServer {
       providerHealth: this.providerHealth,
       sseHub: this.sseHub,
       caffeinate: this.caffeinate,
+      rateTracker: this.rateTracker,
       socketPath: this.socketPath,
       issueRunToken: issueToken,
       onContractUpdated: (taskId) => {

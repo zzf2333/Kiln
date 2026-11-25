@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { z } from "zod";
 import {
   CardContractSchema,
   DevicesConfigSchema,
@@ -16,6 +17,7 @@ import {
   RunEventSchema,
   RunMetaSchema,
   SpaceConfigSchema,
+  StageIdSchema,
   StateEventSchema,
   TaskCardSchema,
   WorkflowsConfigSchema,
@@ -69,6 +71,45 @@ import {
   type TaskTokenTotals,
   type UsageTurnRow,
 } from "./sqlite.js";
+
+const ChatUsageDiskEntrySchema = z.object({
+  run_id: z.string().min(1),
+  task_id: z.string().min(1),
+  stage: StageIdSchema.nullable().optional(),
+  roster_role: z.string().min(1).nullable().optional(),
+  session_reused: z.boolean().optional(),
+  event: RunEventSchema,
+});
+
+function toUsageTurnRow(
+  meta: {
+    runId: string;
+    taskId: string;
+    stage: StageId | null;
+    rosterRole: string | null;
+    sessionReused: boolean;
+  },
+  event: Extract<RunEvent, { kind: "usage" }>,
+): UsageTurnRow {
+  return {
+    run_id: meta.runId,
+    turn_id: event.turnId,
+    task_id: meta.taskId,
+    agent: event.agent,
+    model: event.model,
+    input_tokens: event.inputTokens,
+    cached_input_tokens: event.cachedInputTokens ?? 0,
+    output_tokens: event.outputTokens,
+    cache_write_tokens: event.cacheWriteTokens ?? 0,
+    reasoning_tokens: event.reasoningTokens ?? 0,
+    provider_cost_usd: event.providerCostUsd ?? null,
+    cost_source: event.costSource ?? null,
+    stage: meta.stage,
+    roster_role: meta.rosterRole,
+    session_reused: meta.sessionReused ? 1 : 0,
+    recorded_at: event.at,
+  };
+}
 
 const STAGE_ORDER: Record<StageId, number> = {
   intake: 0,
@@ -753,25 +794,61 @@ export class KilnStore {
     appendNdjsonLine(this.paths.runEventsNdjson(safeTaskId, safeRunDir), parsedEvent);
 
     if (parsedEvent.kind === "usage" && usageRunMeta !== null) {
-      this.sqlite.upsertUsageTurn({
-        run_id: usageRunMeta.run_id,
-        turn_id: parsedEvent.turnId,
-        task_id: safeTaskId,
-        agent: parsedEvent.agent,
-        model: parsedEvent.model,
-        input_tokens: parsedEvent.inputTokens,
-        cached_input_tokens: parsedEvent.cachedInputTokens ?? 0,
-        output_tokens: parsedEvent.outputTokens,
-        cache_write_tokens: parsedEvent.cacheWriteTokens ?? 0,
-        reasoning_tokens: parsedEvent.reasoningTokens ?? 0,
-        provider_cost_usd: parsedEvent.providerCostUsd ?? null,
-        cost_source: parsedEvent.costSource ?? null,
-        stage: usageRunMeta.stage,
-        roster_role: usageRunMeta.roster_role ?? null,
-        session_reused: usageRunMeta.session_reused ? 1 : 0,
-        recorded_at: parsedEvent.at,
-      });
+      this.sqlite.upsertUsageTurn(
+        toUsageTurnRow(
+          {
+            runId: usageRunMeta.run_id,
+            taskId: safeTaskId,
+            stage: usageRunMeta.stage,
+            rosterRole: usageRunMeta.roster_role ?? null,
+            sessionReused: Boolean(usageRunMeta.session_reused),
+          },
+          parsedEvent,
+        ),
+      );
     }
+  }
+
+  /**
+   * Persists an interactive chat/recon `usage` event to `~/.kiln/usage/chat-usage.ndjson`
+   * and upserts it into `usage_turns` so intake/resolver usage survives SQLite rebuilds.
+   */
+  recordChatUsage(
+    meta: {
+      runId: string;
+      taskId: string;
+      stage: StageId | null;
+      rosterRole?: string | null;
+      sessionReused?: boolean;
+    },
+    event: RunEvent,
+  ): void {
+    const parsedEvent = RunEventSchema.parse(event);
+    if (parsedEvent.kind !== "usage") {
+      throw new Error(`Expected usage RunEvent, got "${parsedEvent.kind}"`);
+    }
+    const diskEntry = ChatUsageDiskEntrySchema.parse({
+      run_id: meta.runId,
+      task_id: meta.taskId,
+      stage: meta.stage ?? null,
+      roster_role: meta.rosterRole ?? null,
+      session_reused: Boolean(meta.sessionReused),
+      event: parsedEvent,
+    });
+    ensureDir(this.paths.usageDir);
+    appendNdjsonLine(this.paths.chatUsageNdjson, diskEntry);
+    this.sqlite.upsertUsageTurn(
+      toUsageTurnRow(
+        {
+          runId: diskEntry.run_id,
+          taskId: diskEntry.task_id,
+          stage: diskEntry.stage ?? null,
+          rosterRole: diskEntry.roster_role ?? null,
+          sessionReused: Boolean(diskEntry.session_reused),
+        },
+        parsedEvent,
+      ),
+    );
   }
 
   readConfig(name: "roles"): RolesConfig | null;
@@ -1103,6 +1180,9 @@ export class KilnStore {
     const effectivePriorities = propagateEffectivePriorities(cards, derivedByTask);
 
     const dbPath = this.paths.indexSqlite;
+    const chatUsageEntries = fs.existsSync(this.paths.chatUsageNdjson)
+      ? readNdjsonValidated(this.paths.chatUsageNdjson, ChatUsageDiskEntrySchema)
+      : [];
     const tmpDbPath = `${dbPath}.rebuild.${process.pid}.${randomUUID()}.tmp`;
     let tmpSqlite: KilnSqliteIndex | null = null;
 
@@ -1130,6 +1210,23 @@ export class KilnStore {
             created_at: card.created_at,
             updated_at: derived.updatedAt,
           });
+        }
+
+        for (const entry of chatUsageEntries) {
+          if (entry.event.kind === "usage") {
+            sqlite.upsertUsageTurn(
+              toUsageTurnRow(
+                {
+                  runId: entry.run_id,
+                  taskId: entry.task_id,
+                  stage: entry.stage ?? null,
+                  rosterRole: entry.roster_role ?? null,
+                  sessionReused: Boolean(entry.session_reused),
+                },
+                entry.event,
+              ),
+            );
+          }
         }
 
         for (const [taskId, runs] of runsByTask) {

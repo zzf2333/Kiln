@@ -124,6 +124,14 @@ export class KilnPaths {
     return path.join(this.home, "cache");
   }
 
+  get usageDir(): string {
+    return path.join(this.home, "usage");
+  }
+
+  get chatUsageNdjson(): string {
+    return path.join(this.usageDir, "chat-usage.ndjson");
+  }
+
   get pricingCacheFile(): string {
     return path.join(this.cacheDir, "model-pricing-catalog.json");
   }

@@ -4,13 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SseEventSchema, type RolesConfig, type TaskCard } from "@kiln/protocol";
+import { SseEventSchema, type RolesConfig, type SseEvent, type TaskCard } from "@kiln/protocol";
 import { FakeBackend, type ExecutionBackend } from "../../backend/index.js";
 import { stageHostScopedChanges } from "../../gate/index.js";
 import { writeFileAtomic } from "../../store/index.js";
 import {
   KilndServer,
   LiveRateTracker,
+  approximateCharsTokens,
   approximateDeltaTokens,
   type RateTickPayload,
 } from "../index.js";
@@ -2239,5 +2240,114 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     expect(receivedMessages[2]).toContain("[当前右侧草稿最新字段:");
     expect(receivedMessages[3]).toContain("生成或更新完整的《产品方案 (BRIEF.md)》");
     expect(receivedMessages[3]).toContain("重点写清键盘交互");
+  });
+
+  it("tracks thinking chars and delta message rate.tick for intake PM chat and persists chat usage into todayUsage", async () => {
+    expect(approximateCharsTokens(400)).toBe(100);
+    expect(approximateCharsTokens(0)).toBe(0);
+
+    const ticks: RateTickPayload[] = [];
+    const tracker = new LiveRateTracker({
+      windowMs: 2_000,
+      tickIntervalMs: 10,
+      onTick: (p) => ticks.push(p),
+    });
+    expect(
+      tracker.recordCharDelta({ taskId: "intake:d-unit", chars: 200, timestampMs: 1_000 }),
+    ).toBe(50);
+    expect(tracker.snapshot(1_200).rates["intake:d-unit"]).toBe(25);
+    tracker.stop();
+
+    const kilnHome = makeTempDir("kiln-pm-rate-");
+    const fakeBackend = new FakeBackend({ defaultTurnScript: [] });
+    const server = new KilndServer({
+      kilnHome,
+      host: "127.0.0.1",
+      port: 0,
+      publicDir: null,
+      rateWindowMs: 2_000,
+      rateTickIntervalMs: 20,
+      enableOrchestrator: false,
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    await server.start();
+
+    server.store.writeConfig("roles", {
+      schema_version: 1,
+      heterogeneous_review: true,
+      roles: {
+        intake: {
+          backend_id: "fake",
+          agent: "pi",
+          model: "magpie/group/fast",
+          allow_full_access_fallback: false,
+        },
+      },
+    });
+    const draftRes = await server.app.request(
+      new Request("http://127.0.0.1/api/drafts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: "d-rate-pm",
+          title: "PM 实时速度测试",
+          space: "local",
+        }),
+      }),
+    );
+    expect(draftRes.status).toBe(201);
+
+    fakeBackend.enqueueScript(
+      [
+        { kind: "thinking", chars: 800, delayMs: 20 },
+        { kind: "message", text: "正在分析你的需求…", delta: true, delayMs: 60 },
+        {
+          kind: "usage",
+          turnId: "pm-turn-1",
+          inputTokens: 1500,
+          cachedInputTokens: 500,
+          outputTokens: 320,
+        },
+        { kind: "exit", reason: "completed" },
+      ],
+      (ctx) => ctx.runSpec.role === "intake",
+    );
+
+    const sseFrames: SseEvent[] = [];
+    const unsubscribe = server.sseHub.subscribe((ev) => sseFrames.push(ev));
+
+    try {
+      const chatRes = await server.app.request(
+        new Request("http://127.0.0.1/api/drafts/d-rate-pm/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: "帮我拆解方案" }),
+        }),
+      );
+      if (chatRes.status !== 200) {
+        throw new Error(`Unexpected chat status ${chatRes.status}: ${await chatRes.text()}`);
+      }
+    } finally {
+      unsubscribe();
+    }
+
+    const rateTicks = sseFrames.filter(
+      (ev): ev is Extract<SseEvent, { type: "rate.tick" }> => ev.type === "rate.tick",
+    );
+    expect(rateTicks.some((t) => (t.rates["intake:d-rate-pm"] ?? 0) > 0)).toBe(true);
+    expect(rateTicks.at(-1)?.totals.tokPerSec).toBe(0);
+    expect(server.rateTracker.snapshot().tokPerSec).toBe(0);
+
+    const bootRes = await server.app.request(new Request("http://127.0.0.1/api/bootstrap"));
+    expect(bootRes.status).toBe(200);
+    const boot = (await bootRes.json()) as {
+      todayUsage: {
+        totalTokens: number;
+        byAgentModel?: Record<string, Record<string, { totalTokens: number }>>;
+      };
+    };
+    expect(boot.todayUsage.totalTokens).toBe(1820);
+    expect(boot.todayUsage.byAgentModel?.pi?.["magpie/group/fast"]?.totalTokens).toBe(1820);
   });
 });

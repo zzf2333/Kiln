@@ -859,7 +859,12 @@ export class CodexAppServerBackend implements ProviderTelemetryBackend {
       }
       case "item/reasoning/summaryTextDelta":
       case "item/reasoning/textDelta": {
-        turn.queue.push({ kind: "thinking", at });
+        const delta = typeof params.delta === "string" ? params.delta : "";
+        turn.queue.push(
+          delta.length > 0
+            ? { kind: "thinking", at, chars: delta.length }
+            : { kind: "thinking", at },
+        );
         break;
       }
       case "item/started":

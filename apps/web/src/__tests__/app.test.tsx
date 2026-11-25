@@ -4977,6 +4977,71 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     });
   });
 
+  it("UsagePanel reflects active PM/intake rate.tick in statusbar and L2 monitor even when task slots are 0", async () => {
+    let emitSse: ((type: string, data: unknown) => void) | null = null;
+    const origMock = MockEventSource;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof Request ? input.url : "";
+      if (url.endsWith("/api/bootstrap")) {
+        return jsonResponse(
+          makeBaseBootstrap({
+            drafts: [
+              {
+                schema_version: 1,
+                id: "d-pm-live",
+                title: "清理旧版残留",
+                space: "local",
+                priority: "P2",
+                track: "L2",
+                workspace_mode: "host_scoped",
+                depends_on: [],
+                open_questions: [],
+                contract: {
+                  goal: "g",
+                  end: "e",
+                  accept_cmd: "echo ok",
+                  scope: ["/tmp/x"],
+                  deliver: { mode: "manual", cmd: null },
+                },
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              },
+            ],
+          }),
+        );
+      }
+      return jsonResponse({});
+    });
+
+    const { container } = render(<App />);
+    await waitFor(() => {
+      expect(document.getElementById("upTotalRate")?.textContent).toBe("0");
+    });
+
+    const sse = origMock.instances[0]!;
+    emitSse = (type, data) => sse.emit(type, data);
+    emitSse("rate.tick", {
+      seq: 201,
+      type: "rate.tick",
+      rates: { "intake:d-pm-live": 142 },
+      totals: { costUsd: 0.03, tokPerSec: 142 },
+    });
+
+    await waitFor(() => {
+      expect(document.getElementById("upTotalRate")?.textContent).toBe("142");
+    });
+    const usagePanel = container.querySelector("#usagePanel")!;
+    expect(usagePanel.textContent).toContain("对话中");
+    expect(usagePanel.textContent).toContain("0/5");
+    expect(usagePanel.querySelector(".live-dot")).toBeTruthy();
+
+    fireEvent.mouseEnter(usagePanel);
+    const l2Dialog = await screen.findByRole("dialog", { name: "今日实时监控浮层" });
+    expect(l2Dialog.textContent).toContain("立项");
+    expect(l2Dialog.textContent).toContain("清理旧版残留");
+    expect(l2Dialog.textContent).toContain("142 tok/s");
+  });
+
   it("IntakeView renders interactive OptionPickerCard for structured A/B/C options and triggers @ / composer toolbar", async () => {
     const sentMessages: string[] = [];
     let draftCreated = false;

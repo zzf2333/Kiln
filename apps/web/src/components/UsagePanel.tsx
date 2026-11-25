@@ -27,6 +27,17 @@ import { useKilnStore } from "../state/store";
 
 type L3Target = { kind: "task"; taskId: string } | { kind: "provider"; providerId: string } | null;
 
+interface ActiveChatSessionItem {
+  key: string;
+  kind: "intake" | "resolver";
+  targetId: string;
+  roleLabel: string;
+  title: string;
+  agent: string;
+  model: string;
+  rate: number;
+}
+
 interface SubscriptionSummaryItem {
   id: string;
   label: string;
@@ -126,6 +137,14 @@ export function UsagePanel() {
     ratesByTask,
     liveTotals,
     tasks,
+    drafts,
+    intakeBusy,
+    intakeDraftId,
+    intakeForm,
+    resolveBusy,
+    taskId,
+    workflows,
+    roles,
     spaces,
     limits,
   } = state;
@@ -253,6 +272,103 @@ export function UsagePanel() {
       .sort((a, b) => (ratesByTask[b.id] ?? 0) - (ratesByTask[a.id] ?? 0));
   }, [tasks, parentIds, ratesByTask]);
 
+  const activeChatSessions = useMemo<ActiveChatSessionItem[]>(() => {
+    const intakeWf = workflows?.stage_bindings?.intake;
+    const intakeRole = roles.roles.intake;
+    const intakeAgent = intakeWf?.provider || intakeRole?.agent || "pm";
+    const intakeModel = intakeWf?.model || intakeRole?.model || "";
+
+    const resolverWf = workflows?.stage_bindings?.resolver ?? workflows?.stage_bindings?.advisor;
+    const resolverRole = roles.roles.resolver ?? roles.roles.advisor;
+    const resolverAgent = resolverWf?.provider || resolverRole?.agent || "advisor";
+    const resolverModel = resolverWf?.model || resolverRole?.model || "";
+
+    const byKey = new Map<string, ActiveChatSessionItem>();
+    let hasIntakeRate = false;
+
+    for (const [key, rawRate] of Object.entries(ratesByTask)) {
+      const rate = Math.round(Number.isFinite(rawRate) ? rawRate : 0);
+      if (key.startsWith("intake:")) {
+        hasIntakeRate = true;
+        const targetId = key.slice("intake:".length);
+        const draft = drafts.find((d) => d.id === targetId);
+        byKey.set(key, {
+          key,
+          kind: "intake",
+          targetId,
+          roleLabel: "立项",
+          title:
+            draft?.title?.trim() ||
+            (intakeDraftId === targetId ? intakeForm.title.trim() : "") ||
+            "立项助手",
+          agent: intakeAgent,
+          model: intakeModel,
+          rate,
+        });
+      } else if (key.startsWith("resolver:")) {
+        const targetId = key.slice("resolver:".length);
+        const task = tasks.find((t) => t.id === targetId);
+        byKey.set(key, {
+          key,
+          kind: "resolver",
+          targetId,
+          roleLabel: "讨论",
+          title: task?.title?.trim() || "方案讨论",
+          agent: resolverAgent,
+          model: resolverModel,
+          rate,
+        });
+      }
+    }
+
+    if (intakeBusy) {
+      const key = `intake:${intakeDraftId ?? "__pending__"}`;
+      if (!byKey.has(key) && (intakeDraftId !== null || !hasIntakeRate)) {
+        const draft = intakeDraftId ? drafts.find((d) => d.id === intakeDraftId) : undefined;
+        byKey.set(key, {
+          key,
+          kind: "intake",
+          targetId: intakeDraftId ?? "",
+          roleLabel: "立项",
+          title: draft?.title?.trim() || intakeForm.title.trim() || "立项助手",
+          agent: intakeAgent,
+          model: intakeModel,
+          rate: Math.round(ratesByTask[key] ?? 0),
+        });
+      }
+    }
+
+    if (resolveBusy && taskId) {
+      const key = `resolver:${taskId}`;
+      if (!byKey.has(key)) {
+        const task = tasks.find((t) => t.id === taskId);
+        byKey.set(key, {
+          key,
+          kind: "resolver",
+          targetId: taskId,
+          roleLabel: "讨论",
+          title: task?.title?.trim() || "方案讨论",
+          agent: resolverAgent,
+          model: resolverModel,
+          rate: Math.round(ratesByTask[key] ?? 0),
+        });
+      }
+    }
+
+    return Array.from(byKey.values()).sort((a, b) => b.rate - a.rate);
+  }, [
+    ratesByTask,
+    drafts,
+    tasks,
+    intakeBusy,
+    intakeDraftId,
+    intakeForm.title,
+    resolveBusy,
+    taskId,
+    workflows,
+    roles,
+  ]);
+
   const ratesSum = Object.values(ratesByTask).reduce(
     (sum, r) => sum + (Number.isFinite(r) ? r : 0),
     0,
@@ -288,6 +404,28 @@ export function UsagePanel() {
       liveRateByAgent[t.agent] = (liveRateByAgent[t.agent] ?? 0) + rate;
     }
   }
+  for (const chat of activeChatSessions) {
+    if (chat.rate > 0 && chat.agent) {
+      liveRateByAgent[chat.agent] = (liveRateByAgent[chat.agent] ?? 0) + chat.rate;
+    }
+  }
+
+  const activeModelPills = [
+    ...runningLeafTasks.map((t) => ({
+      id: t.id,
+      agent: t.agent ?? "pm",
+      modelLabel: t.model ?? (t.agent ? `${t.agent} · 运行中` : `${stageMeta(t.stage).label}中`),
+      rate: Math.round(ratesByTask[t.id] ?? 0),
+    })),
+    ...activeChatSessions.map((c) => ({
+      id: c.key,
+      agent: c.agent,
+      modelLabel: c.model || `${c.roleLabel}中`,
+      rate: c.rate,
+    })),
+  ];
+  const hasActiveActivity =
+    runningLeafTasks.length > 0 || activeChatSessions.length > 0 || totalRate > 0;
 
   const quotas = extractEffectiveQuotas(providerStatuses, providerUsage);
   const statusById = new Map(providerStatuses.map((p) => [p.provider_id, p]));
@@ -371,9 +509,13 @@ export function UsagePanel() {
         }}
       >
         <span className="sb-seg sb-seg-live">
-          <span className={runningLeafTasks.length > 0 ? "dot live-dot" : "dot up-idle-dot"} />
+          <span className={hasActiveActivity ? "dot live-dot" : "dot up-idle-dot"} />
           <span className="sb-seg-label">
-            {runningLeafTasks.length > 0 ? `${runningLeafTasks.length} 运行` : "待机"}
+            {runningLeafTasks.length > 0
+              ? `${runningLeafTasks.length} 运行`
+              : activeChatSessions.length > 0 || totalRate > 0
+                ? "对话中"
+                : "待机"}
           </span>
           <span className="sb-slot mono" id="upSessions">
             {runningLeafTasks.length}/{limits.max_concurrent_slots}
@@ -385,24 +527,21 @@ export function UsagePanel() {
             <b id="upTotalRate">{totalRate}</b>
             <span>tok/s</span>
           </span>
-          {runningLeafTasks.length > 0 ? (
+          {activeModelPills.length > 0 ? (
             <span className="sb-active-models">
-              {runningLeafTasks.slice(0, 2).map((t) => {
-                const rate = Math.round(ratesByTask[t.id] ?? 0);
-                const modelLabel =
-                  t.model ?? (t.agent ? `${t.agent} · 运行中` : `${stageMeta(t.stage).label}中`);
-                return (
-                  <span key={t.id} className="sb-model-pill">
-                    <ProviderAvatar providerId={t.agent ?? "pm"} size="xs" />
-                    <span className="mono sb-model-name" title={modelLabel}>
-                      {modelLabel}
-                    </span>
-                    {rate > 0 ? <span className="mono sb-model-rate">{rate}t/s</span> : null}
+              {activeModelPills.slice(0, 2).map((pill) => (
+                <span key={pill.id} className="sb-model-pill">
+                  <ProviderAvatar providerId={pill.agent} size="xs" />
+                  <span className="mono sb-model-name" title={pill.modelLabel}>
+                    {pill.modelLabel}
                   </span>
-                );
-              })}
-              {runningLeafTasks.length > 2 ? (
-                <span className="sb-more mono">+{runningLeafTasks.length - 2}</span>
+                  {pill.rate > 0 ? (
+                    <span className="mono sb-model-rate">{pill.rate}t/s</span>
+                  ) : null}
+                </span>
+              ))}
+              {activeModelPills.length > 2 ? (
+                <span className="sb-more mono">+{activeModelPills.length - 2}</span>
               ) : null}
             </span>
           ) : null}
@@ -513,13 +652,62 @@ export function UsagePanel() {
                       {runningLeafTasks.length}/{limits.max_concurrent_slots} · {totalRate} tok/s
                     </span>
                   </div>
-                  {runningLeafTasks.length === 0 ? (
+                  {runningLeafTasks.length === 0 && activeChatSessions.length === 0 ? (
                     <div className="up-pop-empty">
                       当前空闲（{runningLeafTasks.length}/{limits.max_concurrent_slots}{" "}
                       并发槽位可用）
                     </div>
                   ) : (
                     <div className="up-pop-list">
+                      {activeChatSessions.map((chat) => {
+                        const modelId = chat.model || "默认模型";
+                        const modelPrice = chat.model ? pricing.models[chat.model] : undefined;
+                        return (
+                          <button
+                            key={chat.key}
+                            type="button"
+                            className="up-pop-row"
+                            onMouseEnter={() =>
+                              setL3Target({ kind: "provider", providerId: chat.agent })
+                            }
+                            onClick={() => {
+                              closeAll();
+                              if (chat.kind === "intake") {
+                                store.go("intake");
+                              } else if (chat.targetId) {
+                                store.openTask(chat.targetId);
+                              }
+                            }}
+                          >
+                            <div className="up-pop-row-top">
+                              <span
+                                className="up-stage-pill"
+                                style={{
+                                  color:
+                                    chat.kind === "intake" ? "var(--s-intake)" : "var(--acc-2)",
+                                }}
+                              >
+                                {chat.roleLabel}
+                              </span>
+                              <span className="up-pop-row-title" title={chat.title}>
+                                {chat.title}
+                              </span>
+                              <span className="mono up-pop-row-rate">
+                                {chat.rate > 0 ? `${chat.rate} tok/s` : "对话中"}
+                              </span>
+                            </div>
+                            <div className="up-pop-row-sub">
+                              <span className="up-pop-row-model">
+                                <ProviderAvatar providerId={chat.agent} size="xs" />
+                                <span className="mono">{modelId}</span>
+                              </span>
+                              <span className="mono up-pop-row-price">
+                                {formatModelPricingCompact(modelId, modelPrice)}
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      })}
                       {runningLeafTasks.map((t) => {
                         const rate = Math.round(ratesByTask[t.id] ?? 0);
                         const cost = computeTaskCostUsd(t, pricing);

@@ -63,7 +63,11 @@ export function toOrthogonalUsage(usage: RunUsage): OrthogonalUsageCounters {
 }
 
 const RunEventBaseUnionSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("thinking"), at: z.string().min(1) }),
+  z.object({
+    kind: z.literal("thinking"),
+    at: z.string().min(1),
+    chars: z.number().int().nonnegative().optional(),
+  }),
   z.object({
     kind: z.literal("message"),
     at: z.string().min(1),
