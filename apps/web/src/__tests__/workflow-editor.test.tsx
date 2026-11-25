@@ -225,6 +225,9 @@ describe("WorkflowView animated flowchart, custom slots, same-model reuse & Inta
     // Create a custom template and switch to it
     fireEvent.click(screen.getByRole("button", { name: "新建模板" }));
     const tplDialog = await screen.findByRole("dialog", { name: "新建工作流模板" });
+    expect(tplDialog.classList.contains("modal-card")).toBe(true);
+    expect(tplDialog.parentElement?.classList.contains("palette-mask")).toBe(true);
+    expect(tplDialog.parentElement?.classList.contains("open")).toBe(true);
     fireEvent.change(within(tplDialog).getByLabelText("新模板名称"), {
       target: { value: "安全发布流" },
     });

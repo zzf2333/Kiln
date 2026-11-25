@@ -4710,7 +4710,8 @@
     color: var(--t2);
     text-align: left;
   }
-  .p-item:hover {
+  .p-item:hover,
+  .p-item.is-active {
     background: var(--raised);
     color: var(--t1);
   }
@@ -7706,6 +7707,9 @@
     .tb-l {
       flex: 1 1 auto;
       min-width: 120px;
+      flex-wrap: wrap;
+      max-width: 100%;
+      gap: 8px;
     }
     .tb-sub {
       display: none;
@@ -8236,19 +8240,6 @@
     }
     .split-card-grid {
       grid-template-columns: 1fr;
-    }
-    .wf-split {
-      display: block;
-      overflow-y: auto;
-    }
-    .wf-canvas-main {
-      overflow: visible;
-    }
-    .wf-stage-layout {
-      grid-template-columns: 1fr;
-    }
-    .wf-advisor-bridge {
-      display: none;
     }
   }
 
@@ -9570,6 +9561,56 @@
     }
     to {
       stroke-dashoffset: 0;
+    }
+  }
+
+  @media (max-width: 820px) {
+    .wf-tpl-controls {
+      width: 100%;
+      margin-left: 0;
+      flex-wrap: wrap;
+      white-space: normal;
+    }
+    .wf-tpl-controls .select {
+      flex: 1 1 160px;
+      min-width: 0;
+      max-width: 100%;
+    }
+    .wf-pool-bar {
+      padding: 8px 12px;
+      gap: 8px;
+    }
+    .wf-pool-tiles {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+      width: 100%;
+    }
+    .wf-ptile {
+      min-width: 0;
+    }
+    .wf-split {
+      display: block;
+      overflow-y: auto;
+    }
+    .wf-canvas-main {
+      overflow: visible;
+      padding: 12px;
+    }
+    .wf-stage-layout {
+      grid-template-columns: 1fr;
+    }
+    .wf-dock-col {
+      min-width: 0;
+    }
+    .wf-advisor-bridge {
+      display: none;
+    }
+    .wf-split .inspector {
+      width: 100%;
+      min-width: 0;
+      border-left: none;
+      border-top: 1px solid var(--line);
+      overflow: visible;
     }
   }
 

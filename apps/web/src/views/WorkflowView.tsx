@@ -2908,8 +2908,17 @@ export function WorkflowView() {
       {/* 新建工作流模板弹窗 */}
       <Dialog.Root open={newTplOpen} onOpenChange={setNewTplOpen}>
         <Dialog.Portal>
-          <Dialog.Overlay className="modal-mask">
-            <Dialog.Content className="modal" aria-label="新建工作流模板">
+          <Dialog.Overlay
+            className="palette-mask open"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setNewTplOpen(false);
+            }}
+          >
+            <Dialog.Content
+              className="modal-card"
+              aria-label="新建工作流模板"
+              aria-describedby={undefined}
+            >
               <div className="modal-head">
                 <Dialog.Title asChild>
                   <h2>新建工作流模板</h2>

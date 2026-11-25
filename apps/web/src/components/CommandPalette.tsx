@@ -1,5 +1,5 @@
 import { Dialog } from "radix-ui";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useKilnStore, type MvpView, type SettingsTab } from "../state/store";
 
 interface PaletteAction {
@@ -10,14 +10,24 @@ interface PaletteAction {
 export function CommandPalette() {
   const { store, state } = useKilnStore();
   const [query, setQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   useEffect(() => {
     if (state.paletteOpen) {
       setQuery("");
+      setActiveIndex(0);
       setTimeout(() => inputRef.current?.focus(), 0);
     }
   }, [state.paletteOpen]);
+
+  useEffect(() => {
+    if (!state.paletteOpen) {
+      return;
+    }
+    itemRefs.current[activeIndex]?.scrollIntoView?.({ block: "nearest" });
+  }, [activeIndex, query, state.paletteOpen]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
@@ -159,6 +169,67 @@ export function CommandPalette() {
       t.status !== "cancelled" &&
       (!q || t.title.toLowerCase().includes(q) || t.id.toLowerCase().includes(q)),
   );
+  const items = [
+    ...filteredActions.map((a, idx) => ({
+      id: `palette-action-${idx}`,
+      key: `action:${a.label}`,
+      primary: a.label,
+      secondary: "跳转",
+      secondaryClass: "muted",
+      run: a.run,
+    })),
+    ...filteredTasks.map((t) => ({
+      id: `palette-task-${t.id}`,
+      key: `task:${t.id}`,
+      primary: t.title,
+      secondary: t.id,
+      secondaryClass: "mono muted",
+      run: () => {
+        store.setPaletteOpen(false);
+        store.openTask(t.id);
+      },
+    })),
+  ];
+  const resolvedActiveIndex =
+    items.length === 0 ? -1 : Math.min(Math.max(activeIndex, 0), items.length - 1);
+  const activeItem = resolvedActiveIndex >= 0 ? items[resolvedActiveIndex] : undefined;
+  itemRefs.current.length = items.length;
+
+  const handleInputKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>): void => {
+    if (items.length === 0) {
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIndex((prev) => {
+        const cur = Math.min(Math.max(prev, 0), items.length - 1);
+        return (cur + 1) % items.length;
+      });
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex((prev) => {
+        const cur = Math.min(Math.max(prev, 0), items.length - 1);
+        return (cur - 1 + items.length) % items.length;
+      });
+      return;
+    }
+    if (e.key === "Home") {
+      e.preventDefault();
+      setActiveIndex(0);
+      return;
+    }
+    if (e.key === "End") {
+      e.preventDefault();
+      setActiveIndex(items.length - 1);
+      return;
+    }
+    if (e.key === "Enter" && activeItem) {
+      e.preventDefault();
+      activeItem.run();
+    }
+  };
 
   return (
     <Dialog.Root
@@ -193,30 +264,36 @@ export function CommandPalette() {
               ref={inputRef}
               id="paletteInput"
               placeholder="搜索任务或跳转"
+              aria-activedescendant={activeItem?.id}
               value={query}
-              onChange={(e) => setQuery((e.currentTarget as HTMLInputElement).value)}
+              onChange={(e) => {
+                setQuery((e.currentTarget as HTMLInputElement).value);
+                setActiveIndex(0);
+              }}
+              onKeyDown={handleInputKeyDown}
             />
-            <div className="palette-list" id="paletteList">
-              {filteredActions.map((a) => (
-                <button key={a.label} type="button" className="p-item" onClick={a.run}>
-                  <span>{a.label}</span>
-                  <span className="muted">跳转</span>
-                </button>
-              ))}
-              {filteredTasks.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  className="p-item"
-                  onClick={() => {
-                    store.setPaletteOpen(false);
-                    store.openTask(t.id);
-                  }}
-                >
-                  <span>{t.title}</span>
-                  <span className="mono muted">{t.id}</span>
-                </button>
-              ))}
+            <div className="palette-list" id="paletteList" role="listbox" aria-label="命令与任务">
+              {items.map((item, idx) => {
+                const isActive = idx === resolvedActiveIndex;
+                return (
+                  <button
+                    key={item.key}
+                    id={item.id}
+                    ref={(el) => {
+                      itemRefs.current[idx] = el;
+                    }}
+                    type="button"
+                    role="option"
+                    aria-selected={isActive}
+                    className={isActive ? "p-item is-active" : "p-item"}
+                    onMouseEnter={() => setActiveIndex(idx)}
+                    onClick={item.run}
+                  >
+                    <span>{item.primary}</span>
+                    <span className={item.secondaryClass}>{item.secondary}</span>
+                  </button>
+                );
+              })}
             </div>
           </Dialog.Content>
         </Dialog.Overlay>

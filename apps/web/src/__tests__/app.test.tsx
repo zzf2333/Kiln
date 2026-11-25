@@ -5815,4 +5815,43 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       expect(container.textContent).toContain("0/5");
     });
   });
+
+  it("命令面板支持方向键与 Enter 键盘导航 (Issue #12)", async () => {
+    fetchMock.mockImplementation(async (url) => {
+      if (url === "/api/bootstrap") {
+        return jsonResponse(makeBaseBootstrap());
+      }
+      return jsonResponse({});
+    });
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "总览" })).toBeTruthy();
+    });
+
+    fireEvent.keyDown(document, { key: "k", metaKey: true });
+    const paletteInput = (await screen.findByPlaceholderText("搜索任务或跳转")) as HTMLInputElement;
+
+    fireEvent.change(paletteInput, { target: { value: "设置" } });
+    const list = document.getElementById("paletteList")!;
+    const options = Array.from(list.querySelectorAll<HTMLButtonElement>('[role="option"]'));
+    expect(options.length).toBeGreaterThanOrEqual(2);
+    expect(options[0]!.classList.contains("is-active")).toBe(true);
+    expect(options[0]!.getAttribute("aria-selected")).toBe("true");
+
+    fireEvent.keyDown(paletteInput, { key: "ArrowDown" });
+    expect(options[1]!.classList.contains("is-active")).toBe(true);
+    expect(options[0]!.classList.contains("is-active")).toBe(false);
+
+    fireEvent.keyDown(paletteInput, { key: "ArrowUp" });
+    expect(options[0]!.classList.contains("is-active")).toBe(true);
+
+    fireEvent.keyDown(paletteInput, { key: "ArrowDown" });
+    fireEvent.keyDown(paletteInput, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(document.getElementById("paletteInput")).toBeNull();
+      expect(window.location.hash).toContain("view=settings");
+    });
+  });
 });
