@@ -15,7 +15,9 @@
     "check": "vp check",
     "test": "vp test run",
     "test:socket": "vp test run --config vitest.socket.config.ts",
-    "test:watch": "vp test"
+    "test:watch": "vp test",
+    "qa:sandbox": "node scripts/qa-sandbox.mjs",
+    "qa:sync-issues": "node scripts/qa-sync-issues.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
