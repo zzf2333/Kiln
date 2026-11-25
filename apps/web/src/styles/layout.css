@@ -5304,7 +5304,7 @@
   }
   .chain-add {
     display: grid;
-    grid-template-columns: 112px minmax(0, 1fr) auto;
+    grid-template-columns: minmax(92px, 0.85fr) minmax(0, 1.35fr) auto;
     gap: 6px;
     align-items: center;
   }
@@ -7554,7 +7554,7 @@
     flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) clamp(320px, 28vw, 386px);
+    grid-template-columns: minmax(0, 1fr) clamp(296px, 25vw, 368px);
   }
   .wf-canvas-main {
     min-width: 0;
@@ -7588,8 +7588,8 @@
 
   .wf-stage-layout {
     display: grid;
-    grid-template-columns: minmax(0, 560px) minmax(264px, 324px);
-    gap: 44px;
+    grid-template-columns: minmax(286px, 560px) minmax(216px, 310px);
+    gap: 28px;
     align-items: start;
     justify-content: center;
   }
@@ -7725,11 +7725,26 @@
     min-width: 0;
     font-size: 12px;
   }
+  .wf-binding-card {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+  }
+  .wf-binding-top {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px 6px;
+    width: 100%;
+    min-width: 0;
+  }
   .wf-node-prov {
     color: var(--t2);
     font-weight: 500;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
-    flex-shrink: 0;
   }
   .wf-binding-sep {
     color: var(--t3);
@@ -7737,7 +7752,8 @@
   }
   .wf-node-model {
     color: var(--t1);
-    flex: 1;
+    display: block;
+    width: 100%;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -8037,13 +8053,13 @@
   }
   .wf-advisor-bridge {
     position: absolute;
-    left: -44px;
-    width: 44px;
+    left: -28px;
+    width: 28px;
     height: 36px;
     pointer-events: none;
   }
   .wf-advisor-bridge-svg {
-    width: 44px;
+    width: 28px;
     height: 36px;
     display: block;
     overflow: visible;

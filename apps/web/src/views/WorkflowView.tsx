@@ -1059,16 +1059,16 @@ export function WorkflowView() {
     }
     const provLabel = statusByProvider.get(binding.provider)?.label ?? binding.provider;
     return (
-      <span className="wf-binding-bar">
-        <ProviderAvatar providerId={binding.provider} />
-        <span className="wf-node-prov">{provLabel}</span>
-        <span className="wf-binding-sep" aria-hidden="true">
-          ·
+      <span className="wf-binding-bar wf-binding-card">
+        <span className="wf-binding-top">
+          <ProviderAvatar providerId={binding.provider} />
+          <span className="wf-node-prov">{provLabel}</span>
+          <span className="sp" />
+          {binding.effort ? <span className="wf-effort">{binding.effort}</span> : null}
         </span>
         <span className="mono wf-node-model" title={binding.model}>
           {binding.model}
         </span>
-        {binding.effort ? <span className="wf-effort">{binding.effort}</span> : null}
       </span>
     );
   };
@@ -1811,53 +1811,59 @@ export function WorkflowView() {
                 <span className="sp" />
                 <span className="mono muted">{fallbacks.length} 级</span>
               </div>
-              <div className="chain">
-                {fallbacks.map((fb, idx) => (
-                  <div key={`${fb.provider}-${fb.model}-${idx}`} className="chain-item">
-                    <span className="chain-ord">{idx + 1}</span>
-                    <ProviderAvatar providerId={fb.provider} />
-                    <span className="chain-prov">
-                      {statusByProvider.get(fb.provider)?.label ?? fb.provider}
-                    </span>
-                    <span className="mono muted">{fb.model}</span>
-                    <span className="sp" />
-                    {idx > 0 ? (
+              {fallbacks.length > 0 ? (
+                <div className="chain">
+                  {fallbacks.map((fb, idx) => (
+                    <div key={`${fb.provider}-${fb.model}-${idx}`} className="chain-item">
+                      <span className="chain-ord">{idx + 1}</span>
+                      <ProviderAvatar providerId={fb.provider} />
+                      <span className="chain-prov">
+                        {statusByProvider.get(fb.provider)?.label ?? fb.provider}
+                      </span>
+                      <span className="mono muted">{fb.model}</span>
+                      <span className="sp" />
+                      {idx > 0 ? (
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          aria-label={`上移备选 ${fb.model}`}
+                          onClick={() => {
+                            const next = [...fallbacks];
+                            const [item] = next.splice(idx, 1);
+                            next.splice(idx - 1, 0, item!);
+                            mutateDraft((prev) => ({
+                              ...prev,
+                              stage_fallbacks: { ...prev.stage_fallbacks, [key]: next },
+                            }));
+                          }}
+                        >
+                          <ArrowUpIcon />
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         className="icon-btn"
-                        aria-label={`上移备选 ${fb.model}`}
-                        onClick={() => {
-                          const next = [...fallbacks];
-                          const [item] = next.splice(idx, 1);
-                          next.splice(idx - 1, 0, item!);
+                        aria-label={`移除备选 ${fb.model}`}
+                        onClick={() =>
                           mutateDraft((prev) => ({
                             ...prev,
-                            stage_fallbacks: { ...prev.stage_fallbacks, [key]: next },
-                          }));
-                        }}
+                            stage_fallbacks: {
+                              ...prev.stage_fallbacks,
+                              [key]: fallbacks.filter((_, i) => i !== idx),
+                            },
+                          }))
+                        }
                       >
-                        <ArrowUpIcon />
+                        <CloseIcon />
                       </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      aria-label={`移除备选 ${fb.model}`}
-                      onClick={() =>
-                        mutateDraft((prev) => ({
-                          ...prev,
-                          stage_fallbacks: {
-                            ...prev.stage_fallbacks,
-                            [key]: fallbacks.filter((_, i) => i !== idx),
-                          },
-                        }))
-                      }
-                    >
-                      <CloseIcon />
-                    </button>
-                  </div>
-                ))}
-              </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="muted" style={{ fontSize: "11.5px", marginBottom: "6px" }}>
+                  当前未添加备选（仅在 429 限流或异构避让时按顺序接棒）
+                </div>
+              )}
               <div className="chain-add">
                 <KilnSelect
                   className="select select-sm"
@@ -1880,7 +1886,7 @@ export function WorkflowView() {
                 <button
                   type="button"
                   className="btn btn-sm"
-                  style={{ width: "28px", padding: 0, justifyContent: "center" }}
+                  style={{ width: "28px", height: "28px", padding: 0, justifyContent: "center" }}
                   aria-label="添加备选"
                   disabled={!activeFbProvider || !activeFbModel}
                   onClick={() => {
@@ -2803,19 +2809,19 @@ export function WorkflowView() {
             <div className="wf-dock-col">
               <div className="wf-advisor-wrap">
                 <div className="wf-advisor-bridge" aria-hidden="true">
-                  <svg className="wf-advisor-bridge-svg" viewBox="0 0 44 36">
-                    <line x1="3" y1="18" x2="41" y2="18" className="wf-advisor-rail" />
-                    <line x1="3" y1="18" x2="41" y2="18" className="wf-advisor-stream" />
+                  <svg className="wf-advisor-bridge-svg" viewBox="0 0 28 36">
+                    <line x1="3" y1="18" x2="25" y2="18" className="wf-advisor-rail" />
+                    <line x1="3" y1="18" x2="25" y2="18" className="wf-advisor-stream" />
                     <line
                       x1="3"
                       y1="18"
-                      x2="41"
+                      x2="25"
                       y2="18"
                       pathLength={100}
                       className="wf-advisor-pulse"
                     />
                     <circle cx="3" cy="18" r="2.8" className="wf-advisor-dot" />
-                    <circle cx="41" cy="18" r="2.8" className="wf-advisor-dot" />
+                    <circle cx="25" cy="18" r="2.8" className="wf-advisor-dot" />
                   </svg>
                   <span className="wf-advisor-tag">随时介入</span>
                 </div>

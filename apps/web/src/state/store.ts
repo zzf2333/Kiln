@@ -3987,7 +3987,18 @@ export class KilnWebStore {
       this.showToast(`已保存 config/${section}.yaml`);
       return true;
     } catch (err) {
-      this.showToast(err instanceof Error ? err.message : "保存设置失败");
+      const raw = err instanceof Error ? err.message : "保存设置失败";
+      if (
+        section === "workflows" &&
+        (raw.includes('Unknown settings section "workflows"') ||
+          raw.includes("invalid_settings_section"))
+      ) {
+        this.showToast(
+          "后台 kilnd 仍是旧版本，请退出并重启 Kiln（或终端执行 kiln down && kiln up）后再保存",
+        );
+      } else {
+        this.showToast(raw);
+      }
       return false;
     }
   }

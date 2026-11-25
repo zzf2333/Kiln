@@ -13,6 +13,7 @@ import {
 import {
   DEFAULT_KILND_URL,
   MAIN_WINDOW_LABEL,
+  REQUIRED_KILND_API_REVISION,
   UrlValidationError,
   applyStartAction,
   buildChildCommandPathDirs,
@@ -42,6 +43,7 @@ import {
   renderPosixCliWrapper,
   renderWindowsCliShim,
   shouldPreventExit,
+  shouldRestartStaleDaemon,
   summarizeStartError,
   trayStateFromBootstrap,
   trayStateFromProbe,
@@ -409,5 +411,32 @@ describe("@kiln/desktop Electron core model & daemon client", () => {
     });
     expect(fs.existsSync(path.join(assetsDir, "icon.icns"))).toBe(true);
     expect(fs.existsSync(path.join(assetsDir, "icon.ico"))).toBe(true);
+  });
+
+  it("parses health api_revision and restarts stale kilnd only when idle", () => {
+    const legacy = parseHealthJson('{"ok":true,"pid":101,"version":"0.0.5"}');
+    expect(legacy.apiRevision).toBeUndefined();
+    expect(shouldRestartStaleDaemon(legacy, REQUIRED_KILND_API_REVISION, 0)).toBe(true);
+    expect(shouldRestartStaleDaemon(legacy, REQUIRED_KILND_API_REVISION, 2)).toBe(false);
+
+    const oldRevision = parseHealthJson('{"ok":true,"pid":102,"version":"0.0.5","api_revision":1}');
+    expect(oldRevision.apiRevision).toBe(1);
+    expect(shouldRestartStaleDaemon(oldRevision, REQUIRED_KILND_API_REVISION, 0)).toBe(true);
+
+    const current = parseHealthJson(
+      `{"ok":true,"pid":103,"version":"0.0.5","api_revision":${REQUIRED_KILND_API_REVISION}}`,
+    );
+    expect(current.apiRevision).toBe(REQUIRED_KILND_API_REVISION);
+    expect(shouldRestartStaleDaemon(current, REQUIRED_KILND_API_REVISION, 0)).toBe(false);
+
+    const offline = parseHealthJson('{"ok":false,"pid":null,"version":null,"api_revision":1}');
+    expect(shouldRestartStaleDaemon(offline, REQUIRED_KILND_API_REVISION, 0)).toBe(false);
+
+    expect(() =>
+      parseHealthJson('{"ok":true,"pid":1,"version":"0.0.5","api_revision":-1}'),
+    ).toThrow();
+    expect(() =>
+      parseHealthJson('{"ok":true,"pid":1,"version":"0.0.5","api_revision":"2"}'),
+    ).toThrow();
   });
 });

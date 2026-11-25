@@ -6,10 +6,13 @@ export const KILN_BIN_NAME_POSIX = "kiln";
 export const KILN_BIN_NAME_WINDOWS = "kiln.exe";
 export const MAX_JSON_DEPTH = 128;
 
+export const REQUIRED_KILND_API_REVISION = 2;
+
 export interface KilnHealth {
   ok: boolean;
   pid: number | null;
   version: string | null;
+  apiRevision?: number | null;
 }
 
 export interface KilnLiveRatesTotals {
@@ -171,6 +174,14 @@ export function closePolicyForWindow(_label: string): WindowClosePolicy {
 
 export function decideStartupWindowAction(kilndOnline: boolean): StartupWindowAction {
   return kilndOnline ? "open_immediately" : "auto_start_then_open";
+}
+
+export function shouldRestartStaleDaemon(
+  health: KilnHealth,
+  requiredRevision: number,
+  runningCount: number,
+): boolean {
+  return health.ok && (health.apiRevision ?? 0) < requiredRevision && runningCount === 0;
 }
 
 export function shouldPreventExit(exitCode: number | null, allowExit: boolean): boolean {
@@ -784,7 +795,23 @@ export function parseHealthJson(body: string): KilnHealth {
     }
     version = obj.version;
   }
-  return { ok: obj.ok, pid, version };
+  let apiRevision: number | null = null;
+  if (obj.api_revision !== undefined && obj.api_revision !== null) {
+    if (
+      typeof obj.api_revision !== "number" ||
+      !Number.isInteger(obj.api_revision) ||
+      obj.api_revision < 0
+    ) {
+      throw new Error("JSON schema mismatch: health.api_revision must be non-negative integer");
+    }
+    apiRevision = obj.api_revision;
+  }
+  return {
+    ok: obj.ok,
+    pid,
+    version,
+    ...(apiRevision !== null ? { apiRevision } : {}),
+  };
 }
 
 export function parseBootstrapSummaryJson(body: string): KilnBootstrapSummary {

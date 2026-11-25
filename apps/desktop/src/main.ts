@@ -7,9 +7,12 @@ import {
   spawnKilnUp,
 } from "./daemon-client.js";
 import {
+  REQUIRED_KILND_API_REVISION,
   applyStartAction,
   decideStartupWindowAction,
   isTrayStateOnline,
+  shouldRestartStaleDaemon,
+  type KilnHealth,
   type NormalizedKilndUrl,
   type StartActionState,
   type TrayDisplayState,
@@ -155,12 +158,38 @@ class KilnDesktopApp implements TrayCoordinator {
   }
 
   private async ensureKilndAndOpen(route?: WorkbenchRoute | null): Promise<void> {
-    let online = false;
+    let health: KilnHealth | null = null;
     try {
-      const health = await this.client.fetchHealth();
-      online = health.ok;
+      health = await this.client.fetchHealth();
     } catch {
-      online = false;
+      health = null;
+    }
+
+    let online = health?.ok === true;
+    if (health?.ok && (health.apiRevision ?? 0) < REQUIRED_KILND_API_REVISION) {
+      let runningCount = 0;
+      try {
+        const summary = await this.client.fetchBootstrap();
+        runningCount = summary.runningCount;
+      } catch {
+        runningCount = 0;
+      }
+      if (shouldRestartStaleDaemon(health, REQUIRED_KILND_API_REVISION, runningCount)) {
+        process.stderr.write(
+          `kiln-desktop: restarting stale kilnd (api_revision=${health.apiRevision ?? 0} < ${REQUIRED_KILND_API_REVISION}, runningCount=0)\n`,
+        );
+        try {
+          await runKilnDown();
+          online = false;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          process.stderr.write(`kiln-desktop: failed to stop stale kilnd: ${msg}\n`);
+        }
+      } else {
+        process.stderr.write(
+          `kiln-desktop: stale kilnd kept running because ${runningCount} task(s) active\n`,
+        );
+      }
     }
 
     const action = decideStartupWindowAction(online);

@@ -861,6 +861,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       ok: true,
       pid: process.pid,
       version,
+      api_revision: 2,
       mode: "local",
     });
   });
