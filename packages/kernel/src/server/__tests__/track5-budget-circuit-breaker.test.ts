@@ -438,4 +438,208 @@ describe("Track 5 [B10] USD budget circuit breakers", () => {
     );
     expect(server2.store.readTaskCard(card2.id).limits.max_cost_usd).toBe(2.0);
   });
+
+  it("halts on global daily USD hard budget with budget_exceeded pending options (no dispatch_error) and resumes via raise or unlimited", async () => {
+    const home = createTempDir("kiln-b10-global-");
+
+    const fakeBackend = new FakeBackend({
+      backendId: "fake",
+      agents: [CODEX_DESCRIPTOR, CLAUDE_DESCRIPTOR],
+    });
+    const registry = new BackendRegistry();
+    registry.register(fakeBackend);
+
+    const store = new KilnStore({ kilnHome: home });
+    store.writeConfig(
+      "pricing",
+      PricingConfigSchema.parse({
+        schema_version: 1,
+        models: {
+          "gpt-5.4": { in: 10, cached: 1, out: 30 },
+          "claude-sonnet-4-6": { in: 10, cached: 1, out: 30 },
+        },
+      }),
+    );
+    store.writeConfig(
+      "roles",
+      RolesConfigSchema.parse({
+        schema_version: 1,
+        heterogeneous_review: true,
+        roles: {
+          worker: { agent: "codex", model: "gpt-5.4" },
+          reviewer: { agent: "claude", model: "claude-sonnet-4-6" },
+        },
+      }),
+    );
+
+    // Seed an existing done task with $0.10 spend today, and configure strict $0.01 daily limit
+    const seedCard = TaskCardSchema.parse({
+      schema_version: 1,
+      id: "t-seed-spend",
+      title: "Historical spend today",
+      space: "local",
+      priority: "P2",
+      track: "L1",
+      workspace_mode: "scratch_dir",
+      parent: null,
+      depends_on: [],
+      contract_version: 1,
+      contract: {
+        goal: "Seed spend",
+        end: "Done",
+        accept_cmd: "echo ok",
+        accept_files_hash: `sha256:${"a".repeat(64)}`,
+        scope: ["**"],
+        deliver: { mode: "manual", cmd: null },
+        human_accept: false,
+        external_actions: "ask",
+      },
+      limits: {
+        retries_per_stage: 2,
+        review_rounds: 2,
+        advisor_calls: 1,
+        max_tokens: 150_000,
+      },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    store.createTask(seedCard, "# Seed");
+    store.appendStateEvent(seedCard.id, { type: "done", at: new Date().toISOString() });
+    writeYamlAtomic(
+      store.paths.runYaml(seedCard.id, "001-implement"),
+      RunMetaSchema.parse({
+        schema_version: 1,
+        run_id: "r-seed-1",
+        task_id: seedCard.id,
+        stage: "implement",
+        round: 1,
+        contract_version: 1,
+        role: "worker",
+        agent: "codex",
+        model: "gpt-5.4",
+        backend_id: "fake",
+        session_ref: { backendId: "fake", sessionId: "s-seed" },
+        started_at: new Date().toISOString(),
+      }),
+      RunMetaSchema,
+    );
+    store.recordRunEvent(
+      seedCard.id,
+      "001-implement",
+      RunEventSchema.parse({
+        kind: "usage",
+        turnId: "u-seed-1",
+        agent: "codex",
+        model: "gpt-5.4",
+        inputTokens: 10_000,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        at: new Date().toISOString(),
+      }),
+    );
+
+    store.writeConfig(
+      "limits",
+      LimitsConfigSchema.parse({
+        schema_version: 1,
+        daily_budget_usd: 0.01,
+        budget_soft_warning_ratio: 0.8,
+      }),
+    );
+
+    const probeCard = TaskCardSchema.parse({
+      ...seedCard,
+      id: "t-global-probe",
+      title: "Global budget probe",
+    });
+    store.createTask(probeCard, "# Probe");
+
+    const server = new KilndServer({
+      store,
+      backendRegistry: registry,
+      host: "127.0.0.1",
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: true,
+      deliverHandler: async () => ({ status: "done", deliverRef: "manual:ok" }),
+    });
+    servers.push(server);
+    await server.start();
+
+    await waitUntil(
+      () => server.store.getTaskIndex(probeCard.id)?.status === "waiting",
+      "t-global-probe waiting on budget_exceeded",
+    );
+
+    expect(fakeBackend.getRecordedSpecs().some((s) => s.taskId === probeCard.id)).toBe(false);
+    const pending = server.pendingDecisions.get(probeCard.id);
+    expect(pending).not.toBeNull();
+    expect(pending?.reason).toBe("budget_exceeded");
+    expect(pending?.category).toBe("budget_exceeded");
+    expect(pending?.options.map((o) => o.id)).toEqual([
+      "opt-raise-global-budget",
+      "opt-unlimited-global-budget",
+      "opt-retry-budget",
+      "opt-cancel",
+    ]);
+
+    // Raise global daily budget -> unblocks probe and dispatches worker
+    const raiseRes = await server.app.request(`/api/tasks/${probeCard.id}/decide`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        decision_id: pending!.id,
+        option_id: "opt-raise-global-budget",
+        action: "resume",
+        apply_ledger_rule: false,
+      }),
+    });
+    expect(raiseRes.status).toBe(200);
+    expect((server.store.readConfig("limits")?.daily_budget_usd ?? 0) > 0.1).toBe(true);
+    await waitUntil(
+      () => fakeBackend.getRecordedSpecs().some((s) => s.taskId === probeCard.id),
+      "t-global-probe dispatched after raising daily budget",
+    );
+
+    // Lower daily limit again for a second card and test opt-unlimited-global-budget
+    server.store.writeConfig(
+      "limits",
+      LimitsConfigSchema.parse({
+        schema_version: 1,
+        daily_budget_usd: 0.01,
+        budget_soft_warning_ratio: 0.8,
+      }),
+    );
+    const probeCard2 = TaskCardSchema.parse({
+      ...seedCard,
+      id: "t-global-probe-2",
+      title: "Global budget unlimited probe",
+    });
+    server.store.createTask(probeCard2, "# Probe 2");
+    void server.orchestrator?.wake();
+
+    await waitUntil(
+      () => server.store.getTaskIndex(probeCard2.id)?.status === "waiting",
+      "t-global-probe-2 waiting on budget_exceeded",
+    );
+    const pending2 = server.pendingDecisions.get(probeCard2.id);
+    expect(pending2?.reason).toBe("budget_exceeded");
+
+    const unlimRes = await server.app.request(`/api/tasks/${probeCard2.id}/decide`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        decision_id: pending2!.id,
+        option_id: "opt-unlimited-global-budget",
+        action: "resume",
+        apply_ledger_rule: false,
+      }),
+    });
+    expect(unlimRes.status).toBe(200);
+    expect(server.store.readConfig("limits")?.daily_budget_usd).toBeUndefined();
+    await waitUntil(
+      () => fakeBackend.getRecordedSpecs().some((s) => s.taskId === probeCard2.id),
+      "t-global-probe-2 dispatched after removing daily budget limit",
+    );
+  });
 });

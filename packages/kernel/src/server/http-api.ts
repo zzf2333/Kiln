@@ -3004,6 +3004,18 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
           updated_at: new Date().toISOString(),
         });
         writeYamlAtomic(store.paths.cardYaml(taskId), updatedCard, TaskCardSchema);
+      } else if (selectedOption.id === "opt-unlimited-global-budget") {
+        const curLimits =
+          store.readConfig("limits") ?? LimitsConfigSchema.parse({ schema_version: 1 });
+        const globalBudget = computeGlobalBudgetStatus(store);
+        const nextLimitsPayload: Record<string, unknown> = { ...curLimits };
+        if (globalBudget.daily.level === "exceeded") {
+          delete nextLimitsPayload.daily_budget_usd;
+        }
+        if (globalBudget.monthly.level === "exceeded") {
+          delete nextLimitsPayload.monthly_budget_usd;
+        }
+        store.writeConfig("limits", LimitsConfigSchema.parse(nextLimitsPayload));
       } else if (selectedOption.id === "opt-raise-global-budget") {
         const curLimits =
           store.readConfig("limits") ?? LimitsConfigSchema.parse({ schema_version: 1 });

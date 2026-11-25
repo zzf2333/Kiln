@@ -2097,9 +2097,15 @@ export class KilnOrchestrator {
                   recommended: true,
                 },
                 {
-                  id: "opt-pause",
-                  label: "暂停任务等待次日/人工恢复",
-                  action: "pause",
+                  id: "opt-unlimited-global-budget",
+                  label: `移除${bScope === "daily" ? "每日" : "每月"}金额上限并继续`,
+                  action: "resume",
+                  recommended: false,
+                },
+                {
+                  id: "opt-retry-budget",
+                  label: "已在设置调整预算或等待重置后直接继续",
+                  action: "resume",
                   recommended: false,
                 },
                 {
