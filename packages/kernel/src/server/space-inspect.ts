@@ -1079,6 +1079,14 @@ export function validateCommitWorkflow(
     });
   }
 
+  if (workspaceMode !== "git_worktree" && toggles.testFirstLock) {
+    throw new ServerHttpError(400, {
+      error: "invalid_workflow_workspace",
+      workspaceMode,
+      message: 'Only "git_worktree" workspace_mode supports test_first_lock red-green isolation',
+    });
+  }
+
   if (workspaceMode === "host_scoped") {
     if (!hasCompleteHostTwoPhaseWorkflow(workflow)) {
       throw new ServerHttpError(400, {

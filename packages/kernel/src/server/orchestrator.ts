@@ -44,6 +44,7 @@ import {
   type SteerTaskRequest,
   type TaskCard,
   type TaskRetroReport,
+  type Track,
   type VerifierCapability,
   type WorkflowAgentNode,
 } from "@kiln/protocol";
@@ -1887,6 +1888,8 @@ export class KilnOrchestrator {
     escalatedDiffStat?: string;
     deliverConflictNote?: string;
     acceptEnvContext?: AcceptEnvHandoffContext | null;
+    implementMode?: "normal" | "dry_run_only" | "test_first_lock";
+    lockedContractTests?: readonly string[];
   }): HandoffPayload {
     const advisorReq =
       params.stage === "advise"
@@ -2392,7 +2395,12 @@ export class KilnOrchestrator {
             this.transitionTaskToWaiting(plan.taskId, decision, guard);
             return;
           }
-          const restartIdx = findLoopRestartStepIndex(plan.card, "implement", plan.card.track);
+          const restartIdx = this.resolveImplementReworkStepIndex(
+            plan.taskId,
+            plan.card,
+            findLoopRestartStepIndex(plan.card, "implement", plan.card.track),
+            plan.card.track,
+          );
           await this.advanceToNextStage(plan.taskId, "implement", guard, restartIdx);
           return;
         }
@@ -2436,6 +2444,21 @@ export class KilnOrchestrator {
       }
     }
 
+    const resolvedStepNode = resolveWorkflowStepAt(
+      plan.card,
+      plan.stepIndex ?? null,
+      plan.stage,
+      plan.card.track,
+    )?.node;
+    const dispatchImplementMode =
+      plan.stage === "implement" && resolvedStepNode?.kind === "agent"
+        ? (resolvedStepNode.mode ?? "normal")
+        : undefined;
+    const activeTestsLock =
+      plan.stage === "implement" && (dispatchImplementMode ?? "normal") === "normal"
+        ? this.getActiveContractTestsLock(plan.taskId, plan.contractVersion)
+        : null;
+
     const handoff = this.buildHandoffPayload({
       card: plan.card,
       runId,
@@ -2459,6 +2482,10 @@ export class KilnOrchestrator {
         ? { deliverConflictNote: opts.deliverConflictNote }
         : {}),
       ...(acceptEnvContext !== null ? { acceptEnvContext } : {}),
+      ...(dispatchImplementMode !== undefined ? { implementMode: dispatchImplementMode } : {}),
+      ...(activeTestsLock !== null && activeTestsLock.test_files.length > 0
+        ? { lockedContractTests: activeTestsLock.test_files }
+        : {}),
     });
 
     const isReadOnly =
@@ -4171,6 +4198,33 @@ export class KilnOrchestrator {
       card.workspace_mode === "git_worktree" ? this.getGitWorktreeDir(taskId) : undefined;
     const baselineSnapshot = this.readSavedFrozenBaseline(taskId, card);
 
+    const resolvedCurrentStep =
+      effectiveStage === "implement"
+        ? resolveWorkflowStepAt(card, runMeta.step_index ?? null, effectiveStage, card.track)
+        : null;
+    if (
+      resolvedCurrentStep?.node.kind === "agent" &&
+      resolvedCurrentStep.node.stage === "implement" &&
+      resolvedCurrentStep.node.mode === "test_first_lock" &&
+      parsedReceipt.ok &&
+      parsedReceipt.frontmatter.outcome === "completed" &&
+      parsedReceipt.frontmatter.run_id === runMeta.run_id &&
+      parsedReceipt.frontmatter.contract_version === card.contract_version
+    ) {
+      await this.verifyAndLockRedTests({
+        taskId,
+        card,
+        runDirName,
+        runMeta,
+        worktreePath,
+        baselineSnapshot,
+        guard,
+        activeRunId,
+        ...(signal !== undefined ? { signal } : {}),
+      });
+      return;
+    }
+
     // Multi-specialist consecutive implement steps: validate receipt, scope & frozen baseline,
     // commit intermediate changes, and hand off directly to the next implement specialist before
     // running full accept_cmd verification at the end of the implement sequence.
@@ -4304,6 +4358,35 @@ export class KilnOrchestrator {
     if (signal?.aborted || !this.isRunStillCurrent(taskId, activeRunId, card.contract_version)) {
       this.syncCaffeinate();
       return;
+    }
+
+    if (effectiveStage === "implement") {
+      const activeTestsLock = this.getActiveContractTestsLock(taskId, card.contract_version);
+      if (
+        activeTestsLock &&
+        gateResult.report.frozen_files_changed.some((p) => activeTestsLock.test_files.includes(p))
+      ) {
+        if (worktreePath && fs.existsSync(worktreePath) && activeTestsLock.test_files.length > 0) {
+          await runGitCommand([
+            "-C",
+            worktreePath,
+            "checkout",
+            "HEAD",
+            "--",
+            ...activeTestsLock.test_files,
+          ]).catch(() => {});
+        }
+        gateResult.report = GateReportSchema.parse({
+          ...gateResult.report,
+          artifacts_ok: false,
+        });
+        gateResult.passed = false;
+        writeYamlAtomic(
+          this.store.paths.gateYaml(taskId, runDirName),
+          gateResult.report,
+          GateReportSchema,
+        );
+      }
     }
 
     const { counters, triageAttempted } = this.computeStageCounters(
@@ -4491,7 +4574,16 @@ export class KilnOrchestrator {
     }
 
     if (stageDecision.action === "retry_stage") {
-      await this.advanceToNextStage(taskId, stageDecision.stage, guard, runMeta.step_index ?? null);
+      const retryStepIndex =
+        stageDecision.stage === "implement"
+          ? this.resolveImplementReworkStepIndex(
+              taskId,
+              latestCard,
+              runMeta.step_index ?? null,
+              stageDecision.effectiveTrack,
+            )
+          : (runMeta.step_index ?? null);
+      await this.advanceToNextStage(taskId, stageDecision.stage, guard, retryStepIndex);
       return;
     }
 
@@ -4540,6 +4632,417 @@ export class KilnOrchestrator {
       created_at: new Date().toISOString(),
     });
     this.transitionTaskToWaiting(taskId, pending, guard);
+  }
+
+  private getActiveContractTestsLock(
+    taskId: string,
+    contractVersion: number,
+  ): Extract<StateEvent, { type: "contract_tests_locked" }> | null {
+    const card = this.store.readTaskCard(taskId);
+    const events = this.store.readStateEvents(taskId);
+    let active: Extract<StateEvent, { type: "contract_tests_locked" }> | null = null;
+    for (const ev of events) {
+      if (ev.type === "contract_tests_locked" && ev.contract_version === contractVersion) {
+        active = ev;
+      } else if (
+        ev.type === "workflow_patched" &&
+        (ev.contract_version === undefined || ev.contract_version === contractVersion)
+      ) {
+        const flat = getWorkflowFlatSteps(card, card.track);
+        const remaining = flat.slice(ev.resume_step_index);
+        if (
+          remaining.some(
+            (n) => n.kind === "agent" && n.stage === "implement" && n.mode === "test_first_lock",
+          )
+        ) {
+          active = null;
+        }
+      } else if (ev.type === "contract_updated" && ev.to_version === contractVersion) {
+        active = null;
+      }
+    }
+    return active;
+  }
+
+  private resolveImplementReworkStepIndex(
+    taskId: string,
+    card: TaskCard,
+    candidateStepIndex: number | null,
+    effectiveTrack?: Track,
+  ): number | null {
+    if (candidateStepIndex === null) {
+      return null;
+    }
+    const flat = getWorkflowFlatSteps(card, effectiveTrack ?? card.track);
+    const candidate = flat[candidateStepIndex];
+    if (
+      candidate?.kind === "agent" &&
+      candidate.stage === "implement" &&
+      candidate.mode === "test_first_lock" &&
+      this.getActiveContractTestsLock(taskId, card.contract_version) !== null
+    ) {
+      for (let i = candidateStepIndex + 1; i < flat.length; i++) {
+        const next = flat[i]!;
+        if (
+          next.kind === "agent" &&
+          next.stage === "implement" &&
+          (next.mode ?? "normal") !== "test_first_lock"
+        ) {
+          return i;
+        }
+      }
+    }
+    return candidateStepIndex;
+  }
+
+  private async verifyAndLockRedTests(params: {
+    taskId: string;
+    card: TaskCard;
+    runDirName: string;
+    runMeta: RunMeta;
+    worktreePath: string | undefined;
+    baselineSnapshot: FrozenSnapshot | undefined;
+    guard: ExpectedRunGuard;
+    activeRunId: string;
+    signal?: AbortSignal;
+  }): Promise<void> {
+    const {
+      taskId,
+      card,
+      runDirName,
+      runMeta,
+      worktreePath,
+      baselineSnapshot,
+      guard,
+      activeRunId,
+      signal,
+    } = params;
+
+    const failRedTestCheck = async (gateReport: GateReport, detailNote: string): Promise<void> => {
+      writeYamlAtomic(this.store.paths.gateYaml(taskId, runDirName), gateReport, GateReportSchema);
+      const decPath = this.store.paths.decisionsMd(taskId);
+      const existing = readOptionalText(decPath) ?? "";
+      const noteBlock = [`### 红绿建测安检退回 (${runMeta.run_id})`, `- 原因: ${detailNote}`].join(
+        "\n",
+      );
+      writeFileAtomic(
+        decPath,
+        existing.trim().length > 0 ? `${existing.trimEnd()}\n\n${noteBlock}\n` : `${noteBlock}\n`,
+      );
+
+      const { counters, triageAttempted } = this.computeStageCounters(
+        taskId,
+        card,
+        "implement",
+        runMeta.run_id,
+      );
+      const advisorAvailable = this.isAdvisorConfigured();
+      const consecutiveSameFailureCount = this.computeConsecutiveSameGateFailureCount(
+        taskId,
+        card,
+        runMeta.run_id,
+        gateReport,
+      );
+      const syntheticReceipt = parseAndValidateReceipt(
+        "worker",
+        readOptionalText(this.store.paths.receiptMd(taskId, runDirName)) ?? "",
+      );
+      const stageDecision = evaluateWorkerStageOutcome(
+        card,
+        syntheticReceipt,
+        gateReport,
+        counters,
+        {
+          currentStage: "implement",
+          triageAttempted,
+          consecutiveSameFailureCount,
+          advisorAvailable,
+        },
+      );
+
+      if (stageDecision.escalateToL2 && card.track === "L1") {
+        const escalatedState = this.stateMachine.escalateTrackToL2(
+          taskId,
+          stageDecision.escalateReason ?? "frozen_files_changed",
+        );
+        this.publishTaskUpdated(taskId, {
+          contractVersion: escalatedState.contractVersion,
+        });
+      }
+
+      const latestCard = this.store.readTaskCard(taskId);
+      if (stageDecision.action === "advance_stage") {
+        return;
+      }
+      if (stageDecision.action === "invoke_advisor") {
+        assertCanInvokeAdvisor("kernel");
+        this.writeAdvisorRequest(taskId, {
+          schema_version: 1,
+          contract_version: latestCard.contract_version,
+          trigger: "stuck_same_failure",
+          source_stage: "implement",
+          source_run_id: runMeta.run_id,
+          source_role: "worker",
+          category: "stuck_loop",
+          reason: stageDecision.reason,
+          question: `红绿建测出卷阶段 (${runMeta.run_id}) 连续失败 (${detailNote})，请在不改目标与 scope 前提下研判破局。`,
+          options: [],
+          failure_fingerprint: computeGateFailureFingerprint(gateReport) ?? stageDecision.reason,
+          consecutive_failures: consecutiveSameFailureCount,
+          created_at: new Date().toISOString(),
+        });
+        await this.advanceToNextStage(taskId, "advise", guard);
+        return;
+      }
+      if (stageDecision.action === "retry_stage") {
+        await this.advanceToNextStage(
+          taskId,
+          stageDecision.stage,
+          guard,
+          runMeta.step_index ?? null,
+        );
+        return;
+      }
+      if (stageDecision.action === "invoke_triage") {
+        const roles = this.store.readConfig("roles");
+        if (roles?.roles.triage) {
+          await this.advanceToNextStage(taskId, "triage", guard);
+          return;
+        }
+      }
+      const pending = PendingDecisionSchema.parse({
+        id: `dec-${randomUUID().slice(0, 8)}`,
+        task_id: taskId,
+        run_id: runMeta.run_id,
+        contract_version: latestCard.contract_version,
+        reason: stageDecision.reason,
+        category: stageDecision.escalateToL2 ? "frozen_test_escalation" : "gate_failure_escalation",
+        question: `红绿建测出卷节点未通过 0-Token 安检：${detailNote}`,
+        options: [
+          {
+            id: "opt-retry-implement",
+            label: "重新生成失败测试 (test_first_lock)",
+            action: "resume",
+            target_stage: "implement",
+            step_index: runMeta.step_index ?? 0,
+            recommended: true,
+          },
+          {
+            id: "opt-cancel",
+            label: "取消任务",
+            action: "cancel",
+            recommended: false,
+          },
+        ],
+        created_at: new Date().toISOString(),
+      });
+      this.transitionTaskToWaiting(taskId, pending, guard);
+    };
+
+    if (!worktreePath || !fs.existsSync(worktreePath)) {
+      const report = GateReportSchema.parse({
+        schema_version: 1,
+        run_id: runMeta.run_id,
+        contract_version: card.contract_version,
+        schema_ok: true,
+        scope_ok: false,
+        artifacts_ok: false,
+        out_of_scope_paths: [],
+        frozen_files_changed: [],
+        accept_exit_code: 1,
+        accept_duration_ms: 0,
+        escalated_to_l2: false,
+        checked_at: new Date().toISOString(),
+      });
+      await failRedTestCheck(report, "test_first_lock 缺少可用 git_worktree 工作区");
+      return;
+    }
+
+    const rollbackRef = "HEAD";
+    const rollbackWorktree = async () => {
+      await runGitCommand(["-C", worktreePath, "reset", "--hard", rollbackRef]).catch(() => {});
+      await runGitCommand(["-C", worktreePath, "clean", "-fd"]).catch(() => {});
+    };
+
+    const gitChanges = await inspectGitWorktreeChanges(worktreePath, rollbackRef);
+    const changedPaths = gitChanges.changedPaths;
+    const isTestFilePath = (p: string): boolean =>
+      /\.(test|spec)\.[^./]+$/i.test(p) || /(^|\/)(__tests__|evals)\//.test(p);
+
+    const nonTestPaths = changedPaths.filter((p) => !isTestFilePath(p));
+    const scopeCheck = checkScope(changedPaths, card.contract.scope);
+    const space = this.store.readSpace(card.space);
+    const freezePatterns = space?.freeze_patterns ?? [];
+    let frozenFilesChanged: string[] = [];
+    if (freezePatterns.length > 0 || baselineSnapshot !== undefined) {
+      const frozenCheck = detectFrozenFilesChanged({
+        rootDir: worktreePath,
+        freezePatterns,
+        acceptCmd: card.contract.accept_cmd,
+        baselineHash: card.contract.accept_files_hash,
+        changedPaths,
+        baselineSnapshot,
+      });
+      frozenFilesChanged = frozenCheck.frozenFilesChanged;
+    }
+
+    if (
+      changedPaths.length === 0 ||
+      nonTestPaths.length > 0 ||
+      !scopeCheck.ok ||
+      frozenFilesChanged.length > 0
+    ) {
+      await rollbackWorktree();
+      const reasonParts: string[] = [];
+      if (changedPaths.length === 0) {
+        reasonParts.push("未产生任何测试文件改动");
+      }
+      if (nonTestPaths.length > 0) {
+        reasonParts.push(`触及非测试源码 (${nonTestPaths.join(", ")})`);
+      }
+      if (!scopeCheck.ok) {
+        reasonParts.push(`越出 contract.scope (${scopeCheck.outOfScopePaths.join(", ")})`);
+      }
+      if (frozenFilesChanged.length > 0) {
+        reasonParts.push(`篡改既有冻结文件 (${frozenFilesChanged.join(", ")})`);
+      }
+      const report = GateReportSchema.parse({
+        schema_version: 1,
+        run_id: runMeta.run_id,
+        contract_version: card.contract_version,
+        schema_ok: true,
+        scope_ok: scopeCheck.ok && nonTestPaths.length === 0,
+        artifacts_ok: false,
+        out_of_scope_paths: scopeCheck.ok ? nonTestPaths : scopeCheck.outOfScopePaths,
+        frozen_files_changed: frozenFilesChanged,
+        accept_exit_code: 1,
+        accept_duration_ms: 0,
+        escalated_to_l2: frozenFilesChanged.length > 0 && card.track === "L1",
+        checked_at: new Date().toISOString(),
+      });
+      await failRedTestCheck(report, `Check 1 路径安检失败: ${reasonParts.join("; ")}`);
+      return;
+    }
+
+    const startedMs = Date.now();
+    const redResult = await runIsolatedCommand(card.contract.accept_cmd, {
+      cwd: worktreePath,
+      ...(signal !== undefined ? { signal } : {}),
+    });
+    const redDurationMs = Math.max(0, Date.now() - startedMs);
+    if (signal?.aborted || !this.isRunStillCurrent(taskId, activeRunId, card.contract_version)) {
+      this.syncCaffeinate();
+      return;
+    }
+
+    if (redResult.timedOut || redResult.exitCode === 0) {
+      await rollbackWorktree();
+      const report = GateReportSchema.parse({
+        schema_version: 1,
+        run_id: runMeta.run_id,
+        contract_version: card.contract_version,
+        schema_ok: true,
+        scope_ok: true,
+        artifacts_ok: false,
+        out_of_scope_paths: [],
+        frozen_files_changed: [],
+        accept_exit_code: redResult.timedOut ? 124 : redResult.exitCode,
+        accept_duration_ms: redDurationMs,
+        escalated_to_l2: false,
+        checked_at: new Date().toISOString(),
+      });
+      await failRedTestCheck(
+        report,
+        redResult.timedOut
+          ? "Check 2 红灯校验超时（accept_cmd 超时），已回滚工作区"
+          : "Check 2 红灯校验未失败（accept_cmd 意外返回 0，疑似空壳/假测试），已回滚工作区",
+      );
+      return;
+    }
+
+    await this.commitVerifiedWorktreeChanges(card, worktreePath, runMeta.round);
+    const commitSha = (
+      await runGitCommand(["-C", worktreePath, "rev-parse", "HEAD"]).catch(() => "")
+    ).trim();
+
+    const mergedFreezePatterns = Array.from(
+      new Set([
+        ...freezePatterns,
+        ...(baselineSnapshot?.files.map((f) => f.path) ?? []),
+        ...changedPaths,
+      ]),
+    );
+    const nextSnapshot = computeFrozenSnapshot(
+      worktreePath,
+      mergedFreezePatterns,
+      card.contract.accept_cmd,
+    );
+    this.saveFrozenBaseline(taskId, nextSnapshot);
+
+    const nowIso = new Date().toISOString();
+    const latestCard = this.store.readTaskCard(taskId);
+    const updatedCard = TaskCardSchema.parse({
+      ...latestCard,
+      contract: {
+        ...latestCard.contract,
+        accept_files_hash: nextSnapshot.hash,
+      },
+      updated_at: nowIso,
+    });
+    writeYamlAtomic(this.store.paths.cardYaml(taskId), updatedCard, TaskCardSchema);
+    this.store.appendStateEvent(taskId, {
+      type: "contract_tests_locked",
+      at: nowIso,
+      contract_version: updatedCard.contract_version,
+      run_id: runMeta.run_id,
+      test_files: changedPaths,
+      accept_files_hash: nextSnapshot.hash,
+      ...(commitSha ? { commit_sha: commitSha } : {}),
+    });
+
+    const lockGateReport = GateReportSchema.parse({
+      schema_version: 1,
+      run_id: runMeta.run_id,
+      contract_version: updatedCard.contract_version,
+      schema_ok: true,
+      scope_ok: true,
+      artifacts_ok: true,
+      out_of_scope_paths: [],
+      frozen_files_changed: [],
+      accept_exit_code: 0,
+      accept_duration_ms: redDurationMs,
+      escalated_to_l2: false,
+      checked_at: nowIso,
+    });
+    writeYamlAtomic(
+      this.store.paths.gateYaml(taskId, runDirName),
+      lockGateReport,
+      GateReportSchema,
+    );
+
+    await createGitWorktreeCheckpoint({
+      worktreePath,
+      taskId,
+      runId: runMeta.run_id,
+      phase: "post",
+      stage: "implement",
+      round: runMeta.round,
+    }).catch(() => {});
+    await this.refreshTaskContextMap(updatedCard, worktreePath, runMeta.input_ref);
+
+    const derived = deriveTaskStatus(updatedCard, this.store.readStateEvents(taskId));
+    const nextStep = nextWorkflowStepAfter(
+      updatedCard,
+      runMeta.step_index ?? null,
+      "implement",
+      derived.track,
+    );
+    await this.advanceToNextStage(
+      taskId,
+      nextStep?.stage ?? "implement",
+      guard,
+      nextStep?.stepIndex ?? null,
+    );
   }
 
   private async commitVerifiedWorktreeChanges(
@@ -4714,11 +5217,16 @@ export class KilnOrchestrator {
     }
 
     if (reviewDecision.action === "rework_implement") {
-      const restartStepIndex = findLoopRestartStepIndex(
+      const restartStepIndex = this.resolveImplementReworkStepIndex(
+        taskId,
         card,
-        reviewDecision.targetStage,
+        findLoopRestartStepIndex(
+          card,
+          reviewDecision.targetStage,
+          card.track,
+          runMeta.step_index ?? null,
+        ),
         card.track,
-        runMeta.step_index ?? null,
       );
       await this.advanceToNextStage(taskId, reviewDecision.targetStage, guard, restartStepIndex);
       return;
@@ -5004,11 +5512,11 @@ export class KilnOrchestrator {
         nextStep?.stepIndex ?? null,
       );
     } else {
-      const restartIdx = findLoopRestartStepIndex(
+      const restartIdx = this.resolveImplementReworkStepIndex(
+        taskId,
         card,
-        "implement",
+        findLoopRestartStepIndex(card, "implement", card.track, runMeta.step_index ?? null),
         card.track,
-        runMeta.step_index ?? null,
       );
       await this.advanceToNextStage(taskId, "implement", guard, restartIdx);
     }
@@ -6462,11 +6970,11 @@ export class KilnOrchestrator {
             stage: "implement",
           });
           const latestCard = this.store.readTaskCard(p.taskId);
-          const restartStepIndex = findLoopRestartStepIndex(
+          const restartStepIndex = this.resolveImplementReworkStepIndex(
+            p.taskId,
             latestCard,
-            "implement",
+            findLoopRestartStepIndex(latestCard, "implement", latestCard.track, p.stepIndex),
             latestCard.track,
-            p.stepIndex,
           );
           await this.advanceToNextStage(p.taskId, "implement", expected, restartStepIndex);
         },

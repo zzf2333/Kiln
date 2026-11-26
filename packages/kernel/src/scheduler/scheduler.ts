@@ -46,6 +46,7 @@ import {
   type RateLimitKey,
 } from "./locks.js";
 import {
+  filterCandidatesAvoidingPeers,
   resolveRoleAssignment,
   resolveRosterStageAssignment,
   type ResolvedRoleAssignment,
@@ -914,15 +915,34 @@ export class KilnScheduler {
 
           let resolvedRosterRoleId = explicitRosterRoleId;
           let escalateFromRole: string | undefined;
+          const isTestFirstLockNode =
+            stage === "implement" &&
+            effectiveNode?.kind === "agent" &&
+            effectiveNode.mode === "test_first_lock";
+
           if (stage === "implement") {
-            const implChoice = resolveImplementRosterRole(
-              this.store,
-              snap.card,
-              rosterConfig,
-              explicitRosterRoleId,
-            );
-            resolvedRosterRoleId = implChoice.rosterRoleId;
-            escalateFromRole = implChoice.escalateFromRole;
+            if (isTestFirstLockNode) {
+              const testerEntry = rosterConfig.roster.tester;
+              if (
+                !resolvedRosterRoleId &&
+                testerEntry?.enabled &&
+                (testerEntry.primary !== undefined || (testerEntry.fallbacks?.length ?? 0) > 0)
+              ) {
+                resolvedRosterRoleId = "tester";
+              } else if (!resolvedRosterRoleId) {
+                const mainDevEntry = rosterConfig.roster.main_dev;
+                resolvedRosterRoleId = mainDevEntry?.enabled ? "main_dev" : undefined;
+              }
+            } else {
+              const implChoice = resolveImplementRosterRole(
+                this.store,
+                snap.card,
+                rosterConfig,
+                explicitRosterRoleId,
+              );
+              resolvedRosterRoleId = implChoice.rosterRoleId;
+              escalateFromRole = implChoice.escalateFromRole;
+            }
           }
 
           const avoidPeers: Array<{ stage: StageId; agent: string; model: string }> = [];
@@ -974,10 +994,78 @@ export class KilnScheduler {
               this.rateLimitTracker.getCooldownUntil(key, nowMs) !== null ||
               (this.providerHealth?.isInCooldown(key.agent, nowMs) ?? false),
           });
+          if (isTestFirstLockNode && roleAssignment !== null) {
+            if (!nodeOverride?.binding && (rosterConfig.heterogeneous_review ?? true)) {
+              const downstreamImplNode = workflowNodes.find(
+                (n, idx) =>
+                  idx > (stepIndex ?? -1) &&
+                  n.kind === "agent" &&
+                  n.stage === "implement" &&
+                  (n.mode ?? "normal") === "normal",
+              );
+              let answererPeer: { agent: string; model: string } | null = null;
+              if (downstreamImplNode?.kind === "agent") {
+                if (downstreamImplNode.binding) {
+                  answererPeer = {
+                    agent: downstreamImplNode.binding.provider,
+                    model: downstreamImplNode.binding.model,
+                  };
+                } else {
+                  const ansKey = downstreamImplNode.roster_role ?? "main_dev";
+                  const ansEntry = rosterConfig.roster[ansKey];
+                  if (ansEntry?.enabled && ansEntry.primary) {
+                    answererPeer = {
+                      agent: ansEntry.primary.provider,
+                      model: ansEntry.primary.model,
+                    };
+                  }
+                }
+              }
+              if (answererPeer && roleAssignment.rosterRoleId) {
+                const authorEntry = rosterConfig.roster[roleAssignment.rosterRoleId];
+                const authorCandidates = [
+                  ...(authorEntry?.primary ? [authorEntry.primary] : []),
+                  ...(authorEntry?.fallbacks ?? []),
+                ];
+                const distinct = filterCandidatesAvoidingPeers(authorCandidates, [answererPeer]);
+                const chosen =
+                  distinct.find(
+                    (cand) =>
+                      this.rateLimitTracker.getCooldownUntil(
+                        {
+                          ...(cand.backend_id !== undefined ? { backendId: cand.backend_id } : {}),
+                          agent: cand.provider,
+                          model: cand.model,
+                        },
+                        nowMs,
+                      ) === null &&
+                      !(this.providerHealth?.isInCooldown(cand.provider, nowMs) ?? false),
+                  ) ?? distinct[0];
+                if (chosen) {
+                  roleAssignment = {
+                    ...roleAssignment,
+                    ...(chosen.backend_id !== undefined ? { backendId: chosen.backend_id } : {}),
+                    agent: chosen.provider,
+                    model: chosen.model,
+                    ...(chosen.effort !== undefined ? { reasoningEffort: chosen.effort } : {}),
+                  };
+                }
+              }
+            }
+            roleAssignment = {
+              ...roleAssignment,
+              freshContext: true,
+              perm: "workspace_write",
+            };
+          }
           if (stage === "research" && roleAssignment === null) {
             role = null;
           }
         } else if (rolesConfig && role !== null && stage !== "verify" && stage !== "deliver") {
+          const isTestFirstLockNode =
+            stage === "implement" &&
+            stageNode?.kind === "agent" &&
+            stageNode.mode === "test_first_lock";
           if (nodeOverride?.binding) {
             roleAssignment = {
               role,
@@ -993,7 +1081,7 @@ export class KilnScheduler {
               ...(nodeOverride.binding.effort !== undefined
                 ? { reasoningEffort: nodeOverride.binding.effort }
                 : {}),
-              freshContext: stage !== "implement",
+              freshContext: stage !== "implement" || isTestFirstLockNode,
               allowFullAccessFallback: false,
               usedFallback: false,
             };
@@ -1008,13 +1096,14 @@ export class KilnScheduler {
                   ? { agentCapabilitiesMap: this.agentCapabilitiesMap }
                   : {},
               );
-              if (roleAssignment && (nodeOverride?.label || nodeOverride?.instructions)) {
+              if (roleAssignment) {
                 roleAssignment = {
                   ...roleAssignment,
-                  ...(nodeOverride.label !== undefined ? { stepLabel: nodeOverride.label } : {}),
-                  ...(nodeOverride.instructions !== undefined
+                  ...(nodeOverride?.label !== undefined ? { stepLabel: nodeOverride.label } : {}),
+                  ...(nodeOverride?.instructions !== undefined
                     ? { customInstructions: nodeOverride.instructions }
                     : {}),
+                  ...(isTestFirstLockNode ? { freshContext: true } : {}),
                 };
               }
             }

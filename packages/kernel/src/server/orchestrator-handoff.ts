@@ -282,6 +282,8 @@ export interface BuildHandoffParams {
   previousReviewSummary?: string | null;
   previousAcceptSummary?: string | null;
   acceptEnvContext?: AcceptEnvHandoffContext | null;
+  implementMode?: "normal" | "dry_run_only" | "test_first_lock";
+  lockedContractTests?: readonly string[];
 }
 
 function buildLayer0WorkspaceSafetyNote(card: TaskCard, role: RoleId, stage: StageId): string {
@@ -323,6 +325,8 @@ function buildStageCognitiveDirective(params: {
   round?: number;
   hasAdvisorOrHumanDecision?: boolean;
   hasDownstreamHumanApproval?: boolean;
+  implementMode?: "normal" | "dry_run_only" | "test_first_lock";
+  lockedContractTests?: readonly string[];
 }): string {
   const {
     stage,
@@ -333,6 +337,8 @@ function buildStageCognitiveDirective(params: {
     round = 1,
     hasAdvisorOrHumanDecision = false,
     hasDownstreamHumanApproval = false,
+    implementMode = "normal",
+    lockedContractTests = [],
   } = params;
   if (stage === "research") {
     return [
@@ -406,6 +412,15 @@ function buildStageCognitiveDirective(params: {
   if (stage === "triage") {
     return `### 阶段认知与自由度模式：异常研判（triage · 只读）\n- 请基于失败事实与磁盘日志判定根因并给出 retry / escalate_advisor / ask_human 建议，严禁修改工作区文件，提交 triage 角色回执。`;
   }
+  if (implementMode === "test_first_lock") {
+    return [
+      `### 阶段认知与自由度模式：红绿建测物理隔离 · 红灯出卷阶段 (implement · test_first_lock · 只写失败测试)`,
+      `- 工作区位于 ${cwd}。你正在执行 **E1 红绿建测前置出卷节点**，职责是为契约目标编写可验证的失败测试。`,
+      `- **严格路径白名单**：本步改动必须 100% 仅限 \`contract.scope\` 内的测试文件（\`*.test.*\`、\`*.spec.*\`、\`**/__tests__/**\` 或 \`evals/**\`）；**严禁新增或修改任何业务源码，也严禁篡改既有冻结文件**。`,
+      `- **红灯前提约束**：提交回执前，你新增/修改的测试在当前未实现业务源码下**必须确定性失败（\`accept_cmd\` 返回非 0 退出码）**。内核回执后将依次执行 3 道 0-Token 物理安检（仅测试文件变动 → \`accept_cmd\` 红灯复验 → 提交并与 SHA256 动态锁定写入 \`frozen_baseline.json\`），一旦发现改动业务源码或 \`accept_cmd\` 意外 exit 0 将立即回滚重出。`,
+      `- 若经只读核查发现需求存在无法先写测试的技术歧义，请提交 \`outcome: "need_decision"\`（\`category: "technical_ambiguity"\`）说明原因。`,
+    ].join("\n");
+  }
   if (card.workspace_mode === "host_scoped") {
     return [
       `### 阶段认知与自由度模式：本机暂存收敛执行（implement · host_scoped）`,
@@ -414,7 +429,11 @@ function buildStageCognitiveDirective(params: {
       `- 若最终判定可执行目标数为 0，禁止提交 \`outcome: completed\` 静默送审空方案，须提交 \`outcome: need_decision\` 说明缺口并请求用户决定。`,
     ].join("\n");
   }
-  return `### 阶段认知与自由度模式：严格收敛执行（implement）\n- 请严格遵循定稿方案与交付契约做最小完整落地，严禁越过 \`contract.scope\` 或自行扩大需求边界；若触发方案中的 \`Re-plan if\` 条件、发现不可逾越前提或需要重编排步骤/角色，请立即通过 \`outcome: need_decision\`（\`category: "workflow_replan"\`）上报以唤醒 \`advisor\` 重排，而非盲目强改。`;
+  const lockedTestsNote =
+    lockedContractTests.length > 0
+      ? `\n- **红绿建测锁定考卷生效中**：下列测试文件已被 \`test_first_lock\` 锁定并纳入 \`frozen_baseline.json\` 冻结基线，**严禁修改、删除或削弱断言**（一旦触碰将被 0-Token 门禁立即拒收）：${lockedContractTests.map((p) => `\`${p}\``).join("、")}。你只能修改业务源码使测试由红转绿；若经严格核查确信某条锁定测试本身与 \`BRIEF\`/\`PLAN\` 矛盾，请勿私自改测试，须提交 \`outcome: "need_decision"\`（\`category: "technical_ambiguity"\`）请求 \`advisor\` 通过 \`workflow_patch\` 解锁重出。`
+      : "";
+  return `### 阶段认知与自由度模式：严格收敛执行（implement）\n- 请严格遵循定稿方案与交付契约做最小完整落地，严禁越过 \`contract.scope\` 或自行扩大需求边界；若触发方案中的 \`Re-plan if\` 条件、发现不可逾越前提或需要重编排步骤/角色，请立即通过 \`outcome: need_decision\`（\`category: "workflow_replan"\`）上报以唤醒 \`advisor\` 重排，而非盲目强改。${lockedTestsNote}`;
 }
 
 /**
@@ -502,6 +521,8 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
     previousReviewSummary,
     previousAcceptSummary,
     acceptEnvContext,
+    implementMode,
+    lockedContractTests,
   } = params;
 
   const brief = readOptionalText(store.paths.briefMd(card.id)) ?? "";
@@ -802,6 +823,8 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
       round,
       hasAdvisorOrHumanDecision,
       hasDownstreamHumanApproval,
+      ...(implementMode !== undefined ? { implementMode } : {}),
+      ...(lockedContractTests !== undefined ? { lockedContractTests } : {}),
     }),
     ``,
     ...(advisorContextSection ? [advisorContextSection, ``] : []),

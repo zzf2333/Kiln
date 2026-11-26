@@ -164,7 +164,7 @@ function sameAgentModel(
   return a.agent === b.agent && a.model === b.model;
 }
 
-function filterCandidatesAvoidingPeers(
+export function filterCandidatesAvoidingPeers(
   candidates: readonly RosterModelBinding[],
   peers: ReadonlyArray<{ agent: string; model: string }>,
 ): RosterModelBinding[] {
@@ -326,7 +326,10 @@ export function resolveRosterStageAssignment(
 
   const overrideBinding = options?.nodeOverride?.binding;
   const effectivePerm: RosterPermission = entry?.perm ?? defaultPermForStage(stage, role);
-  const effectiveMode: RosterExecutionMode = overrideBinding ? "agent" : (entry?.mode ?? "agent");
+  const effectiveMode: RosterExecutionMode =
+    overrideBinding || (entry !== undefined && entry.stage !== stage)
+      ? "agent"
+      : (entry?.mode ?? "agent");
 
   if (effectiveMode === "kernel") {
     return null;

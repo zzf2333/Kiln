@@ -496,19 +496,29 @@ export function computeFrozenSnapshot(
 export function detectFrozenFilesChanged(
   input: DetectFrozenFilesChangedInput,
 ): DetectFrozenFilesChangedResult {
+  const effectiveFreezePatterns = Array.from(
+    new Set([
+      ...input.freezePatterns,
+      ...(input.baselineSnapshot?.files.map((entry) => entry.path) ?? []),
+    ]),
+  );
   const currentSnapshot = computeFrozenSnapshot(
     input.rootDir,
-    input.freezePatterns,
+    effectiveFreezePatterns,
     input.acceptCmd,
   );
   const hashMatched = currentSnapshot.hash === input.baselineHash;
 
   const changedSet = new Set<string>();
-  const compiledPatterns = input.freezePatterns.map(compileScopePattern);
+  const compiledPatterns = effectiveFreezePatterns.map(compileScopePattern);
+  const baselinePaths = new Set(input.baselineSnapshot?.files.map((entry) => entry.path) ?? []);
 
   if (input.changedPaths && compiledPatterns.length > 0) {
     for (const rawChanged of input.changedPaths) {
       const norm = normalizeRepoRelativePath(rawChanged);
+      if (baselinePaths.has(norm)) {
+        continue;
+      }
       const segs = norm.split("/");
       if (compiledPatterns.some((p) => matchesCompiledPattern(norm, segs, p))) {
         changedSet.add(norm);
