@@ -647,12 +647,21 @@ export function DetailView() {
       (ev): ev is Extract<typeof ev, { type: "subtasks_spawned" }> =>
         ev.type === "subtasks_spawned" && ev.contract_version === card.contract_version,
     );
-  const latestFastForward = [...stateEventsList]
-    .reverse()
-    .find(
-      (ev): ev is Extract<typeof ev, { type: "stage_fast_forwarded" }> =>
-        ev.type === "stage_fast_forwarded",
-    );
+  let latestFastForward:
+    | Extract<(typeof stateEventsList)[number], { type: "stage_fast_forwarded" }>
+    | undefined;
+  for (let i = stateEventsList.length - 1; i >= 0; i -= 1) {
+    const ev = stateEventsList[i]!;
+    if (ev.type === "contract_updated" || (ev.type === "running" && ev.stage === "implement")) {
+      break;
+    }
+    if (ev.type === "stage_fast_forwarded") {
+      if (ev.contract_version === undefined || ev.contract_version === card.contract_version) {
+        latestFastForward = ev;
+      }
+      break;
+    }
+  }
   const childTasks = state.tasks.filter((t) => t.parent_id === card.id);
   const completedChildCount = childTasks.filter((t) => t.status === "done").length;
   const totalSplitCount =

@@ -394,8 +394,8 @@ export class KilndServer {
       onBeforeDecisionApply: async (taskId) => {
         await this.orchestrator.abortActiveRun(taskId);
       },
-      onApproveSubtaskSplit: async (taskId, decisionId) => {
-        await this.orchestrator.approvePendingSubtaskSplit(taskId, decisionId);
+      onApproveSubtaskSplit: async (taskId, decisionId, opts) => {
+        await this.orchestrator.approvePendingSubtaskSplit(taskId, decisionId, opts);
       },
       getActiveAcceptEnv: (taskId) => this.orchestrator.getActiveAcceptEnvSnapshot(taskId),
       onSettingsUpdated: async (section) => {

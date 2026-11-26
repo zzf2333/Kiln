@@ -17,7 +17,7 @@ import {
   runIsolatedCommand,
 } from "../gate/index.js";
 import type { DispatchPlan } from "../scheduler/index.js";
-import type { KilnStore } from "../store/index.js";
+import { deriveTaskStatus, type KilnStore } from "../store/index.js";
 import { MAX_REFINERY_AUTO_REWORKS, countRefineryAutoReworks } from "./merge-queue.js";
 import { runGitCommand } from "./orchestrator-git.js";
 
@@ -491,7 +491,11 @@ export async function executeDeliverStage(
 
     if (card.workspace_mode === "git_worktree" && worktreePath && fs.existsSync(worktreePath)) {
       const space = ctx.store.readSpace(card.space);
-      if (card.contract.deliver.mode === "merge_main" && space?.repo_path) {
+      if (
+        (card.contract.deliver.mode === "merge_main" ||
+          card.contract.deliver.mode === "merge_parent") &&
+        space?.repo_path
+      ) {
         const statusOut = (
           await runGitCommand(["-C", worktreePath, "status", "--porcelain"])
         ).trim();
@@ -512,7 +516,7 @@ export async function executeDeliverStage(
             contract_version: card.contract_version,
             reason: "worktree_dirty_before_merge",
             category: "deliver_merge_blocked",
-            question: `工作树分支 kiln/${plan.taskId} 存在未提交改动，无法执行 merge_main，请先处理未提交变更后再重试合并。`,
+            question: `工作树分支 kiln/${plan.taskId} 存在未提交改动，无法执行 ${card.contract.deliver.mode}，请先处理未提交变更后再重试合并。`,
             options: [
               {
                 id: "opt-reimplement",
@@ -523,7 +527,7 @@ export async function executeDeliverStage(
               },
               {
                 id: "opt-retry-deliver",
-                label: "已在本地处理，重试合并主分支",
+                label: "已在本地处理，重试合并",
                 action: "resume",
                 target_stage: "deliver",
                 recommended: false,
@@ -542,27 +546,76 @@ export async function executeDeliverStage(
         }
 
         const parentWorktreePath = card.parent !== null ? ctx.getGitWorktreeDir(card.parent) : null;
-        const parentSpawnedChild =
-          card.parent !== null &&
-          parentWorktreePath !== null &&
-          fs.existsSync(parentWorktreePath) &&
-          (() => {
-            try {
-              const parentCard = ctx.store.readTaskCard(card.parent!);
-              const parentEvents = ctx.store.readStateEvents(card.parent!);
-              return parentEvents.some(
-                (ev) =>
-                  ev.type === "subtasks_spawned" &&
-                  ev.contract_version === parentCard.contract_version &&
-                  ev.child_task_ids.includes(plan.taskId),
-              );
-            } catch {
-              return false;
+        let isSplitChildRecord = card.contract.deliver.mode === "merge_parent";
+        let parentTargetReady = false;
+        let parentUnavailableReason = "";
+
+        if (card.parent !== null) {
+          try {
+            const parentCard = ctx.store.readTaskCard(card.parent);
+            const parentEvents = ctx.store.readStateEvents(card.parent);
+            const parentDerived = deriveTaskStatus(parentCard, parentEvents);
+            const anySpawnedChild = parentEvents.some(
+              (ev) => ev.type === "subtasks_spawned" && ev.child_task_ids.includes(plan.taskId),
+            );
+            if (anySpawnedChild) {
+              isSplitChildRecord = true;
             }
-          })();
-        const baseRef = parentSpawnedChild ? `kiln/${card.parent}` : space.default_branch;
-        const mergeTargetDir = parentSpawnedChild ? parentWorktreePath! : space.repo_path!;
-        const mergeTargetLabel = parentSpawnedChild ? "父任务工作树" : "主仓库";
+            const activeSpawnedChild = parentEvents.some(
+              (ev) =>
+                ev.type === "subtasks_spawned" &&
+                ev.contract_version === parentCard.contract_version &&
+                ev.child_task_ids.includes(plan.taskId),
+            );
+            if (!activeSpawnedChild) {
+              parentUnavailableReason = `父任务 "${card.parent}" 当前契约版本 (v${parentCard.contract_version}) 已与裂变记录不一致`;
+            } else if (parentDerived.status === "cancelled" || parentDerived.status === "done") {
+              parentUnavailableReason = `父任务 "${card.parent}" 已处于终态 "${parentDerived.status}"`;
+            } else if (!parentWorktreePath || !fs.existsSync(parentWorktreePath)) {
+              parentUnavailableReason = `父任务 "${card.parent}" 工作树目录不存在或已被清理`;
+            } else {
+              parentTargetReady = true;
+            }
+          } catch {
+            parentUnavailableReason = `父任务 "${card.parent}" 不存在或已被删除`;
+          }
+        } else if (isSplitChildRecord) {
+          parentUnavailableReason = `子卡缺少有效的 parent 任务引用`;
+        }
+
+        if (isSplitChildRecord && !parentTargetReady) {
+          const decision = PendingDecisionSchema.parse({
+            id: `dec-${randomUUID().slice(0, 8)}`,
+            task_id: plan.taskId,
+            contract_version: card.contract_version,
+            reason: "parent_merge_target_unavailable",
+            category: "deliver_merge_blocked",
+            question: `裂变子卡分支 kiln/${plan.taskId} 禁止越权合入主分支，但合入父工作树失败：${parentUnavailableReason}。`,
+            options: [
+              {
+                id: "opt-retry-deliver",
+                label: "父任务恢复后重试合入父工作树",
+                action: "resume",
+                target_stage: "deliver",
+                recommended: true,
+              },
+              {
+                id: "opt-cancel",
+                label: "取消此子卡",
+                action: "cancel",
+                recommended: false,
+              },
+            ],
+            created_at: new Date().toISOString(),
+          });
+          ctx.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
+          return;
+        }
+
+        const isParentMerge = isSplitChildRecord && parentTargetReady;
+        const baseRef = isParentMerge ? `kiln/${card.parent}` : space.default_branch;
+        const mergeTargetDir = isParentMerge ? parentWorktreePath! : space.repo_path!;
+        const mergeTargetLabel = isParentMerge ? "父任务工作树" : "主仓库";
         const mergeOutcome = await ctx.withSpaceMergeLock(
           space.repo_path,
           async (): Promise<{
@@ -574,6 +627,35 @@ export async function executeDeliverStage(
               !ctx.isRunStillCurrent(plan.taskId, deliverRunId, plan.contractVersion)
             ) {
               ctx.syncCaffeinate();
+              return { handled: true };
+            }
+
+            if (isParentMerge && !fs.existsSync(mergeTargetDir)) {
+              const decision = PendingDecisionSchema.parse({
+                id: `dec-${randomUUID().slice(0, 8)}`,
+                task_id: plan.taskId,
+                contract_version: card.contract_version,
+                reason: "parent_merge_target_unavailable",
+                category: "deliver_merge_blocked",
+                question: `裂变子卡分支 kiln/${plan.taskId} 禁止越权合入主分支，锁内检测父工作树已不存在。`,
+                options: [
+                  {
+                    id: "opt-retry-deliver",
+                    label: "父任务恢复后重试合入父工作树",
+                    action: "resume",
+                    target_stage: "deliver",
+                    recommended: true,
+                  },
+                  {
+                    id: "opt-cancel",
+                    label: "取消此子卡",
+                    action: "cancel",
+                    recommended: false,
+                  },
+                ],
+                created_at: new Date().toISOString(),
+              });
+              ctx.transitionTaskToWaiting(plan.taskId, decision, deliverGuard);
               return { handled: true };
             }
 
@@ -625,7 +707,7 @@ export async function executeDeliverStage(
                 id: `dec-${randomUUID().slice(0, 8)}`,
                 task_id: plan.taskId,
                 contract_version: card.contract_version,
-                reason: parentSpawnedChild
+                reason: isParentMerge
                   ? "parent_worktree_not_ready_for_merge"
                   : "main_repo_not_ready_for_merge",
                 category: "deliver_merge_blocked",

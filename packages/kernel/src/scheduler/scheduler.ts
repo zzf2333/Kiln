@@ -380,7 +380,38 @@ function computeNextStageAndRound(
   if (derived.stage === "triage" || derived.stage === "advise") {
     stage = derived.stage;
   } else {
-    const resolved = resolveWorkflowStepAt(card, derived.stepIndex, derived.stage, derived.track);
+    let hintStepIndex = derived.stepIndex;
+    if (hintStepIndex === null && derived.stage !== null) {
+      for (let i = events.length - 1; i >= 0; i--) {
+        const ev = events[i]!;
+        if (ev.type === "running" && ev.stage === "implement") {
+          break;
+        }
+        if (
+          ev.type === "subtasks_spawned" &&
+          ev.contract_version === derived.contractVersion &&
+          derived.stage === "verify"
+        ) {
+          hintStepIndex = ev.resume_step_index;
+          break;
+        }
+      }
+      if (hintStepIndex === null) {
+        for (let i = events.length - 1; i >= 0; i--) {
+          const ev = events[i]!;
+          if (ev.type === "workflow_patched" && ev.contract_version === derived.contractVersion) {
+            const flat = getWorkflowFlatSteps(card, derived.track);
+            const start = Math.max(0, Math.min(ev.preserved_prefix_steps, flat.length));
+            const relIdx = flat.slice(start).findIndex((n) => n.stage === derived.stage);
+            if (relIdx >= 0) {
+              hintStepIndex = start + relIdx;
+            }
+            break;
+          }
+        }
+      }
+    }
+    const resolved = resolveWorkflowStepAt(card, hintStepIndex, derived.stage, derived.track);
     if (resolved) {
       stage = resolved.node.stage;
       stepIndex = resolved.stepIndex;
@@ -667,7 +698,8 @@ export class KilnScheduler {
               scope: snap.card.contract.scope,
             });
             if (
-              snap.card.contract.deliver.mode === "merge_main" &&
+              (snap.card.contract.deliver.mode === "merge_main" ||
+                snap.card.contract.deliver.mode === "merge_parent") &&
               snap.derived.stage === "deliver"
             ) {
               activeMergeSpaces.add(snap.card.space);
@@ -1035,7 +1067,8 @@ export class KilnScheduler {
       const isMergeMainDeliverCandidate =
         stage === "deliver" &&
         snap.card.workspace_mode === "git_worktree" &&
-        snap.card.contract.deliver.mode === "merge_main";
+        (snap.card.contract.deliver.mode === "merge_main" ||
+          snap.card.contract.deliver.mode === "merge_parent");
       if (isMergeMainDeliverCandidate && activeMergeSpaces.has(snap.card.space)) {
         continue;
       }

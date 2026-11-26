@@ -270,7 +270,16 @@ export interface HttpApiDependencies {
   onTaskCancelled?: (taskId: string) => Promise<void> | void;
   onTaskDeleted?: (taskId: string, card: TaskCard) => Promise<void> | void;
   onBeforeDecisionApply?: (taskId: string) => Promise<void> | void;
-  onApproveSubtaskSplit?: (taskId: string, decisionId: string) => Promise<void> | void;
+  onApproveSubtaskSplit?: (
+    taskId: string,
+    decisionId: string,
+    options?: {
+      rationale?: string;
+      applyLedgerRule?: boolean;
+      contractUpdate?: ContractUpdateInput;
+      ledgerRule?: string;
+    },
+  ) => Promise<void> | void;
   onSettingsUpdated?: (
     section: "roles" | "limits" | "pricing" | "providers" | "roster",
   ) => Promise<void> | void;
@@ -2796,6 +2805,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     const body = OptionalReasonBodySchema.parse(await readJsonBodyOptional(c));
     const result = stateMachine.cancelTask(taskId, body.reason);
     pendingDecisions.remove(taskId);
+    fs.rmSync(store.paths.pendingSubtaskSplitYaml(taskId), { force: true });
     await Promise.resolve(onTaskCancelled?.(taskId));
     if (!onTaskCancelled) {
       try {
@@ -2804,6 +2814,28 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         // ignore non-critical retro errors during cancel
       }
     }
+
+    const childRows = store
+      .listTasks()
+      .filter(
+        (row) => row.parent_id === taskId && row.status !== "done" && row.status !== "cancelled",
+      );
+    for (const child of childRows) {
+      const childCancelRes = stateMachine.cancelTask(child.id, `父任务 ${taskId} 已取消`);
+      pendingDecisions.remove(child.id);
+      fs.rmSync(store.paths.pendingSubtaskSplitYaml(child.id), { force: true });
+      await Promise.resolve(onTaskCancelled?.(child.id));
+      sseHub.publish({
+        type: "task.updated",
+        taskId: child.id,
+        patch: {
+          status: childCancelRes.state.status,
+          contractVersion: childCancelRes.state.contractVersion,
+        },
+      });
+      registerUpstreamCancelledDownstreams(childCancelRes.waitingDownstreamTaskIds);
+    }
+
     caffeinate.syncRunningCount(countRunningLeafTasks(store));
 
     sseHub.publish({
@@ -2838,14 +2870,18 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
 
     const dependentTaskIds = store
       .listTasks()
-      .filter((row) => row.id !== taskId && store.readTaskCard(row.id).depends_on.includes(taskId))
+      .filter(
+        (row) =>
+          row.id !== taskId &&
+          (row.parent_id === taskId || store.readTaskCard(row.id).depends_on.includes(taskId)),
+      )
       .map((row) => row.id);
     if (dependentTaskIds.length > 0) {
       throw new ServerHttpError(409, {
         error: "task_has_dependents",
         taskId,
         dependentTaskIds,
-        message: `任务 "${taskId}" 被下游任务（${dependentTaskIds.join(", ")}）依赖，请先解除或清理下游任务后再删除`,
+        message: `任务 "${taskId}" 被下游或裂变子任务（${dependentTaskIds.join(", ")}）依赖，请先解除或清理后再删除`,
       });
     }
 
@@ -2854,6 +2890,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
 
     await Promise.resolve(onTaskDeleted?.(taskId, card));
     pendingDecisions.remove(taskId);
+    fs.rmSync(store.paths.pendingSubtaskSplitYaml(taskId), { force: true });
     const res = store.deleteTask(taskId, { purgeUsage });
     caffeinate.syncRunningCount(countRunningLeafTasks(store));
     sseHub.publish({
@@ -3017,7 +3054,15 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
 
     if (pending.reason === "subtask_split_approval") {
       if (selectedOption.id === "opt-approve-subtask-split" && onApproveSubtaskSplit) {
-        await Promise.resolve(onApproveSubtaskSplit(taskId, pending.id));
+        await Promise.resolve(
+          onApproveSubtaskSplit(taskId, pending.id, {
+            ...(decideReq.rationale !== undefined ? { rationale: decideReq.rationale } : {}),
+            ...(decideReq.apply_ledger_rule !== undefined
+              ? { applyLedgerRule: decideReq.apply_ledger_rule }
+              : {}),
+            ...(contractUpdate !== undefined ? { contractUpdate } : {}),
+          }),
+        );
         const nextCard = store.readTaskCard(taskId);
         const nextState = deriveTaskStatus(nextCard, store.readStateEvents(taskId));
         return c.json({
@@ -3160,6 +3205,30 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     }
 
     caffeinate.syncRunningCount(countRunningLeafTasks(store));
+
+    if (result.action === "cancel") {
+      fs.rmSync(store.paths.pendingSubtaskSplitYaml(taskId), { force: true });
+      const childRows = store
+        .listTasks()
+        .filter(
+          (row) => row.parent_id === taskId && row.status !== "done" && row.status !== "cancelled",
+        );
+      for (const child of childRows) {
+        const childCancelRes = stateMachine.cancelTask(child.id, `父任务 ${taskId} 已取消`);
+        pendingDecisions.remove(child.id);
+        fs.rmSync(store.paths.pendingSubtaskSplitYaml(child.id), { force: true });
+        await Promise.resolve(onTaskCancelled?.(child.id));
+        sseHub.publish({
+          type: "task.updated",
+          taskId: child.id,
+          patch: {
+            status: childCancelRes.state.status,
+            contractVersion: childCancelRes.state.contractVersion,
+          },
+        });
+        registerUpstreamCancelledDownstreams(childCancelRes.waitingDownstreamTaskIds);
+      }
+    }
 
     if (nextWaitingDecision) {
       sseHub.publish({

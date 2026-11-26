@@ -587,8 +587,15 @@ describe("workflow composable blueprint schemas & helpers", () => {
       currentBlueprint: baseBlueprint,
       sourceStepIndex: 1,
       sourceStage: "implement",
-      rationale: "Need deeper plan and debugger specialist",
+      rationale: "Need deeper plan and frontend_ui specialist",
       replaceRemainingSteps: [
+        {
+          kind: "agent",
+          stage: "research",
+          role: "advisor",
+          fresh_context: true,
+          roster_role: "debugger",
+        },
         {
           kind: "agent",
           stage: "plan",
@@ -600,7 +607,7 @@ describe("workflow composable blueprint schemas & helpers", () => {
           stage: "implement",
           role: "worker",
           fresh_context: false,
-          roster_role: "debugger",
+          roster_role: "frontend_ui",
         },
         {
           kind: "agent",
@@ -610,7 +617,8 @@ describe("workflow composable blueprint schemas & helpers", () => {
         },
       ],
       roster: {
-        debugger: { enabled: true, stage: "implement", perm: "workspace_write" },
+        debugger: { enabled: true, stage: "research", perm: "read_only" },
+        frontend_ui: { enabled: true, stage: "implement", perm: "workspace_write" },
         researcher: { enabled: true, stage: "research", perm: "read_only" },
       },
     });
@@ -618,9 +626,10 @@ describe("workflow composable blueprint schemas & helpers", () => {
     if (!patchOk.ok) throw new Error(patchOk.errors.join("; "));
     expect(patchOk.preservedPrefixSteps).toBe(1);
     expect(patchOk.resumeStepIndex).toBe(1);
-    expect(patchOk.resumeStage).toBe("plan");
+    expect(patchOk.resumeStage).toBe("research");
     const patchedFlat = flattenWorkflowSteps(patchOk.blueprint);
     expect(patchedFlat.map((n) => `${n.kind}:${n.stage}`)).toEqual([
+      "agent:research",
       "agent:research",
       "agent:plan",
       "agent:implement",
@@ -791,5 +800,129 @@ describe("workflow composable blueprint schemas & helpers", () => {
         created_at: "2026-11-26T00:00:00.000Z",
       }).subtasks,
     ).toHaveLength(2);
+  });
+
+  it("enforces host_op two-phase safety and multi-segment restart/L2 escalation boundaries", () => {
+    const hostBlueprint = buildWorkflowPreset("host_op");
+    const hostPatched = applyAdvisorWorkflowPatch({
+      currentBlueprint: hostBlueprint,
+      sourceStepIndex: 0,
+      sourceStage: "implement",
+      workspaceMode: "host_scoped",
+      rationale: "Add research before staged implement",
+      replaceRemainingSteps: [
+        { kind: "agent", stage: "research", role: "advisor", fresh_context: true },
+        { kind: "agent", stage: "implement", role: "worker", fresh_context: false },
+        { kind: "gate", stage: "verify", check: "full" },
+      ],
+    });
+    expect(hostPatched.ok).toBe(true);
+    if (!hostPatched.ok) throw new Error(hostPatched.errors.join("; "));
+    expect(hasCompleteHostTwoPhaseWorkflow(hostPatched.blueprint)).toBe(true);
+    expect(
+      getImplementAgentMode({
+        track: "L1",
+        workspace_mode: "host_scoped",
+        contract: {},
+        workflow: hostPatched.blueprint,
+      }),
+    ).toBe("dry_run_only");
+    expect(
+      getVerifyGateCheckMode({
+        track: "L1",
+        workspace_mode: "host_scoped",
+        contract: {},
+        workflow: hostPatched.blueprint,
+      }),
+    ).toBe("staged_only");
+
+    // Rejects injecting staged_only / dry_run_only into a non-host_scoped workflow
+    const nonHostReject = applyAdvisorWorkflowPatch({
+      currentBlueprint: buildWorkflowPreset("quick"),
+      sourceStepIndex: 0,
+      sourceStage: "implement",
+      workspaceMode: "git_worktree",
+      rationale: "Illegal host mode injection",
+      replaceRemainingSteps: [
+        {
+          kind: "agent",
+          stage: "implement",
+          role: "worker",
+          fresh_context: false,
+          mode: "dry_run_only",
+        },
+        { kind: "gate", stage: "verify", check: "staged_only" },
+      ],
+    });
+    expect(nonHostReject.ok).toBe(false);
+
+    // Multi-segment workflow after review deadlock restarts in active segment (never historical prefix/plan)
+    const multiSegPatch = applyAdvisorWorkflowPatch({
+      currentBlueprint: buildWorkflowPreset("standard_dev"),
+      sourceStepIndex: 2,
+      sourceStage: "review",
+      workspaceMode: "git_worktree",
+      rationale: "Insert new plan + frontend_ui segment",
+      replaceRemainingSteps: [
+        { kind: "agent", stage: "plan", role: "advisor", fresh_context: true },
+        { kind: "agent", stage: "implement", role: "worker", fresh_context: false },
+        { kind: "agent", stage: "review", role: "reviewer", fresh_context: true },
+      ],
+    });
+    expect(multiSegPatch.ok).toBe(true);
+    if (!multiSegPatch.ok) throw new Error(multiSegPatch.errors.join("; "));
+    const multiFlat = flattenWorkflowSteps(multiSegPatch.blueprint);
+    expect(multiFlat.map((n) => n.stage)).toEqual([
+      "implement",
+      "verify",
+      "plan",
+      "implement",
+      "verify",
+      "review",
+      "deliver",
+    ]);
+    const restartIdx = findLoopRestartStepIndex(
+      {
+        track: "L2",
+        workspace_mode: "git_worktree",
+        contract: {},
+        workflow: multiSegPatch.blueprint,
+      },
+      "implement",
+      "L2",
+      5,
+    );
+    expect(restartIdx).toBe(3);
+
+    // L1 -> L2 frozen escalation appends review after the active segment's verify gate, not old prefix
+    const l1MultiSeg = WorkflowBlueprintSchema.parse({
+      schema_version: 1,
+      preset: "custom",
+      steps: [
+        { kind: "agent", stage: "implement", role: "worker", fresh_context: false },
+        { kind: "gate", stage: "verify", check: "full" },
+        { kind: "agent", stage: "plan", role: "advisor", fresh_context: true },
+        { kind: "agent", stage: "implement", role: "worker", fresh_context: false },
+        { kind: "gate", stage: "verify", check: "full" },
+        {
+          kind: "command",
+          stage: "deliver",
+          apply_staged: false,
+          run_deliver_cmd: false,
+          verify_sha256: false,
+          final_accept_gate: false,
+        },
+      ],
+    });
+    const escalated = ensureWorkflowIncludesReview(l1MultiSeg);
+    expect(flattenWorkflowSteps(escalated).map((n) => n.stage)).toEqual([
+      "implement",
+      "verify",
+      "plan",
+      "implement",
+      "verify",
+      "review",
+      "deliver",
+    ]);
   });
 });

@@ -141,7 +141,7 @@ export function computeMergeQueueSnapshot(store: KilnStore): MergeQueueEntry[] {
   for (const [taskId, info] of derivedByTaskId) {
     if (
       info.workspaceMode !== "git_worktree" ||
-      info.deliverMode !== "merge_main" ||
+      (info.deliverMode !== "merge_main" && info.deliverMode !== "merge_parent") ||
       info.stage !== "deliver"
     ) {
       continue;

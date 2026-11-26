@@ -94,6 +94,7 @@ import {
   getTaskPipelineStages,
   handleExecutionFailure,
   nextTaskStageAfter,
+  type ContractUpdateInput,
   type StageCounters,
 } from "../state/index.js";
 import {
@@ -114,6 +115,7 @@ import { captureHostEnvironmentSnapshot } from "./host-snapshot.js";
 import type { RemoteNotifier } from "./remote-notify.js";
 import { resolveMcpServerCommand, type McpCommandSpec } from "./chat.js";
 import { ServerHttpError } from "./errors.js";
+import { validateCommitContract } from "./space-inspect.js";
 import type {
   TechnicalDecisionAdvisorRouteInput,
   TechnicalDecisionAdvisorRouteResult,
@@ -1568,6 +1570,16 @@ export class KilnOrchestrator {
       const firstImplementRun = this.listTaskRunDirs(card.id).find(
         (r) => r.meta?.stage === "implement" && r.meta.input_ref,
       );
+      const subtaskBase = this.findActiveSubtaskBaseRefSha(card.id, card.contract_version);
+      if (
+        subtaskBase !== null &&
+        (!firstImplementRun || subtaskBase.at <= firstImplementRun.meta!.started_at)
+      ) {
+        return {
+          cwd: resolvedWorktreePath,
+          inputRef: subtaskBase.sha,
+        };
+      }
       return {
         cwd: resolvedWorktreePath,
         inputRef: firstImplementRun?.meta?.input_ref ?? headCommit,
@@ -3730,6 +3742,24 @@ export class KilnOrchestrator {
     return true;
   }
 
+  private findActiveSubtaskBaseRefSha(
+    taskId: string,
+    contractVersion: number,
+  ): { sha: string; at: string } | null {
+    const events = this.store.readStateEvents(taskId);
+    for (let i = events.length - 1; i >= 0; i--) {
+      const ev = events[i]!;
+      if (
+        ev.type === "subtasks_spawned" &&
+        ev.contract_version === contractVersion &&
+        ev.base_ref_sha
+      ) {
+        return { sha: ev.base_ref_sha, at: ev.at };
+      }
+    }
+    return null;
+  }
+
   private async collectTaskChangedPathsForFastForward(card: TaskCard): Promise<string[] | null> {
     if (card.workspace_mode === "git_worktree") {
       const worktreePath = this.getGitWorktreeDir(card.id);
@@ -3738,21 +3768,11 @@ export class KilnOrchestrator {
       }
       const runs = this.listTaskRunDirs(card.id);
       const firstImpl = runs.find((r) => r.meta?.stage === "implement" && r.meta.input_ref);
-      let baseRef = firstImpl?.meta?.input_ref;
-      if (!baseRef) {
-        const events = this.store.readStateEvents(card.id);
-        for (let i = events.length - 1; i >= 0; i--) {
-          const ev = events[i]!;
-          if (
-            ev.type === "subtasks_spawned" &&
-            ev.contract_version === card.contract_version &&
-            ev.base_ref_sha
-          ) {
-            baseRef = ev.base_ref_sha;
-            break;
-          }
-        }
-      }
+      const subtaskBase = this.findActiveSubtaskBaseRefSha(card.id, card.contract_version);
+      let baseRef =
+        subtaskBase !== null && (!firstImpl || subtaskBase.at <= firstImpl.meta!.started_at)
+          ? subtaskBase.sha
+          : firstImpl?.meta?.input_ref;
       if (!baseRef) {
         baseRef = this.store.readSpace(card.space)?.default_branch ?? "main";
       }
@@ -3780,6 +3800,16 @@ export class KilnOrchestrator {
       return true;
     }
 
+    const flatSteps = getWorkflowFlatSteps(card, card.track);
+    const deliverIdx = flatSteps.findIndex((n) => n.stage === "deliver");
+    if (deliverIdx <= candidateStep.stepIndex) {
+      return false;
+    }
+    const skippedSlice = flatSteps.slice(candidateStep.stepIndex, deliverIdx);
+    if (skippedSlice.length === 0 || skippedSlice.some((n) => n.kind !== "agent")) {
+      return false;
+    }
+
     const changedPaths = await this.collectTaskChangedPathsForFastForward(card);
     if (changedPaths === null || changedPaths.length === 0) {
       return false;
@@ -3797,31 +3827,34 @@ export class KilnOrchestrator {
       return false;
     }
 
+    const canSkipAll =
+      ff.reason === "docs_only"
+        ? skippedSlice.every((n) => n.stage === "review" || n.stage === "accept")
+        : skippedSlice.every((n) => n.stage === "accept");
+
     const shouldSkip =
-      fromStage === "verify"
+      canSkipAll &&
+      (fromStage === "verify"
         ? (ff.reason === "docs_only" &&
             (candidateStep.stage === "review" || candidateStep.stage === "accept")) ||
           (ff.reason === "tests_only" &&
             candidateStep.stage === "accept" &&
             candidateStep.node.kind === "agent")
-        : candidateStep.stage === "accept" && candidateStep.node.kind === "agent";
+        : candidateStep.stage === "accept" && candidateStep.node.kind === "agent");
 
     if (!shouldSkip) {
       return false;
     }
 
-    const flatSteps = getWorkflowFlatSteps(card, card.track);
-    const deliverIdx = flatSteps.findIndex((n) => n.stage === "deliver");
-    const toStepIndex = deliverIdx >= 0 ? deliverIdx : undefined;
-
     this.warmPool.evictTask(taskId);
     const nextState = this.store.appendStateEvent(taskId, {
       type: "stage_fast_forwarded",
       at: new Date().toISOString(),
+      contract_version: card.contract_version,
       skipped_stage: candidateStep.stage,
       skipped_step_index: candidateStep.stepIndex,
       to_stage: "deliver",
-      ...(toStepIndex !== undefined ? { to_step_index: toStepIndex } : {}),
+      to_step_index: deliverIdx,
       reason: ff.reason,
       changed_paths: changedPaths,
     });
@@ -4210,12 +4243,22 @@ export class KilnOrchestrator {
           )
         : undefined;
 
+    const subtaskBase = this.findActiveSubtaskBaseRefSha(taskId, card.contract_version);
+    const effectiveGateInputRef =
+      subtaskBase !== null &&
+      (!runMeta.input_ref ||
+        subtaskBase.at <=
+          (this.listTaskRunDirs(taskId).find((r) => r.meta?.stage === "implement")?.meta
+            ?.started_at ?? runMeta.started_at))
+        ? subtaskBase.sha
+        : runMeta.input_ref;
+
     const gateResult = await runVerificationGate(this.store, {
       taskId,
       runDirName,
       gateCheckMode: getVerifyGateCheckMode(card),
       ...(worktreePath !== undefined ? { worktreePath } : {}),
-      ...(runMeta.input_ref !== undefined ? { inputRef: runMeta.input_ref } : {}),
+      ...(effectiveGateInputRef !== undefined ? { inputRef: effectiveGateInputRef } : {}),
       ...(baselineSnapshot !== undefined ? { baselineSnapshot } : {}),
       ...(explicitHostChangedPaths !== undefined
         ? { hostChangedPaths: explicitHostChangedPaths }
@@ -4640,6 +4683,7 @@ export class KilnOrchestrator {
         card,
         reviewDecision.targetStage,
         card.track,
+        runMeta.step_index ?? null,
       );
       await this.advanceToNextStage(taskId, reviewDecision.targetStage, guard, restartStepIndex);
       return;
@@ -4925,7 +4969,12 @@ export class KilnOrchestrator {
         nextStep?.stepIndex ?? null,
       );
     } else {
-      const restartIdx = findLoopRestartStepIndex(card, "implement", card.track);
+      const restartIdx = findLoopRestartStepIndex(
+        card,
+        "implement",
+        card.track,
+        runMeta.step_index ?? null,
+      );
       await this.advanceToNextStage(taskId, "implement", guard, restartIdx);
     }
   }
@@ -5532,7 +5581,12 @@ export class KilnOrchestrator {
         const rosterPermMap = Object.fromEntries(
           Object.entries(rosterEntries).map(([k, v]) => [
             k,
-            { enabled: v.enabled, perm: v.perm, stage: v.stage },
+            {
+              enabled: v.enabled,
+              perm: v.perm,
+              stage: v.stage,
+              secondary_stages: v.secondary_stages,
+            },
           ]),
         );
         const patchRes = applyAdvisorWorkflowPatch({
@@ -6377,6 +6431,7 @@ export class KilnOrchestrator {
             latestCard,
             "implement",
             latestCard.track,
+            p.stepIndex,
           );
           await this.advanceToNextStage(p.taskId, "implement", expected, restartStepIndex);
         },
@@ -6444,6 +6499,20 @@ export class KilnOrchestrator {
     if (!dag.ok) {
       escalateInvalid(dag.errors.join("; "));
       return;
+    }
+
+    for (const s of subtasks) {
+      try {
+        validateCommitContract(this.store, {
+          end: s.contract.end,
+          accept_cmd: s.contract.accept_cmd ?? card.contract.accept_cmd,
+          scope: s.contract.scope,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        escalateInvalid(`子卡 "${s.temp_id}" 契约不合规：${msg}`);
+        return;
+      }
     }
 
     const scopeSubsetOk = subtasks.every((s) =>
@@ -6523,7 +6592,15 @@ export class KilnOrchestrator {
     });
   }
 
-  async approvePendingSubtaskSplit(taskId: string, decisionId: string): Promise<void> {
+  async approvePendingSubtaskSplit(
+    taskId: string,
+    decisionId: string,
+    options?: {
+      rationale?: string;
+      applyLedgerRule?: boolean;
+      contractUpdate?: ContractUpdateInput;
+    },
+  ): Promise<void> {
     const safeTaskId = assertSafeSegment(taskId, "taskId");
     const pending = this.pendingDecisions.get(safeTaskId);
     const splitPath = this.store.paths.pendingSubtaskSplitYaml(safeTaskId);
@@ -6539,11 +6616,82 @@ export class KilnOrchestrator {
       );
     }
 
+    const initialCard = this.store.readTaskCard(safeTaskId);
+    if (
+      splitSpec.contract_version !== initialCard.contract_version ||
+      pending.contract_version !== initialCard.contract_version
+    ) {
+      fs.rmSync(splitPath, { force: true });
+      throw new ServerHttpError(409, {
+        error: "stale_subtask_split",
+        taskId: safeTaskId,
+        expectedContractVersion: initialCard.contract_version,
+        splitContractVersion: splitSpec.contract_version,
+        message: `Task "${safeTaskId}" contract version changed from v${splitSpec.contract_version} to v${initialCard.contract_version}; subtask split proposal is stale`,
+      });
+    }
+
+    const baseScope = options?.contractUpdate?.contractPatch.scope ?? initialCard.contract.scope;
+    const allChildScopesCovered = splitSpec.subtasks.every((s) =>
+      isChildScopeSubsetOfParent(s.contract.scope, baseScope),
+    );
+    const mergedScope = allChildScopesCovered
+      ? [...baseScope]
+      : Array.from(new Set([...baseScope, ...splitSpec.subtasks.flatMap((s) => s.contract.scope)]));
+
+    const nextParentEnd = options?.contractUpdate?.contractPatch.end ?? initialCard.contract.end;
+    const nextParentAcceptCmd =
+      options?.contractUpdate?.contractPatch.accept_cmd ?? initialCard.contract.accept_cmd;
+    validateCommitContract(this.store, {
+      end: nextParentEnd,
+      accept_cmd: nextParentAcceptCmd,
+      scope: mergedScope,
+      deliver: initialCard.contract.deliver,
+    });
+
+    const scopeExpanded =
+      mergedScope.length !== initialCard.contract.scope.length ||
+      mergedScope.some((entry, idx) => initialCard.contract.scope[idx] !== entry);
+
+    let effectiveContractUpdate: ContractUpdateInput | undefined = options?.contractUpdate;
+    if (effectiveContractUpdate !== undefined) {
+      if (!allChildScopesCovered) {
+        effectiveContractUpdate = {
+          ...effectiveContractUpdate,
+          contractPatch: {
+            ...effectiveContractUpdate.contractPatch,
+            scope: mergedScope,
+          },
+        };
+      }
+    } else if (scopeExpanded) {
+      effectiveContractUpdate = {
+        contractPatch: { scope: mergedScope },
+        affectedStages: ["verify"],
+      };
+    }
+
+    const decisionForApply: PendingDecision =
+      options?.applyLedgerRule === true
+        ? pending
+        : {
+            ...pending,
+            options: pending.options.map((opt) => {
+              if (opt.id !== "opt-approve-subtask-split") {
+                return opt;
+              }
+              const { ledger_rule: _omitted, ...withoutLedgerRule } = opt;
+              return withoutLedgerRule;
+            }),
+          };
+
     this.stateMachine.applyDecision({
       taskId: safeTaskId,
-      decision: pending,
+      decision: decisionForApply,
       optionId: "opt-approve-subtask-split",
       decider: "human",
+      ...(options?.rationale !== undefined ? { rationale: options.rationale } : {}),
+      ...(effectiveContractUpdate !== undefined ? { contractUpdate: effectiveContractUpdate } : {}),
     });
     this.pendingDecisions.remove(safeTaskId);
     fs.rmSync(splitPath, { force: true });
@@ -6555,6 +6703,13 @@ export class KilnOrchestrator {
       runId: splitSpec.source_run_id,
       rationale: splitSpec.rationale,
       subtasks: splitSpec.subtasks,
+    });
+    const postSplitCard = this.store.readTaskCard(safeTaskId);
+    const postSplitState = deriveTaskStatus(postSplitCard, this.store.readStateEvents(safeTaskId));
+    this.publishTaskUpdated(safeTaskId, {
+      status: postSplitState.status,
+      ...(postSplitState.stage !== null ? { stage: postSplitState.stage } : {}),
+      contractVersion: postSplitState.contractVersion,
     });
   }
 
@@ -6690,6 +6845,11 @@ export class KilnOrchestrator {
           childWorkflow.steps = childWorkflow.steps.map(patchImplRole);
         }
 
+        const effectiveAcceptCmd = spec.contract.accept_cmd ?? card.contract.accept_cmd;
+        const effectiveAcceptHash =
+          effectiveAcceptCmd !== card.contract.accept_cmd
+            ? "pending"
+            : card.contract.accept_files_hash;
         const childCard = TaskCardSchema.parse({
           schema_version: 1,
           id: childId,
@@ -6706,12 +6866,12 @@ export class KilnOrchestrator {
             goal: spec.contract.goal,
             ...(spec.contract.non_goals.length > 0 ? { non_goals: spec.contract.non_goals } : {}),
             end: spec.contract.end,
-            accept_cmd: spec.contract.accept_cmd ?? card.contract.accept_cmd,
-            accept_files_hash: card.contract.accept_files_hash,
+            accept_cmd: effectiveAcceptCmd,
+            accept_files_hash: effectiveAcceptHash,
             scope: spec.contract.scope,
             deliver:
               card.workspace_mode === "git_worktree"
-                ? { mode: "merge_main", cmd: null }
+                ? { mode: "merge_parent", cmd: null }
                 : { mode: "manual", cmd: null },
             human_accept: false,
             external_actions: "ask",
@@ -6726,6 +6886,7 @@ export class KilnOrchestrator {
           created_at: now,
           updated_at: now,
         });
+        validateCommitContract(this.store, childCard.contract);
 
         const briefParts = [
           spec.brief_markdown.trim(),

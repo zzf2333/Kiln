@@ -556,16 +556,20 @@ export function flattenWorkflowSteps(blueprint: WorkflowBlueprint): WorkflowAtom
  */
 export function hasCompleteHostTwoPhaseWorkflow(blueprint: WorkflowBlueprint): boolean {
   const flat = flattenWorkflowSteps(blueprint);
-  const implNode = flat.find((n) => n.kind === "agent" && n.stage === "implement");
-  const gateNode = flat.find((n) => n.kind === "gate");
+  const implNodes = flat.filter(
+    (n): n is WorkflowAgentNode => n.kind === "agent" && n.stage === "implement",
+  );
+  const gateNodes = flat.filter((n): n is WorkflowGateNode => n.kind === "gate");
   const cmdNode = flat.find(
     (n): n is WorkflowCommandNode => n.kind === "command" && n.stage === "deliver",
   );
+  const hasDeliverApproval = flat.some((n) => n.kind === "approval" && n.stage === "deliver");
   return (
-    implNode?.kind === "agent" &&
-    implNode.mode === "dry_run_only" &&
-    gateNode?.kind === "gate" &&
-    gateNode.check === "staged_only" &&
+    implNodes.length > 0 &&
+    implNodes.every((n) => n.mode === "dry_run_only") &&
+    gateNodes.length > 0 &&
+    gateNodes.every((n) => n.check === "staged_only") &&
+    hasDeliverApproval &&
     Boolean(cmdNode?.apply_staged) &&
     Boolean(cmdNode?.final_accept_gate)
   );
@@ -785,12 +789,23 @@ export function resolveTaskWorkflow(card: WorkflowCardLike): WorkflowBlueprint {
 }
 
 /**
- * Inserts an independent `review` agent node into a blueprint if absent
+ * Inserts an independent `review` agent node into a blueprint if absent in the active segment
  * (used when an L1 task is escalated to L2 due to frozen test edits).
  */
 export function ensureWorkflowIncludesReview(blueprint: WorkflowBlueprint): WorkflowBlueprint {
   const flat = flattenWorkflowSteps(blueprint);
-  if (flat.some((n) => n.kind === "agent" && n.stage === "review")) {
+  let lastImplFlatIdx = -1;
+  for (let i = flat.length - 1; i >= 0; i--) {
+    if (flat[i]?.kind === "agent" && flat[i]?.stage === "implement") {
+      lastImplFlatIdx = i;
+      break;
+    }
+  }
+  const activeTailHasReview =
+    lastImplFlatIdx >= 0
+      ? flat.slice(lastImplFlatIdx + 1).some((n) => n.kind === "agent" && n.stage === "review")
+      : flat.some((n) => n.kind === "agent" && n.stage === "review");
+  if (activeTailHasReview) {
     return {
       ...blueprint,
       steps: blueprint.steps.map((s) => cloneNode(s)),
@@ -805,28 +820,32 @@ export function ensureWorkflowIncludesReview(blueprint: WorkflowBlueprint): Work
   };
 
   const nextSteps: WorkflowStep[] = blueprint.steps.map((s) => cloneNode(s));
-  for (let i = 0; i < nextSteps.length; i++) {
+  for (let i = nextSteps.length - 1; i >= 0; i--) {
     const step = nextSteps[i]!;
-    if (step.kind === "loop") {
-      const idx = step.steps.findIndex((n) => n.kind === "gate" || n.stage === "implement");
-      const insertAt = idx >= 0 ? idx + 1 : step.steps.length;
+    if (step.kind === "loop" && step.steps.some((n) => n.stage === "implement")) {
+      let lastAnchor = -1;
+      for (let j = step.steps.length - 1; j >= 0; j--) {
+        const inner = step.steps[j]!;
+        if (inner.kind === "gate" || inner.stage === "implement") {
+          lastAnchor = j;
+          break;
+        }
+      }
+      const insertAt = lastAnchor >= 0 ? lastAnchor + 1 : step.steps.length;
       step.steps.splice(insertAt, 0, reviewNode);
       return { ...blueprint, steps: nextSteps };
     }
   }
 
-  const verifyOrImplIdx = nextSteps.findIndex(
-    (s) => s.kind === "gate" || (s.kind === "agent" && s.stage === "implement"),
-  );
-  let insertAt = verifyOrImplIdx >= 0 ? verifyOrImplIdx + 1 : nextSteps.length;
-  // Insert after verify gate if implement came immediately before verify gate.
-  if (
-    verifyOrImplIdx >= 0 &&
-    nextSteps[verifyOrImplIdx]?.kind === "agent" &&
-    nextSteps[verifyOrImplIdx + 1]?.kind === "gate"
-  ) {
-    insertAt = verifyOrImplIdx + 2;
+  let anchorIdx = -1;
+  for (let i = nextSteps.length - 1; i >= 0; i--) {
+    const step = nextSteps[i]!;
+    if (step.kind === "gate" || (step.kind === "agent" && step.stage === "implement")) {
+      anchorIdx = i;
+      break;
+    }
   }
+  const insertAt = anchorIdx >= 0 ? anchorIdx + 1 : nextSteps.length;
   nextSteps.splice(insertAt, 0, reviewNode);
   return {
     ...blueprint,
@@ -932,12 +951,14 @@ export function nextWorkflowStepAfter(
 
 /**
  * Finds the step index to restart at when looping back (e.g. review -> implement),
- * preferring the first matching stage inside a `loop` block if one exists.
+ * scoped to the active execution segment (after the latest preceding `plan`/`research` node
+ * up to `fromStepIndex`) so multi-segment patched workflows never jump back into historical prefixes.
  */
 export function findLoopRestartStepIndex(
   card: WorkflowCardLike,
   targetStage: StageId,
   effectiveTrack?: Track,
+  fromStepIndex?: number | null,
 ): number | null {
   let resolved = resolveTaskWorkflow(card);
   const targetTrack = effectiveTrack ?? card.track;
@@ -945,12 +966,35 @@ export function findLoopRestartStepIndex(
     resolved = ensureWorkflowIncludesReview(resolved);
   }
 
+  const flat = flattenWorkflowSteps(resolved);
+  if (flat.length === 0) {
+    return null;
+  }
+
+  const bound =
+    fromStepIndex !== undefined && fromStepIndex !== null && fromStepIndex >= 0
+      ? Math.min(fromStepIndex, flat.length - 1)
+      : flat.length - 1;
+
+  let activeSegStart = 0;
+  for (let i = bound; i >= 0; i--) {
+    const stage = flat[i]!.stage;
+    if (stage === "plan" || stage === "research") {
+      activeSegStart = i + 1;
+      break;
+    }
+  }
+
   let offset = 0;
+  let matchedLoopRestart: number | null = null;
   for (const step of resolved.steps) {
     if (step.kind === "loop") {
-      for (let i = 0; i < step.steps.length; i++) {
-        if (step.steps[i]!.stage === targetStage) {
-          return offset + i;
+      if (offset >= activeSegStart && offset <= bound) {
+        for (let i = 0; i < step.steps.length; i++) {
+          if (step.steps[i]!.stage === targetStage) {
+            matchedLoopRestart = offset + i;
+            break;
+          }
         }
       }
       offset += step.steps.length;
@@ -958,8 +1002,39 @@ export function findLoopRestartStepIndex(
       offset += 1;
     }
   }
+  if (matchedLoopRestart !== null) {
+    return matchedLoopRestart;
+  }
 
-  const flat = flattenWorkflowSteps(resolved);
+  if (targetStage === "implement") {
+    let lastImpl = -1;
+    for (let i = bound; i >= activeSegStart; i--) {
+      if (flat[i]!.stage === "implement") {
+        lastImpl = i;
+        break;
+      }
+    }
+    if (lastImpl !== -1) {
+      let seqStart = lastImpl;
+      while (seqStart > activeSegStart && flat[seqStart - 1]!.stage === "implement") {
+        seqStart -= 1;
+      }
+      return seqStart;
+    }
+  } else {
+    for (let i = activeSegStart; i <= bound; i++) {
+      if (flat[i]!.stage === targetStage) {
+        return i;
+      }
+    }
+  }
+
+  for (let i = activeSegStart; i < flat.length; i++) {
+    if (flat[i]!.stage === targetStage) {
+      return i;
+    }
+  }
+
   const idx = flat.findIndex((n) => n.stage === targetStage);
   return idx >= 0 ? idx : null;
 }
@@ -982,16 +1057,24 @@ export function getWorkflowLoopPolicy(
 
 export function getVerifyGateCheckMode(card: WorkflowCardLike): "full" | "staged_only" {
   const flat = flattenWorkflowSteps(resolveTaskWorkflow(card));
-  const gateNode = flat.find((n): n is WorkflowGateNode => n.kind === "gate");
-  return gateNode?.check ?? "full";
+  for (let i = flat.length - 1; i >= 0; i--) {
+    const node = flat[i]!;
+    if (node.kind === "gate") {
+      return node.check;
+    }
+  }
+  return "full";
 }
 
 export function getImplementAgentMode(card: WorkflowCardLike): "normal" | "dry_run_only" {
   const flat = flattenWorkflowSteps(resolveTaskWorkflow(card));
-  const implNode = flat.find(
-    (n): n is WorkflowAgentNode => n.kind === "agent" && n.stage === "implement",
-  );
-  return implNode?.mode ?? "normal";
+  for (let i = flat.length - 1; i >= 0; i--) {
+    const node = flat[i]!;
+    if (node.kind === "agent" && node.stage === "implement") {
+      return node.mode ?? "normal";
+    }
+  }
+  return "normal";
 }
 
 export function getStageNodeKind(
@@ -1269,9 +1352,34 @@ export function applyAdvisorWorkflowPatch(
       ? input.replaceRemainingSteps.filter((s) => s.kind === "loop" || s.stage !== "deliver")
       : input.replaceRemainingSteps;
 
+  const isHostTwoPhase =
+    input.workspaceMode === "host_scoped" ||
+    input.currentBlueprint.preset === "host_op" ||
+    extractWorkflowToggles(input.currentBlueprint).hostTwoPhase;
+
+  const coerceHostTwoPhaseStep = (step: WorkflowStep): WorkflowStep => {
+    const cloned = cloneNode(step);
+    if (!isHostTwoPhase) {
+      return cloned;
+    }
+    if (cloned.kind === "loop") {
+      return {
+        ...cloned,
+        steps: cloned.steps.map((inner) => coerceHostTwoPhaseStep(inner) as WorkflowAtomicNode),
+      };
+    }
+    if (cloned.kind === "agent" && cloned.stage === "implement") {
+      return { ...cloned, mode: "dry_run_only" };
+    }
+    if (cloned.kind === "gate" && cloned.stage === "verify") {
+      return { ...cloned, check: "staged_only" };
+    }
+    return cloned;
+  };
+
   const rawSteps: WorkflowStep[] = [
     ...preservedPrefix,
-    ...filteredReplacement.map((s) => cloneNode(s)),
+    ...filteredReplacement.map((s) => coerceHostTwoPhaseStep(s)),
     ...origDeliverNodes,
   ];
 
@@ -1292,12 +1400,18 @@ export function applyAdvisorWorkflowPatch(
   const trimmedRationale = input.rationale.trim();
   const basePatched: WorkflowBlueprint = {
     schema_version: 1,
-    preset: input.currentBlueprint.preset === "host_op" ? "host_op" : "custom",
+    preset: isHostTwoPhase ? "host_op" : "custom",
     steps: rawSteps,
     ...(trimmedRationale.length > 0 ? { pm_rationale: trimmedRationale } : {}),
   };
 
   let normalized = normalizeWorkflowBlueprintSafety(basePatched);
+  if (isHostTwoPhase) {
+    normalized = {
+      ...normalized,
+      steps: normalized.steps.map((s) => coerceHostTwoPhaseStep(s)),
+    };
+  }
   if (normalized.preset !== "host_op" && origAcceptNodes.length > 0) {
     normalized = ensureWorkflowAcceptStep(normalized);
   }
@@ -1312,6 +1426,30 @@ export function applyAdvisorWorkflowPatch(
   }
 
   const flatPatched = flattenWorkflowSteps(normalized);
+  if (isHostTwoPhase) {
+    if (!hasCompleteHostTwoPhaseWorkflow(normalized)) {
+      return {
+        ok: false,
+        errors: [
+          "host_op workflow_patch must preserve dry_run_only, staged_only, deliver approval, apply_staged, and final_accept_gate",
+        ],
+      };
+    }
+  } else if (input.workspaceMode !== undefined && input.workspaceMode !== "host_scoped") {
+    const hasHostTwoPhaseMarker = flatPatched.some(
+      (n) =>
+        (n.kind === "agent" && n.mode === "dry_run_only") ||
+        (n.kind === "gate" && n.check === "staged_only") ||
+        (n.kind === "command" && (n.apply_staged || n.final_accept_gate)),
+    );
+    if (hasHostTwoPhaseMarker) {
+      return {
+        ok: false,
+        errors: ["Non-host_scoped workflow cannot enable host_op two-phase staging modes"],
+      };
+    }
+  }
+
   const k = preservedPrefix.length;
   if (k >= flatPatched.length || flatPatched[k]!.stage === "deliver") {
     return {

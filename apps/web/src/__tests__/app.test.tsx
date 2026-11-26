@@ -6618,4 +6618,129 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       expect(openedTaskIds).toContain("t-child-1");
     });
   });
+
+  it("hides stale stage_fast_forwarded badge after contract_updated bumps version", async () => {
+    const baseBootstrap = makeBaseBootstrap({
+      tasks: [
+        {
+          id: "t-ff-stale",
+          space: "kiln",
+          parent_id: null,
+          title: "快进徽章升版清理测试",
+          priority: "P1",
+          effective_priority: "P1",
+          track: "L2",
+          workspace_mode: "git_worktree",
+          status: "queued",
+          stage: "implement",
+          round: 1,
+          active_run_id: null,
+          contract_version: 2,
+          depends_on: [],
+          created_at: "2026-11-26T00:00:00.000Z",
+          updated_at: "2026-11-26T00:06:00.000Z",
+          tokens: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+          cost_usd: 0,
+        },
+      ],
+    });
+
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof Request ? input.url : "";
+      if (url === "/api/bootstrap") {
+        return jsonResponse(baseBootstrap);
+      }
+      if (url === "/api/tasks/t-ff-stale") {
+        return jsonResponse({
+          card: {
+            schema_version: 1,
+            id: "t-ff-stale",
+            title: "快进徽章升版清理测试",
+            space: "kiln",
+            priority: "P1",
+            track: "L2",
+            workspace_mode: "git_worktree",
+            parent: null,
+            depends_on: [],
+            contract_version: 2,
+            contract: {
+              goal: "Goal v2",
+              end: "End v2",
+              accept_cmd: "echo ok",
+              accept_files_hash: "pending",
+              scope: ["src/**"],
+              deliver: { mode: "merge_main", cmd: null },
+              human_accept: false,
+              external_actions: "ask",
+            },
+            limits: {
+              retries_per_stage: 2,
+              review_rounds: 2,
+              advisor_calls: 1,
+              max_tokens: 250000,
+            },
+            created_at: "2026-11-26T00:00:00.000Z",
+            updated_at: "2026-11-26T00:06:00.000Z",
+          },
+          state: {
+            status: "queued",
+            stage: "implement",
+            round: 1,
+            activeRunId: null,
+            priority: "P1",
+            effectivePriority: "P1",
+            track: "L2",
+            contractVersion: 2,
+            updatedAt: "2026-11-26T00:06:00.000Z",
+          },
+          stateEvents: [
+            {
+              type: "stage_fast_forwarded",
+              at: "2026-11-26T00:03:00.000Z",
+              contract_version: 1,
+              skipped_stage: "review",
+              skipped_step_index: 2,
+              to_stage: "deliver",
+              to_step_index: 4,
+              reason: "docs_only",
+              changed_paths: ["docs/readme.md"],
+            },
+            {
+              type: "contract_updated",
+              at: "2026-11-26T00:06:00.000Z",
+              from_version: 1,
+              to_version: 2,
+              affected_stages: ["implement"],
+            },
+          ],
+          brief: "# Brief",
+          decisions: "",
+          pendingDecision: null,
+          ledgerProposals: [],
+          runs: [],
+          usageTurns: [],
+          usage: {
+            totals: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+            byModel: {},
+            todayCostUsd: 0,
+            totalCostUsd: 0,
+          },
+          chatMessages: [],
+        });
+      }
+      if (url.includes("/chat")) {
+        return jsonResponse({ messages: [] });
+      }
+      if (url.includes("/api/chat/commands")) {
+        return jsonResponse({ commands: [], mcpServers: [] });
+      }
+      return jsonResponse({});
+    });
+
+    render(<App />);
+    const cardBtn = await screen.findByText("快进徽章升版清理测试");
+    fireEvent.click(cardBtn);
+    await screen.findAllByText(/Goal v2/);
+    expect(screen.queryByText(/0-Token 快进/)).toBeNull();
+  });
 });

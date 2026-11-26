@@ -338,6 +338,7 @@ export class TaskStateMachine {
       type: "paused",
       at: timestamp,
       ...(derived.stage !== null ? { stage: derived.stage } : {}),
+      ...(derived.stepIndex !== null ? { step_index: derived.stepIndex } : {}),
       ...(reason !== undefined ? { reason } : {}),
     });
 
@@ -364,10 +365,13 @@ export class TaskStateMachine {
     }
 
     const timestamp = now ?? new Date().toISOString();
+    const preservedStepIndex =
+      stageToResume === derived.stage && derived.stepIndex !== null ? derived.stepIndex : null;
     let nextState = this.store.appendStateEvent(taskId, {
       type: "resumed",
       at: timestamp,
       stage: stageToResume,
+      ...(preservedStepIndex !== null ? { step_index: preservedStepIndex } : {}),
     });
 
     if (this.getCancelledDependencies(card.depends_on).length > 0) {

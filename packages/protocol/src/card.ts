@@ -93,6 +93,7 @@ export const StageIdSchema = z.enum(STAGE_IDS);
 
 export const DeliverConfigSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("merge_main"), cmd: z.null().optional() }),
+  z.object({ mode: z.literal("merge_parent"), cmd: z.null().optional() }),
   z.object({ mode: z.literal("open_pr"), cmd: z.null().optional() }),
   z.object({ mode: z.literal("run_cmd"), cmd: z.string().trim().min(1) }),
   z.object({ mode: z.literal("manual"), cmd: z.null().optional() }),
@@ -570,6 +571,7 @@ export const StateEventSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("stage_fast_forwarded"),
     at: z.string().min(1),
+    contract_version: z.number().int().positive().optional(),
     skipped_stage: StageIdSchema,
     skipped_step_index: z.number().int().nonnegative().optional(),
     to_stage: StageIdSchema,
