@@ -2033,4 +2033,52 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
   });
+
+  it("CodexAppServerBackend records modeId='workspace-write' for worker and 'read-only' for read-only roles", async () => {
+    const cwd = makeTempWs("kiln-codex-modes-");
+    const logFile = path.join(cwd, "codex.log");
+    const backend = new CodexAppServerBackend({
+      provider: {
+        id: "codex",
+        label: "Codex CLI",
+        adapter: "codex_app_server",
+        enabled: true,
+        command: process.execPath,
+        args: [codexScript],
+        env: { TEST_CODEX_LOG: logFile },
+        custom_models: [],
+      },
+    });
+
+    try {
+      const workerRef = await backend.start({
+        runId: "r-mode-w",
+        taskId: "t-mode-w",
+        role: "worker",
+        agent: "codex",
+        model: "gpt-5.4",
+        cwd,
+        prompt: "hello",
+        freshContext: true,
+      });
+      await collectAllEvents(backend, workerRef);
+      expect(workerRef.meta?.modeId).toBe("workspace-write");
+
+      const reviewerRef = await backend.start({
+        runId: "r-mode-r",
+        taskId: "t-mode-r",
+        role: "reviewer",
+        agent: "codex",
+        model: "gpt-5.4",
+        cwd,
+        prompt: "review",
+        freshContext: true,
+      });
+      await collectAllEvents(backend, reviewerRef);
+      expect(reviewerRef.meta?.modeId).toBe("read-only");
+    } finally {
+      await backend.dispose();
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });

@@ -11,6 +11,7 @@ import {
   FullAccessOnlyProviderError,
   IneligibleRoleAgentError,
   isFullAccessMode,
+  isReadOnlyMode,
   selectSafeModeId,
   UnknownBackendError,
 } from "../index.js";
@@ -159,6 +160,25 @@ describe("selectSafeModeId & isFullAccessMode", () => {
     expect(selectSafeModeId("antigravity", fullOnlyModes, { allowFullAccessFallback: true })).toBe(
       "full-access",
     );
+
+    // Must never pick read-only/plan/ask modes for write roles when writable safe modes exist
+    expect(isReadOnlyMode({ id: "read-only", label: "Read Only" })).toBe(true);
+    expect(isReadOnlyMode({ id: "plan", label: "Plan" })).toBe(true);
+    expect(isReadOnlyMode({ id: "workspace-write", label: "Workspace Write" })).toBe(false);
+    expect(
+      selectSafeModeId("codex", [
+        { id: "read-only", label: "Read Only" },
+        { id: "workspace-write", label: "Workspace Write" },
+      ]),
+    ).toBe("workspace-write");
+    expect(
+      selectSafeModeId("custom-acp", [
+        { id: "plan", label: "Plan" },
+        { id: "ask", label: "Ask" },
+        { id: "code", label: "Code" },
+        { id: "auto", label: "Auto" },
+      ]),
+    ).toBe("auto");
   });
 });
 

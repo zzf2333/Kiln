@@ -63,8 +63,8 @@ export const CODEX_APP_SERVER_CAPABILITIES: BackendCapabilities = {
 };
 
 const CODEX_MODES: readonly BackendModeDescriptor[] = [
-  { id: "read-only", label: "Read Only" },
   { id: "workspace-write", label: "Workspace Write" },
+  { id: "read-only", label: "Read Only" },
 ];
 
 const GRANULAR_APPROVAL_POLICY = {

@@ -186,6 +186,7 @@ export class UnknownBackendError extends Error {
 }
 
 const FULL_ACCESS_PATTERN = /full[-_\s]?access|bypass/i;
+const READ_ONLY_MODE_PATTERN = /^(?:read[-_\s]?only|plan|ask)$/i;
 
 /**
  * Identifies whether a backend permission mode grants unrestricted full-access/bypass execution.
@@ -198,9 +199,19 @@ export function isFullAccessMode(mode: BackendModeDescriptor): boolean {
 }
 
 /**
- * Selects the safest non-full-access modeId for a provider, aligned with M0 probe findings:
+ * Identifies whether a backend permission mode restricts workspace file mutations.
+ */
+export function isReadOnlyMode(mode: BackendModeDescriptor): boolean {
+  return (
+    READ_ONLY_MODE_PATTERN.test(mode.id.trim()) || READ_ONLY_MODE_PATTERN.test(mode.label.trim())
+  );
+}
+
+/**
+ * Selects the safest non-full-access writable modeId for a provider, aligned with M0 probe findings:
  * - empty modes (e.g. Pi) returns undefined so callers omit modeId completely;
- * - providers with restricted modes prefer "auto", then "default", then first non-full-access mode;
+ * - providers with restricted modes filter out read-only/plan modes first, then prefer
+ *   "workspace-write", "auto", "default", or first writable non-full-access mode (falling back to safeModes[0]);
  * - full-access-only providers throw FullAccessOnlyProviderError unless allowFullAccessFallback is true.
  */
 export function selectSafeModeId(
@@ -214,10 +225,13 @@ export function selectSafeModeId(
 
   const safeModes = modes.filter((mode) => !isFullAccessMode(mode));
   if (safeModes.length > 0) {
+    const writableModes = safeModes.filter((mode) => !isReadOnlyMode(mode));
+    const pool = writableModes.length > 0 ? writableModes : safeModes;
     const preferred =
-      safeModes.find((mode) => mode.id === "auto") ??
-      safeModes.find((mode) => mode.id === "default") ??
-      safeModes[0];
+      pool.find((mode) => mode.id === "workspace-write") ??
+      pool.find((mode) => mode.id === "auto") ??
+      pool.find((mode) => mode.id === "default") ??
+      pool[0];
     return preferred?.id;
   }
 

@@ -817,9 +817,9 @@ export class AcpBackend implements ProviderTelemetryBackend {
 
       let chosenModeId: string | undefined;
       if (isReadOnly) {
-        const planMode = modeDescs.find((m) => m.id === "plan");
-        if (planMode) {
-          chosenModeId = planMode.id;
+        const readOnlyMode = modeDescs.find((m) => m.id === "plan" || m.id === "read-only");
+        if (readOnlyMode) {
+          chosenModeId = readOnlyMode.id;
         } else {
           chosenModeId = selectSafeModeId(this.provider.id, modeDescs, {
             allowFullAccessFallback: runSpec.allowFullAccessFallback,

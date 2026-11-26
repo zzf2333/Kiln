@@ -2280,6 +2280,10 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         contract: {
           ...existingDraft.contract,
           ...(input.contract ?? {}),
+          accept_files_hash:
+            input.contract?.accept_files_hash?.trim() ||
+            existingDraft.contract.accept_files_hash?.trim() ||
+            "pending",
         },
         limits: resolveCardLimits(store, input.limits),
         created_at: now,

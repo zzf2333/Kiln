@@ -3597,4 +3597,50 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     expect(boot.todayUsage.byAgentModel?.codex?.["gpt-5.4-mini"]?.totalTokens).toBe(11_000);
     expect(boot.todayUsage.byAgentModel?.codex?.["gpt-5.4"]).toBeUndefined();
   });
+
+  it("POST /api/drafts/:id/commit defaults missing accept_files_hash to 'pending'", async () => {
+    const kilnHome = makeTempDir();
+    tempDirs.push(kilnHome);
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      tokenSecret: "commit-hash-default-secret-1234",
+    });
+    servers.push(server);
+    await server.start();
+
+    const createDraftRes = await requestHttp(server, "/api/drafts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "d-hash-default",
+        title: "Host script task",
+        space: "local",
+        workspace_mode: "host_scoped",
+        workflow: buildWorkflowPreset("host_op"),
+        brief_markdown: "# Host Op Brief",
+        contract: {
+          goal: "Stage host script",
+          end: "Script staged",
+          accept_cmd: "echo ok",
+          scope: ["/tmp/kiln-test-target.txt"],
+          deliver: { mode: "manual", cmd: null },
+        },
+      }),
+    });
+    expect(createDraftRes.status).toBe(201);
+
+    const commitRes = await requestHttp(server, "/api/drafts/d-hash-default/commit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(commitRes.status).toBe(201);
+    const committed = (await readJson(commitRes)) as {
+      ok: boolean;
+      card: { id: string; contract: { accept_files_hash: string } };
+    };
+    expect(committed.ok).toBe(true);
+    expect(committed.card.contract.accept_files_hash).toBe("pending");
+  });
 });
