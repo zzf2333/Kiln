@@ -522,7 +522,38 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
       ? activeLedgerEntries.map((e) => `- ${e.rule}`).join("\n")
       : "(无)";
 
-  const steerNotes = extractActiveSteerNotes(store.readStateEvents(card.id), card.contract_version);
+  const stateEvents = store.readStateEvents(card.id);
+  const steerNotes = extractActiveSteerNotes(stateEvents, card.contract_version);
+  const latestImplementDecidedNotes: Array<{
+    at: string;
+    decision_id: string;
+    target_stage?: string;
+    summary?: string;
+  }> = [];
+  if (stage === "implement") {
+    let lastImplRunIdx = -1;
+    for (let idx = stateEvents.length - 1; idx >= 0; idx -= 1) {
+      const ev = stateEvents[idx]!;
+      if (ev.type === "running" && ev.stage === "implement") {
+        lastImplRunIdx = idx;
+        break;
+      }
+    }
+    const decisionBlocks = decisions
+      ? decisions.split(/(?=^\[裁决记录)/m).map((block) => block.trim())
+      : [];
+    for (const ev of stateEvents.slice(lastImplRunIdx + 1)) {
+      if (ev.type === "decided" && ev.action === "resume") {
+        const matchedBlock = decisionBlocks.find((block) => block.includes(`id=${ev.decision_id}`));
+        latestImplementDecidedNotes.push({
+          at: ev.at,
+          decision_id: ev.decision_id,
+          ...(ev.target_stage !== undefined ? { target_stage: ev.target_stage } : {}),
+          ...(matchedBlock ? { summary: matchedBlock } : {}),
+        });
+      }
+    }
+  }
 
   const advisorRoutingHint =
     role === "worker" || role === "reviewer"
@@ -722,6 +753,19 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
       ? [`## 合并冲突按需处理指令`, deliverConflictNote.trim()].join("\n")
       : "";
 
+  const postRunDecidedSection =
+    latestImplementDecidedNotes.length > 0
+      ? [
+          `## 本轮退回修改裁决（必须响应）`,
+          `以下为上一轮执行后最新确认的调整意见，请在既有工作区/暂存产物基础上增量修改后重新提交回执：`,
+          ...latestImplementDecidedNotes.map((n) =>
+            n.summary
+              ? n.summary
+              : `- [${n.at}] decision=${n.decision_id}${n.target_stage ? ` -> ${n.target_stage}` : ""}`,
+          ),
+        ].join("\n")
+      : "";
+
   const dynamicTail = [
     `# 本轮执行指令 (${stage} · round ${round})`,
     `- task_id: ${card.id}`,
@@ -752,6 +796,7 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
     ...(acceptDeltaSection ? [acceptDeltaSection, ``] : []),
     ...(failureDeltaSection ? [failureDeltaSection, ``] : []),
     ...(reviewDeltaSection ? [reviewDeltaSection, ``] : []),
+    ...(postRunDecidedSection ? [postRunDecidedSection, ``] : []),
     ...(steerSection ? [steerSection, ``] : []),
   ].join("\n");
 

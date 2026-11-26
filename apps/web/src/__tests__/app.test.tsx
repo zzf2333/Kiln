@@ -2171,8 +2171,50 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     await waitFor(() => {
       expect(screen.getByText("修改本机配置等待审批")).toBeTruthy();
     });
+    expect(rApplied.container).toBeTruthy();
     expect(screen.queryByText("待落盘暂存 Diff")).toBeNull();
     rApplied.unmount();
+
+    // 4. Plain markdown staged preview, byte size, toggle Diff/Raw, and revealLocalPath button
+    detail.hostBackup = { ...detail.hostBackup!, status: "staged_awaiting_approval" };
+    detail.hostStagedDiffs = [
+      {
+        targetPath: "/Users/me/.local/share/cleanup-report.md",
+        existedBefore: false,
+        preSha256: null,
+        stagedBytes: 2048,
+        stagedLocalPath: "/tmp/kiln/workspaces/t-host-diff/staged/cleanup-report.md",
+        stagedPreviewText: "# 盘点报告\n- 应保留项\n",
+        diff: "+++ b/cleanup-report.md\n+# 盘点报告\n+- 应保留项",
+        truncated: false,
+      },
+    ];
+    let revealedTarget: string | null = null;
+    fetchMock.mockImplementation(async (url, init) => {
+      if (url === "/api/bootstrap") return jsonResponse(bootstrap);
+      if (url === "/api/tasks/t-host-diff") return jsonResponse(detail);
+      if (url === "/api/tasks/t-host-diff/chat") return jsonResponse({ messages: [] });
+      if (url === "/api/system/reveal-path") {
+        const parsed = JSON.parse(String(init?.body ?? "{}")) as { path?: string };
+        revealedTarget = parsed.path ?? null;
+        return jsonResponse({ ok: true, path: revealedTarget });
+      }
+      return jsonResponse({});
+    });
+    window.location.hash = "#resolve=t-host-diff";
+    const rPreview = render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("2.0 KB")).toBeTruthy();
+    });
+    const previewPre = rPreview.container.querySelector("pre.staged-diff-pre");
+    expect(previewPre?.textContent).toBe("# 盘点报告\n- 应保留项\n");
+    fireEvent.click(screen.getByText("查看 Diff"));
+    expect(previewPre?.textContent).toContain("+++ b/cleanup-report.md");
+    fireEvent.click(screen.getByText("定位文件"));
+    await waitFor(() => {
+      expect(revealedTarget).toBe("/tmp/kiln/workspaces/t-host-diff/staged/cleanup-report.md");
+    });
+    rPreview.unmount();
   });
 
   it("supports space onboarding when no project spaces exist, SpaceModal inspect/save, dual-mode form sync before chat, draft deletion, sidebar space inheritance, and Settings spaces tab", async () => {

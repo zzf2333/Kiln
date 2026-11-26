@@ -1792,7 +1792,9 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     }
 
     const hostBackup = readHostBackupManifestOptional(store, taskId);
-    const hostStagedDiffs = buildHostStagedDiffs(store, taskId);
+    const hostStagedDiffs = buildHostStagedDiffs(store, taskId, {
+      includeLocalPaths: listenerMode === "local",
+    });
     const chatMessages = readTaskChatFallback(taskId);
     const retroReport = readYamlOptional(store.paths.retroYaml(taskId), TaskRetroReportSchema);
     const retroMd = readOptionalText(store.paths.retroMd(taskId));
@@ -3073,6 +3075,19 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     }
 
     pendingDecisions.remove(taskId);
+
+    if (
+      pending.reason === "host_scoped_approval" &&
+      selectedOption.action === "resume" &&
+      selectedOption.target_stage === "implement"
+    ) {
+      store.releaseHostPathLocks(taskId);
+      fs.rmSync(store.paths.backupManifest(taskId), { force: true });
+      fs.rmSync(path.join(store.paths.backupDir(taskId), "files"), {
+        recursive: true,
+        force: true,
+      });
+    }
 
     let nextWaitingDecision: PendingDecision | null = null;
     if (result.state.status === "waiting") {

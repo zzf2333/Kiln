@@ -7,7 +7,16 @@ import { MiniRail } from "../components/MiniRail";
 import { ViewFrame } from "../components/ViewFrame";
 import { isProjectSpace, useKilnStore } from "../state/store";
 
+function formatStagedBytes(bytes: number | undefined): string | null {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) return null;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
 export function HostStagedDiffSection({ detail }: { detail: TaskDetailResponse | undefined }) {
+  const { store } = useKilnStore();
+  const [rawDiffMap, setRawDiffMap] = useState<Record<string, boolean>>({});
   const diffs = detail?.hostStagedDiffs;
   if (detail?.hostBackup?.status !== "staged_awaiting_approval" || !diffs || diffs.length === 0) {
     return null;
@@ -20,20 +29,52 @@ export function HostStagedDiffSection({ detail }: { detail: TaskDetailResponse |
         <span className="muted mono">{diffs.length} 个文件待写入</span>
       </div>
       <div className="staged-diffs-list">
-        {diffs.map((entry, idx) => (
-          <div key={`${entry.targetPath}-${idx}`} className="staged-diff-file">
-            <div className="staged-diff-file-head">
-              <span className={`staged-tag ${entry.existedBefore ? "is-mod" : "is-add"}`}>
-                {entry.existedBefore ? "修改" : "新增"}
-              </span>
-              <span className="staged-diff-path mono" title={entry.targetPath}>
-                {entry.targetPath}
-              </span>
-              {entry.truncated ? <span className="staged-tag is-trunc">内容已截断</span> : null}
+        {diffs.map((entry, idx) => {
+          const sizeLabel = formatStagedBytes(entry.stagedBytes);
+          const hasPlainPreview =
+            typeof entry.stagedPreviewText === "string" && entry.stagedPreviewText.length > 0;
+          const showDiff = !hasPlainPreview || rawDiffMap[entry.targetPath] === true;
+          return (
+            <div key={`${entry.targetPath}-${idx}`} className="staged-diff-file">
+              <div className="staged-diff-file-head">
+                <span className={`staged-tag ${entry.existedBefore ? "is-mod" : "is-add"}`}>
+                  {entry.existedBefore ? "修改" : "新增"}
+                </span>
+                <span className="staged-diff-path mono" title={entry.targetPath}>
+                  {entry.targetPath}
+                </span>
+                {sizeLabel ? <span className="staged-tag is-size mono">{sizeLabel}</span> : null}
+                {entry.truncated ? <span className="staged-tag is-trunc">内容已截断</span> : null}
+                {hasPlainPreview ? (
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-ghost staged-head-btn"
+                    onClick={() =>
+                      setRawDiffMap((prev) => ({
+                        ...prev,
+                        [entry.targetPath]: !prev[entry.targetPath],
+                      }))
+                    }
+                  >
+                    {showDiff ? "查看原文" : "查看 Diff"}
+                  </button>
+                ) : null}
+                {entry.stagedLocalPath ? (
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-ghost staged-head-btn"
+                    onClick={() => void store.revealLocalPath(entry.stagedLocalPath!)}
+                  >
+                    定位文件
+                  </button>
+                ) : null}
+              </div>
+              <pre className="mono staged-diff-pre">
+                {showDiff ? entry.diff : entry.stagedPreviewText}
+              </pre>
             </div>
-            <pre className="mono staged-diff-pre">{entry.diff}</pre>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </section>
   );

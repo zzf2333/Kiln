@@ -356,6 +356,9 @@ export interface HostStagedDiffEntry {
   existedBefore: boolean;
   preSha256: string | null;
   stagedSha256?: string | null;
+  stagedBytes?: number;
+  stagedLocalPath?: string;
+  stagedPreviewText?: string;
   diff: string;
   truncated: boolean;
 }

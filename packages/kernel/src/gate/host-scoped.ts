@@ -161,6 +161,9 @@ export interface HostStagedDiffEntry {
   existedBefore: boolean;
   preSha256: string | null;
   stagedSha256?: string | null;
+  stagedBytes?: number;
+  stagedLocalPath?: string;
+  stagedPreviewText?: string;
   diff: string;
   truncated: boolean;
 }
@@ -602,7 +605,14 @@ function buildUnifiedLineDiff(expectedText: string | null, actualText: string | 
 }
 
 type PreviewFileReadResult =
-  | { ok: true; buffer: Buffer; bytesTruncated: boolean; isBinary: boolean }
+  | {
+      ok: true;
+      buffer: Buffer;
+      sizeBytes: number;
+      canonicalPath: string;
+      bytesTruncated: boolean;
+      isBinary: boolean;
+    }
   | { ok: false; reason: "missing" | "unreadable" };
 
 function resolveCanonicalDirOptional(dirPath: string): string | null {
@@ -676,6 +686,8 @@ function readPreviewFileBounded(
     return {
       ok: true,
       buffer: slice,
+      sizeBytes: stat.size,
+      canonicalPath: canonicalFile,
       bytesTruncated: stat.size > maxBytes,
       isBinary: slice.includes(0),
     };
@@ -696,7 +708,11 @@ function readPreviewFileBounded(
  * Builds bounded per-file unified diffs between backed-up pre-apply originals and
  * staged host-scoped files while the task awaits human approval (`staged_awaiting_approval`).
  */
-export function buildHostStagedDiffs(store: KilnStore, taskId: string): HostStagedDiffEntry[] {
+export function buildHostStagedDiffs(
+  store: KilnStore,
+  taskId: string,
+  options?: { includeLocalPaths?: boolean },
+): HostStagedDiffEntry[] {
   const safeTaskId = assertSafeSegment(taskId, "taskId");
 
   let manifest: HostBackupManifest;
@@ -717,6 +733,7 @@ export function buildHostStagedDiffs(store: KilnStore, taskId: string): HostStag
   const stagedDir = store.paths.stagedDir(safeTaskId);
   const canonicalBackupDir = resolveCanonicalDirOptional(backupDir);
   const canonicalStagedDir = resolveCanonicalDirOptional(stagedDir);
+  const includeLocalPaths = options?.includeLocalPaths === true;
 
   return manifest.files.map((entry) => {
     const afterRead = readPreviewFileBounded(
@@ -725,6 +742,12 @@ export function buildHostStagedDiffs(store: KilnStore, taskId: string): HostStag
       entry.staged_relative_path,
       MAX_STAGED_PREVIEW_BYTES,
     );
+    const stagedMeta = afterRead.ok
+      ? {
+          stagedBytes: afterRead.sizeBytes,
+          ...(includeLocalPaths ? { stagedLocalPath: afterRead.canonicalPath } : {}),
+        }
+      : {};
 
     const beforeRead: PreviewFileReadResult = entry.existed_before
       ? entry.backup_relative_path
@@ -735,7 +758,14 @@ export function buildHostStagedDiffs(store: KilnStore, taskId: string): HostStag
             MAX_STAGED_PREVIEW_BYTES,
           )
         : { ok: false, reason: "missing" }
-      : { ok: true, buffer: Buffer.alloc(0), bytesTruncated: false, isBinary: false };
+      : {
+          ok: true,
+          buffer: Buffer.alloc(0),
+          sizeBytes: 0,
+          canonicalPath: "",
+          bytesTruncated: false,
+          isBinary: false,
+        };
 
     if ((beforeRead.ok && beforeRead.isBinary) || (afterRead.ok && afterRead.isBinary)) {
       return {
@@ -743,6 +773,7 @@ export function buildHostStagedDiffs(store: KilnStore, taskId: string): HostStag
         existedBefore: entry.existed_before,
         preSha256: entry.pre_sha256,
         stagedSha256: entry.staged_sha256 ?? null,
+        ...stagedMeta,
         diff: "[binary file diff omitted]",
         truncated: false,
       };
@@ -754,6 +785,7 @@ export function buildHostStagedDiffs(store: KilnStore, taskId: string): HostStag
         existedBefore: entry.existed_before,
         preSha256: entry.pre_sha256,
         stagedSha256: entry.staged_sha256 ?? null,
+        ...stagedMeta,
         diff: "[backup file unavailable]",
         truncated: false,
       };
@@ -778,12 +810,16 @@ export function buildHostStagedDiffs(store: KilnStore, taskId: string): HostStag
       treatEmptyAsZeroLines: true,
       maxOutputLines: MAX_STAGED_DIFF_LINES,
     });
+    const ext = path.extname(entry.staged_relative_path).toLowerCase();
+    const isPlainDocPreview = !entry.existed_before && (ext === ".md" || ext === ".txt");
 
     return {
       targetPath: entry.target_canonical_path,
       existedBefore: entry.existed_before,
       preSha256: entry.pre_sha256,
       stagedSha256: entry.staged_sha256 ?? null,
+      ...stagedMeta,
+      ...(isPlainDocPreview ? { stagedPreviewText: afterText } : {}),
       diff: diffResult.diff,
       truncated: beforeRead.bytesTruncated || afterRead.bytesTruncated || diffResult.truncated,
     };

@@ -1703,5 +1703,60 @@ describe("Orchestrator enhancements: step_index, tester/deliverer agent modes, a
     expect(workerSpec?.prompt).toContain(
       "严禁把“0 项空动作计划”作为 outcome: completed 推入交付审批",
     );
+
+    // Slice 3: check host_scoped_approval has opt-rework-staged & enhanced hostStagedDiffs
+    const approvalDec = server.pendingDecisions.get("t-host-snap")!;
+    expect(approvalDec.options.some((o) => o.id === "opt-rework-staged")).toBe(true);
+    const localDetailRes = await server.app.request(
+      new Request("http://127.0.0.1/api/tasks/t-host-snap"),
+    );
+    const localDetail = (await localDetailRes.json()) as {
+      hostStagedDiffs?: Array<{
+        stagedBytes?: number;
+        stagedLocalPath?: string;
+        stagedPreviewText?: string;
+      }>;
+    };
+    expect(localDetail.hostStagedDiffs?.[0]?.stagedBytes).toBeGreaterThan(0);
+    expect(localDetail.hostStagedDiffs?.[0]?.stagedLocalPath).toBe(
+      path.join(expectedStaged, "report.md"),
+    );
+    expect(localDetail.hostStagedDiffs?.[0]?.stagedPreviewText).toBe("# Report\n");
+
+    // Rework via opt-rework-staged preserves staged/ and injects decision rationale into warm/cold implement
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "host_impl_snap", detail: "rework" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "worker" },
+    );
+    const reworkRes = await server.app.request(
+      new Request("http://127.0.0.1/api/tasks/t-host-snap/decide", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          decision_id: approvalDec.id,
+          option_id: "opt-rework-staged",
+          action: "resume",
+          rationale: "请把 Adobe 纳入待隔离清单",
+        }),
+      }),
+    );
+    expect(reworkRes.status).toBe(200);
+    await waitUntil(
+      () =>
+        server.pendingDecisions.get("t-host-snap")?.reason === "host_scoped_approval" &&
+        server.pendingDecisions.get("t-host-snap")?.id !== approvalDec.id,
+      "t-host-snap re-enters host_scoped_approval after opt-rework-staged",
+    );
+    const implRuns = fakeBackend.getRecordedSpecs().filter((s) => s.taskId === "t-host-snap");
+    expect(implRuns.length).toBeGreaterThanOrEqual(1);
+    const reworkHandoff = fs.readFileSync(
+      path.join(kilnHome, "tasks", "t-host-snap", "runs", "002-implement", "HANDOFF.md"),
+      "utf8",
+    );
+    expect(reworkHandoff).toContain("本轮退回修改裁决（必须响应）");
+    expect(reworkHandoff).toContain("请把 Adobe 纳入待隔离清单");
   });
 });

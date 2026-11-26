@@ -215,6 +215,13 @@ export async function executeDeliverStage(
                 recommended: true,
               },
               {
+                id: "opt-rework-staged",
+                label: "退回调整暂存清单/脚本（附修改意见）",
+                action: "resume",
+                target_stage: "implement",
+                recommended: false,
+              },
+              {
                 id: "opt-finish-staged",
                 label: "仅保留暂存补丁，不写本机直接完成",
                 action: "finish",

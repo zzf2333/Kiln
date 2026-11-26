@@ -1823,10 +1823,17 @@
     color: var(--ask);
     background: rgba(219, 161, 69, 0.14);
   }
+  .staged-tag.is-size,
   .staged-tag.is-trunc {
     color: var(--t2);
     background: var(--surface);
     border: 1px solid var(--line-2);
+  }
+  .staged-head-btn {
+    height: 22px;
+    padding: 0 8px;
+    font-size: 11px;
+    flex-shrink: 0;
   }
   .staged-diff-pre {
     margin: 0;
