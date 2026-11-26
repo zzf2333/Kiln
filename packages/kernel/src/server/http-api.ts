@@ -10,6 +10,7 @@ import {
   CommitPrActionRequestSchema,
   DecideRequestSchema,
   DraftCardSchema,
+  DualSynthesisRecordSchema,
   GateReportSchema,
   GithubPrFeedbackSnapshotSchema,
   HashMismatchErrorSchema,
@@ -100,6 +101,7 @@ import {
   deriveTaskStatus,
   readNdjsonValidated,
   readYamlOptional,
+  writeFileAtomic,
   writeYamlAtomic,
 } from "../store/index.js";
 import type { CaffeinateController } from "./caffeinate.js";
@@ -1831,6 +1833,12 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       brief,
       plan,
       research,
+      dualSynthesis: readYamlOptional(
+        store.paths.dualSynthesisYaml(taskId),
+        DualSynthesisRecordSchema,
+      ),
+      planCandidateA: readOptionalText(store.paths.planCandidateAMd(taskId)),
+      planCandidateB: readOptionalText(store.paths.planCandidateBMd(taskId)),
       retro: retroReport ? { report: retroReport, markdown: retroMd } : null,
       attachments: card.attachments ?? [],
       checkpoints,
@@ -3073,6 +3081,36 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
         });
       }
       fs.rmSync(store.paths.pendingSubtaskSplitYaml(taskId), { force: true });
+    }
+
+    if (
+      pending.reason === "dual_synthesis_need_decision" &&
+      selectedOption.action === "resume" &&
+      (selectedOption.id === "opt-adopt-brain-a" || selectedOption.id === "opt-adopt-brain-b")
+    ) {
+      const candidatePath =
+        selectedOption.id === "opt-adopt-brain-a"
+          ? store.paths.planCandidateAMd(taskId)
+          : store.paths.planCandidateBMd(taskId);
+      const chosenMarkdown = readOptionalText(candidatePath);
+      if (chosenMarkdown && chosenMarkdown.trim().length > 0) {
+        writeFileAtomic(store.paths.planMd(taskId), chosenMarkdown);
+      }
+      const existingDual = readYamlOptional(
+        store.paths.dualSynthesisYaml(taskId),
+        DualSynthesisRecordSchema,
+      );
+      if (existingDual) {
+        writeYamlAtomic(
+          store.paths.dualSynthesisYaml(taskId),
+          DualSynthesisRecordSchema.parse({
+            ...existingDual,
+            status: "adopted_single",
+            note: `人工拍板采用 ${selectedOption.id === "opt-adopt-brain-a" ? "Brain A" : "Brain B"} 候选方案`,
+          }),
+          DualSynthesisRecordSchema,
+        );
+      }
     }
 
     const isTokenLimitExceeded =

@@ -145,7 +145,10 @@ export function IntakeView() {
     .map((n) => n.label!.trim());
   const workflowPreviewParts: string[] = ["立项"];
   if (wfToggles.includePlan) {
-    workflowPreviewParts.push("方案(顾问)");
+    workflowPreviewParts.push(wfToggles.dualSynthesis ? "双脑方案(顾问)" : "方案(顾问)");
+  }
+  if (wfToggles.testFirstLock && !wfToggles.hostTwoPhase) {
+    workflowPreviewParts.push("红绿建测锁定");
   }
   if (wfToggles.includeReview) {
     workflowPreviewParts.push(
@@ -914,6 +917,34 @@ export function IntakeView() {
                           >
                             顾问方案
                           </button>
+                          {wfToggles.includePlan ? (
+                            <button
+                              type="button"
+                              className={`chip-tab ${wfToggles.dualSynthesis ? "on" : ""}`}
+                              aria-pressed={Boolean(wfToggles.dualSynthesis)}
+                              onClick={() =>
+                                store.updateIntakeWorkflowToggles({
+                                  dualSynthesis: !wfToggles.dualSynthesis,
+                                })
+                              }
+                            >
+                              双脑博弈方案
+                            </button>
+                          ) : null}
+                          {!wfToggles.hostTwoPhase ? (
+                            <button
+                              type="button"
+                              className={`chip-tab ${wfToggles.testFirstLock ? "on" : ""}`}
+                              aria-pressed={Boolean(wfToggles.testFirstLock)}
+                              onClick={() =>
+                                store.updateIntakeWorkflowToggles({
+                                  testFirstLock: !wfToggles.testFirstLock,
+                                })
+                              }
+                            >
+                              红绿建测锁定
+                            </button>
+                          ) : null}
                           <button
                             type="button"
                             className={`chip-tab ${wfToggles.includeReview ? "on" : ""}`}

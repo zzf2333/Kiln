@@ -1594,6 +1594,54 @@ export function WorkflowView() {
                 </button>
               </div>
             ) : null}
+            {customNode.stage === "plan" ? (
+              <div className="seg seg-wrap" role="group" aria-label="方案博弈模式">
+                <button
+                  type="button"
+                  className={(customNode.plan_mode ?? "single") === "single" ? "on" : ""}
+                  onClick={() =>
+                    mutateActiveTemplate((bp) => {
+                      const targetLoc = customNodeInfo!.loc;
+                      if (targetLoc.scope === "top") {
+                        return {
+                          ...bp,
+                          steps: bp.steps.map((s, idx) =>
+                            idx === targetLoc.index && s.kind === "agent"
+                              ? { ...s, plan_mode: "single" }
+                              : s,
+                          ),
+                        };
+                      }
+                      return bp;
+                    })
+                  }
+                >
+                  单脑规划
+                </button>
+                <button
+                  type="button"
+                  className={customNode.plan_mode === "dual_synthesis" ? "on" : ""}
+                  onClick={() =>
+                    mutateActiveTemplate((bp) => {
+                      const targetLoc = customNodeInfo!.loc;
+                      if (targetLoc.scope === "top") {
+                        return {
+                          ...bp,
+                          steps: bp.steps.map((s, idx) =>
+                            idx === targetLoc.index && s.kind === "agent"
+                              ? { ...s, plan_mode: "dual_synthesis" }
+                              : s,
+                          ),
+                        };
+                      }
+                      return bp;
+                    })
+                  }
+                >
+                  双脑博弈合成 (E2)
+                </button>
+              </div>
+            ) : null}
             <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
               <button
                 type="button"

@@ -499,3 +499,79 @@ export function resolveRosterStageAssignment(
     usedFallback,
   };
 }
+
+/**
+ * Resolves a heterogeneous read-only peer (`Brain B`) for Track 7 E2 plan/advise dual synthesis,
+ * avoiding `primaryAssignment`'s provider/model family. Returns `null` when no healthy distinct peer exists.
+ */
+export function resolveDualSynthesisPeerAssignment(
+  rosterConfig: RosterConfig,
+  stage: "plan" | "advise",
+  primaryAssignment: { agent: string; model: string },
+  options?: {
+    isCoolingDown?: (key: { backendId?: string; agent: string; model: string }) => boolean;
+    agentCapabilitiesMap?: ReadonlyMap<string, BackendCapabilities>;
+  },
+): ResolvedRoleAssignment | null {
+  const roleOrder =
+    stage === "plan" ? (["architect", "advisor"] as const) : (["advisor", "architect"] as const);
+  const dedupedCandidates: RosterModelBinding[] = [];
+  const seenKeys = new Set<string>();
+
+  for (const key of roleOrder) {
+    const entry = rosterConfig.roster[key];
+    if (!entry || !entry.enabled || entry.mode !== "agent") {
+      continue;
+    }
+    const bindings = [...(entry.primary ? [entry.primary] : []), ...(entry.fallbacks ?? [])];
+    for (const b of bindings) {
+      const sig = `${b.backend_id ?? ""}:${b.provider}:${b.model}`;
+      if (!seenKeys.has(sig)) {
+        seenKeys.add(sig);
+        dedupedCandidates.push(b);
+      }
+    }
+  }
+
+  if (dedupedCandidates.length === 0) {
+    return null;
+  }
+
+  const distinct = filterCandidatesAvoidingPeers(dedupedCandidates, [primaryAssignment]);
+  if (distinct.length === 0) {
+    return null;
+  }
+
+  const selected = distinct.find((cand) => {
+    const caps = options?.agentCapabilitiesMap?.get(cand.provider);
+    if (caps !== undefined && !caps.mcpInjection) {
+      return true;
+    }
+    if (!options?.isCoolingDown) {
+      return true;
+    }
+    return !options.isCoolingDown({
+      ...(cand.backend_id !== undefined ? { backendId: cand.backend_id } : {}),
+      agent: cand.provider,
+      model: cand.model,
+    });
+  });
+
+  if (!selected) {
+    return null;
+  }
+
+  return {
+    role: "advisor",
+    rosterRoleId: stage === "plan" ? "architect" : "advisor",
+    rosterMode: "agent",
+    perm: "read_only",
+    ...(selected.backend_id !== undefined ? { backendId: selected.backend_id } : {}),
+    agent: selected.provider,
+    model: selected.model,
+    ...(selected.effort !== undefined ? { reasoningEffort: selected.effort } : {}),
+    freshContext: true,
+    allowFullAccessFallback: false,
+    usedFallback: true,
+  };
+}

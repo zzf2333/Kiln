@@ -904,3 +904,683 @@ describe("Track 7 E1: test_first_lock physical red-green test isolation", () => 
     expect(ansSpecs[0]?.agent).toBe("codex");
   }, 30_000);
 });
+
+describe("Track 7 E2: plan-level dual_synthesis & 2nd-advise auto-upgrade", () => {
+  it("runs concurrent Brain A + B, reuses Brain A via backend.send(), writes candidates & exposes detail API", async () => {
+    const kilnHome = makeTempDir("kiln-e2-synth-home-");
+    const repoDir = makeTempDir("kiln-e2-synth-repo-");
+    const baseSha = initSampleGitRepo(repoDir);
+    const acceptCmd = "echo ok";
+    const snap = computeFrozenSnapshot(repoDir, [], acceptCmd);
+    const fakeBackend = makeTrack7Backend();
+    const observedActions: string[] = [];
+
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: true,
+      tokenSecret: "e2-secret-0123456789abcdef012345",
+      approvalHandler: async (req, ctx) => {
+        observedActions.push(req.action);
+        const wtPath = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
+        const matchedSpec =
+          fakeBackend.getRecordedSpecs().find((s) => s.runId === ctx.runId) ??
+          [...fakeBackend.getRecordedSpecs()]
+            .reverse()
+            .find((s) => s.taskId === ctx.taskId && s.role === ctx.role);
+        const token = matchedSpec?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+
+        const submit = async (markdown: string): Promise<void> => {
+          const res = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({ markdown }),
+          });
+          if (res.status !== 200) {
+            throw new Error(`submit failed (${res.status}): ${JSON.stringify(res.body)}`);
+          }
+        };
+
+        if (req.action === "plan_cand_a") {
+          await submit(
+            serializeFrontmatterMarkdown(
+              {
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                outcome: "resolved",
+                chosen_approach: "方案 A：保持轻量模块结构",
+              },
+              "## 技术取舍\nBrain A 草案详情\n\n## 授权裁决\n按 A 实施\n",
+            ),
+          );
+        } else if (req.action === "plan_cand_b") {
+          await submit(
+            serializeFrontmatterMarkdown(
+              {
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                outcome: "resolved",
+                chosen_approach: "方案 B：补充边界容错校验",
+              },
+              "## 技术取舍\nBrain B 草案详情\n\n## 授权裁决\n补充空值防守\n",
+            ),
+          );
+        } else if (req.action === "plan_synth") {
+          await submit(
+            serializeFrontmatterMarkdown(
+              {
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                outcome: "resolved",
+                chosen_approach: "融合方案：轻量模块 + 边界容错",
+              },
+              [
+                "> **双脑博弈合成摘要**：采纳 Brain A 的轻量结构与 Brain B 的空值容错护栏。",
+                "> - 架构骨架：沿用既有模块拆分",
+                "> - 边界兜底：增加空输入保护",
+                "",
+                "## 技术取舍\n取长补短收敛终版\n\n## 授权裁决\n按终版执行\n",
+              ].join("\n"),
+            ),
+          );
+        } else if (req.action === "impl_after_synth") {
+          fs.appendFileSync(path.join(wtPath, "src", "core", "calc.ts"), "\n// e2 impl\n");
+          await submit(
+            makeWorkerReceipt({
+              run_id: ctx.runId,
+              contract_version: ctx.card.contract_version,
+              input_ref: baseSha,
+              output_ref: "HEAD",
+              changed_paths: ["src/core/calc.ts"],
+            }),
+          );
+        }
+        await ctx.backend.answer(req.id, true);
+      },
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "sp-e2",
+      name: "E2 Space",
+      repo_path: repoDir,
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    });
+    server.store.writeConfig("roster", makeTrack7Roster());
+    server.store.writeConfig("limits", makeDefaultLimits(2));
+
+    // Brain A (codex, turn 1 + warm send turn 2) & Brain B (claude)
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "plan_cand_a", detail: "Brain A draft" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "advisor", agent: "codex", turnNumber: 1 },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "plan_synth", detail: "Brain A warm synthesis" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "advisor", agent: "codex", turnNumber: 2 },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "plan_cand_b", detail: "Brain B draft" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "advisor", agent: "claude", turnNumber: 1 },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "impl_after_synth", detail: "worker implement" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "worker" },
+    );
+
+    const now = new Date().toISOString();
+    const card = TaskCardSchema.parse({
+      schema_version: 1,
+      id: "t-e2-synth",
+      title: "E2 dual synthesis test",
+      space: "sp-e2",
+      priority: "P1",
+      track: "L1",
+      workspace_mode: "git_worktree",
+      parent: null,
+      depends_on: [],
+      contract_version: 1,
+      workflow: buildWorkflowPreset("quick", {
+        includePlan: true,
+        dualSynthesis: true,
+      }),
+      contract: {
+        goal: "Plan with dual synthesis and implement cleanly",
+        end: "done",
+        accept_cmd: acceptCmd,
+        accept_files_hash: snap.hash,
+        scope: ["src/core/**"],
+        deliver: { mode: "merge_main", cmd: null },
+        human_accept: false,
+        external_actions: "ask",
+      },
+      limits: {
+        retries_per_stage: 2,
+        review_rounds: 2,
+        advisor_calls: 2,
+        max_tokens: 5_000_000,
+      },
+      created_at: now,
+      updated_at: now,
+    });
+    server.stateMachine.createTask(card, "# E2 Dual Synthesis\n");
+    await server.start();
+
+    await waitUntil(() => {
+      const status = server.store.getTaskIndex("t-e2-synth")?.status;
+      return status === "done" || status === "waiting";
+    }, "E2 synthesized task done");
+
+    expect(server.store.getTaskIndex("t-e2-synth")?.status).toBe("done");
+    expect(fakeBackend.getRecordedSends()).toHaveLength(1);
+    expect(fs.existsSync(server.store.paths.planCandidateAMd("t-e2-synth"))).toBe(true);
+    expect(fs.existsSync(server.store.paths.planCandidateBMd("t-e2-synth"))).toBe(true);
+    const planDoc = fs.readFileSync(server.store.paths.planMd("t-e2-synth"), "utf8");
+    expect(planDoc).toContain("双脑博弈合成摘要");
+
+    const detailRes = await server.app.request("/api/tasks/t-e2-synth");
+    expect(detailRes.status).toBe(200);
+    const detailJson = (await detailRes.json()) as {
+      dualSynthesis: {
+        status: string;
+        reused_brain_a_session: boolean;
+        candidates: unknown[];
+      } | null;
+      planCandidateA: string | null;
+      planCandidateB: string | null;
+    };
+    expect(detailJson.dualSynthesis?.status).toBe("synthesized");
+    expect(detailJson.dualSynthesis?.reused_brain_a_session).toBe(true);
+    expect(detailJson.dualSynthesis?.candidates).toHaveLength(2);
+    expect(detailJson.planCandidateA).toContain("Brain A 草案详情");
+    expect(detailJson.planCandidateB).toContain("Brain B 草案详情");
+  }, 20_000);
+
+  it("handles need_decision A/B adoption via /decide and single-provider fallback_single gracefully", async () => {
+    const kilnHome = makeTempDir("kiln-e2-dec-home-");
+    const repoDir = makeTempDir("kiln-e2-dec-repo-");
+    const baseSha = initSampleGitRepo(repoDir);
+    const acceptCmd = "echo ok";
+    const snap = computeFrozenSnapshot(repoDir, [], acceptCmd);
+    const fakeBackend = makeTrack7Backend();
+
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: true,
+      tokenSecret: "e2-dec-secret-0123456789abcdef01",
+      approvalHandler: async (req, ctx) => {
+        const wtPath = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
+        const matchedSpec =
+          fakeBackend.getRecordedSpecs().find((s) => s.runId === ctx.runId) ??
+          [...fakeBackend.getRecordedSpecs()]
+            .reverse()
+            .find((s) => s.taskId === ctx.taskId && s.role === ctx.role);
+        const token = matchedSpec?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+        const submit = async (markdown: string): Promise<void> => {
+          const res = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({ markdown }),
+          });
+          if (res.status !== 200) {
+            throw new Error(`submit failed (${res.status}): ${JSON.stringify(res.body)}`);
+          }
+        };
+
+        if (req.action === "cand_a_need_dec") {
+          await submit(
+            serializeFrontmatterMarkdown(
+              {
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                outcome: "need_decision",
+                chosen_approach: "A 认为存在接口兼容争议",
+              },
+              "## 技术取舍\n方案 A 待决策内容\n\n## 授权裁决\n请拍板\n",
+            ),
+          );
+        } else if (req.action === "cand_b_ok") {
+          await submit(
+            serializeFrontmatterMarkdown(
+              {
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                outcome: "resolved",
+                chosen_approach: "B 给出无破坏兼容方案",
+              },
+              "## 技术取舍\n方案 B 可直接执行详情\n\n## 授权裁决\n采用方案 B\n",
+            ),
+          );
+        } else if (req.action === "single_fb_plan") {
+          await submit(
+            serializeFrontmatterMarkdown(
+              {
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                outcome: "resolved",
+                chosen_approach: "单脑降级直出方案",
+              },
+              "## 技术取舍\n单脑细节\n\n## 授权裁决\n按单脑执行\n",
+            ),
+          );
+        } else if (req.action === "impl_done") {
+          fs.appendFileSync(path.join(wtPath, "src", "core", "calc.ts"), "\n// dec impl\n");
+          await submit(
+            makeWorkerReceipt({
+              run_id: ctx.runId,
+              contract_version: ctx.card.contract_version,
+              input_ref: baseSha,
+              output_ref: "HEAD",
+              changed_paths: ["src/core/calc.ts"],
+            }),
+          );
+        }
+        await ctx.backend.answer(req.id, true);
+      },
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "sp-e2-dec",
+      name: "E2 Decide Space",
+      repo_path: repoDir,
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    });
+    server.store.writeConfig("roster", makeTrack7Roster());
+    server.store.writeConfig("limits", makeDefaultLimits(2));
+
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "cand_a_need_dec", detail: "A need_decision" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-e2-dec", role: "advisor", agent: "codex" },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "cand_b_ok", detail: "B ok" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-e2-dec", role: "advisor", agent: "claude" },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "impl_done", detail: "implement after adopt B" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-e2-dec", role: "worker" },
+    );
+
+    const now = new Date().toISOString();
+    const cardDec = TaskCardSchema.parse({
+      schema_version: 1,
+      id: "t-e2-dec",
+      title: "E2 need decision A/B",
+      space: "sp-e2-dec",
+      priority: "P1",
+      track: "L1",
+      workspace_mode: "git_worktree",
+      parent: null,
+      depends_on: [],
+      contract_version: 1,
+      workflow: buildWorkflowPreset("quick", {
+        includePlan: true,
+        dualSynthesis: true,
+      }),
+      contract: {
+        goal: "Test A/B adoption",
+        end: "done",
+        accept_cmd: acceptCmd,
+        accept_files_hash: snap.hash,
+        scope: ["src/core/**"],
+        deliver: { mode: "merge_main", cmd: null },
+        human_accept: false,
+        external_actions: "ask",
+      },
+      limits: {
+        retries_per_stage: 2,
+        review_rounds: 2,
+        advisor_calls: 2,
+        max_tokens: 5_000_000,
+      },
+      created_at: now,
+      updated_at: now,
+    });
+    server.stateMachine.createTask(cardDec, "# E2 Decide\n");
+    await server.start();
+
+    await waitUntil(
+      () => server.store.getTaskIndex("t-e2-dec")?.status === "waiting",
+      "E2 task waiting on dual_synthesis_need_decision",
+    );
+    const pendingDec = server.pendingDecisions.get("t-e2-dec");
+    expect(pendingDec?.reason).toBe("dual_synthesis_need_decision");
+    expect(pendingDec?.options.map((o) => o.id)).toContain("opt-adopt-brain-a");
+    expect(pendingDec?.options.map((o) => o.id)).toContain("opt-adopt-brain-b");
+
+    const decideRes = await server.app.request("/api/tasks/t-e2-dec/decide", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        decision_id: pendingDec!.id,
+        option_id: "opt-adopt-brain-b",
+        action: "resume",
+      }),
+    });
+    expect(decideRes.status).toBe(200);
+    expect(fs.readFileSync(server.store.paths.planMd("t-e2-dec"), "utf8")).toContain(
+      "方案 B 可直接执行详情",
+    );
+
+    await waitUntil(
+      () => server.store.getTaskIndex("t-e2-dec")?.status === "done",
+      "E2 task done after adopting B",
+    );
+
+    // Part B: single-provider graceful fallback_single
+    const singleRoster = makeTrack7Roster();
+    singleRoster.roster.architect!.primary = {
+      provider: "codex",
+      model: "gpt-5.4",
+      backend_id: "fake",
+    };
+    singleRoster.roster.architect!.fallbacks = [];
+    singleRoster.roster.advisor!.primary = {
+      provider: "codex",
+      model: "gpt-5.4",
+      backend_id: "fake",
+    };
+    singleRoster.roster.advisor!.fallbacks = [];
+    server.store.writeConfig("roster", singleRoster);
+
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "single_fb_plan", detail: "single fallback plan" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-e2-fb", role: "advisor" },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "impl_done", detail: "single fallback impl" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-e2-fb", role: "worker" },
+    );
+
+    const cardFb = TaskCardSchema.parse({
+      ...cardDec,
+      id: "t-e2-fb",
+      title: "E2 single-provider fallback",
+    });
+    server.stateMachine.createTask(cardFb, "# E2 Fallback\n");
+    await server.orchestrator.wake();
+    await waitUntil(
+      () => server.store.getTaskIndex("t-e2-fb")?.status === "done",
+      "E2 single-provider fallback task done",
+    );
+    const fbRes = await server.app.request("/api/tasks/t-e2-fb");
+    const fbJson = (await fbRes.json()) as {
+      dualSynthesis: { status: string } | null;
+    };
+    expect(fbJson.dualSynthesis?.status).toBe("fallback_single");
+  }, 20_000);
+
+  it("auto-upgrades the 2nd advise run in the same contract window to dual_synthesis", async () => {
+    const kilnHome = makeTempDir("kiln-e2-adv-home-");
+    const repoDir = makeTempDir("kiln-e2-adv-repo-");
+    const baseSha = initSampleGitRepo(repoDir);
+    const acceptCmd = "echo ok";
+    const snap = computeFrozenSnapshot(repoDir, [], acceptCmd);
+    const fakeBackend = makeTrack7Backend();
+
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: true,
+      tokenSecret: "e2-adv-secret-0123456789abcdef01",
+      approvalHandler: async (req, ctx) => {
+        const wtPath = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
+        const matchedSpec =
+          fakeBackend.getRecordedSpecs().find((s) => s.runId === ctx.runId) ??
+          [...fakeBackend.getRecordedSpecs()]
+            .reverse()
+            .find((s) => s.taskId === ctx.taskId && s.role === ctx.role);
+        const token = matchedSpec?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+        const submit = async (markdown: string): Promise<void> => {
+          const res = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({ markdown }),
+          });
+          if (res.status !== 200) {
+            throw new Error(`submit failed (${res.status}): ${JSON.stringify(res.body)}`);
+          }
+        };
+
+        if (req.action === "worker_ask_1" || req.action === "worker_ask_2") {
+          await submit(
+            makeWorkerReceipt({
+              run_id: ctx.runId,
+              contract_version: ctx.card.contract_version,
+              outcome: "need_decision",
+              input_ref: baseSha,
+              output_ref: baseSha,
+              changed_paths: [],
+              accept_result: "skipped",
+              category: "technical_ambiguity",
+              question: `第 ${req.action} 次求助 advisor`,
+            }),
+          );
+        } else if (req.action === "advise_1_single") {
+          await submit(
+            serializeFrontmatterMarkdown(
+              {
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                outcome: "resolved",
+                chosen_approach: "第 1 次单脑裁决",
+                decision_kind: "technical_ambiguity",
+                target_stage: "implement",
+              },
+              "## 技术取舍\n单脑第1次\n\n## 授权裁决\n继续实施\n",
+            ),
+          );
+        } else if (req.action === "advise_2_cand_a") {
+          await submit(
+            serializeFrontmatterMarkdown(
+              {
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                outcome: "resolved",
+                chosen_approach: "第 2 次顾问 Brain A 思路",
+                decision_kind: "technical_ambiguity",
+                target_stage: "implement",
+              },
+              "## 技术取舍\nA 建议\n\n## 授权裁决\n回实施\n",
+            ),
+          );
+        } else if (req.action === "advise_2_cand_b") {
+          await submit(
+            serializeFrontmatterMarkdown(
+              {
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                outcome: "resolved",
+                chosen_approach: "第 2 次顾问 Brain B 思路",
+                decision_kind: "technical_ambiguity",
+                target_stage: "implement",
+              },
+              "## 技术取舍\nB 建议\n\n## 授权裁决\n回实施\n",
+            ),
+          );
+        } else if (req.action === "advise_2_synth") {
+          await submit(
+            serializeFrontmatterMarkdown(
+              {
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                outcome: "resolved",
+                chosen_approach: "第 2 次顾问双脑合成裁决",
+                decision_kind: "technical_ambiguity",
+                target_stage: "implement",
+              },
+              "> **双脑博弈合成摘要**：第 2 次顾问已自动升级双脑合成。\n\n## 技术取舍\n合并 A+B\n\n## 授权裁决\n最终落地\n",
+            ),
+          );
+        } else if (req.action === "worker_done") {
+          fs.appendFileSync(path.join(wtPath, "src", "core", "calc.ts"), "\n// adv2 done\n");
+          await submit(
+            makeWorkerReceipt({
+              run_id: ctx.runId,
+              contract_version: ctx.card.contract_version,
+              input_ref: baseSha,
+              output_ref: "HEAD",
+              changed_paths: ["src/core/calc.ts"],
+            }),
+          );
+        }
+        await ctx.backend.answer(req.id, true);
+      },
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "sp-e2-adv",
+      name: "E2 Advise Space",
+      repo_path: repoDir,
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    });
+    server.store.writeConfig("roster", makeTrack7Roster());
+    server.store.writeConfig("limits", makeDefaultLimits(4));
+
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "worker_ask_1", detail: "ask 1" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "worker" },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "advise_1_single", detail: "1st advise single" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "advisor", agent: "codex" },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "worker_ask_2", detail: "ask 2" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "worker" },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "advise_2_cand_a", detail: "2nd advise Brain A" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "advisor", agent: "codex", turnNumber: 1 },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "advise_2_synth", detail: "2nd advise synth" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "advisor", agent: "codex", turnNumber: 2 },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "advise_2_cand_b", detail: "2nd advise Brain B" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "advisor", agent: "claude", turnNumber: 1 },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "worker_done", detail: "worker finish" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "worker" },
+    );
+
+    const now = new Date().toISOString();
+    const card = TaskCardSchema.parse({
+      schema_version: 1,
+      id: "t-e2-adv",
+      title: "E2 2nd advise auto-upgrade",
+      space: "sp-e2-adv",
+      priority: "P1",
+      track: "L1",
+      workspace_mode: "git_worktree",
+      parent: null,
+      depends_on: [],
+      contract_version: 1,
+      workflow: buildWorkflowPreset("quick"),
+      contract: {
+        goal: "Test 2nd advise upgrade",
+        end: "done",
+        accept_cmd: acceptCmd,
+        accept_files_hash: snap.hash,
+        scope: ["src/core/**"],
+        deliver: { mode: "merge_main", cmd: null },
+        human_accept: false,
+        external_actions: "ask",
+      },
+      limits: {
+        retries_per_stage: 4,
+        review_rounds: 2,
+        advisor_calls: 3,
+        max_tokens: 5_000_000,
+      },
+      created_at: now,
+      updated_at: now,
+    });
+    server.stateMachine.createTask(card, "# E2 2nd Advise\n");
+    await server.start();
+
+    await waitUntil(
+      () => server.store.getTaskIndex("t-e2-adv")?.status === "done",
+      "E2 2nd advise task done",
+    );
+
+    const res = await server.app.request("/api/tasks/t-e2-adv");
+    const json = (await res.json()) as {
+      dualSynthesis: { stage: string; status: string; reused_brain_a_session: boolean } | null;
+    };
+    expect(json.dualSynthesis?.stage).toBe("advise");
+    expect(json.dualSynthesis?.status).toBe("synthesized");
+    expect(json.dualSynthesis?.reused_brain_a_session).toBe(true);
+    expect(fakeBackend.getRecordedSends()).toHaveLength(1);
+  }, 20_000);
+});

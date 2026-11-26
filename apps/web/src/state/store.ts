@@ -192,16 +192,18 @@ export interface IntakeFormState {
 
 function collectAgentAssignmentsByStage(
   workflow: WorkflowBlueprint | undefined,
-): Map<WorkflowAgentStage, WorkflowAgentNode> {
-  const map = new Map<WorkflowAgentStage, WorkflowAgentNode>();
+): Map<string, WorkflowAgentNode> {
+  const map = new Map<string, WorkflowAgentNode>();
   if (!workflow) return map;
+  const keyFor = (step: WorkflowAgentNode) =>
+    `${step.stage}:${step.mode === "test_first_lock" ? "test_first_lock" : "normal"}`;
   for (const step of workflow.steps) {
     if (step.kind === "agent") {
-      map.set(step.stage, step);
+      map.set(keyFor(step), step);
     } else if (step.kind === "loop") {
       for (const inner of step.steps) {
         if (inner.kind === "agent") {
-          map.set(inner.stage, inner);
+          map.set(keyFor(inner), inner);
         }
       }
     }
@@ -230,14 +232,18 @@ function preserveWorkflowAssignments(
   const prevByStage = collectAgentAssignmentsByStage(prev);
   const dropSet = options?.dropRosterRoles;
   const mapAgentNode = (node: WorkflowAgentNode): WorkflowAgentNode => {
-    const old = prevByStage.get(node.stage);
+    const key = `${node.stage}:${node.mode === "test_first_lock" ? "test_first_lock" : "normal"}`;
+    const old = prevByStage.get(key) ?? prevByStage.get(`${node.stage}:normal`);
     const mergedRole = node.roster_role ?? old?.roster_role;
     const effectiveRole = mergedRole && dropSet?.has(mergedRole) ? undefined : mergedRole;
     const effectiveRationale = node.rationale ?? old?.rationale;
+    const effectivePlanMode =
+      node.stage === "plan" ? (node.plan_mode ?? old?.plan_mode) : undefined;
     return {
       ...node,
       ...(effectiveRole !== undefined ? { roster_role: effectiveRole } : {}),
       ...(effectiveRationale !== undefined ? { rationale: effectiveRationale } : {}),
+      ...(effectivePlanMode !== undefined ? { plan_mode: effectivePlanMode } : {}),
     };
   };
 
@@ -2953,8 +2959,12 @@ export class KilnWebStore {
       hostTwoPhase: cur.workspace_mode === "host_scoped",
       hasDeliverCmd: cur.deliver_cmd.trim().length > 0,
     };
+    if (!merged.includePlan) {
+      merged.dualSynthesis = false;
+    }
     if (merged.hostTwoPhase) {
       merged.deliverApproval = true;
+      merged.testFirstLock = false;
     }
     const nextWorkflow = preserveWorkflowAssignments(cur.workflow, buildCustomWorkflow(merged), {
       preserveResearch: true,

@@ -475,6 +475,7 @@ export class KilndServer {
       },
       onTechnicalDecisionForAdvisor: (params) =>
         this.orchestrator.tryRouteTechnicalDecisionToAdvisor(params),
+      onSubmitAuxiliaryReceipt: (input) => this.orchestrator.tryAcceptAuxiliaryReceipt(input),
     });
   }
 

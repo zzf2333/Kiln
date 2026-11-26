@@ -662,6 +662,13 @@ export function DetailView() {
       break;
     }
   }
+  const latestTestsLock = [...stateEventsList]
+    .reverse()
+    .find(
+      (ev): ev is Extract<typeof ev, { type: "contract_tests_locked" }> =>
+        ev.type === "contract_tests_locked" && ev.contract_version === card.contract_version,
+    );
+  const dualSynthesis = detail?.dualSynthesis ?? null;
   const childTasks = state.tasks.filter((t) => t.parent_id === card.id);
   const completedChildCount = childTasks.filter((t) => t.status === "done").length;
   const totalSplitCount =
@@ -845,6 +852,32 @@ export function DetailView() {
             {latestFastForward ? (
               <span className="chip chip-ok">
                 {`0-Token 快进 · ${latestFastForward.reason === "docs_only" ? "纯文档变更" : "纯测试变更"}`}
+              </span>
+            ) : null}
+            {latestTestsLock ? (
+              <span className="chip chip-ok">
+                {`红绿锁卷 · 已锁定 ${latestTestsLock.test_files.length} 个考卷测试`}
+              </span>
+            ) : null}
+            {dualSynthesis ? (
+              <span
+                className={`chip ${
+                  dualSynthesis.status === "synthesized"
+                    ? "chip-ok"
+                    : dualSynthesis.status === "awaiting_decision"
+                      ? "chip-warn"
+                      : ""
+                }`}
+              >
+                {dualSynthesis.status === "synthesized"
+                  ? `双脑博弈合成${dualSynthesis.reused_brain_a_session ? " · 复用A会话" : ""}`
+                  : dualSynthesis.status === "adopted_single"
+                    ? "双脑择优采纳"
+                    : dualSynthesis.status === "fallback_single"
+                      ? "单脑降级规划"
+                      : dualSynthesis.status === "awaiting_decision"
+                        ? "双脑待决分歧"
+                        : "双脑草案失败"}
               </span>
             ) : null}
           </div>
@@ -2342,6 +2375,48 @@ export function DetailView() {
                 <div style={{ maxHeight: "260px", overflowY: "auto" }}>
                   <MarkdownContent text={detail.plan} />
                 </div>
+                {dualSynthesis || detail.planCandidateA || detail.planCandidateB ? (
+                  <details style={{ marginTop: "10px" }}>
+                    <summary style={{ cursor: "pointer", fontSize: "12.5px", fontWeight: 500 }}>
+                      查看双脑候选方案对照（PLAN_CANDIDATE_A vs B
+                      {dualSynthesis?.candidates.length
+                        ? ` · ${dualSynthesis.candidates.map((c) => `${c.brain}:${c.model}`).join(" / ")}`
+                        : ""}
+                      ）
+                    </summary>
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+                        gap: "10px",
+                        marginTop: "8px",
+                      }}
+                    >
+                      {detail.planCandidateA ? (
+                        <div
+                          className="panel"
+                          style={{ padding: "8px", maxHeight: "220px", overflowY: "auto" }}
+                        >
+                          <div className="mono" style={{ fontSize: "11px", marginBottom: "4px" }}>
+                            Brain A (PLAN_CANDIDATE_A.md)
+                          </div>
+                          <MarkdownContent text={detail.planCandidateA} />
+                        </div>
+                      ) : null}
+                      {detail.planCandidateB ? (
+                        <div
+                          className="panel"
+                          style={{ padding: "8px", maxHeight: "220px", overflowY: "auto" }}
+                        >
+                          <div className="mono" style={{ fontSize: "11px", marginBottom: "4px" }}>
+                            Brain B (PLAN_CANDIDATE_B.md)
+                          </div>
+                          <MarkdownContent text={detail.planCandidateB} />
+                        </div>
+                      ) : null}
+                    </div>
+                  </details>
+                ) : null}
               </section>
             ) : null}
 
@@ -2385,7 +2460,9 @@ export function DetailView() {
                                 ? ` · 裂变 ${ev.child_task_ids.length} 张子卡 (${ev.child_task_ids.join(", ")}) → 集成屏障 ${stageMeta(ev.resume_stage).label}`
                                 : ev.type === "stage_fast_forwarded"
                                   ? ` · 跳过 ${stageMeta(ev.skipped_stage).label} → ${stageMeta(ev.to_stage).label} (${ev.reason === "docs_only" ? "纯文档变更" : "纯测试变更"})`
-                                  : `${"reason" in ev && ev.reason ? ` · ${ev.reason}` : ""}${"stage" in ev && ev.stage ? ` · ${stageMeta(ev.stage).label}` : ""}`}
+                                  : ev.type === "contract_tests_locked"
+                                    ? ` · 锁定 ${ev.test_files.length} 个红灯考卷测试 (${ev.test_files.join(", ")})`
+                                    : `${"reason" in ev && ev.reason ? ` · ${ev.reason}` : ""}${"stage" in ev && ev.stage ? ` · ${stageMeta(ev.stage).label}` : ""}`}
                           </span>
                         </div>
                       ))}

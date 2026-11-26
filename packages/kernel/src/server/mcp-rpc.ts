@@ -108,6 +108,7 @@ export interface McpRpcServerOptions {
   onTechnicalDecisionForAdvisor?: (
     input: TechnicalDecisionAdvisorRouteInput,
   ) => TechnicalDecisionAdvisorRouteResult;
+  onSubmitAuxiliaryReceipt?: (input: { claims: RunTokenClaims; rawMarkdown: string }) => boolean;
 }
 
 export interface PrepareIpcSocketPathDeps {
@@ -328,6 +329,9 @@ export class McpRpcServer {
   private readonly onTechnicalDecisionForAdvisor:
     | ((input: TechnicalDecisionAdvisorRouteInput) => TechnicalDecisionAdvisorRouteResult)
     | undefined;
+  private readonly onSubmitAuxiliaryReceipt:
+    | ((input: { claims: RunTokenClaims; rawMarkdown: string }) => boolean)
+    | undefined;
 
   private shutdownToken: string | undefined;
   private shutdownTriggered = false;
@@ -351,6 +355,7 @@ export class McpRpcServer {
     this.onContractUpdated = options.onContractUpdated;
     this.onDecisionRequested = options.onDecisionRequested;
     this.onTechnicalDecisionForAdvisor = options.onTechnicalDecisionForAdvisor;
+    this.onSubmitAuxiliaryReceipt = options.onSubmitAuxiliaryReceipt;
   }
 
   setShutdownToken(token: string | undefined): void {
@@ -1342,16 +1347,6 @@ export class McpRpcServer {
     const effectiveRunId = this.resolveEffectiveRunId(claims);
     this.requireCard(claims.taskId);
 
-    const matchedRun = findRunByRunId(this.store, claims.taskId, effectiveRunId);
-    if (!matchedRun) {
-      throw new ServerHttpError(404, {
-        error: "run_not_found",
-        taskId: claims.taskId,
-        runId: effectiveRunId,
-        message: `No RUN.yaml found for task "${claims.taskId}" and run "${effectiveRunId}"`,
-      });
-    }
-
     if (!isReceiptKind(claims.role)) {
       throw new ServerHttpError(400, {
         error: "invalid_receipt",
@@ -1384,6 +1379,30 @@ export class McpRpcServer {
         role: claims.role,
         errors,
         message: `Invalid ${claims.role} receipt: ${errors.join("; ")}`,
+      });
+    }
+
+    if (
+      this.onSubmitAuxiliaryReceipt?.({
+        claims: { ...claims, runId: effectiveRunId },
+        rawMarkdown: input.markdown,
+      })
+    ) {
+      return {
+        ok: true,
+        accepted: true,
+        auxiliary: true,
+        run_id: effectiveRunId,
+      };
+    }
+
+    const matchedRun = findRunByRunId(this.store, claims.taskId, effectiveRunId);
+    if (!matchedRun) {
+      throw new ServerHttpError(404, {
+        error: "run_not_found",
+        taskId: claims.taskId,
+        runId: effectiveRunId,
+        message: `No RUN.yaml found for task "${claims.taskId}" and run "${effectiveRunId}"`,
       });
     }
 

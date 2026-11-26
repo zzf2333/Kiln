@@ -5,6 +5,7 @@ import {
   AcceptVerificationReportSchema,
   AdvisorRequestSchema,
   DecisionRecordSchema,
+  DualSynthesisRecordSchema,
   GateReportSchema,
   PendingDecisionSchema,
   PendingSubtaskSplitSchema,
@@ -23,6 +24,7 @@ import {
   isWriteCapableRosterPermission,
   nextWorkflowStepAfter,
   parseAndValidateReceipt,
+  parseFrontmatterMarkdown,
   resolveTaskWorkflow,
   resolveWorkflowStepAt,
   serializeFrontmatterMarkdown,
@@ -31,6 +33,8 @@ import {
   type AcceptVerificationReport,
   type AdvisorRequest,
   type BackendCapabilities,
+  type DualSynthesisCandidateSummary,
+  type DualSynthesisRecord,
   type GateReport,
   type MidFlightSubtaskSpec,
   type PendingDecision,
@@ -84,7 +88,12 @@ import {
   type FrozenSnapshot,
   type StagedHostFileSpec,
 } from "../gate/index.js";
-import { KilnScheduler, type DispatchPlan } from "../scheduler/index.js";
+import {
+  KilnScheduler,
+  resolveDualSynthesisPeerAssignment,
+  type DispatchPlan,
+  type ResolvedRoleAssignment,
+} from "../scheduler/index.js";
 import {
   TaskStateMachine,
   assertCanInvokeAdvisor,
@@ -447,6 +456,20 @@ export class KilnOrchestrator {
   private readonly inFlightOperations = new Map<string, InFlightStageOperation>();
   private readonly abortingBeforeDispatch = new Set<string>();
   private readonly advisorPreRunDirtySignatures = new Map<string, string>();
+  private readonly activeAuxiliaryReceipts = new Map<
+    string,
+    { taskId: string; contractVersion: number; rawMarkdown?: string }
+  >();
+  private readonly auxiliaryActiveHandles = new Map<
+    string,
+    {
+      taskId: string;
+      runId: string;
+      role: RoleId;
+      backend: ExecutionBackend;
+      sessionRef: SessionRef;
+    }
+  >();
   private readonly activeAcceptEnvs = new Map<string, AcceptEnvSession>();
   private readonly activeAcceptEnvConfigs = new Map<string, AcceptEntryConfig>();
   private readonly approvalUnsubscribers: Array<() => void> = [];
@@ -552,7 +575,11 @@ export class KilnOrchestrator {
     backend: ExecutionBackend,
     req: ApprovalRequestEvent,
   ): Promise<void> {
-    let matched: ActiveRunHandle | null = null;
+    let matched: {
+      taskId: string;
+      runId: string;
+      role: RoleId;
+    } | null = null;
     for (const handle of this.activeRuns.values()) {
       if (
         handle.backend.backendId === backend.backendId &&
@@ -560,6 +587,13 @@ export class KilnOrchestrator {
       ) {
         matched = handle;
         break;
+      }
+    }
+    if (!matched) {
+      const auxKey = `${backend.backendId}:${req.sessionRef.sessionId}`;
+      const aux = this.auxiliaryActiveHandles.get(auxKey);
+      if (aux) {
+        matched = aux;
       }
     }
 
@@ -698,6 +732,12 @@ export class KilnOrchestrator {
       this.rateTracker.clearTask(handle.taskId);
       await handle.backend.cancel(handle.sessionRef).catch(() => {});
     }
+    const auxHandles = Array.from(this.auxiliaryActiveHandles.values());
+    this.auxiliaryActiveHandles.clear();
+    this.activeAuxiliaryReceipts.clear();
+    for (const aux of auxHandles) {
+      await aux.backend.cancel(aux.sessionRef).catch(() => {});
+    }
     const inFlightOps = Array.from(this.inFlightOperations.values());
     for (const op of inFlightOps) {
       op.abortController.abort();
@@ -776,6 +816,28 @@ export class KilnOrchestrator {
         this.inFlightOperations.delete(safeTaskId);
       }
     }
+    for (const [auxKey, aux] of this.auxiliaryActiveHandles.entries()) {
+      if (aux.taskId === safeTaskId) {
+        this.auxiliaryActiveHandles.delete(auxKey);
+        await aux.backend.cancel(aux.sessionRef).catch(() => {});
+      }
+    }
+  }
+
+  tryAcceptAuxiliaryReceipt(input: {
+    claims: { taskId: string; runId: string; contractVersion: number };
+    rawMarkdown: string;
+  }): boolean {
+    const entry = this.activeAuxiliaryReceipts.get(input.claims.runId);
+    if (
+      !entry ||
+      entry.taskId !== input.claims.taskId ||
+      entry.contractVersion !== input.claims.contractVersion
+    ) {
+      return false;
+    }
+    entry.rawMarkdown = input.rawMarkdown;
+    return true;
   }
 
   async cleanupDeletedTask(taskId: string, card: TaskCard): Promise<void> {
@@ -2263,6 +2325,27 @@ export class KilnOrchestrator {
       return;
     }
 
+    const resolvedDispatchStep = resolveWorkflowStepAt(
+      plan.card,
+      plan.stepIndex ?? null,
+      plan.stage,
+      plan.card.track,
+    )?.node;
+    const isDualPlanNode =
+      plan.stage === "plan" &&
+      resolvedDispatchStep?.kind === "agent" &&
+      resolvedDispatchStep.plan_mode === "dual_synthesis";
+    const isEscalatedDualAdvise =
+      plan.stage === "advise" &&
+      this.listCurrentWindowRuns(plan.taskId, plan.card).filter((r) => r.meta.stage === "advise")
+        .length >= 1;
+    if ((isDualPlanNode || isEscalatedDualAdvise) && plan.role === "advisor") {
+      const handled = await this.dispatchDualSynthesisStageRun(plan, assignment);
+      if (handled) {
+        return;
+      }
+    }
+
     const workspace = await this.prepareWorkspaceForPlan(plan.card, plan.stage);
     const runDirName = this.allocateRunDirName(plan.taskId, plan.stage);
     const runId = `run-${plan.taskId}-${plan.stage}-r${plan.round}-v${plan.contractVersion}-${randomUUID().slice(0, 6)}`;
@@ -2853,6 +2936,668 @@ export class KilnOrchestrator {
 
     this.attachSessionConsumer(plan.taskId, runDirName, updatedRunMeta, backend, sessionRef);
     this.flushDeferredApprovals();
+  }
+
+  private async dispatchDualSynthesisStageRun(
+    plan: DispatchPlan,
+    primaryAssignment: ResolvedRoleAssignment,
+  ): Promise<boolean> {
+    if (plan.stage !== "plan" && plan.stage !== "advise") {
+      return false;
+    }
+    const stage: "plan" | "advise" = plan.stage;
+    const nowMs = this.nowMs();
+    const rosterConfig = this.store.readConfig("roster");
+    if (!rosterConfig) {
+      return false;
+    }
+
+    const peerAssignment = resolveDualSynthesisPeerAssignment(
+      rosterConfig,
+      stage,
+      { agent: primaryAssignment.agent, model: primaryAssignment.model },
+      {
+        agentCapabilitiesMap: this.agentCapabilitiesMap,
+        isCoolingDown: (key) =>
+          this.scheduler.isKeyInCooldown(key, nowMs) ||
+          (this.providerHealth?.isInCooldown(key.agent, nowMs) ?? false),
+      },
+    );
+    const backendA = await this.findBackendWithAgent(
+      primaryAssignment.backendId,
+      primaryAssignment.agent,
+    );
+    const peerBackend = peerAssignment
+      ? await this.findBackendWithAgent(peerAssignment.backendId, peerAssignment.agent)
+      : null;
+
+    if (!peerAssignment || !peerBackend || !backendA) {
+      const fallbackRecord: DualSynthesisRecord = DualSynthesisRecordSchema.parse({
+        schema_version: 1,
+        stage,
+        run_id: `fallback-${randomUUID().slice(0, 6)}`,
+        contract_version: plan.contractVersion,
+        status: "fallback_single",
+        reused_brain_a_session: false,
+        created_at: new Date().toISOString(),
+        candidates: [
+          {
+            brain: "A",
+            agent: primaryAssignment.agent,
+            model: primaryAssignment.model,
+            outcome: "skipped",
+            summary: "未找到可用异构备选模型，降级单脑执行",
+          },
+        ],
+        note: "当前未配置或无健康异构备选模型（Brain B），已退化为单脑规划/裁决",
+      });
+      writeYamlAtomic(
+        this.store.paths.dualSynthesisYaml(plan.taskId),
+        fallbackRecord,
+        DualSynthesisRecordSchema,
+      );
+      return false;
+    }
+
+    const workspace = await this.prepareWorkspaceForPlan(plan.card, stage);
+    const runDirName = this.allocateRunDirName(plan.taskId, stage);
+    const runId = `run-${plan.taskId}-${stage}-r${plan.round}-v${plan.contractVersion}-${randomUUID().slice(0, 6)}`;
+    const now = new Date().toISOString();
+    const guard: ExpectedRunGuard = {
+      runId,
+      contractVersion: plan.contractVersion,
+    };
+
+    const capsA = await backendA.capabilities(primaryAssignment.agent);
+    assertRoleAgentEligible("advisor", primaryAssignment.agent, capsA);
+
+    const handoff = this.buildHandoffPayload({
+      card: plan.card,
+      runId,
+      runDirName,
+      stage,
+      round: plan.round,
+      role: "advisor",
+      cwd: workspace.cwd,
+      inputRef: workspace.inputRef,
+      mcpEnabled: capsA.mcpInjection,
+      ...(primaryAssignment.rosterRoleId !== undefined
+        ? { rosterRoleId: primaryAssignment.rosterRoleId }
+        : {}),
+      ...(primaryAssignment.stepLabel !== undefined
+        ? { stepLabel: primaryAssignment.stepLabel }
+        : {}),
+      ...(primaryAssignment.customInstructions !== undefined
+        ? { customInstructions: primaryAssignment.customInstructions }
+        : {}),
+    });
+
+    const runMeta: RunMeta = RunMetaSchema.parse({
+      schema_version: 1,
+      run_id: runId,
+      task_id: plan.taskId,
+      stage,
+      ...(plan.stepIndex !== null ? { step_index: plan.stepIndex } : {}),
+      round: plan.round,
+      role: "advisor",
+      ...(primaryAssignment.rosterRoleId !== undefined
+        ? { roster_role: primaryAssignment.rosterRoleId }
+        : {}),
+      contract_version: plan.contractVersion,
+      backend_id: backendA.backendId,
+      agent: primaryAssignment.agent,
+      model: primaryAssignment.model,
+      ...(primaryAssignment.reasoningEffort !== undefined
+        ? { reasoning_effort: primaryAssignment.reasoningEffort }
+        : {}),
+      session_ref: {
+        backendId: backendA.backendId,
+        sessionId: `dual-${runId}`,
+      },
+      cwd: workspace.cwd,
+      ...(workspace.inputRef !== undefined ? { input_ref: workspace.inputRef } : {}),
+      started_at: now,
+    });
+
+    const leaseResult = this.store.persistRunBeforeDispatch(
+      runMeta,
+      runDirName,
+      handoff.fullMarkdown,
+    );
+    if (!leaseResult.acquired) {
+      return true;
+    }
+
+    this.syncCaffeinate();
+    this.publishTaskUpdated(plan.taskId, {
+      status: "running",
+      stage,
+      round: plan.round,
+      contractVersion: plan.contractVersion,
+    });
+
+    if (plan.card.workspace_mode === "git_worktree") {
+      const preDirtySig = await this.computeWorktreeDirtySignature(workspace.cwd);
+      this.advisorPreRunDirtySignatures.set(runId, preDirtySig);
+    }
+
+    const opAbortController = new AbortController();
+    const signal = opAbortController.signal;
+    const runPromise = (async () => {
+      const runIdA = `${runId}-cand-a`;
+      const runIdB = `${runId}-cand-b`;
+      const registeredSessions: Array<{ backend: ExecutionBackend; sessionRef: SessionRef }> = [];
+
+      const consumeTurnEvents = async (
+        brainTag: "A" | "B" | "S",
+        backend: ExecutionBackend,
+        sessionRef: SessionRef,
+        turnSeqTag: string,
+      ): Promise<Extract<RunEvent, { kind: "exit" }> | null> => {
+        let exitEv: Extract<RunEvent, { kind: "exit" }> | null = null;
+        try {
+          for await (const ev of backend.events(sessionRef)) {
+            if (signal.aborted) {
+              break;
+            }
+            const normalizedEv: RunEvent =
+              ev.kind === "usage"
+                ? {
+                    ...ev,
+                    turnId: `${brainTag.toLowerCase()}-${turnSeqTag}-${ev.turnId ?? "t"}`,
+                  }
+                : ev;
+            this.store.recordRunEvent(plan.taskId, runDirName, normalizedEv);
+            this.sseHub.publish({
+              type: "run.event",
+              taskId: plan.taskId,
+              runId,
+              event: normalizedEv,
+            });
+            if (ev.kind === "exit") {
+              exitEv = ev;
+            }
+          }
+        } catch (err) {
+          exitEv = {
+            kind: "exit",
+            at: new Date().toISOString(),
+            reason: "failed",
+            detail: err instanceof Error ? err.message : String(err),
+          };
+        }
+        return exitEv;
+      };
+
+      interface AuxCandidateResult {
+        brain: "A" | "B";
+        agent: string;
+        model: string;
+        backend: ExecutionBackend;
+        sessionRef: SessionRef | null;
+        exitEvent: Extract<RunEvent, { kind: "exit" }> | null;
+        rawReceipt: string | null;
+        parsed: ReturnType<typeof parseAndValidateReceipt<"advisor">> | null;
+        mcpServers: McpStdioMountSpec[] | undefined;
+        caps: BackendCapabilities;
+        error?: string;
+      }
+
+      const runCandidateBrain = async (
+        brain: "A" | "B",
+        backend: ExecutionBackend,
+        assign: ResolvedRoleAssignment,
+        auxRunId: string,
+      ): Promise<AuxCandidateResult> => {
+        const caps = await backend.capabilities(assign.agent);
+        const mcpServers: McpStdioMountSpec[] | undefined = caps.mcpInjection
+          ? [
+              {
+                name: "kiln",
+                command: this.mcpServerCommand.command,
+                args: [...this.mcpServerCommand.args],
+                env: {
+                  ...(this.mcpServerCommand.env ?? {}),
+                  KILN_RUN_TOKEN: this.issueRunToken({
+                    taskId: plan.taskId,
+                    runId: auxRunId,
+                    role: "advisor",
+                    contractVersion: plan.contractVersion,
+                    ttlSeconds: 7_200,
+                  }),
+                  KILN_SOCK_PATH: this.socketPath,
+                  KILN_HOME: this.store.paths.home,
+                },
+              },
+            ]
+          : undefined;
+
+        this.activeAuxiliaryReceipts.set(auxRunId, {
+          taskId: plan.taskId,
+          contractVersion: plan.contractVersion,
+        });
+
+        const candPrompt = [
+          handoff.fullMarkdown,
+          ``,
+          `---`,
+          `### 双脑并行独立草案指令（Brain ${brain} · ${assign.agent}/${assign.model}）`,
+          `- 当前运行处于 E2 方案层双脑博弈独立起草阶段（只读），你的临时 \`run_id\` 为 \`${auxRunId}\`。`,
+          `- 提交回执时请务必将 frontmatter 中的 \`run_id\` 设为 \`${auxRunId}\`；严禁修改工作区文件。`,
+        ].join("\n");
+
+        const attachments = resolveRunAttachmentInputs(this.store, {
+          kind: "task",
+          taskId: plan.taskId,
+        });
+        const auxSpec: BackendRunSpec = {
+          runId: auxRunId,
+          taskId: plan.taskId,
+          role: "advisor",
+          agent: assign.agent,
+          model: assign.model,
+          ...(assign.reasoningEffort !== undefined
+            ? { reasoningEffort: assign.reasoningEffort }
+            : {}),
+          cwd: workspace.cwd,
+          prompt: candPrompt,
+          freshContext: true,
+          allowFullAccessFallback: assign.allowFullAccessFallback,
+          readOnly: true,
+          ...(mcpServers !== undefined ? { mcpServers } : {}),
+          ...(attachments.length > 0 ? { attachments } : {}),
+        };
+
+        let sessionRef: SessionRef | null = null;
+        this.startingBackendCount += 1;
+        try {
+          sessionRef = await backend.start(auxSpec);
+          registeredSessions.push({ backend, sessionRef });
+          this.auxiliaryActiveHandles.set(`${backend.backendId}:${sessionRef.sessionId}`, {
+            taskId: plan.taskId,
+            runId: auxRunId,
+            role: "advisor",
+            backend,
+            sessionRef,
+          });
+        } catch (err) {
+          return {
+            brain,
+            agent: assign.agent,
+            model: assign.model,
+            backend,
+            sessionRef: null,
+            exitEvent: null,
+            rawReceipt: null,
+            parsed: null,
+            mcpServers,
+            caps,
+            error: err instanceof Error ? err.message : String(err),
+          };
+        } finally {
+          this.startingBackendCount = Math.max(0, this.startingBackendCount - 1);
+          this.flushDeferredApprovals();
+        }
+
+        const exitEvent = await consumeTurnEvents(brain, backend, sessionRef, "cand");
+        const rawReceipt = this.activeAuxiliaryReceipts.get(auxRunId)?.rawMarkdown ?? null;
+        const parsed = rawReceipt ? parseAndValidateReceipt("advisor", rawReceipt) : null;
+        return {
+          brain,
+          agent: assign.agent,
+          model: assign.model,
+          backend,
+          sessionRef,
+          exitEvent,
+          rawReceipt,
+          parsed,
+          mcpServers,
+          caps,
+        };
+      };
+
+      try {
+        const [resA, resB] = await Promise.all([
+          runCandidateBrain("A", backendA, primaryAssignment, runIdA),
+          runCandidateBrain("B", peerBackend, peerAssignment, runIdB),
+        ]);
+
+        if (signal.aborted || !this.isRunStillCurrent(plan.taskId, runId, plan.contractVersion)) {
+          this.syncCaffeinate();
+          return;
+        }
+
+        const latestCard = this.store.readTaskCard(plan.taskId);
+        const workspaceMutated = await this.detectAdvisorWorkspaceMutation(latestCard, runId);
+        if (workspaceMutated) {
+          this.escalateAdvisorWorkspaceMutation({
+            taskId: plan.taskId,
+            stage,
+            card: latestCard,
+            runMeta,
+            guard,
+          });
+          return;
+        }
+
+        const formatCandidateDoc = (res: AuxCandidateResult): string | null => {
+          if (!res.parsed?.ok) {
+            return res.rawReceipt;
+          }
+          return [
+            `# 候选方案 ${res.brain} (${res.agent}/${res.model})`,
+            ``,
+            `- outcome: ${res.parsed.frontmatter.outcome}`,
+            `- chosen_approach: ${res.parsed.frontmatter.chosen_approach}`,
+            ``,
+            res.parsed.body.trim(),
+            ``,
+          ].join("\n");
+        };
+
+        const candADoc = formatCandidateDoc(resA);
+        const candBDoc = formatCandidateDoc(resB);
+        if (candADoc) {
+          writeFileAtomic(this.store.paths.planCandidateAMd(plan.taskId), candADoc);
+        }
+        if (candBDoc) {
+          writeFileAtomic(this.store.paths.planCandidateBMd(plan.taskId), candBDoc);
+        }
+
+        const summarizeCandidate = (res: AuxCandidateResult): DualSynthesisCandidateSummary => ({
+          brain: res.brain,
+          agent: res.agent,
+          model: res.model,
+          outcome: res.parsed?.ok
+            ? res.parsed.frontmatter.outcome === "need_decision"
+              ? "need_decision"
+              : "completed"
+            : "failed",
+          ...(res.parsed?.ok
+            ? { summary: res.parsed.frontmatter.chosen_approach }
+            : res.error
+              ? { summary: res.error }
+              : {}),
+          run_id: res.brain === "A" ? runIdA : runIdB,
+        });
+
+        const candidatesSummary: DualSynthesisCandidateSummary[] = [
+          summarizeCandidate(resA),
+          summarizeCandidate(resB),
+        ];
+
+        const aResolved = Boolean(
+          resA.parsed?.ok && resA.parsed.frontmatter.outcome === "resolved",
+        );
+        const bResolved = Boolean(
+          resB.parsed?.ok && resB.parsed.frontmatter.outcome === "resolved",
+        );
+        const aNeedDec = Boolean(
+          resA.parsed?.ok && resA.parsed.frontmatter.outcome === "need_decision",
+        );
+        const bNeedDec = Boolean(
+          resB.parsed?.ok && resB.parsed.frontmatter.outcome === "need_decision",
+        );
+
+        const rewriteReceiptRunId = (rawMarkdown: string): string => {
+          try {
+            const parsedDoc = parseFrontmatterMarkdown(rawMarkdown);
+            return serializeFrontmatterMarkdown(
+              {
+                ...parsedDoc.frontmatter,
+                run_id: runId,
+                contract_version: plan.contractVersion,
+              },
+              parsedDoc.body,
+            );
+          } catch {
+            return rawMarkdown;
+          }
+        };
+
+        const dispatchFinalizer = async (): Promise<void> => {
+          if (stage === "plan") {
+            await this.finalizePlanRun(plan.taskId, runDirName, runMeta);
+          } else {
+            await this.finalizeAdvisorRun(plan.taskId, runDirName, runMeta);
+          }
+        };
+
+        if (aNeedDec || bNeedDec) {
+          const dualRecord = DualSynthesisRecordSchema.parse({
+            schema_version: 1,
+            stage,
+            run_id: runId,
+            contract_version: plan.contractVersion,
+            status: "awaiting_decision",
+            reused_brain_a_session: false,
+            created_at: new Date().toISOString(),
+            candidates: candidatesSummary,
+            note: "至少一侧大脑提出需人类拍板分歧，等待人工择优或重审",
+          });
+          writeYamlAtomic(
+            this.store.paths.dualSynthesisYaml(plan.taskId),
+            dualRecord,
+            DualSynthesisRecordSchema,
+          );
+          const pending = PendingDecisionSchema.parse({
+            id: `dec-${randomUUID().slice(0, 8)}`,
+            task_id: plan.taskId,
+            run_id: runId,
+            contract_version: plan.contractVersion,
+            reason: "dual_synthesis_need_decision",
+            category: "design_tradeoff",
+            question: [
+              `双脑博弈${stage === "plan" ? "方案" : "顾问"}阶段出现待决分歧（A: ${resA.parsed?.ok ? resA.parsed.frontmatter.chosen_approach : "失败"}；B: ${resB.parsed?.ok ? resB.parsed.frontmatter.chosen_approach : "失败"}），请直接拍板采纳候选方案 A / B 或重试：`,
+            ].join("\n"),
+            options: [
+              ...(resA.parsed?.ok
+                ? [
+                    {
+                      id: "opt-adopt-brain-a",
+                      label: `采纳 Brain A 方案 (${primaryAssignment.agent}/${primaryAssignment.model}) 并继续实施`,
+                      action: "resume" as const,
+                      target_stage: "implement" as const,
+                      recommended: !aNeedDec,
+                    },
+                  ]
+                : []),
+              ...(resB.parsed?.ok
+                ? [
+                    {
+                      id: "opt-adopt-brain-b",
+                      label: `采纳 Brain B 方案 (${peerAssignment.agent}/${peerAssignment.model}) 并继续实施`,
+                      action: "resume" as const,
+                      target_stage: "implement" as const,
+                      recommended: aNeedDec && !bNeedDec,
+                    },
+                  ]
+                : []),
+              {
+                id: `opt-retry-${stage}`,
+                label: `补充要求后重新执行${stage === "plan" ? "方案" : "顾问"}阶段`,
+                action: "resume" as const,
+                target_stage: stage,
+                recommended: false,
+              },
+              {
+                id: "opt-cancel",
+                label: "取消任务",
+                action: "cancel" as const,
+                recommended: false,
+              },
+            ],
+            created_at: new Date().toISOString(),
+          });
+          this.transitionTaskToWaiting(plan.taskId, pending, guard);
+          return;
+        }
+
+        if (aResolved && bResolved && resA.parsed?.ok && resB.parsed?.ok) {
+          const synthesisPrompt = [
+            `### E2 双脑博弈合成指令（请基于 Brain A 与 Brain B 的独立草案合成终版方案）`,
+            `- 请对比 Brain A（你自身上一轮方案）与异构 Brain B（${peerAssignment.agent}/${peerAssignment.model}）方案的优缺点，取长补短收敛为唯一可执行方案。`,
+            `- 回执正文开头**必须保留** 3 行以内 \`> **双脑博弈合成摘要**\` 引用块说明采纳与权衡要点。`,
+            `- 提交 \`advisor\` 回执时请务必将 \`run_id\` 设为 \`${runIdA}\`、\`contract_version\` 设为 \`${plan.contractVersion}\`、\`outcome\` 设为 \`resolved\`。`,
+            ``,
+            `#### Brain B 候选方案 (${peerAssignment.agent}/${peerAssignment.model})`,
+            `- chosen_approach: ${resB.parsed.frontmatter.chosen_approach}`,
+            resB.parsed.body.trim(),
+          ].join("\n");
+
+          const auxEntryA = this.activeAuxiliaryReceipts.get(runIdA);
+          if (auxEntryA) {
+            auxEntryA.rawMarkdown = undefined;
+          }
+
+          let reusedBrainASession = false;
+          let synthRaw: string | null = null;
+
+          if (resA.sessionRef) {
+            try {
+              await backendA.send(resA.sessionRef, synthesisPrompt);
+              reusedBrainASession = true;
+              await consumeTurnEvents("S", backendA, resA.sessionRef, "synth");
+              synthRaw = this.activeAuxiliaryReceipts.get(runIdA)?.rawMarkdown ?? null;
+            } catch {
+              reusedBrainASession = false;
+              synthRaw = null;
+            }
+          }
+
+          const synthParsedCheck = synthRaw ? parseAndValidateReceipt("advisor", synthRaw) : null;
+          let resolvedSynthRaw: string;
+          if (synthParsedCheck?.ok && synthRaw) {
+            resolvedSynthRaw = synthRaw;
+          } else {
+            // Deterministic synthesis fallback preserving Candidate A + B merits and 3-line summary
+            const fallbackHeader = [
+              `> **双脑博弈合成摘要**：综合 Brain A (${primaryAssignment.agent}/${primaryAssignment.model})「${resA.parsed.frontmatter.chosen_approach}」与 Brain B (${peerAssignment.agent}/${peerAssignment.model})「${resB.parsed.frontmatter.chosen_approach}」，取双方边界与验证重点收敛为唯一终版。`,
+              `> - 采纳要点 A：${resA.parsed.frontmatter.chosen_approach}`,
+              `> - 补充边界 B：${resB.parsed.frontmatter.chosen_approach}`,
+            ].join("\n");
+            resolvedSynthRaw = serializeFrontmatterMarkdown(
+              {
+                run_id: runId,
+                contract_version: plan.contractVersion,
+                outcome: "resolved",
+                chosen_approach: `${resA.parsed.frontmatter.chosen_approach}（融合 ${peerAssignment.model} 审视要点）`,
+                ...(resA.parsed.frontmatter.decision_kind !== undefined
+                  ? { decision_kind: resA.parsed.frontmatter.decision_kind }
+                  : {}),
+                ...(resA.parsed.frontmatter.workflow_patch !== undefined
+                  ? { workflow_patch: resA.parsed.frontmatter.workflow_patch }
+                  : {}),
+                ...(resA.parsed.frontmatter.spawn_subtasks !== undefined
+                  ? { spawn_subtasks: resA.parsed.frontmatter.spawn_subtasks }
+                  : {}),
+              },
+              `${fallbackHeader}\n\n${resA.parsed.body.trim()}\n\n### Brain B 补充审视与对照\n${resB.parsed.body.trim()}`,
+            );
+          }
+
+          let finalMarkdown = rewriteReceiptRunId(resolvedSynthRaw);
+          const finalParsed = parseAndValidateReceipt("advisor", finalMarkdown);
+          if (finalParsed.ok && !finalParsed.body.includes("双脑博弈合成摘要")) {
+            const synthHeader = [
+              `> **双脑博弈合成摘要**：融合 Brain A (${primaryAssignment.model}) 与 Brain B (${peerAssignment.model}) 方案优势收敛成终版。`,
+              `> - Brain A: ${resA.parsed.frontmatter.chosen_approach}`,
+              `> - Brain B: ${resB.parsed.frontmatter.chosen_approach}`,
+            ].join("\n");
+            finalMarkdown = serializeFrontmatterMarkdown(
+              finalParsed.frontmatter,
+              `${synthHeader}\n\n${finalParsed.body.trim()}`,
+            );
+          }
+
+          this.store.submitReceipt({
+            taskId: plan.taskId,
+            runId,
+            contractVersion: plan.contractVersion,
+            runDirName,
+            markdown: finalMarkdown,
+          });
+          writeYamlAtomic(
+            this.store.paths.dualSynthesisYaml(plan.taskId),
+            DualSynthesisRecordSchema.parse({
+              schema_version: 1,
+              stage,
+              run_id: runId,
+              contract_version: plan.contractVersion,
+              status: "synthesized",
+              reused_brain_a_session: reusedBrainASession,
+              created_at: new Date().toISOString(),
+              candidates: candidatesSummary,
+            }),
+            DualSynthesisRecordSchema,
+          );
+          await dispatchFinalizer();
+          return;
+        }
+
+        if (aResolved || bResolved) {
+          const survivor = aResolved ? resA : resB;
+          const rewritten = rewriteReceiptRunId(survivor.rawReceipt!);
+          this.store.submitReceipt({
+            taskId: plan.taskId,
+            runId,
+            contractVersion: plan.contractVersion,
+            runDirName,
+            markdown: rewritten,
+          });
+          writeYamlAtomic(
+            this.store.paths.dualSynthesisYaml(plan.taskId),
+            DualSynthesisRecordSchema.parse({
+              schema_version: 1,
+              stage,
+              run_id: runId,
+              contract_version: plan.contractVersion,
+              status: "adopted_single",
+              reused_brain_a_session: false,
+              created_at: new Date().toISOString(),
+              candidates: candidatesSummary,
+              note: `另一侧失败或未提交有效回执，自动采纳 Brain ${survivor.brain} (${survivor.agent}/${survivor.model}) 方案`,
+            }),
+            DualSynthesisRecordSchema,
+          );
+          await dispatchFinalizer();
+          return;
+        }
+
+        writeYamlAtomic(
+          this.store.paths.dualSynthesisYaml(plan.taskId),
+          DualSynthesisRecordSchema.parse({
+            schema_version: 1,
+            stage,
+            run_id: runId,
+            contract_version: plan.contractVersion,
+            status: "failed",
+            reused_brain_a_session: false,
+            created_at: new Date().toISOString(),
+            candidates: candidatesSummary,
+            note: "Brain A 与 Brain B 均未产出有效回执",
+          }),
+          DualSynthesisRecordSchema,
+        );
+        await dispatchFinalizer();
+      } finally {
+        this.activeAuxiliaryReceipts.delete(runIdA);
+        this.activeAuxiliaryReceipts.delete(runIdB);
+        for (const { backend, sessionRef } of registeredSessions) {
+          this.auxiliaryActiveHandles.delete(`${backend.backendId}:${sessionRef.sessionId}`);
+        }
+        if (this.inFlightOperations.get(plan.taskId)?.runId === runId) {
+          this.inFlightOperations.delete(plan.taskId);
+        }
+      }
+    })();
+
+    this.inFlightOperations.set(plan.taskId, {
+      runId,
+      abortController: opAbortController,
+      promise: runPromise,
+    });
+    return true;
   }
 
   private async handleBackendStartError(

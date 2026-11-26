@@ -25,6 +25,7 @@ import type {
   DiscoveredGitRepo,
   DiscoverSpacesResponse,
   DraftCard,
+  DualSynthesisRecord,
   GateReport,
   GithubCheckRunItem,
   GithubPrCommentItem,
@@ -469,6 +470,9 @@ export interface TaskDetailResponse {
   chatMessages?: ChatMessage[];
   reviewChecklist?: ChecklistItem[];
   mergeQueueEntry?: MergeQueueEntry | null;
+  dualSynthesis?: DualSynthesisRecord | null;
+  planCandidateA?: string | null;
+  planCandidateB?: string | null;
 }
 
 export interface ResolveTaskChecklistResponse {

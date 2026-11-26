@@ -531,6 +531,10 @@ export class KilnScheduler {
     return cooldownUntilMs;
   }
 
+  isKeyInCooldown(key: RateLimitKey, nowMs: number = this.now()): boolean {
+    return this.rateLimitTracker.getCooldownUntil(key, nowMs) !== null;
+  }
+
   /**
    * Coalescing wakeup entry point: if a tick is already in flight, marks `dirty` so one
    * follow-up pass drains newly arrived work without concurrent re-entrancy races.

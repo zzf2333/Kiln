@@ -6743,4 +6743,174 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     await screen.findAllByText(/Goal v2/);
     expect(screen.queryByText(/0-Token 快进/)).toBeNull();
   });
+
+  it("支持 Track 7 E1 红绿建测与 E2 双脑博弈开关及 DetailView 候选方案对照与锁卷时间线", async () => {
+    const baseBootstrap = makeBaseBootstrap();
+    baseBootstrap.spaces = {
+      kiln: {
+        schema_version: 1,
+        id: "kiln",
+        name: "Kiln",
+        repo_path: "/tmp/kiln",
+        default_branch: "main",
+        copy_untracked: [],
+        clone_deps: [],
+        freeze_patterns: [],
+      },
+    };
+    baseBootstrap.tasks = [
+      {
+        id: "t-track7-ui",
+        title: "Track 7 前端联动卡片",
+        space: "kiln",
+        parent_id: null,
+        priority: "P1",
+        effective_priority: "P1",
+        track: "L2",
+        workspace_mode: "git_worktree",
+        status: "running",
+        stage: "implement",
+        round: 1,
+        active_run_id: null,
+        contract_version: 1,
+        depends_on: [],
+        created_at: "2026-11-26T00:00:00.000Z",
+        updated_at: "2026-11-26T00:05:00.000Z",
+        tokens: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+        cost_usd: 0,
+      },
+    ];
+
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof Request ? input.url : "";
+      if (url === "/api/bootstrap") {
+        return jsonResponse(baseBootstrap);
+      }
+      if (url === "/api/tasks/t-track7-ui") {
+        return jsonResponse({
+          card: {
+            schema_version: 1,
+            id: "t-track7-ui",
+            title: "Track 7 前端联动卡片",
+            space: "kiln",
+            priority: "P1",
+            track: "L2",
+            workspace_mode: "git_worktree",
+            parent: null,
+            depends_on: [],
+            contract_version: 1,
+            workflow: buildWorkflowPreset("standard_dev", {
+              includePlan: true,
+              dualSynthesis: true,
+              testFirstLock: true,
+            }),
+            contract: {
+              goal: "Track 7 UI verification",
+              end: "Render badges and candidate comparison",
+              accept_cmd: "echo ok",
+              accept_files_hash: "pending",
+              scope: ["src/**"],
+              deliver: { mode: "merge_main", cmd: null },
+              human_accept: false,
+              external_actions: "ask",
+            },
+            limits: {
+              retries_per_stage: 2,
+              review_rounds: 2,
+              advisor_calls: 1,
+              max_tokens: 250000,
+            },
+            created_at: "2026-11-26T00:00:00.000Z",
+            updated_at: "2026-11-26T00:05:00.000Z",
+          },
+          state: {
+            status: "running",
+            stage: "implement",
+            round: 1,
+            activeRunId: null,
+            priority: "P1",
+            effectivePriority: "P1",
+            track: "L2",
+            contractVersion: 1,
+            updatedAt: "2026-11-26T00:05:00.000Z",
+          },
+          stateEvents: [
+            {
+              type: "contract_tests_locked",
+              at: "2026-11-26T00:04:00.000Z",
+              contract_version: 1,
+              run_id: "run-tfl-1",
+              test_files: ["src/__tests__/feature.test.ts"],
+              accept_files_hash: "sha256:locked",
+            },
+          ],
+          brief: "# Brief",
+          plan: "> **双脑博弈合成摘要**：融合方案\n\n## 终版方案\n实施正文",
+          planCandidateA: "# 候选方案 A\nCodex 草案",
+          planCandidateB: "# 候选方案 B\nClaude 草案",
+          dualSynthesis: {
+            schema_version: 1,
+            stage: "plan",
+            run_id: "run-plan-1",
+            contract_version: 1,
+            status: "synthesized",
+            reused_brain_a_session: true,
+            created_at: "2026-11-26T00:02:00.000Z",
+            candidates: [
+              { brain: "A", agent: "codex", model: "gpt-5.4", outcome: "completed" },
+              { brain: "B", agent: "claude", model: "claude-sonnet-4-6", outcome: "completed" },
+            ],
+          },
+          decisions: "",
+          pendingDecision: null,
+          ledgerProposals: [],
+          runs: [],
+          usageTurns: [],
+          usage: {
+            totals: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+            byModel: {},
+            todayCostUsd: 0,
+            totalCostUsd: 0,
+          },
+          chatMessages: [],
+        });
+      }
+      if (url.includes("/chat")) {
+        return jsonResponse({ messages: [] });
+      }
+      if (url.includes("/api/chat/commands")) {
+        return jsonResponse({ commands: [], mcpServers: [] });
+      }
+      return jsonResponse({});
+    });
+
+    window.location.hash = "#view=intake";
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: /立项设置/ }));
+    const planToggle = await screen.findByRole("button", { name: "顾问方案" });
+    fireEvent.click(planToggle);
+
+    const dualToggle = await screen.findByRole("button", { name: "双脑博弈方案" });
+    fireEvent.click(dualToggle);
+
+    const tflToggle = await screen.findByRole("button", { name: "红绿建测锁定" });
+    fireEvent.click(tflToggle);
+
+    const preview = screen.getByLabelText("流程预览").textContent ?? "";
+    expect(preview).toContain("双脑方案(顾问)");
+    expect(preview).toContain("红绿建测锁定");
+
+    // Check DetailView renders Track 7 badges, timeline event, and candidate comparison drawer
+    window.location.hash = "#task=t-track7-ui";
+    fireEvent(window, new HashChangeEvent("hashchange"));
+
+    await screen.findByText(/红绿锁卷 · 已锁定 1 个考卷测试/);
+    await screen.findByText(/双脑博弈合成 · 复用A会话/);
+    await screen.findByText(/锁定 1 个红灯考卷测试/);
+    const drawerSummary = await screen.findByText(/查看双脑候选方案对照/);
+    fireEvent.click(drawerSummary);
+    await screen.findByText(/Codex 草案/);
+    await screen.findByText(/Claude 草案/);
+  });
 });
