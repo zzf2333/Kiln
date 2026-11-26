@@ -87,3 +87,11 @@ fix = ["4269e6bcd494ff52724fc9c04636064dc976029e"]
 risk = "high"
 files = ["packages/kernel/src/backend/codex-app-server.ts"]
 defect = "CODEX_MODES 将 read-only 排在首位，而写角色调用的 selectSafeModeId 在找不到 auto/default 时回退 safeModes[0]，导致所有非只读 Codex 执行会话在 sessionRef.meta.modeId 与 RUN.yaml 中被错误标记为 read-only。"
+
+[[cases]]
+id = "R12"
+intro = "847178e664902778df497d1923a399e13760808b"
+fix = ["2cf7efa5e2dba2437b6b04b57e578dd1b93bb386"]
+risk = "high"
+files = ["packages/kernel/src/gate/host-scoped.ts"]
+defect = "matchesSingleHostScopePattern 对不带尾部斜杠或通配符的 host_scoped 白名单路径调用 fs.statSync 判断是否为目录，当契约 scope 指向 Phase 2 才会新建的宿主机目录时因 ENOENT 回退为仅精确匹配单路径，导致目录下所有暂存文件被误判为 out_of_scope_paths。"
