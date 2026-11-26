@@ -655,8 +655,8 @@ export function validateWorkflowBlueprint(
   let seenStagedOnlyGate = false;
   let seenFinalAcceptGateAfterStaged = false;
   let maxStageRankSeen = -1;
-  let seenResearchIdx = -1;
-  let seenPlanRank = -1;
+  let pendingResearchIdx = -1;
+  let pendingPlanIdx = -1;
   let firstImplementIdx = -1;
   let lastImplementIdx = -1;
   let lastVerifyGateIdx = -1;
@@ -681,12 +681,17 @@ export function validateWorkflowBlueprint(
           firstImplementIdx = i;
         }
         lastImplementIdx = i;
+        pendingResearchIdx = -1;
+        pendingPlanIdx = -1;
       }
-      if (node.stage === "research" && seenResearchIdx === -1) {
-        seenResearchIdx = i;
+      if (node.stage === "research") {
+        if (pendingPlanIdx !== -1) {
+          errors.push('Stage "research" must appear before "plan"');
+        }
+        pendingResearchIdx = i;
       }
       if (node.stage === "plan") {
-        seenPlanRank = i;
+        pendingPlanIdx = i;
       }
     } else if (node.kind === "gate") {
       if (node.check === "staged_only") {
@@ -720,13 +725,10 @@ export function validateWorkflowBlueprint(
   if (!hasImplement) {
     errors.push('Workflow blueprint must contain at least one "implement" agent node');
   }
-  if (seenResearchIdx !== -1 && seenPlanRank !== -1 && seenResearchIdx > seenPlanRank) {
-    errors.push('Stage "research" must appear before "plan"');
-  }
-  if (seenResearchIdx !== -1 && firstImplementIdx !== -1 && seenResearchIdx > firstImplementIdx) {
+  if (pendingResearchIdx !== -1) {
     errors.push('Stage "research" must appear before "implement"');
   }
-  if (seenPlanRank !== -1 && firstImplementIdx !== -1 && seenPlanRank > firstImplementIdx) {
+  if (pendingPlanIdx !== -1) {
     errors.push('Stage "plan" must appear before "implement"');
   }
   if (seenStagedOnlyGate && !seenFinalAcceptGateAfterStaged) {
@@ -1194,4 +1196,135 @@ export function validateSplitCardsDag(
   }
 
   return { ok: true, order };
+}
+
+export interface ApplyAdvisorWorkflowPatchInput {
+  currentBlueprint: WorkflowBlueprint;
+  sourceStepIndex: number | null;
+  sourceStage: StageId;
+  replaceRemainingSteps: readonly WorkflowStep[];
+  rationale: string;
+  roster?: Readonly<Record<string, RosterPermissionLike>>;
+  workspaceMode?: WorkspaceMode;
+}
+
+export type ApplyAdvisorWorkflowPatchResult =
+  | {
+      ok: true;
+      blueprint: WorkflowBlueprint;
+      preservedPrefixSteps: number;
+      resumeStepIndex: number;
+      resumeStage: StageId;
+    }
+  | {
+      ok: false;
+      errors: string[];
+    };
+
+/**
+ * Splices an advisor-proposed `replaceRemainingSteps` tail after completed prefix steps,
+ * preserving terminal `accept`/`deliver` safety nodes and validating against roster rules.
+ */
+export function applyAdvisorWorkflowPatch(
+  input: ApplyAdvisorWorkflowPatchInput,
+): ApplyAdvisorWorkflowPatchResult {
+  for (let i = 0; i < input.replaceRemainingSteps.length; i++) {
+    const step = input.replaceRemainingSteps[i]!;
+    if (step.kind === "loop" && step.steps.some((inner) => inner.stage === "deliver")) {
+      return {
+        ok: false,
+        errors: [`Loop at replace_remaining_steps[${i}] cannot contain deliver stage`],
+      };
+    }
+  }
+
+  const origFlat = flattenWorkflowSteps(input.currentBlueprint);
+  const resolved = resolveWorkflowStepAt(
+    {
+      track: "L2",
+      workspace_mode: input.workspaceMode ?? "git_worktree",
+      contract: {},
+      workflow: input.currentBlueprint,
+    },
+    input.sourceStepIndex,
+    input.sourceStage,
+  );
+  let prefixEnd = resolved ? resolved.stepIndex : 0;
+  if (input.sourceStage === "verify") {
+    while (
+      prefixEnd > 0 &&
+      origFlat[prefixEnd - 1]?.kind === "agent" &&
+      origFlat[prefixEnd - 1]?.stage === "implement"
+    ) {
+      prefixEnd -= 1;
+    }
+  }
+
+  const preservedPrefix = origFlat.slice(0, prefixEnd).map((n) => cloneNode(n));
+  const origDeliverNodes = origFlat.filter((n) => n.stage === "deliver").map((n) => cloneNode(n));
+  const origAcceptNodes = origFlat.filter((n) => n.stage === "accept").map((n) => cloneNode(n));
+
+  const filteredReplacement =
+    origDeliverNodes.length > 0
+      ? input.replaceRemainingSteps.filter((s) => s.kind === "loop" || s.stage !== "deliver")
+      : input.replaceRemainingSteps;
+
+  const rawSteps: WorkflowStep[] = [
+    ...preservedPrefix,
+    ...filteredReplacement.map((s) => cloneNode(s)),
+    ...origDeliverNodes,
+  ];
+
+  const hasAcceptAfterSplice = flattenWorkflowSteps({
+    schema_version: 1,
+    preset: "custom",
+    steps: rawSteps,
+  }).some((n) => n.stage === "accept");
+  if (origAcceptNodes.length > 0 && !hasAcceptAfterSplice) {
+    const firstDeliverIdx = rawSteps.findIndex((s) => s.kind !== "loop" && s.stage === "deliver");
+    rawSteps.splice(
+      firstDeliverIdx >= 0 ? firstDeliverIdx : rawSteps.length,
+      0,
+      ...origAcceptNodes,
+    );
+  }
+
+  const trimmedRationale = input.rationale.trim();
+  const basePatched: WorkflowBlueprint = {
+    schema_version: 1,
+    preset: input.currentBlueprint.preset === "host_op" ? "host_op" : "custom",
+    steps: rawSteps,
+    ...(trimmedRationale.length > 0 ? { pm_rationale: trimmedRationale } : {}),
+  };
+
+  let normalized = normalizeWorkflowBlueprintSafety(basePatched);
+  if (normalized.preset !== "host_op" && origAcceptNodes.length > 0) {
+    normalized = ensureWorkflowAcceptStep(normalized);
+  }
+
+  const valid = input.roster
+    ? validateBlueprintAgainstRoster(normalized, input.roster, {
+        workspaceMode: input.workspaceMode,
+      })
+    : validateWorkflowBlueprint(normalized);
+  if (!valid.ok) {
+    return { ok: false, errors: valid.errors };
+  }
+
+  const flatPatched = flattenWorkflowSteps(normalized);
+  const k = preservedPrefix.length;
+  if (k >= flatPatched.length || flatPatched[k]!.stage === "deliver") {
+    return {
+      ok: false,
+      errors: ["Advisor workflow_patch must include at least one non-deliver execution step"],
+    };
+  }
+
+  return {
+    ok: true,
+    blueprint: normalized,
+    preservedPrefixSteps: k,
+    resumeStepIndex: k,
+    resumeStage: flatPatched[k]!.stage,
+  };
 }

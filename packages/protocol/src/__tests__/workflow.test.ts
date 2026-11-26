@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  ADVISOR_ELIGIBLE_DECISION_CATEGORIES,
+  AdvisorReceiptFrontmatterSchema,
+  PendingSubtaskSplitSchema,
+  StateEventSchema,
   WorkflowBlueprintSchema,
+  applyAdvisorWorkflowPatch,
   buildCustomWorkflow,
   buildWorkflowPreset,
   ensureWorkflowIncludesReview,
@@ -20,7 +25,7 @@ import {
   resolveTaskWorkflow,
   resolveWorkflowStepAt,
   validateWorkflowBlueprint,
-} from "../workflow.js";
+} from "../index.js";
 
 describe("workflow composable blueprint schemas & helpers", () => {
   it("builds valid preset blueprints for quick, host_op, standard_dev, and full_delivery", () => {
@@ -557,5 +562,234 @@ describe("workflow composable blueprint schemas & helpers", () => {
       ),
     };
     expect(hasCompleteHostTwoPhaseWorkflow(incomplete)).toBe(false);
+  });
+
+  it("validates Track 6 advisor workflow_patch, per-segment plan/implement ordering, spawn_subtasks, and StateEvents", () => {
+    expect(ADVISOR_ELIGIBLE_DECISION_CATEGORIES).toContain("workflow_replan");
+    expect(ADVISOR_ELIGIBLE_DECISION_CATEGORIES).toContain("subtask_split");
+
+    const baseBlueprint = WorkflowBlueprintSchema.parse(
+      buildCustomWorkflow({
+        preset: "full_delivery",
+        includeResearch: true,
+        includePlan: false,
+        includeReview: true,
+        includeAccept: true,
+        acceptMode: "verifier",
+        deliverApproval: false,
+        hostTwoPhase: false,
+        hasDeliverCmd: false,
+      }),
+    );
+
+    // Preserves completed research prefix, inserts plan + specialist implement, restores verify/accept/deliver
+    const patchOk = applyAdvisorWorkflowPatch({
+      currentBlueprint: baseBlueprint,
+      sourceStepIndex: 1,
+      sourceStage: "implement",
+      rationale: "Need deeper plan and debugger specialist",
+      replaceRemainingSteps: [
+        {
+          kind: "agent",
+          stage: "plan",
+          role: "advisor",
+          fresh_context: true,
+        },
+        {
+          kind: "agent",
+          stage: "implement",
+          role: "worker",
+          fresh_context: false,
+          roster_role: "debugger",
+        },
+        {
+          kind: "agent",
+          stage: "review",
+          role: "reviewer",
+          fresh_context: true,
+        },
+      ],
+      roster: {
+        debugger: { enabled: true, stage: "implement", perm: "workspace_write" },
+        researcher: { enabled: true, stage: "research", perm: "read_only" },
+      },
+    });
+    expect(patchOk.ok).toBe(true);
+    if (!patchOk.ok) throw new Error(patchOk.errors.join("; "));
+    expect(patchOk.preservedPrefixSteps).toBe(1);
+    expect(patchOk.resumeStepIndex).toBe(1);
+    expect(patchOk.resumeStage).toBe("plan");
+    const patchedFlat = flattenWorkflowSteps(patchOk.blueprint);
+    expect(patchedFlat.map((n) => `${n.kind}:${n.stage}`)).toEqual([
+      "agent:research",
+      "agent:plan",
+      "agent:implement",
+      "gate:verify",
+      "agent:review",
+      "agent:accept",
+      "command:deliver",
+    ]);
+
+    // Also allows keeping a completed historical implement prefix before inserting a new plan -> implement segment
+    const afterImplPatch = applyAdvisorWorkflowPatch({
+      currentBlueprint: baseBlueprint,
+      sourceStepIndex: 3,
+      sourceStage: "review",
+      rationale: "Re-plan after prior implement review deadlock",
+      replaceRemainingSteps: [
+        {
+          kind: "agent",
+          stage: "plan",
+          role: "advisor",
+          fresh_context: true,
+        },
+        {
+          kind: "agent",
+          stage: "implement",
+          role: "worker",
+          fresh_context: false,
+        },
+        {
+          kind: "agent",
+          stage: "review",
+          role: "reviewer",
+          fresh_context: true,
+        },
+      ],
+    });
+    expect(afterImplPatch.ok).toBe(true);
+
+    // Blocks read-only roster role injected into implement
+    const readOnlyBlocked = applyAdvisorWorkflowPatch({
+      currentBlueprint: baseBlueprint,
+      sourceStepIndex: 1,
+      sourceStage: "implement",
+      rationale: "Invalid role",
+      replaceRemainingSteps: [
+        {
+          kind: "agent",
+          stage: "implement",
+          role: "worker",
+          fresh_context: false,
+          roster_role: "researcher",
+        },
+      ],
+      roster: {
+        researcher: { enabled: true, stage: "research", perm: "read_only" },
+      },
+    });
+    expect(readOnlyBlocked.ok).toBe(false);
+
+    // Blocks orphan trailing plan without implement
+    const trailingPlan = validateWorkflowBlueprint({
+      schema_version: 1,
+      preset: "custom",
+      steps: [
+        { kind: "agent", stage: "implement", role: "worker", fresh_context: false },
+        { kind: "gate", stage: "verify", check: "full" },
+        { kind: "agent", stage: "plan", role: "advisor", fresh_context: true },
+        {
+          kind: "command",
+          stage: "deliver",
+          apply_staged: false,
+          run_deliver_cmd: false,
+          verify_sha256: false,
+          final_accept_gate: false,
+        },
+      ],
+    });
+    expect(trailingPlan.ok).toBe(false);
+
+    // Rejects mutually exclusive workflow_patch + spawn_subtasks
+    const mutualExclusion = AdvisorReceiptFrontmatterSchema.safeParse({
+      run_id: "r-1",
+      contract_version: 1,
+      outcome: "resolved",
+      chosen_approach: "Both",
+      workflow_patch: {
+        rationale: "patch",
+        replace_remaining_steps: [
+          { kind: "agent", stage: "implement", role: "worker", fresh_context: false },
+        ],
+      },
+      spawn_subtasks: [
+        {
+          temp_id: "a",
+          title: "Sub A",
+          contract: { goal: "A", end: "Done A", scope: ["src/a/**"] },
+          brief_markdown: "# A",
+        },
+        {
+          temp_id: "b",
+          title: "Sub B",
+          contract: { goal: "B", end: "Done B", scope: ["src/b/**"] },
+          brief_markdown: "# B",
+        },
+      ],
+    });
+    expect(mutualExclusion.success).toBe(false);
+
+    // Validates new StateEvents & PendingSubtaskSplitSchema
+    expect(
+      StateEventSchema.parse({
+        type: "workflow_patched",
+        at: "2026-11-26T00:00:00.000Z",
+        run_id: "run-adv-1",
+        contract_version: 1,
+        preserved_prefix_steps: 1,
+        new_total_steps: 7,
+        resume_stage: "plan",
+        resume_step_index: 1,
+        rationale: "Replan",
+      }).type,
+    ).toBe("workflow_patched");
+    expect(
+      StateEventSchema.parse({
+        type: "subtasks_spawned",
+        at: "2026-11-26T00:00:00.000Z",
+        run_id: "run-plan-1",
+        contract_version: 1,
+        child_task_ids: ["t-c1", "t-c2"],
+        base_ref_sha: "abc1234",
+        resume_stage: "verify",
+        resume_step_index: 3,
+      }).type,
+    ).toBe("subtasks_spawned");
+    expect(
+      StateEventSchema.parse({
+        type: "stage_fast_forwarded",
+        at: "2026-11-26T00:00:00.000Z",
+        skipped_stage: "accept",
+        skipped_step_index: 4,
+        to_stage: "deliver",
+        to_step_index: 5,
+        reason: "docs_only",
+        changed_paths: ["docs/readme.md"],
+      }).type,
+    ).toBe("stage_fast_forwarded");
+    expect(
+      PendingSubtaskSplitSchema.parse({
+        decision_id: "dec-split-1",
+        contract_version: 1,
+        source_run_id: "run-plan-1",
+        source_stage: "plan",
+        rationale: "Needs scope expansion",
+        subtasks: [
+          {
+            temp_id: "s1",
+            title: "Part 1",
+            contract: { goal: "G1", end: "E1", scope: ["src/a/**"] },
+            brief_markdown: "# S1",
+          },
+          {
+            temp_id: "s2",
+            title: "Part 2",
+            contract: { goal: "G2", end: "E2", scope: ["src/b/**"] },
+            brief_markdown: "# S2",
+          },
+        ],
+        created_at: "2026-11-26T00:00:00.000Z",
+      }).subtasks,
+    ).toHaveLength(2);
   });
 });

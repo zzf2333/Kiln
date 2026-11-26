@@ -113,6 +113,8 @@ export const ADVISOR_ELIGIBLE_DECISION_CATEGORIES = [
   "layout_ambiguity",
   "implementation_choice",
   "architecture_choice",
+  "workflow_replan",
+  "subtask_split",
 ] as const;
 export type AdvisorEligibleDecisionCategory = (typeof ADVISOR_ELIGIBLE_DECISION_CATEGORIES)[number];
 

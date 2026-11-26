@@ -39,6 +39,7 @@ import {
   type WorkflowPreset,
   type WorkspaceMode,
 } from "./constants.js";
+import { MidFlightSubtaskSpecSchema } from "./receipts.js";
 import { WorkflowBlueprintSchema } from "./workflow.js";
 
 export {
@@ -545,8 +546,51 @@ export const StateEventSchema = z.discriminatedUnion("type", [
     checkpoint_ref: z.string().min(1),
     commit_sha: z.string().min(1),
   }),
+  z.object({
+    type: z.literal("workflow_patched"),
+    at: z.string().min(1),
+    run_id: z.string().min(1),
+    contract_version: z.number().int().positive(),
+    preserved_prefix_steps: z.number().int().nonnegative(),
+    new_total_steps: z.number().int().positive(),
+    resume_stage: StageIdSchema,
+    resume_step_index: z.number().int().nonnegative(),
+    rationale: z.string().min(1),
+  }),
+  z.object({
+    type: z.literal("subtasks_spawned"),
+    at: z.string().min(1),
+    run_id: z.string().min(1),
+    contract_version: z.number().int().positive(),
+    child_task_ids: z.array(z.string().min(1)).min(2),
+    base_ref_sha: z.string().min(1).optional(),
+    resume_stage: StageIdSchema,
+    resume_step_index: z.number().int().nonnegative(),
+  }),
+  z.object({
+    type: z.literal("stage_fast_forwarded"),
+    at: z.string().min(1),
+    skipped_stage: StageIdSchema,
+    skipped_step_index: z.number().int().nonnegative().optional(),
+    to_stage: StageIdSchema,
+    to_step_index: z.number().int().nonnegative().optional(),
+    reason: z.enum(["docs_only", "tests_only"]),
+    changed_paths: z.array(z.string()),
+  }),
 ]);
 export type StateEvent = z.infer<typeof StateEventSchema>;
+
+export const PendingSubtaskSplitSchema = z.object({
+  schema_version: z.literal(1).default(1),
+  decision_id: z.string().min(1),
+  contract_version: z.number().int().positive(),
+  source_run_id: z.string().min(1),
+  source_stage: z.enum(["plan", "advise"]),
+  rationale: z.string().min(1),
+  subtasks: z.array(MidFlightSubtaskSpecSchema).min(2).max(12),
+  created_at: z.string().min(1),
+});
+export type PendingSubtaskSplit = z.infer<typeof PendingSubtaskSplitSchema>;
 
 export const GateReportSchema = z.object({
   schema_version: z.literal(1),

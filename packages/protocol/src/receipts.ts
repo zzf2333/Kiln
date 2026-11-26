@@ -1,6 +1,7 @@
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { z } from "zod";
-import { VERIFIER_ENTRY_MODES } from "./constants.js";
+import { PRIORITIES, TRACKS, VERIFIER_ENTRY_MODES } from "./constants.js";
+import { WorkflowStepSchema } from "./workflow.js";
 
 export const RECEIPT_KINDS = ["worker", "reviewer", "verifier", "triage", "advisor"] as const;
 
@@ -94,19 +95,64 @@ export const TriageReceiptFrontmatterSchema = z.object({
 });
 export type TriageReceiptFrontmatter = z.infer<typeof TriageReceiptFrontmatterSchema>;
 
-export const AdvisorReceiptFrontmatterSchema = z.object({
-  run_id: z.string().min(1),
-  contract_version: z.number().int().positive(),
-  outcome: z.enum(["resolved", "need_decision"]),
-  chosen_approach: z.string().min(1),
-  decision_kind: z
-    .enum(["plan", "technical_ambiguity", "review_deadlock", "stuck_recovery"])
-    .optional(),
-  requires_contract_change: z.boolean().default(false),
-  requires_scope_expansion: z.boolean().default(false),
-  requires_human_approval: z.boolean().default(false),
-  target_stage: z.enum(["implement", "review"]).optional(),
+export const AdvisorWorkflowPatchSchema = z.object({
+  rationale: z.string().trim().min(1).max(1000),
+  replace_remaining_steps: z.array(WorkflowStepSchema).min(1).max(12),
 });
+export type AdvisorWorkflowPatch = z.infer<typeof AdvisorWorkflowPatchSchema>;
+
+export const MidFlightSubtaskSpecSchema = z.object({
+  temp_id: z.string().trim().min(1).max(32),
+  title: z.string().trim().min(1).max(160),
+  priority: z.enum(PRIORITIES).optional(),
+  track: z.enum(TRACKS).default("L2"),
+  depends_on_temp_ids: z.array(z.string().trim().min(1)).default([]),
+  roster_role: z.string().trim().min(1).optional(),
+  include_review: z.boolean().default(true),
+  contract: z.object({
+    goal: z.string().trim().min(1),
+    non_goals: z.array(z.string().trim().min(1)).default([]),
+    end: z.string().trim().min(1),
+    accept_cmd: z.string().trim().min(1).optional(),
+    scope: z.array(z.string().trim().min(1)).min(1),
+  }),
+  brief_markdown: z.string().trim().min(1),
+});
+export type MidFlightSubtaskSpec = z.infer<typeof MidFlightSubtaskSpecSchema>;
+
+export const AdvisorReceiptFrontmatterSchema = z
+  .object({
+    run_id: z.string().min(1),
+    contract_version: z.number().int().positive(),
+    outcome: z.enum(["resolved", "need_decision"]),
+    chosen_approach: z.string().min(1),
+    decision_kind: z
+      .enum([
+        "plan",
+        "technical_ambiguity",
+        "review_deadlock",
+        "stuck_recovery",
+        "workflow_replan",
+        "subtask_split",
+      ])
+      .optional(),
+    requires_contract_change: z.boolean().default(false),
+    requires_scope_expansion: z.boolean().default(false),
+    requires_human_approval: z.boolean().default(false),
+    target_stage: z.enum(["implement", "review"]).optional(),
+    workflow_patch: AdvisorWorkflowPatchSchema.optional(),
+    spawn_subtasks: z.array(MidFlightSubtaskSpecSchema).min(2).max(12).optional(),
+  })
+  .superRefine((val, ctx) => {
+    if (val.workflow_patch !== undefined && val.spawn_subtasks !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "workflow_patch and spawn_subtasks are mutually exclusive in a single advisor receipt",
+        path: ["spawn_subtasks"],
+      });
+    }
+  });
 export type AdvisorReceiptFrontmatter = z.infer<typeof AdvisorReceiptFrontmatterSchema>;
 
 export interface ParsedFrontmatterMarkdown {
