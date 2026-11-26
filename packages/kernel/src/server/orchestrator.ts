@@ -95,6 +95,7 @@ import {
 import { resolveRunAttachmentInputs } from "./attachments.js";
 import { computeTaskSpentUsd, evaluateDispatchBudget } from "./budget.js";
 import type { CaffeinateController } from "./caffeinate.js";
+import { captureHostEnvironmentSnapshot } from "./host-snapshot.js";
 import type { RemoteNotifier } from "./remote-notify.js";
 import { resolveMcpServerCommand, type McpCommandSpec } from "./chat.js";
 import { ServerHttpError } from "./errors.js";
@@ -1406,6 +1407,17 @@ export class KilnOrchestrator {
       ensureDir(wsDir);
       ensureDir(this.store.paths.stagedDir(card.id));
       const canonicalWsDir = this.canonicalizeWorkspacePath(wsDir);
+      if (stage === "implement") {
+        try {
+          const snapshot = await captureHostEnvironmentSnapshot();
+          writeFileAtomic(
+            path.join(canonicalWsDir, "host-snapshot.json"),
+            `${JSON.stringify(snapshot, null, 2)}\n`,
+          );
+        } catch {
+          // Host snapshot is best-effort enrichment and never blocks dispatch.
+        }
+      }
       this.ensureFrozenBaselineInitialized(card, canonicalWsDir);
       return { cwd: canonicalWsDir };
     }
@@ -2577,6 +2589,12 @@ export class KilnOrchestrator {
       }
     }
 
+    const allowedWriteRoots =
+      !isReadOnly &&
+      (plan.card.workspace_mode === "host_scoped" || assignment.perm === "host_staged")
+        ? [this.canonicalizeWorkspacePath(this.store.paths.stagedDir(plan.taskId))]
+        : undefined;
+
     const runSpec: BackendRunSpec = {
       runId,
       taskId: plan.taskId,
@@ -2591,6 +2609,7 @@ export class KilnOrchestrator {
       freshContext: assignment.freshContext,
       allowFullAccessFallback: assignment.allowFullAccessFallback,
       readOnly: isReadOnly,
+      ...(allowedWriteRoots !== undefined ? { allowedWriteRoots } : {}),
       ...(mcpServers !== undefined ? { mcpServers } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
     };

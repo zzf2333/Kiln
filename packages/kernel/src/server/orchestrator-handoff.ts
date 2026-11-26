@@ -300,10 +300,10 @@ function buildLayer0WorkspaceSafetyNote(card: TaskCard, role: RoleId, stage: Sta
       getVerifyGateCheckMode(card) === "staged_only");
 
   if (isHostTwoPhase) {
-    return `当前为 host_op 两阶段确定性执行（Phase 1 · dry_run_only）：只能把待写入/待执行的脚本、配置文件等产物放入下文指定沙盒暂存目录 staged/，并在回执 changed_paths 中列出对应的宿主机目标绝对路径，严禁直接修改宿主机目标或运行直接改动宿主机的正式命令！Phase 1 门禁采用 staged_only（不会预先运行宿主机正式 accept_cmd），完成暂存与 dry-run 自检后请直接提交 outcome: completed（accept_result 可填 skipped 或 pass），严禁提出 action: return_external。后续落盘审批、交付命令执行与最终 accept_cmd 验真将由 Kiln 内核在 deliver 阶段原子完成。`;
+    return `当前为 host_op 两阶段确定性执行（Phase 1 · dry_run_only）：只能把待写入/待执行的脚本、配置文件等产物放入下文指定沙盒暂存目录 staged/，并在回执 changed_paths 中列出对应的宿主机目标绝对路径，严禁直接修改宿主机目标或运行直接改动宿主机的正式命令！Phase 1 门禁采用 staged_only（不会预先运行宿主机正式 accept_cmd），工作区根目录若存在 \`host-snapshot.json\`（由 kilnd 宿主机预采集的只读进程与已装应用快照），请优先直接读取使用；沙盒内 \`/bin/ps\` 或 \`sfltool\` 权限受限属于正常现象，不得仅以此将全部明确目标降级为 0 项。在确认待执行目标非空且完成暂存与 dry-run 自检后请直接提交 outcome: completed（accept_result 可填 skipped 或 pass），若最终可执行目标确实为 0 项则必须提交 outcome: need_decision 说明原因并请求用户确认，严禁把“0 项空动作计划”作为 outcome: completed 推入交付审批，严禁提出 action: return_external。后续落盘审批、交付命令执行与最终 accept_cmd 验真将由 Kiln 内核在 deliver 阶段原子完成。`;
   }
   if (card.workspace_mode === "host_scoped") {
-    return `当前为 host_scoped 模式：只能把待写文件写入下文指定沙盒暂存目录 staged/，并在回执 changed_paths 中列出对应的宿主机目标绝对路径，严禁直接修改宿主机目标文件！提交 outcome: completed 后将由 Kiln 内核向用户发起落盘审批并原子写入，严禁使用或提出 action: return_external。`;
+    return `当前为 host_scoped 模式：只能把待写文件写入下文指定沙盒暂存目录 staged/，并在回执 changed_paths 中列出对应的宿主机目标绝对路径，严禁直接修改宿主机目标文件！如存在 \`host-snapshot.json\` 请优先读取使用，不得跳过关键业务动作提交 0 项空计划；提交 outcome: completed 后将由 Kiln 内核向用户发起落盘审批并原子写入，严禁使用或提出 action: return_external。`;
   }
   if (card.workspace_mode === "git_worktree") {
     return `当前为 git_worktree 模式：你只需编辑下文指定工作区内 scope 允许的文件并运行验收命令，严禁在受限沙箱里执行 git commit、git merge 或 git push；通过门禁后将由 kilnd 内核统一提交并合入。`;
@@ -400,6 +400,14 @@ function buildStageCognitiveDirective(params: {
   }
   if (stage === "triage") {
     return `### 阶段认知与自由度模式：异常研判（triage · 只读）\n- 请基于失败事实与磁盘日志判定根因并给出 retry / escalate_advisor / ask_human 建议，严禁修改工作区文件，提交 triage 角色回执。`;
+  }
+  if (card.workspace_mode === "host_scoped") {
+    return [
+      `### 阶段认知与自由度模式：本机暂存收敛执行（implement · host_scoped）`,
+      `- 请严格遵循定稿方案与交付契约生成暂存产物，所有写盘仅限 \`staged/\`（工作区根目录 \`host-snapshot.json\` 为只读宿主快照，严禁修改）。`,
+      `- 沙盒内 \`/bin/ps\`、\`sfltool\` 等系统枚举命令被拒时，**应优先采信 \`host-snapshot.json\` 与 \`launchctl\` 结果**；对无对应已装 \`.app\`/输入法、不在 \`host-snapshot.json\` 活跃进程中且无活跃 \`launchctl\` 作业的高置信度目标，应纳入可执行清单（可逆隔离方案下安全可控），交由后续人工交付审批终审。`,
+      `- 若最终判定可执行目标数为 0，禁止提交 \`outcome: completed\` 静默送审空方案，须提交 \`outcome: need_decision\` 说明缺口并请求用户决定。`,
+    ].join("\n");
   }
   return `### 阶段认知与自由度模式：严格收敛执行（implement）\n- 请严格遵循定稿方案与交付契约做最小完整落地，严禁越过 \`contract.scope\` 或自行扩大需求边界；若触发方案中的 \`Re-plan if\` 条件或发现不可逾越前提，请立即通过 \`need_decision\` 上报而非盲目强改。`;
 }
@@ -569,7 +577,7 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
 
   const workspacePathLine =
     card.workspace_mode === "host_scoped"
-      ? `- 沙盒暂存目录 (stagedDir): ${store.paths.stagedDir(card.id)}`
+      ? `- 沙盒暂存目录 (stagedDir): ${store.paths.stagedDir(card.id)}\n- 宿主机只读快照: ${path.join(cwd, "host-snapshot.json")}`
       : `- 工作区路径 (cwd): ${cwd}`;
 
   const stablePrefix = [

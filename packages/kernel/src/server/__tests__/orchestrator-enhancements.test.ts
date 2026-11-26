@@ -7,6 +7,7 @@ import {
   GateReportSchema,
   RosterConfigSchema,
   RunMetaSchema,
+  TaskCardSchema,
   createDefaultWorkflowsConfig,
   serializeFrontmatterMarkdown,
   type LimitsConfig,
@@ -17,6 +18,7 @@ import { FakeBackend } from "../../backend/index.js";
 import { computeFrozenSnapshot } from "../../gate/index.js";
 import { KilnStore, deriveTaskStatus, readYamlOptional } from "../../store/index.js";
 import { KilndServer } from "../index.js";
+import { captureHostEnvironmentSnapshot } from "../host-snapshot.js";
 import { formatDecisionsForHandoff } from "../orchestrator-handoff.js";
 
 function git(args: readonly string[], cwd?: string): string {
@@ -1509,5 +1511,197 @@ describe("Orchestrator enhancements: step_index, tester/deliverer agent modes, a
       "t-rev-proceed reaches deliver approval",
     );
     expect(fs.existsSync(targetFile)).toBe(false);
+  });
+
+  it("captures host snapshot, writes workspaces/<id>/host-snapshot.json, locks allowedWriteRoots to staged/, and enforces local intake speed rules", async () => {
+    const snap = await captureHostEnvironmentSnapshot({ timeoutMs: 2500 });
+    expect(snap.schema_version).toBe(1);
+    expect(["ok", "unavailable"]).toContain(snap.running_processes.status);
+    if (snap.running_processes.status === "ok") {
+      expect(snap.running_processes.items.length).toBeGreaterThan(0);
+      for (const proc of snap.running_processes.items) {
+        expect(proc.name.length).toBeGreaterThan(0);
+        expect(proc.name).not.toMatch(/[\r\n]/);
+      }
+    }
+
+    const kilnHome = makeTempDir();
+    tempDirs.push(kilnHome);
+    const fakeHostTarget = path.join(kilnHome, "host-target", "report.md");
+
+    const fakeBackend = new FakeBackend({ defaultTurnScript: [] });
+    const server = new KilndServer({
+      kilnHome,
+      host: "127.0.0.1",
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: true,
+      tokenSecret: "enhancements-host-snapshot-secret-01234567",
+      approvalHandler: async (req, ctx) => {
+        if (req.action === "host_impl_snap") {
+          const token =
+            fakeBackend
+              .getRecordedSpecs()
+              .filter((s) => s.taskId === ctx.taskId)
+              .at(-1)?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+          const stagedDir = server.store.paths.stagedDir(ctx.taskId);
+          fs.mkdirSync(stagedDir, { recursive: true });
+          fs.writeFileSync(path.join(stagedDir, "report.md"), "# Report\n", "utf8");
+          const res = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: serializeFrontmatterMarkdown(
+                {
+                  run_id: ctx.runId,
+                  contract_version: ctx.card.contract_version,
+                  outcome: "completed",
+                  input_ref: "host_scoped",
+                  output_ref: stagedDir,
+                  changed_paths: [fakeHostTarget],
+                  accept_result: "skipped",
+                  is_bugfix: false,
+                  complexity_escalate: false,
+                },
+                "## 改动说明\n完成暂存\n\n## 验证命令与真实输出\nok\n\n## 未完成或待决问题\n无\n",
+              ),
+            }),
+          });
+          expect(res.status).toBe(200);
+          await ctx.backend.answer(req.id, true);
+        }
+      },
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    server.store.writeConfig("roles", {
+      schema_version: 1,
+      heterogeneous_review: false,
+      roles: {
+        intake: {
+          backend_id: "fake",
+          agent: "codex",
+          model: "gpt-5.4",
+          allow_full_access_fallback: false,
+        },
+        worker: {
+          backend_id: "fake",
+          agent: "codex",
+          model: "gpt-5.4",
+          allow_full_access_fallback: false,
+        },
+      },
+    });
+    await server.start();
+
+    fakeBackend.enqueueScript(
+      [
+        { kind: "message", text: "请确认范围。" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "intake" },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "host_impl_snap", detail: "impl" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "worker" },
+    );
+
+    const draftRes = await server.app.request(
+      new Request("http://127.0.0.1/api/drafts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: "d-local-fast", space: "local" }),
+      }),
+    );
+    expect(draftRes.status).toBe(201);
+    const chatRes = await server.app.request(
+      new Request("http://127.0.0.1/api/drafts/d-local-fast/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "清理已卸载应用残留" }),
+      }),
+    );
+    expect(chatRes.status).toBe(200);
+    const intakeSpec = fakeBackend.getRecordedSpecs().find((s) => s.role === "intake");
+    expect(intakeSpec?.systemPrompt).toContain("严禁在对话轮编写脚本全盘遍历");
+    expect(intakeSpec?.systemPrompt).toContain("host-snapshot.json");
+
+    server.stateMachine.createTask(
+      TaskCardSchema.parse({
+        schema_version: 1,
+        id: "t-host-snap",
+        title: "Host snapshot & staged root check",
+        space: "local",
+        priority: "P1",
+        track: "L2",
+        workspace_mode: "host_scoped",
+        workflow: {
+          schema_version: 1,
+          preset: "host_op",
+          steps: [
+            {
+              kind: "agent",
+              stage: "implement",
+              role: "worker",
+              fresh_context: false,
+              mode: "dry_run_only",
+              roster_role: "ops_sec",
+            },
+            { kind: "gate", stage: "verify", check: "staged_only" },
+            { kind: "approval", stage: "deliver", show: ["staged_diff", "commands"] },
+            {
+              kind: "command",
+              stage: "deliver",
+              apply_staged: true,
+              run_deliver_cmd: false,
+              verify_sha256: true,
+              final_accept_gate: true,
+            },
+          ],
+        },
+        contract_version: 1,
+        contract: {
+          goal: "Stage host report safely",
+          end: "Report staged",
+          accept_cmd: "echo ok",
+          accept_files_hash: "pending",
+          scope: [fakeHostTarget],
+          deliver: { mode: "manual", cmd: null },
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 200_000 },
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }),
+      "# Brief\n",
+    );
+    await server.orchestrator.wake();
+
+    await waitUntil(
+      () => server.pendingDecisions.get("t-host-snap")?.reason === "host_scoped_approval",
+      "t-host-snap reaches host_scoped_approval",
+    );
+
+    const wsSnapshotPath = path.join(kilnHome, "workspaces", "t-host-snap", "host-snapshot.json");
+    expect(fs.existsSync(wsSnapshotPath)).toBe(true);
+    const savedSnap = JSON.parse(fs.readFileSync(wsSnapshotPath, "utf8")) as {
+      schema_version: number;
+      running_processes: { status: string };
+    };
+    expect(savedSnap.schema_version).toBe(1);
+    expect(["ok", "unavailable"]).toContain(savedSnap.running_processes.status);
+
+    const workerSpec = fakeBackend.getRecordedSpecs().find((s) => s.taskId === "t-host-snap");
+    const expectedStaged = fs.realpathSync(
+      path.join(kilnHome, "workspaces", "t-host-snap", "staged"),
+    );
+    expect(workerSpec?.allowedWriteRoots).toEqual([expectedStaged]);
+    expect(workerSpec?.prompt).toContain("host-snapshot.json");
+    expect(workerSpec?.prompt).toContain(
+      "严禁把“0 项空动作计划”作为 outcome: completed 推入交付审批",
+    );
   });
 });
