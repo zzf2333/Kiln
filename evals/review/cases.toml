@@ -79,3 +79,11 @@ fix = ["b00b46fc527fbc0ee92553a37f3417020207dddd"]
 risk = "high"
 files = ["packages/kernel/src/server/orchestrator.ts"]
 defect = "全局每日或每月 USD 硬预算熔断在构造 budget_exceeded 待决选项时写入了不在 DecisionActionSchema 枚举内的 action='pause'，导致 PendingDecisionSchema.parse 抛错，使本应挂起在 budget_exceeded 的任务退化为 dispatch_error 并丢失预算恢复选项。"
+
+[[cases]]
+id = "R11"
+intro = "376f4e1a03b6bc1a5627763b7d4fc819e00bcead"
+fix = ["4269e6bcd494ff52724fc9c04636064dc976029e"]
+risk = "high"
+files = ["packages/kernel/src/backend/codex-app-server.ts"]
+defect = "CODEX_MODES 将 read-only 排在首位，而写角色调用的 selectSafeModeId 在找不到 auto/default 时回退 safeModes[0]，导致所有非只读 Codex 执行会话在 sessionRef.meta.modeId 与 RUN.yaml 中被错误标记为 read-only。"
