@@ -1892,7 +1892,7 @@ export class KilnChatEngine {
           `当前任务模式：本机 / 临时任务（非 Git 项目空间，cwd=${cwd}）`,
           `可用 workspace_mode 仅限 scratch_dir（独立临时沙盒）或 host_scoped（本机白名单文件两阶段暂存，严禁在立项阶段直接改动宿主机文件）。`,
           `**立项快速收敛纪律**：本机任务立项对话轮只负责明确目标、安全边界、保护规则与处置策略，**严禁在对话轮编写脚本全盘遍历 \`~/Library\` / \`/Library\` 或连续执行多次本机目录枚举**（全量盘点统一交由建卡后 Phase 1 的 \`ops_sec\` 在工作区执行；\`kilnd\` 会自动向其注入宿主机只读快照 \`host-snapshot.json\`，无需在 \`workflow\` 中强制要求 \`ps\` / \`sfltool\` 在沙盒内成功，且 \`implement\` 节点建议保持 \`fresh_context: false\` 以便退回微调时复用热会话）。`,
-          `严禁将当前立项临时目录（${cwd} 或任何 ~/.kiln/drafts/ 路径）写入 contract.end、accept_cmd 或 scope：立项提交后草稿目录会被自动删除。scratch_dir 模式请使用相对工作区路径，host_scoped 模式请使用用户明确指定的宿主机持久化路径。`,
+          `严禁将当前立项临时目录（${cwd} 或任何 ~/.kiln/drafts/ 路径）写入 contract.end、accept_cmd 或 scope：立项提交后草稿目录会被自动删除。scratch_dir 模式请使用相对工作区路径，host_scoped 模式请使用用户明确指定的宿主机持久化路径；host_scoped 模式下若落盘目标为目录（尤其是尚未新建的目录），contract.scope 请统一写成 /abs/dir/** 以明确标识目录子树白名单。`,
         ].join("\n");
 
     const draftSummary = [

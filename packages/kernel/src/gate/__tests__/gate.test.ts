@@ -2240,4 +2240,66 @@ describe("runVerificationGate end-to-end", () => {
       store.close();
     }
   });
+
+  it("allows children under a non-existent directory host_scoped scope without trailing slash while blocking regular files and dangling symlinks", () => {
+    const kilnHome = makeTempDir("kiln-gate-newdir-");
+    const hostRoot = makeTempDir("kiln-host-newdir-root-");
+    const store = new KilnStore({ kilnHome });
+    try {
+      const newDirScope = path.join(hostRoot, "future-cleanup-dir");
+      const childInNewDir = resolveCanonicalHostTarget(path.join(newDirScope, "cleanup.sh"));
+      const siblingOutside = resolveCanonicalHostTarget(
+        path.join(hostRoot, "future-cleanup-dir-evil", "x.sh"),
+      );
+
+      expect(isHostTargetWithinScope(childInNewDir, [newDirScope])).toBe(true);
+      expect(isHostTargetWithinScope(siblingOutside, [newDirScope])).toBe(false);
+
+      const existingRegularFile = path.join(hostRoot, "single.conf");
+      fs.writeFileSync(existingRegularFile, "a=1\n");
+      const canonicalRegularFile = resolveCanonicalHostTarget(existingRegularFile);
+      expect(
+        isHostTargetWithinScope(path.join(canonicalRegularFile, "sub.conf"), [existingRegularFile]),
+      ).toBe(false);
+
+      const danglingScope = path.join(hostRoot, "dangling-dir-link");
+      fs.symlinkSync(path.join(hostRoot, "missing-target"), danglingScope);
+      const childUnderDangling = resolveCanonicalHostTarget(path.join(danglingScope, "sub.sh"));
+      expect(isHostTargetWithinScope(childUnderDangling, [danglingScope])).toBe(false);
+
+      const stagedCard = makeTaskCard({
+        id: "t-host-newdir-stage",
+        workspace_mode: "host_scoped",
+        track: "L1",
+        contract: {
+          goal: "Stage files into a non-existent host dir scope without trailing slash",
+          end: "Staged cleanly",
+          accept_cmd: 'node -e "process.exit(0)"',
+          accept_files_hash: "pending",
+          scope: [newDirScope],
+          deliver: { mode: "manual", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+      });
+      store.createTask(stagedCard, "# New dir host scope");
+      writeFileAtomic(
+        path.join(store.paths.stagedDir(stagedCard.id), "cleanup.sh"),
+        "#!/bin/bash\n",
+      );
+      const res = stageHostScopedChanges(store, {
+        taskId: stagedCard.id,
+        contractScope: stagedCard.contract.scope,
+        stagedFiles: [
+          {
+            stagedRelativePath: "cleanup.sh",
+            targetPath: path.join(newDirScope, "cleanup.sh"),
+          },
+        ],
+      });
+      expect(res.ok).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
 });

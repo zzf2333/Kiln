@@ -348,9 +348,26 @@ function resolveStagedHostMapping(
         literalScopePaths.find(
           (p) => p.replace(/\\/g, "/").endsWith(`/${stagedRel}`) || path.basename(p) === stagedBase,
         ) ??
-        (literalScopePaths.length === 1 && stagedFiles.length === 1
+        (literalScopePaths.length === 1 &&
+        stagedFiles.length === 1 &&
+        !stagedRel.includes("/") &&
+        (fs.existsSync(literalScopePaths[0]!) ||
+          path.posix.extname(literalScopePaths[0]!.replace(/\\/g, "/")) !== "" ||
+          path.posix.extname(stagedRel) === "")
           ? literalScopePaths[0]
           : undefined);
+    }
+
+    if (!matchedTarget && process.platform !== "win32" && !stagedRel.startsWith("/")) {
+      const rootedCandidate = `/${stagedRel}`;
+      try {
+        const canonicalRooted = resolveCanonicalHostTarget(rootedCandidate);
+        if (isHostTargetWithinScope(canonicalRooted, contractScope)) {
+          matchedTarget = rootedCandidate;
+        }
+      } catch {
+        // Ignore unresolvable or out-of-scope rooted candidate; fall back to scopeDirs.
+      }
     }
 
     if (!matchedTarget && scopeDirs.length > 0) {
@@ -358,11 +375,14 @@ function resolveStagedHostMapping(
       try {
         if (fs.existsSync(candidateDir) && fs.statSync(candidateDir).isDirectory()) {
           matchedTarget = path.join(candidateDir, stagedRel);
-        } else if (
-          scopeDirs.length > 0 &&
-          contractScope.some((s) => /[*?{}]/.test(s) || s.endsWith("/"))
-        ) {
-          matchedTarget = path.join(candidateDir, stagedRel);
+        } else if (!fs.existsSync(candidateDir)) {
+          try {
+            fs.lstatSync(candidateDir);
+          } catch (lstatErr) {
+            if ((lstatErr as NodeJS.ErrnoException)?.code === "ENOENT") {
+              matchedTarget = path.join(candidateDir, stagedRel);
+            }
+          }
         }
       } catch {
         matchedTarget = path.join(candidateDir, stagedRel);

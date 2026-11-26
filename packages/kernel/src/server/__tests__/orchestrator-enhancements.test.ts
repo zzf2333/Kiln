@@ -1759,4 +1759,154 @@ describe("Orchestrator enhancements: step_index, tester/deliverer agent modes, a
     expect(reworkHandoff).toContain("本轮退回修改裁决（必须响应）");
     expect(reworkHandoff).toContain("请把 Adobe 纳入待隔离清单");
   });
+
+  it("allows host_scoped host_op with non-existent directory scope without trailing slash to pass staged_only gate in round 1", async () => {
+    const kilnHome = makeTempDir();
+    tempDirs.push(kilnHome);
+    const nonExistentHostDir = fs.realpathSync(kilnHome) + "/host-future-cleanup";
+    const expectedCleanupTarget = `${nonExistentHostDir}/cleanup.sh`;
+    const expectedManifestTarget = `${nonExistentHostDir}/manifest.json`;
+
+    const fakeBackend = new FakeBackend({ defaultTurnScript: [] });
+    const server = new KilndServer({
+      kilnHome,
+      host: "127.0.0.1",
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: true,
+      tokenSecret: "nonexistent-host-dir-scope-secret-0123",
+      approvalHandler: async (req, ctx) => {
+        if (req.action === "host_impl_newdir") {
+          const token =
+            fakeBackend
+              .getRecordedSpecs()
+              .filter((s) => s.taskId === ctx.taskId)
+              .at(-1)?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+          const stagedDir = server.store.paths.stagedDir(ctx.taskId);
+          const nestedDir = path.join(stagedDir, nonExistentHostDir.replace(/^\/+/, ""));
+          fs.mkdirSync(nestedDir, { recursive: true });
+          fs.writeFileSync(path.join(nestedDir, "cleanup.sh"), "#!/bin/bash\necho dry-run\n");
+          fs.writeFileSync(path.join(nestedDir, "manifest.json"), '{"targets":["a"]}\n');
+          const res = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: serializeFrontmatterMarkdown(
+                {
+                  run_id: ctx.runId,
+                  contract_version: ctx.card.contract_version,
+                  outcome: "completed",
+                  input_ref: "host_scoped",
+                  output_ref: stagedDir,
+                  changed_paths: [expectedCleanupTarget, expectedManifestTarget],
+                  accept_result: "skipped",
+                  is_bugfix: false,
+                  complexity_escalate: false,
+                },
+                "## 改动说明\n暂存清理脚本与清单\n\n## 验证命令与真实输出\nbash -n ok\n\n## 未完成或待决问题\n无\n",
+              ),
+            }),
+          });
+          expect(res.status).toBe(200);
+          await ctx.backend.answer(req.id, true);
+        }
+      },
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    server.store.writeConfig("roles", {
+      schema_version: 1,
+      heterogeneous_review: false,
+      roles: {
+        worker: {
+          backend_id: "fake",
+          agent: "codex",
+          model: "gpt-5.4",
+          allow_full_access_fallback: false,
+        },
+      },
+    });
+    await server.start();
+
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "host_impl_newdir", detail: "stage files under future dir" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-host-newdir-e2e", role: "worker" },
+    );
+
+    server.stateMachine.createTask(
+      TaskCardSchema.parse({
+        schema_version: 1,
+        id: "t-host-newdir-e2e",
+        title: "Stage host cleanup scripts into uncreated dir",
+        space: "local",
+        priority: "P2",
+        track: "L2",
+        workspace_mode: "host_scoped",
+        workflow: {
+          schema_version: 1,
+          preset: "host_op",
+          steps: [
+            {
+              kind: "agent",
+              stage: "implement",
+              role: "worker",
+              fresh_context: false,
+              mode: "dry_run_only",
+              roster_role: "ops_sec",
+            },
+            { kind: "gate", stage: "verify", check: "staged_only" },
+            { kind: "approval", stage: "deliver", show: ["staged_diff", "commands"] },
+            {
+              kind: "command",
+              stage: "deliver",
+              apply_staged: true,
+              run_deliver_cmd: false,
+              verify_sha256: true,
+              final_accept_gate: true,
+            },
+          ],
+        },
+        contract_version: 1,
+        contract: {
+          goal: "Stage multiple files inside uncreated host directory",
+          end: "Files staged and awaiting approval",
+          accept_cmd: "echo ok",
+          accept_files_hash: "pending",
+          scope: [nonExistentHostDir],
+          deliver: { mode: "manual", cmd: null },
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 200_000 },
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }),
+      "# Brief\n",
+    );
+    await server.orchestrator.wake();
+
+    await waitUntil(
+      () => server.pendingDecisions.get("t-host-newdir-e2e")?.reason === "host_scoped_approval",
+      "t-host-newdir-e2e reaches host_scoped_approval in round 1",
+    );
+
+    const detailRes = await server.app.request(
+      new Request("http://127.0.0.1/api/tasks/t-host-newdir-e2e"),
+    );
+    const detail = (await detailRes.json()) as {
+      runs: Array<{ gate?: { scope_ok: boolean; out_of_scope_paths: string[] } | null }>;
+      pendingDecision?: { reason: string } | null;
+      hostStagedDiffs?: Array<{ targetPath: string }>;
+    };
+    expect(detail.runs).toHaveLength(1);
+    expect(detail.runs[0]?.gate?.scope_ok).toBe(true);
+    expect(detail.runs[0]?.gate?.out_of_scope_paths).toEqual([]);
+    expect(detail.pendingDecision?.reason).toBe("host_scoped_approval");
+    expect(detail.hostStagedDiffs?.map((d) => d.targetPath).sort()).toEqual(
+      [expectedCleanupTarget, expectedManifestTarget].sort(),
+    );
+    expect(fs.existsSync(nonExistentHostDir)).toBe(false);
+  });
 });

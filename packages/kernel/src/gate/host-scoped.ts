@@ -314,14 +314,39 @@ function matchesSingleHostScopePattern(canonicalTarget: string, rawPattern: stri
       return true;
     }
 
-    try {
-      if (fs.statSync(canonicalPattern).isDirectory()) {
-        return targetCmp.startsWith(prefixCmp);
-      }
-    } catch {
-      // Non-existent literal pattern without trailing slash only matches exact target path.
+    if (canonicalPattern === path.parse(canonicalPattern).root) {
+      return false;
     }
-    return false;
+
+    try {
+      const rawLstat = fs.lstatSync(expandedAbs);
+      if (rawLstat.isSymbolicLink()) {
+        try {
+          return fs.statSync(canonicalPattern).isDirectory() && targetCmp.startsWith(prefixCmp);
+        } catch {
+          return false;
+        }
+      }
+    } catch (rawErr) {
+      if ((rawErr as NodeJS.ErrnoException)?.code !== "ENOENT") {
+        return false;
+      }
+    }
+
+    try {
+      return fs.statSync(canonicalPattern).isDirectory() && targetCmp.startsWith(prefixCmp);
+    } catch {
+      try {
+        fs.lstatSync(canonicalPattern);
+        // Dangling symlink (or un-stat-able existing entry): fail closed.
+        return false;
+      } catch (lstatErr) {
+        if ((lstatErr as NodeJS.ErrnoException)?.code === "ENOENT") {
+          return targetCmp.startsWith(prefixCmp);
+        }
+        return false;
+      }
+    }
   }
 
   const parsedRoot = path.parse(expandedAbs).root;
