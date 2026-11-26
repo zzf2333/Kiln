@@ -7,35 +7,45 @@ import {
   DecisionRecordSchema,
   GateReportSchema,
   PendingDecisionSchema,
+  PendingSubtaskSplitSchema,
   RunEventSchema,
   RunMetaSchema,
   TaskCardSchema,
+  applyAdvisorWorkflowPatch,
+  buildCustomWorkflow,
   deriveLegacyRolesConfigFromRoster,
   findLoopRestartStepIndex,
+  flattenWorkflowSteps,
   getVerifyGateCheckMode,
   getWorkflowFlatSteps,
   isAdvisorEligibleDecisionCategory,
   isReadOnlyRosterPermission,
+  isWriteCapableRosterPermission,
   nextWorkflowStepAfter,
   parseAndValidateReceipt,
+  resolveTaskWorkflow,
   resolveWorkflowStepAt,
   serializeFrontmatterMarkdown,
+  validateSplitCardsDag,
   type AcceptEntryConfig,
   type AcceptVerificationReport,
   type AdvisorRequest,
   type BackendCapabilities,
   type GateReport,
+  type MidFlightSubtaskSpec,
   type PendingDecision,
   type RoleId,
   type RunEvent,
   type RunMeta,
   type SessionRef,
   type StageId,
+  type StateEvent,
   type SteerNote,
   type SteerTaskRequest,
   type TaskCard,
   type TaskRetroReport,
   type VerifierCapability,
+  type WorkflowAgentNode,
 } from "@kiln/protocol";
 import {
   FullAccessOnlyProviderError,
@@ -56,6 +66,10 @@ import {
   cleanupTaskCheckpoints,
   computeFrozenSnapshot,
   createGitWorktreeCheckpoint,
+  detectFrozenFilesChanged,
+  evaluateDeterministicFastForward,
+  inspectGitWorktreeChanges,
+  isChildScopeSubsetOfParent,
   isHostTargetWithinScope,
   normalizeRepoRelativePath,
   prepareGitWorktree,
@@ -1477,11 +1491,29 @@ export class KilnOrchestrator {
 
     const worktreePath = this.getGitWorktreeDir(card.id);
     if (!fs.existsSync(worktreePath)) {
+      let baseRef = space.default_branch;
+      if (card.parent !== null) {
+        const hasParentBranch = await runGitCommand([
+          "-C",
+          space.repo_path,
+          "show-ref",
+          "--verify",
+          "--quiet",
+          `refs/heads/kiln/${card.parent}`,
+        ]).then(
+          () => true,
+          () => false,
+        );
+        if (hasParentBranch) {
+          baseRef = `kiln/${card.parent}`;
+        }
+      }
+
       const prep = await prepareGitWorktree({
         repoPath: space.repo_path,
         worktreePath,
         branchName: `kiln/${card.id}`,
-        baseRef: space.default_branch,
+        baseRef,
         copyUntracked: space.copy_untracked,
         cloneDeps: space.clone_deps,
       });
@@ -3368,6 +3400,30 @@ export class KilnOrchestrator {
     );
   }
 
+  private getLatestWorkflowResetIso(taskId: string, card: TaskCard): string {
+    let resetIso = card.created_at;
+    for (const ev of this.store.readStateEvents(taskId)) {
+      if (
+        (ev.type === "contract_updated" ||
+          ((ev.type === "workflow_patched" || ev.type === "subtasks_spawned") &&
+            ev.contract_version === card.contract_version) ||
+          (ev.type === "decided" && ev.action === "resume")) &&
+        ev.at > resetIso
+      ) {
+        resetIso = ev.at;
+      }
+    }
+    return resetIso;
+  }
+
+  private listCurrentSegmentRuns(
+    taskId: string,
+    card: TaskCard,
+  ): Array<ScannedRunDir & { meta: RunMeta }> {
+    const resetIso = this.getLatestWorkflowResetIso(taskId, card);
+    return this.listCurrentWindowRuns(taskId, card).filter((r) => r.meta.started_at >= resetIso);
+  }
+
   private isAdvisorConfigured(): boolean {
     const roster = this.store.readConfig("roster");
     if (roster !== null) {
@@ -3404,7 +3460,7 @@ export class KilnOrchestrator {
     if (!currentFp) {
       return 0;
     }
-    const runs = this.listCurrentWindowRuns(taskId, card);
+    const runs = this.listCurrentSegmentRuns(taskId, card);
     const currentIdx = runs.findIndex((r) => r.meta.run_id === currentRunId);
     const slice = currentIdx >= 0 ? runs.slice(0, currentIdx + 1) : runs;
 
@@ -3446,7 +3502,7 @@ export class KilnOrchestrator {
     if (!currentFp) {
       return 0;
     }
-    const runs = this.listCurrentWindowRuns(taskId, card);
+    const runs = this.listCurrentSegmentRuns(taskId, card);
     const currentIdx = runs.findIndex((r) => r.meta.run_id === currentRunId);
     const slice = currentIdx >= 0 ? runs.slice(0, currentIdx + 1) : runs;
 
@@ -3562,15 +3618,19 @@ export class KilnOrchestrator {
     currentStage: StageId,
     currentRunId: string,
   ): { counters: StageCounters; triageAttempted: boolean } {
-    const runs = this.listCurrentWindowRuns(taskId, card);
+    const windowRuns = this.listCurrentWindowRuns(taskId, card);
+    const segmentRuns = this.listCurrentSegmentRuns(taskId, card);
 
     let advisorCalls = 0;
-    let reviewRounds = 0;
-    let inReviewCycle = false;
-    for (const r of runs) {
+    for (const r of windowRuns) {
       if (r.meta.stage === "advise") {
         advisorCalls += 1;
       }
+    }
+
+    let reviewRounds = 0;
+    let inReviewCycle = false;
+    for (const r of segmentRuns) {
       if (r.meta.stage === "implement") {
         inReviewCycle = false;
       } else if (r.meta.stage === "review" && r.meta.run_id !== currentRunId && r.hasReceipt) {
@@ -3581,9 +3641,9 @@ export class KilnOrchestrator {
       }
     }
 
-    const currentIdx = runs.findIndex((r) => r.meta.run_id === currentRunId);
-    const slice = currentIdx >= 0 ? runs.slice(0, currentIdx + 1) : runs;
-    const currentStepIndex = currentIdx >= 0 ? runs[currentIdx]!.meta.step_index : undefined;
+    const currentIdx = segmentRuns.findIndex((r) => r.meta.run_id === currentRunId);
+    const slice = currentIdx >= 0 ? segmentRuns.slice(0, currentIdx + 1) : segmentRuns;
+    const currentStepIndex = currentIdx >= 0 ? segmentRuns[currentIdx]!.meta.step_index : undefined;
 
     let sameStageStreak = 0;
     for (let i = slice.length - 1; i >= 0; i--) {
@@ -3666,6 +3726,111 @@ export class KilnOrchestrator {
     });
     // Use void wake() so callers on KilnScheduler.onDispatch (e.g. handleBackendStartError,
     // dispatchVerifyStage) never deadlock awaiting the currently executing scheduler tick.
+    void this.wake();
+    return true;
+  }
+
+  private async collectTaskChangedPathsForFastForward(card: TaskCard): Promise<string[] | null> {
+    if (card.workspace_mode === "git_worktree") {
+      const worktreePath = this.getGitWorktreeDir(card.id);
+      if (!fs.existsSync(worktreePath)) {
+        return null;
+      }
+      const runs = this.listTaskRunDirs(card.id);
+      const firstImpl = runs.find((r) => r.meta?.stage === "implement" && r.meta.input_ref);
+      let baseRef = firstImpl?.meta?.input_ref;
+      if (!baseRef) {
+        const events = this.store.readStateEvents(card.id);
+        for (let i = events.length - 1; i >= 0; i--) {
+          const ev = events[i]!;
+          if (
+            ev.type === "subtasks_spawned" &&
+            ev.contract_version === card.contract_version &&
+            ev.base_ref_sha
+          ) {
+            baseRef = ev.base_ref_sha;
+            break;
+          }
+        }
+      }
+      if (!baseRef) {
+        baseRef = this.store.readSpace(card.space)?.default_branch ?? "main";
+      }
+      try {
+        const changes = await inspectGitWorktreeChanges(worktreePath, baseRef);
+        return changes.changedPaths;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  private async tryApplyDeterministicFastForward(params: {
+    taskId: string;
+    card: TaskCard;
+    fromStage: "verify" | "review";
+    candidateStep: { stage: StageId; stepIndex: number; node: { kind: string } };
+    gateReport: GateReport;
+    guard: ExpectedRunGuard;
+  }): Promise<boolean> {
+    const { taskId, card, fromStage, candidateStep, gateReport, guard } = params;
+    if (this.stopped || !this.isRunStillCurrent(taskId, guard.runId, guard.contractVersion)) {
+      this.syncCaffeinate();
+      return true;
+    }
+
+    const changedPaths = await this.collectTaskChangedPathsForFastForward(card);
+    if (changedPaths === null || changedPaths.length === 0) {
+      return false;
+    }
+
+    const ff = evaluateDeterministicFastForward({
+      changedPaths,
+      gatePassed:
+        gateReport.accept_exit_code === 0 && gateReport.scope_ok && gateReport.artifacts_ok,
+      frozenFilesChanged: gateReport.frozen_files_changed,
+      humanAccept: card.contract.human_accept,
+      workspaceMode: card.workspace_mode,
+    });
+    if (!ff.fastForward) {
+      return false;
+    }
+
+    const shouldSkip =
+      fromStage === "verify"
+        ? (ff.reason === "docs_only" &&
+            (candidateStep.stage === "review" || candidateStep.stage === "accept")) ||
+          (ff.reason === "tests_only" &&
+            candidateStep.stage === "accept" &&
+            candidateStep.node.kind === "agent")
+        : candidateStep.stage === "accept" && candidateStep.node.kind === "agent";
+
+    if (!shouldSkip) {
+      return false;
+    }
+
+    const flatSteps = getWorkflowFlatSteps(card, card.track);
+    const deliverIdx = flatSteps.findIndex((n) => n.stage === "deliver");
+    const toStepIndex = deliverIdx >= 0 ? deliverIdx : undefined;
+
+    this.warmPool.evictTask(taskId);
+    const nextState = this.store.appendStateEvent(taskId, {
+      type: "stage_fast_forwarded",
+      at: new Date().toISOString(),
+      skipped_stage: candidateStep.stage,
+      skipped_step_index: candidateStep.stepIndex,
+      to_stage: "deliver",
+      ...(toStepIndex !== undefined ? { to_step_index: toStepIndex } : {}),
+      reason: ff.reason,
+      changed_paths: changedPaths,
+    });
+    this.syncCaffeinate();
+    this.publishTaskUpdated(taskId, {
+      status: nextState.status,
+      stage: "deliver",
+      contractVersion: nextState.contractVersion,
+    });
     void this.wake();
     return true;
   }
@@ -4159,6 +4324,22 @@ export class KilnOrchestrator {
           "verify",
           stageDecision.effectiveTrack,
         );
+        if (
+          afterVerify !== null &&
+          (afterVerify.stage === "review" || afterVerify.stage === "accept")
+        ) {
+          const fastForwarded = await this.tryApplyDeterministicFastForward({
+            taskId,
+            card: latestCard,
+            fromStage: "verify",
+            candidateStep: afterVerify,
+            gateReport: gateResult.report,
+            guard,
+          });
+          if (fastForwarded) {
+            return;
+          }
+        }
         await this.advanceToNextStage(
           taskId,
           afterVerify?.stage ?? "deliver",
@@ -4166,6 +4347,23 @@ export class KilnOrchestrator {
           afterVerify?.stepIndex ?? null,
         );
         return;
+      }
+      if (
+        effectiveStage === "verify" &&
+        postNext !== null &&
+        (postNext.stage === "review" || postNext.stage === "accept")
+      ) {
+        const fastForwarded = await this.tryApplyDeterministicFastForward({
+          taskId,
+          card: latestCard,
+          fromStage: "verify",
+          candidateStep: postNext,
+          gateReport: gateResult.report,
+          guard,
+        });
+        if (fastForwarded) {
+          return;
+        }
       }
       if (postNext !== null) {
         await this.advanceToNextStage(taskId, postNext.stage, guard, postNext.stepIndex);
@@ -4393,6 +4591,39 @@ export class KilnOrchestrator {
         "review",
         card.track,
       );
+      if (
+        reviewDecision.action === "advance_stage" &&
+        !continueOnFail &&
+        nextStep !== null &&
+        nextStep.stage === "accept" &&
+        nextStep.node.kind === "agent"
+      ) {
+        const segRuns = [...this.listCurrentSegmentRuns(taskId, card)].reverse();
+        let latestGate: GateReport | null = null;
+        for (const sr of segRuns) {
+          const gr = readYamlOptional(
+            this.store.paths.gateYaml(taskId, sr.dirName),
+            GateReportSchema,
+          );
+          if (gr && gr.contract_version === card.contract_version) {
+            latestGate = gr;
+            break;
+          }
+        }
+        if (latestGate !== null) {
+          const fastForwarded = await this.tryApplyDeterministicFastForward({
+            taskId,
+            card,
+            fromStage: "review",
+            candidateStep: nextStep,
+            gateReport: latestGate,
+            guard,
+          });
+          if (fastForwarded) {
+            return;
+          }
+        }
+      }
       await this.advanceToNextStage(
         taskId,
         nextStep?.stage ??
@@ -5042,6 +5273,18 @@ export class KilnOrchestrator {
         ``,
       ].join("\n");
       writeFileAtomic(outputPath, markdown);
+      if (stage === "plan" && parsed.frontmatter.spawn_subtasks !== undefined) {
+        await this.handleMidFlightSubtaskSplitProposal({
+          taskId,
+          card,
+          runMeta,
+          guard,
+          rationale: parsed.frontmatter.chosen_approach,
+          subtasks: parsed.frontmatter.spawn_subtasks,
+          sourceStage: "plan",
+        });
+        return;
+      }
       const derived = deriveTaskStatus(card, this.store.readStateEvents(taskId));
       const nextStep = nextWorkflowStepAfter(
         card,
@@ -5262,6 +5505,154 @@ export class KilnOrchestrator {
           created_at: new Date().toISOString(),
         });
         this.transitionTaskToWaiting(taskId, pending, guard);
+        return;
+      }
+
+      if (parsed.frontmatter.spawn_subtasks !== undefined) {
+        this.clearAdvisorRequest(taskId);
+        await this.handleMidFlightSubtaskSplitProposal({
+          taskId,
+          card,
+          runMeta,
+          guard,
+          rationale: parsed.frontmatter.chosen_approach,
+          subtasks: parsed.frontmatter.spawn_subtasks,
+          sourceStage: "advise",
+          advisorReq,
+        });
+        return;
+      }
+
+      if (parsed.frontmatter.workflow_patch !== undefined) {
+        const sourceRunMeta = advisorReq
+          ? this.listTaskRunDirs(taskId).find((r) => r.meta?.run_id === advisorReq.source_run_id)
+              ?.meta
+          : undefined;
+        const rosterEntries = this.store.readEffectiveRosterConfig().roster;
+        const rosterPermMap = Object.fromEntries(
+          Object.entries(rosterEntries).map(([k, v]) => [
+            k,
+            { enabled: v.enabled, perm: v.perm, stage: v.stage },
+          ]),
+        );
+        const patchRes = applyAdvisorWorkflowPatch({
+          currentBlueprint: resolveTaskWorkflow(card),
+          sourceStepIndex: sourceRunMeta
+            ? (sourceRunMeta.step_index ?? null)
+            : (runMeta.step_index ?? null),
+          sourceStage: advisorReq?.source_stage ?? "advise",
+          replaceRemainingSteps: parsed.frontmatter.workflow_patch.replace_remaining_steps,
+          rationale: parsed.frontmatter.workflow_patch.rationale,
+          roster: rosterPermMap,
+          workspaceMode: card.workspace_mode,
+        });
+        if (!patchRes.ok) {
+          this.clearAdvisorRequest(taskId);
+          const pending = PendingDecisionSchema.parse({
+            id: `dec-${randomUUID().slice(0, 8)}`,
+            task_id: taskId,
+            run_id: runMeta.run_id,
+            contract_version: card.contract_version,
+            reason: "advisor_invalid_workflow_patch",
+            category: "advisor_guardrail_escalation",
+            question: `技术顾问提交的动态流程补丁未通过蓝图不变量校验：${patchRes.errors.join("; ")}。\n- 顾问建议: ${parsed.frontmatter.chosen_approach}`,
+            options: [
+              {
+                id: "opt-resume-safe-stage",
+                label:
+                  resumeTargetStage === "review"
+                    ? "忽略流程补丁，留在原流程继续审查"
+                    : "忽略流程补丁，留在原流程继续实施",
+                action: "resume",
+                target_stage: resumeTargetStage,
+                recommended: true,
+              },
+              {
+                id: "opt-cancel",
+                label: "取消任务",
+                action: "cancel",
+                recommended: false,
+              },
+            ],
+            created_at: new Date().toISOString(),
+          });
+          this.transitionTaskToWaiting(taskId, pending, guard);
+          return;
+        }
+
+        const now = new Date().toISOString();
+        const updatedCard = TaskCardSchema.parse({
+          ...card,
+          workflow: patchRes.blueprint,
+          updated_at: now,
+        });
+        writeYamlAtomic(this.store.paths.cardYaml(taskId), updatedCard, TaskCardSchema);
+
+        const record = DecisionRecordSchema.parse({
+          schema_version: 1,
+          id: `adv-${runMeta.run_id}`,
+          task_id: taskId,
+          contract_version: card.contract_version,
+          category: advisorReq?.category ?? "workflow_replan",
+          decider: "advisor",
+          action: "resume",
+          affected_stages: [patchRes.resumeStage],
+          rationale: parsed.frontmatter.workflow_patch.rationale,
+          decided_at: now,
+        });
+        const decPath = this.store.paths.decisionsMd(taskId);
+        const existing = readOptionalText(decPath) ?? "";
+        const bodyText = parsed.body.trim();
+        const block = serializeFrontmatterMarkdown(
+          {
+            schema_version: 1,
+            id: record.id,
+            task_id: record.task_id,
+            contract_version: record.contract_version,
+            category: record.category,
+            decider: record.decider,
+            action: record.action,
+            affected_stages: record.affected_stages,
+            rationale: record.rationale,
+            decided_at: record.decided_at,
+          },
+          [
+            `## 技术顾问动态重排流程 (${record.id})`,
+            ``,
+            `- 选定方案: ${parsed.frontmatter.chosen_approach}`,
+            `- 重排理由: ${parsed.frontmatter.workflow_patch.rationale}`,
+            `- 保留前缀步数: ${patchRes.preservedPrefixSteps}`,
+            `- 恢复执行阶段: ${patchRes.resumeStage} (step #${patchRes.resumeStepIndex})`,
+            ...(advisorReq ? [`- 触发原因: ${advisorReq.trigger} (${advisorReq.reason})`] : []),
+            ...(bodyText ? [``, bodyText] : []),
+            ``,
+          ].join("\n"),
+        );
+        writeFileAtomic(
+          decPath,
+          existing.trim().length > 0 ? `${existing.trimEnd()}\n\n${block}\n` : `${block}\n`,
+        );
+
+        this.clearAdvisorRequest(taskId);
+        this.warmPool.evictTask(taskId);
+        const nextState = this.store.appendStateEvent(taskId, {
+          type: "workflow_patched",
+          at: now,
+          run_id: runMeta.run_id,
+          contract_version: card.contract_version,
+          preserved_prefix_steps: patchRes.preservedPrefixSteps,
+          new_total_steps: flattenWorkflowSteps(patchRes.blueprint).length,
+          resume_stage: patchRes.resumeStage,
+          resume_step_index: patchRes.resumeStepIndex,
+          rationale: parsed.frontmatter.workflow_patch.rationale,
+        });
+        this.syncCaffeinate();
+        this.publishTaskUpdated(taskId, {
+          status: nextState.status,
+          stage: patchRes.resumeStage,
+          contractVersion: nextState.contractVersion,
+        });
+        void this.wake();
         return;
       }
 
@@ -5536,6 +5927,244 @@ export class KilnOrchestrator {
   }
 
   private async dispatchVerifyStage(plan: DispatchPlan): Promise<void> {
+    const preEvents = this.store.readStateEvents(plan.taskId);
+    let activeSubtaskBarrier: Extract<StateEvent, { type: "subtasks_spawned" }> | null = null;
+    for (let i = preEvents.length - 1; i >= 0; i--) {
+      const ev = preEvents[i]!;
+      if (ev.type === "running" && ev.stage === "implement") {
+        break;
+      }
+      if (ev.type === "subtasks_spawned" && ev.contract_version === plan.contractVersion) {
+        activeSubtaskBarrier = ev;
+        break;
+      }
+    }
+
+    if (activeSubtaskBarrier !== null) {
+      const now = new Date().toISOString();
+      const runDirName = this.allocateRunDirName(plan.taskId, "verify");
+      const verifyRunId = `run-${plan.taskId}-verify-r${plan.round}-v${plan.contractVersion}`;
+      const barrierWorktreePath =
+        plan.card.workspace_mode === "git_worktree"
+          ? this.getGitWorktreeDir(plan.taskId)
+          : undefined;
+      const barrierRunMeta: RunMeta = {
+        schema_version: 1,
+        run_id: verifyRunId,
+        task_id: plan.taskId,
+        stage: "verify",
+        ...(plan.stepIndex !== null ? { step_index: plan.stepIndex } : {}),
+        round: plan.round,
+        role: "verifier",
+        contract_version: plan.contractVersion,
+        backend_id: "deterministic",
+        agent: "kilnd-gate",
+        model: "deterministic",
+        session_ref: { backendId: "deterministic", sessionId: verifyRunId },
+        ...(barrierWorktreePath !== undefined ? { cwd: barrierWorktreePath } : {}),
+        ...(activeSubtaskBarrier.base_ref_sha !== undefined
+          ? { input_ref: activeSubtaskBarrier.base_ref_sha }
+          : {}),
+        started_at: now,
+      };
+      ensureDir(this.store.paths.runDir(plan.taskId, runDirName));
+      writeYamlAtomic(
+        this.store.paths.runYaml(plan.taskId, runDirName),
+        barrierRunMeta,
+        RunMetaSchema,
+      );
+      this.store.appendStateEvent(plan.taskId, {
+        type: "running",
+        at: now,
+        stage: "verify",
+        ...(plan.stepIndex !== null ? { step_index: plan.stepIndex } : {}),
+        round: plan.round,
+        run_id: verifyRunId,
+      });
+      this.syncCaffeinate();
+      this.publishTaskUpdated(plan.taskId, {
+        status: "running",
+        stage: "verify",
+        round: plan.round,
+        contractVersion: plan.contractVersion,
+      });
+
+      await this.runTrackedStageOperation(plan.taskId, verifyRunId, async (signal) => {
+        if (
+          signal.aborted ||
+          !this.isRunStillCurrent(plan.taskId, verifyRunId, plan.contractVersion)
+        ) {
+          this.syncCaffeinate();
+          return;
+        }
+
+        const card = this.store.readTaskCard(plan.taskId);
+        const space = this.store.readSpace(card.space);
+        const worktreePath =
+          card.workspace_mode === "git_worktree" ? this.getGitWorktreeDir(plan.taskId) : undefined;
+        let acceptCwd = this.store.paths.taskDir(plan.taskId);
+        let changedPaths: string[] = [];
+
+        if (card.workspace_mode === "scratch_dir") {
+          const parentWsDir = this.store.paths.workspaceDir(plan.taskId);
+          ensureDir(parentWsDir);
+          for (const childId of activeSubtaskBarrier.child_task_ids) {
+            const childWsDir = this.store.paths.workspaceDir(childId);
+            if (!fs.existsSync(childWsDir)) {
+              continue;
+            }
+            for (const relPath of collectRelativeFiles(childWsDir)) {
+              const src = path.join(childWsDir, relPath);
+              const dst = path.join(parentWsDir, relPath);
+              ensureDir(path.dirname(dst));
+              fs.copyFileSync(src, dst);
+            }
+          }
+          acceptCwd = parentWsDir;
+          changedPaths = collectRelativeFiles(parentWsDir);
+        } else if (worktreePath && fs.existsSync(worktreePath)) {
+          acceptCwd = worktreePath;
+          const baseRef = activeSubtaskBarrier.base_ref_sha ?? space?.default_branch ?? "main";
+          const gitChanges = await inspectGitWorktreeChanges(worktreePath, baseRef);
+          changedPaths = gitChanges.changedPaths;
+        }
+
+        const scopeCheck = checkScope(changedPaths, card.contract.scope);
+        const freezePatterns = space?.freeze_patterns ?? [];
+        const baselineSnapshot = this.readSavedFrozenBaseline(plan.taskId, card);
+        let frozenFilesChanged: string[] = [];
+        if (freezePatterns.length > 0 || baselineSnapshot !== undefined) {
+          const frozenCheck = detectFrozenFilesChanged({
+            rootDir: acceptCwd,
+            freezePatterns,
+            acceptCmd: card.contract.accept_cmd,
+            baselineHash: card.contract.accept_files_hash,
+            changedPaths,
+            baselineSnapshot,
+          });
+          frozenFilesChanged = frozenCheck.frozenFilesChanged;
+        }
+
+        const startedMs = Date.now();
+        const cmdResult = await runIsolatedCommand(card.contract.accept_cmd, {
+          cwd: acceptCwd,
+          signal,
+        });
+        if (
+          signal.aborted ||
+          !this.isRunStillCurrent(plan.taskId, verifyRunId, card.contract_version)
+        ) {
+          this.syncCaffeinate();
+          return;
+        }
+
+        const acceptExitCode = cmdResult.timedOut ? 124 : cmdResult.exitCode;
+        const escalatedToL2 = frozenFilesChanged.length > 0 && card.track === "L1";
+        const gateReport = GateReportSchema.parse({
+          schema_version: 1,
+          run_id: verifyRunId,
+          contract_version: card.contract_version,
+          schema_ok: true,
+          scope_ok: scopeCheck.ok,
+          artifacts_ok: true,
+          out_of_scope_paths: scopeCheck.outOfScopePaths,
+          frozen_files_changed: frozenFilesChanged,
+          accept_exit_code: acceptExitCode,
+          accept_duration_ms: Math.max(0, Date.now() - startedMs),
+          escalated_to_l2: escalatedToL2,
+          checked_at: new Date().toISOString(),
+        });
+        writeYamlAtomic(
+          this.store.paths.gateYaml(plan.taskId, runDirName),
+          gateReport,
+          GateReportSchema,
+        );
+
+        if (escalatedToL2) {
+          const escState = this.stateMachine.escalateTrackToL2(plan.taskId, "frozen_files_changed");
+          this.publishTaskUpdated(plan.taskId, {
+            contractVersion: escState.contractVersion,
+          });
+        }
+
+        const latestCard = this.store.readTaskCard(plan.taskId);
+        const verifyGuard: ExpectedRunGuard = {
+          runId: verifyRunId,
+          contractVersion: latestCard.contract_version,
+        };
+        if (scopeCheck.ok && acceptExitCode === 0) {
+          if (worktreePath && fs.existsSync(worktreePath)) {
+            await this.commitVerifiedWorktreeChanges(latestCard, worktreePath, plan.round);
+          }
+          const afterVerify = nextWorkflowStepAfter(
+            latestCard,
+            plan.stepIndex,
+            "verify",
+            latestCard.track,
+          );
+          if (
+            afterVerify !== null &&
+            (afterVerify.stage === "review" || afterVerify.stage === "accept")
+          ) {
+            const fastForwarded = await this.tryApplyDeterministicFastForward({
+              taskId: plan.taskId,
+              card: latestCard,
+              fromStage: "verify",
+              candidateStep: afterVerify,
+              gateReport,
+              guard: verifyGuard,
+            });
+            if (fastForwarded) {
+              return;
+            }
+          }
+          await this.advanceToNextStage(
+            plan.taskId,
+            afterVerify?.stage ?? "deliver",
+            verifyGuard,
+            afterVerify?.stepIndex ?? null,
+          );
+          return;
+        }
+
+        const tailSnippet = (cmdResult.stderr || cmdResult.stdout).trim().slice(-400);
+        const decision = PendingDecisionSchema.parse({
+          id: `dec-${randomUUID().slice(0, 8)}`,
+          task_id: plan.taskId,
+          run_id: verifyRunId,
+          contract_version: latestCard.contract_version,
+          reason: "integration_verify_failed",
+          category: "gate_failure",
+          question: `子卡全部合流后，父卡总集成 verify 未通过（scope_ok=${scopeCheck.ok}, accept_exit_code=${acceptExitCode}${scopeCheck.outOfScopePaths.length > 0 ? `, out_of_scope=${scopeCheck.outOfScopePaths.join(", ")}` : ""}）。${tailSnippet ? `\n输出摘要:\n\`\`\`\n${tailSnippet}\n\`\`\`` : ""}`,
+          options: [
+            {
+              id: "opt-retry-verify",
+              label: "重跑父卡总集成 verify",
+              action: "resume",
+              target_stage: "verify",
+              recommended: true,
+            },
+            {
+              id: "opt-reimplement",
+              label: "退回父卡实施阶段手工/单卡收尾修复",
+              action: "resume",
+              target_stage: "implement",
+              recommended: false,
+            },
+            {
+              id: "opt-cancel",
+              label: "取消任务",
+              action: "cancel",
+              recommended: false,
+            },
+          ],
+          created_at: new Date().toISOString(),
+        });
+        this.transitionTaskToWaiting(plan.taskId, decision, verifyGuard);
+      });
+      return;
+    }
+
     if (
       plan.roleAssignment !== null &&
       plan.card.workspace_mode !== "host_scoped" &&
@@ -5756,6 +6385,462 @@ export class KilnOrchestrator {
       },
       plan,
     );
+  }
+
+  private async handleMidFlightSubtaskSplitProposal(params: {
+    taskId: string;
+    card: TaskCard;
+    runMeta: RunMeta;
+    guard: ExpectedRunGuard;
+    rationale: string;
+    subtasks: readonly MidFlightSubtaskSpec[];
+    sourceStage: "plan" | "advise";
+    advisorReq?: AdvisorRequest | null;
+  }): Promise<void> {
+    const { taskId, card, runMeta, guard, rationale, subtasks, sourceStage, advisorReq } = params;
+    const escalateInvalid = (detail: string): void => {
+      const pending = PendingDecisionSchema.parse({
+        id: `dec-${randomUUID().slice(0, 8)}`,
+        task_id: taskId,
+        run_id: runMeta.run_id,
+        contract_version: card.contract_version,
+        reason: "subtask_split_invalid",
+        category: "advisor_guardrail_escalation",
+        question: `裂变子卡提案未通过不变量校验：${detail}。\n- 建议摘要: ${rationale}${advisorReq ? `\n- 原触发问题: ${advisorReq.question}` : ""}`,
+        options: [
+          {
+            id: "opt-continue-single-card",
+            label: "忽略裂变提案，继续单卡实施",
+            action: "resume",
+            target_stage: "implement",
+            recommended: true,
+          },
+          {
+            id: "opt-cancel",
+            label: "取消任务",
+            action: "cancel",
+            recommended: false,
+          },
+        ],
+        created_at: new Date().toISOString(),
+      });
+      this.transitionTaskToWaiting(taskId, pending, guard);
+    };
+
+    if (card.workspace_mode === "host_scoped") {
+      escalateInvalid("host_scoped 任务禁止中途中裂变为并行子卡");
+      return;
+    }
+    if (card.parent !== null) {
+      escalateInvalid("子卡禁止再次裂变孙卡（仅支持单层父卡裂变）");
+      return;
+    }
+    const dag = validateSplitCardsDag(
+      subtasks.map((s) => ({
+        temp_id: s.temp_id,
+        depends_on_temp_ids: s.depends_on_temp_ids,
+      })),
+    );
+    if (!dag.ok) {
+      escalateInvalid(dag.errors.join("; "));
+      return;
+    }
+
+    const scopeSubsetOk = subtasks.every((s) =>
+      isChildScopeSubsetOfParent(s.contract.scope, card.contract.scope),
+    );
+    const autoApproveEligible = subtasks.length >= 2 && subtasks.length <= 4 && scopeSubsetOk;
+
+    if (!autoApproveEligible) {
+      const decisionId = `dec-${randomUUID().slice(0, 8)}`;
+      const now = new Date().toISOString();
+      const splitRecord = PendingSubtaskSplitSchema.parse({
+        schema_version: 1,
+        decision_id: decisionId,
+        contract_version: card.contract_version,
+        source_run_id: runMeta.run_id,
+        source_stage: sourceStage,
+        rationale,
+        subtasks: [...subtasks],
+        created_at: now,
+      });
+      writeYamlAtomic(
+        this.store.paths.pendingSubtaskSplitYaml(taskId),
+        splitRecord,
+        PendingSubtaskSplitSchema,
+      );
+
+      const reasons: string[] = [];
+      if (subtasks.length > 4) {
+        reasons.push(`拟拆分数量为 ${subtasks.length} 张（超过免批上限 4 张）`);
+      }
+      if (!scopeSubsetOk) {
+        reasons.push("部分子卡 scope 未严格收束在父卡 contract.scope 内");
+      }
+      const pending = PendingDecisionSchema.parse({
+        id: decisionId,
+        task_id: taskId,
+        run_id: runMeta.run_id,
+        contract_version: card.contract_version,
+        reason: "subtask_split_approval",
+        category: "subtask_split",
+        question: `任务 "${card.title}" 在 ${sourceStage} 阶段提出裂变为 ${subtasks.length} 张并行子卡，需您拍板确认（${reasons.join("；")}）：\n- 拆分依据: ${rationale}\n- 子卡列表: ${subtasks.map((s) => `${s.temp_id}:${s.title}[${s.contract.scope.join(",")}]`).join(" | ")}`,
+        options: [
+          {
+            id: "opt-approve-subtask-split",
+            label: "批准裂变为子卡并让父卡挂起至总集成验收",
+            action: "resume",
+            target_stage: "verify",
+            recommended: true,
+          },
+          {
+            id: "opt-continue-single-card",
+            label: "拒绝拆分，按原单卡继续实施",
+            action: "resume",
+            target_stage: "implement",
+            recommended: false,
+          },
+          {
+            id: "opt-cancel",
+            label: "取消任务",
+            action: "cancel",
+            recommended: false,
+          },
+        ],
+        created_at: now,
+      });
+      this.transitionTaskToWaiting(taskId, pending, guard);
+      return;
+    }
+
+    await this.executeMidFlightSubtaskSplit({
+      taskId,
+      card,
+      runId: runMeta.run_id,
+      rationale,
+      subtasks,
+      guard,
+    });
+  }
+
+  async approvePendingSubtaskSplit(taskId: string, decisionId: string): Promise<void> {
+    const safeTaskId = assertSafeSegment(taskId, "taskId");
+    const pending = this.pendingDecisions.get(safeTaskId);
+    const splitPath = this.store.paths.pendingSubtaskSplitYaml(safeTaskId);
+    const splitSpec = readYamlOptional(splitPath, PendingSubtaskSplitSchema);
+    if (
+      !pending ||
+      pending.id !== decisionId ||
+      !splitSpec ||
+      splitSpec.decision_id !== decisionId
+    ) {
+      throw new Error(
+        `Task "${safeTaskId}" does not have a matching pending subtask split for decision "${decisionId}"`,
+      );
+    }
+
+    this.stateMachine.applyDecision({
+      taskId: safeTaskId,
+      decision: pending,
+      optionId: "opt-approve-subtask-split",
+      decider: "human",
+    });
+    this.pendingDecisions.remove(safeTaskId);
+    fs.rmSync(splitPath, { force: true });
+
+    const card = this.store.readTaskCard(safeTaskId);
+    await this.executeMidFlightSubtaskSplit({
+      taskId: safeTaskId,
+      card,
+      runId: splitSpec.source_run_id,
+      rationale: splitSpec.rationale,
+      subtasks: splitSpec.subtasks,
+    });
+  }
+
+  private async executeMidFlightSubtaskSplit(params: {
+    taskId: string;
+    card: TaskCard;
+    runId: string;
+    rationale: string;
+    subtasks: readonly MidFlightSubtaskSpec[];
+    guard?: ExpectedRunGuard;
+  }): Promise<void> {
+    const { taskId, card, runId, rationale, subtasks, guard } = params;
+    if (
+      guard !== undefined &&
+      !this.isRunStillCurrent(taskId, guard.runId, guard.contractVersion)
+    ) {
+      this.syncCaffeinate();
+      return;
+    }
+
+    const dag = validateSplitCardsDag(
+      subtasks.map((s) => ({
+        temp_id: s.temp_id,
+        depends_on_temp_ids: s.depends_on_temp_ids,
+      })),
+    );
+    if (!dag.ok) {
+      throw new Error(`Invalid subtask split DAG: ${dag.errors.join("; ")}`);
+    }
+
+    let baseRefSha: string | undefined;
+    if (card.workspace_mode === "git_worktree") {
+      const prep = await this.prepareWorkspaceForPlan(card, "implement");
+      const dirtyOut = (
+        await runGitCommand(["-C", prep.cwd, "status", "--porcelain"]).catch(() => "")
+      ).trim();
+      if (dirtyOut.length > 0) {
+        await createGitWorktreeCheckpoint({
+          worktreePath: prep.cwd,
+          taskId: card.id,
+          runId,
+          phase: "pre",
+          stage: "implement",
+          round: 1,
+        }).catch(() => {});
+        await runGitCommand(["-C", prep.cwd, "reset", "--hard", "HEAD"]);
+        await runGitCommand(["-C", prep.cwd, "clean", "-fd"]);
+      }
+      const cleanHeadSha = (await runGitCommand(["-C", prep.cwd, "rev-parse", "HEAD"])).trim();
+      baseRefSha = prep.inputRef ?? (cleanHeadSha.length > 0 ? cleanHeadSha : undefined);
+    } else if (card.workspace_mode === "scratch_dir") {
+      ensureDir(this.store.paths.workspaceDir(card.id));
+    }
+
+    const count = subtasks.length;
+    const totals = this.store.getTaskTotalTokens(card.id);
+    const spentTokens =
+      Math.max(0, totals.input_tokens - totals.cached_input_tokens) + totals.output_tokens;
+    const remainingTokens = Math.max(50_000, card.limits.max_tokens - spentTokens);
+    const childMaxTokens = Math.max(50_000, Math.floor((remainingTokens * 0.8) / count));
+    const spentUsd = computeTaskSpentUsd(this.store, card.id);
+    const childMaxCostUsd =
+      card.limits.max_cost_usd !== undefined
+        ? Number(
+            Math.max(
+              0.25,
+              (Math.max(0.25, card.limits.max_cost_usd - spentUsd) * 0.8) / count,
+            ).toFixed(2),
+          )
+        : undefined;
+
+    const specByTempId = new Map<string, MidFlightSubtaskSpec>();
+    for (const s of subtasks) {
+      specByTempId.set(s.temp_id, s);
+    }
+
+    const existingIds = new Set(this.store.listTasks().map((row) => row.id));
+    const tempToRealId = new Map<string, string>();
+    for (const tempId of dag.order) {
+      let candidate = `t-${randomUUID().replace(/-/g, "").slice(0, 8)}`;
+      while (existingIds.has(candidate)) {
+        candidate = `t-${randomUUID().replace(/-/g, "").slice(0, 8)}`;
+      }
+      existingIds.add(candidate);
+      tempToRealId.set(tempId, candidate);
+    }
+
+    const parentPlanText = readOptionalText(this.store.paths.planMd(card.id)) ?? "";
+    const parentResearchText = readOptionalText(this.store.paths.researchMd(card.id)) ?? "";
+    const rosterEntries = this.store.readEffectiveRosterConfig().roster;
+
+    const now = new Date().toISOString();
+    const createdChildIds: string[] = [];
+
+    try {
+      for (const tempId of dag.order) {
+        const spec = specByTempId.get(tempId)!;
+        const childId = tempToRealId.get(tempId)!;
+        const childWorkflow = buildCustomWorkflow({
+          preset: "custom",
+          includeResearch: false,
+          includePlan: false,
+          includeReview: spec.include_review && spec.track === "L2",
+          includeAccept: false,
+          deliverApproval: false,
+          hostTwoPhase: false,
+          hasDeliverCmd: false,
+          maxRounds: card.limits.review_rounds,
+          stuckThreshold: 2,
+        });
+
+        const assignedRole =
+          spec.roster_role &&
+          rosterEntries[spec.roster_role]?.enabled === true &&
+          isWriteCapableRosterPermission(rosterEntries[spec.roster_role]!.perm)
+            ? spec.roster_role
+            : undefined;
+        if (assignedRole) {
+          const patchImplRole = (
+            step: (typeof childWorkflow.steps)[number],
+          ): (typeof childWorkflow.steps)[number] => {
+            if (step.kind === "loop") {
+              return {
+                ...step,
+                steps: step.steps.map((inner) => patchImplRole(inner) as typeof inner),
+              };
+            }
+            if (step.kind === "agent" && step.stage === "implement") {
+              return { ...(step as WorkflowAgentNode), roster_role: assignedRole };
+            }
+            return step;
+          };
+          childWorkflow.steps = childWorkflow.steps.map(patchImplRole);
+        }
+
+        const childCard = TaskCardSchema.parse({
+          schema_version: 1,
+          id: childId,
+          title: spec.title,
+          space: card.space,
+          priority: spec.priority ?? card.priority,
+          track: spec.track,
+          workspace_mode: card.workspace_mode,
+          parent: card.id,
+          depends_on: spec.depends_on_temp_ids.map((depTemp) => tempToRealId.get(depTemp)!),
+          workflow: childWorkflow,
+          contract_version: 1,
+          contract: {
+            goal: spec.contract.goal,
+            ...(spec.contract.non_goals.length > 0 ? { non_goals: spec.contract.non_goals } : {}),
+            end: spec.contract.end,
+            accept_cmd: spec.contract.accept_cmd ?? card.contract.accept_cmd,
+            accept_files_hash: card.contract.accept_files_hash,
+            scope: spec.contract.scope,
+            deliver:
+              card.workspace_mode === "git_worktree"
+                ? { mode: "merge_main", cmd: null }
+                : { mode: "manual", cmd: null },
+            human_accept: false,
+            external_actions: "ask",
+          },
+          limits: {
+            retries_per_stage: card.limits.retries_per_stage,
+            review_rounds: card.limits.review_rounds,
+            advisor_calls: card.limits.advisor_calls,
+            max_tokens: childMaxTokens,
+            ...(childMaxCostUsd !== undefined ? { max_cost_usd: childMaxCostUsd } : {}),
+          },
+          created_at: now,
+          updated_at: now,
+        });
+
+        const briefParts = [
+          spec.brief_markdown.trim(),
+          ``,
+          `---`,
+          `- 父卡: \`${card.id}\` (${card.title})`,
+          `- 拆分理由: ${rationale}`,
+        ];
+        if (parentPlanText.trim().length > 0) {
+          briefParts.push(``, `## 父卡方案摘要`, parentPlanText.trim().slice(0, 1500));
+        } else if (parentResearchText.trim().length > 0) {
+          briefParts.push(``, `## 父卡调研摘要`, parentResearchText.trim().slice(0, 1500));
+        }
+
+        this.stateMachine.createTask(childCard, `${briefParts.join("\n")}\n`);
+        createdChildIds.push(childId);
+      }
+    } catch (err) {
+      for (const cid of createdChildIds) {
+        try {
+          this.store.deleteTaskOnRollback(cid);
+        } catch {
+          // Best-effort cleanup of partially spawned children.
+        }
+      }
+      throw err;
+    }
+
+    const updatedParentCard = TaskCardSchema.parse({
+      ...card,
+      depends_on: Array.from(new Set([...card.depends_on, ...createdChildIds])),
+      updated_at: now,
+    });
+    writeYamlAtomic(this.store.paths.cardYaml(taskId), updatedParentCard, TaskCardSchema);
+
+    const flatParentSteps = getWorkflowFlatSteps(updatedParentCard, updatedParentCard.track);
+    let lastVerifyIdx = 0;
+    for (let i = flatParentSteps.length - 1; i >= 0; i--) {
+      if (flatParentSteps[i]?.stage === "verify") {
+        lastVerifyIdx = i;
+        break;
+      }
+    }
+
+    const decPath = this.store.paths.decisionsMd(taskId);
+    const existingDec = readOptionalText(decPath) ?? "";
+    const record = DecisionRecordSchema.parse({
+      schema_version: 1,
+      id: `split-${runId}`,
+      task_id: taskId,
+      contract_version: updatedParentCard.contract_version,
+      category: "subtask_split",
+      decider: "advisor",
+      action: "resume",
+      affected_stages: ["verify"],
+      rationale,
+      decided_at: now,
+    });
+    const splitBlock = serializeFrontmatterMarkdown(
+      {
+        schema_version: 1,
+        id: record.id,
+        task_id: record.task_id,
+        contract_version: record.contract_version,
+        category: record.category,
+        decider: record.decider,
+        action: record.action,
+        affected_stages: record.affected_stages,
+        rationale: record.rationale,
+        decided_at: record.decided_at,
+      },
+      [
+        `## 中途裂变并行子卡 (${record.id})`,
+        ``,
+        `- 拆分依据: ${rationale}`,
+        `- 子卡列表: ${createdChildIds.join(", ")}`,
+        `- 父卡集成屏障: verify (step #${lastVerifyIdx})`,
+        ``,
+      ].join("\n"),
+    );
+    writeFileAtomic(
+      decPath,
+      existingDec.trim().length > 0
+        ? `${existingDec.trimEnd()}\n\n${splitBlock}\n`
+        : `${splitBlock}\n`,
+    );
+
+    this.warmPool.evictTask(taskId);
+    const nextParentState = this.store.appendStateEvent(taskId, {
+      type: "subtasks_spawned",
+      at: now,
+      run_id: runId,
+      contract_version: updatedParentCard.contract_version,
+      child_task_ids: createdChildIds,
+      ...(baseRefSha !== undefined ? { base_ref_sha: baseRefSha } : {}),
+      resume_stage: "verify",
+      resume_step_index: lastVerifyIdx,
+    });
+    this.stateMachine.syncAllEffectivePriorities();
+    this.syncCaffeinate();
+    for (const childId of createdChildIds) {
+      const childRow = this.store.getTaskIndex(childId);
+      if (childRow) {
+        this.publishTaskUpdated(childId, {
+          status: childRow.status,
+          contractVersion: childRow.contract_version,
+        });
+      }
+    }
+    this.publishTaskUpdated(taskId, {
+      status: nextParentState.status,
+      stage: "verify",
+      contractVersion: nextParentState.contractVersion,
+    });
+    void this.wake();
   }
 
   private completeTaskDelivery(

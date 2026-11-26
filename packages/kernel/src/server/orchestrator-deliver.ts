@@ -541,7 +541,28 @@ export async function executeDeliverStage(
           return;
         }
 
-        const baseRef = space.default_branch;
+        const parentWorktreePath = card.parent !== null ? ctx.getGitWorktreeDir(card.parent) : null;
+        const parentSpawnedChild =
+          card.parent !== null &&
+          parentWorktreePath !== null &&
+          fs.existsSync(parentWorktreePath) &&
+          (() => {
+            try {
+              const parentCard = ctx.store.readTaskCard(card.parent!);
+              const parentEvents = ctx.store.readStateEvents(card.parent!);
+              return parentEvents.some(
+                (ev) =>
+                  ev.type === "subtasks_spawned" &&
+                  ev.contract_version === parentCard.contract_version &&
+                  ev.child_task_ids.includes(plan.taskId),
+              );
+            } catch {
+              return false;
+            }
+          })();
+        const baseRef = parentSpawnedChild ? `kiln/${card.parent}` : space.default_branch;
+        const mergeTargetDir = parentSpawnedChild ? parentWorktreePath! : space.repo_path!;
+        const mergeTargetLabel = parentSpawnedChild ? "父任务工作树" : "主仓库";
         const mergeOutcome = await ctx.withSpaceMergeLock(
           space.repo_path,
           async (): Promise<{
@@ -560,7 +581,7 @@ export async function executeDeliverStage(
               (
                 await runGitCommand([
                   "-C",
-                  space.repo_path!,
+                  mergeTargetDir,
                   "rev-list",
                   "--count",
                   `${baseRef}..kiln/${plan.taskId}`,
@@ -574,14 +595,14 @@ export async function executeDeliverStage(
             const currentMainBranch = (
               await runGitCommand([
                 "-C",
-                space.repo_path!,
+                mergeTargetDir,
                 "rev-parse",
                 "--abbrev-ref",
                 "HEAD",
               ]).catch(() => "")
             ).trim();
             const mainStatus = (
-              await runGitCommand(["-C", space.repo_path!, "status", "--porcelain"])
+              await runGitCommand(["-C", mergeTargetDir, "status", "--porcelain"])
             ).trim();
             if (
               signal.aborted ||
@@ -593,31 +614,33 @@ export async function executeDeliverStage(
             if (mainStatus.length > 0 || currentMainBranch !== baseRef) {
               const reasons: string[] = [];
               if (mainStatus.length > 0) {
-                reasons.push("主仓库存在未提交改动");
+                reasons.push(`${mergeTargetLabel}存在未提交改动`);
               }
               if (currentMainBranch !== baseRef) {
                 reasons.push(
-                  `主仓库当前位于 "${currentMainBranch || "unknown"}" 而非 "${baseRef}"`,
+                  `${mergeTargetLabel}当前位于 "${currentMainBranch || "unknown"}" 而非 "${baseRef}"`,
                 );
               }
               const decision = PendingDecisionSchema.parse({
                 id: `dec-${randomUUID().slice(0, 8)}`,
                 task_id: plan.taskId,
                 contract_version: card.contract_version,
-                reason: "main_repo_not_ready_for_merge",
+                reason: parentSpawnedChild
+                  ? "parent_worktree_not_ready_for_merge"
+                  : "main_repo_not_ready_for_merge",
                 category: "deliver_merge_blocked",
                 question: `分支 kiln/${plan.taskId} 尚有 ${aheadInLock} 个提交未合并至 ${baseRef}，但${reasons.join("且")}，已保留 worktree 等待处理。`,
                 options: [
                   {
                     id: "opt-retry-deliver",
-                    label: "主仓库就绪后重试合并主分支",
+                    label: `${mergeTargetLabel}就绪后重试合并`,
                     action: "resume",
                     target_stage: "deliver",
                     recommended: true,
                   },
                   {
                     id: "opt-finish",
-                    label: "跳过合并主分支直接标记完成（保留工作树）",
+                    label: "跳过合并直接标记完成（保留工作树）",
                     action: "finish",
                     recommended: false,
                   },
@@ -683,7 +706,7 @@ export async function executeDeliverStage(
               (
                 await runGitCommand([
                   "-C",
-                  space.repo_path!,
+                  mergeTargetDir,
                   "rev-list",
                   "--count",
                   `kiln/${plan.taskId}..${baseRef}`,
@@ -721,7 +744,7 @@ export async function executeDeliverStage(
                     plan,
                     {
                       steerId: `refinery-accept-${randomUUID().slice(0, 8)}`,
-                      message: `[Refinery 合并前联合验收失败] 分支 kiln/${plan.taskId} 已成功 rebase 到最新 ${baseRef}，但重跑验收命令 \`${card.contract.accept_cmd}\` 失败 (exit=${postAccept.exitCode}, timedOut=${postAccept.timedOut})。请结合主干最新代码修复回归问题并重新通过验收。`,
+                      message: `[Refinery 合并前联合验收失败] 分支 kiln/${plan.taskId} 已成功 rebase 到最新 ${baseRef}，但重跑验收命令 \`${card.contract.accept_cmd}\` 失败 (exit=${postAccept.exitCode}, timedOut=${postAccept.timedOut})。请结合最新代码修复回归问题并重新通过验收。`,
                     },
                     deliverGuard,
                   );
@@ -733,7 +756,7 @@ export async function executeDeliverStage(
                   contract_version: card.contract_version,
                   reason: "refinery_accept_failed",
                   category: "deliver_merge_blocked",
-                  question: `分支 kiln/${plan.taskId} 在 rebase 至最新 ${baseRef} 后重跑验收命令 \`${card.contract.accept_cmd}\` 仍然失败 (exit=${postAccept.exitCode}, timedOut=${postAccept.timedOut})，主干未被写入，请选择后续操作。`,
+                  question: `分支 kiln/${plan.taskId} 在 rebase 至最新 ${baseRef} 后重跑验收命令 \`${card.contract.accept_cmd}\` 仍然失败 (exit=${postAccept.exitCode}, timedOut=${postAccept.timedOut})，${mergeTargetLabel}未被写入，请选择后续操作。`,
                   options: [
                     {
                       id: "opt-reimplement",
@@ -760,7 +783,7 @@ export async function executeDeliverStage(
               try {
                 await runGitCommand([
                   "-C",
-                  space.repo_path!,
+                  mergeTargetDir,
                   "merge",
                   "--ff-only",
                   `kiln/${plan.taskId}`,
@@ -768,18 +791,18 @@ export async function executeDeliverStage(
               } catch {
                 await runGitCommand([
                   "-C",
-                  space.repo_path!,
+                  mergeTargetDir,
                   "merge",
                   "--no-edit",
                   `kiln/${plan.taskId}`,
                 ]);
               }
               const nextRef = (
-                await runGitCommand(["-C", space.repo_path!, "rev-parse", "HEAD"])
+                await runGitCommand(["-C", mergeTargetDir, "rev-parse", "HEAD"])
               ).trim();
               return { handled: false, deliverRef: nextRef };
             } catch (mergeErr) {
-              await runGitCommand(["-C", space.repo_path!, "merge", "--abort"]).catch(() => {});
+              await runGitCommand(["-C", mergeTargetDir, "merge", "--abort"]).catch(() => {});
               const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
               return await handleMergeConflict(msg);
             }

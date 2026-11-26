@@ -260,6 +260,10 @@ export class KilnPaths {
     return path.join(this.taskDir(taskId), "advisor-request.yaml");
   }
 
+  pendingSubtaskSplitYaml(taskId: string): string {
+    return path.join(this.taskDir(taskId), "pending-subtask-split.yaml");
+  }
+
   decisionsMd(taskId: string): string {
     return path.join(this.taskDir(taskId), "decisions.md");
   }

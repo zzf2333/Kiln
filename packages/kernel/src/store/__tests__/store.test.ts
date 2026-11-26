@@ -1062,4 +1062,82 @@ describe("KilnStore concurrency, contract bump, locks, usage, and isolation", ()
     expect(projectedLegacyRoles.roles.intake?.model).toBe("gemini-3-pro");
     expect(projectedLegacyRoles.roles.worker?.model).toBe("gemini-3-pro");
   });
+
+  it("restores identical queued status, stage, and stepIndex across rebuildIndexFromDisk for Track 6 events", () => {
+    const kilnHome = fs.mkdtempSync(path.join(os.tmpdir(), "kiln-store-track6-rebuild-"));
+    const store = new KilnStore({ kilnHome });
+    try {
+      const cardPatch = makeTaskCard({ id: "t-track6-patch" });
+      store.createTask(cardPatch, "# Patch task");
+      store.appendStateEvent("t-track6-patch", {
+        type: "workflow_patched",
+        at: "2026-11-26T00:01:00.000Z",
+        run_id: "run-adv-1",
+        contract_version: 1,
+        preserved_prefix_steps: 1,
+        new_total_steps: 4,
+        resume_stage: "plan",
+        resume_step_index: 1,
+        rationale: "Need explicit plan before retry",
+      });
+
+      const cardSplit = makeTaskCard({ id: "t-track6-split" });
+      store.createTask(cardSplit, "# Split task");
+      store.appendStateEvent("t-track6-split", {
+        type: "subtasks_spawned",
+        at: "2026-11-26T00:02:00.000Z",
+        run_id: "run-plan-1",
+        contract_version: 1,
+        child_task_ids: ["t-c1", "t-c2"],
+        base_ref_sha: "abc1234",
+        resume_stage: "verify",
+        resume_step_index: 2,
+      });
+
+      const cardFf = makeTaskCard({ id: "t-track6-ff" });
+      store.createTask(cardFf, "# Fast forward task");
+      store.appendStateEvent("t-track6-ff", {
+        type: "stage_fast_forwarded",
+        at: "2026-11-26T00:03:00.000Z",
+        skipped_stage: "review",
+        skipped_step_index: 2,
+        to_stage: "deliver",
+        to_step_index: 4,
+        reason: "docs_only",
+        changed_paths: ["docs/readme.md"],
+      });
+
+      store.rebuildIndexFromDisk();
+
+      const patchState = deriveTaskStatus(
+        store.readTaskCard("t-track6-patch"),
+        store.readStateEvents("t-track6-patch"),
+      );
+      expect(patchState.status).toBe("queued");
+      expect(patchState.stage).toBe("plan");
+      expect(patchState.stepIndex).toBe(1);
+      expect(store.getTaskIndex("t-track6-patch")?.status).toBe("queued");
+
+      const splitState = deriveTaskStatus(
+        store.readTaskCard("t-track6-split"),
+        store.readStateEvents("t-track6-split"),
+      );
+      expect(splitState.status).toBe("queued");
+      expect(splitState.stage).toBe("verify");
+      expect(splitState.stepIndex).toBe(2);
+      expect(store.getTaskIndex("t-track6-split")?.status).toBe("queued");
+
+      const ffState = deriveTaskStatus(
+        store.readTaskCard("t-track6-ff"),
+        store.readStateEvents("t-track6-ff"),
+      );
+      expect(ffState.status).toBe("queued");
+      expect(ffState.stage).toBe("deliver");
+      expect(ffState.stepIndex).toBe(4);
+      expect(store.getTaskIndex("t-track6-ff")?.status).toBe("queued");
+    } finally {
+      store.close();
+      fs.rmSync(kilnHome, { recursive: true, force: true });
+    }
+  });
 });

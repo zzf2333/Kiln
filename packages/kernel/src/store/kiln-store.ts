@@ -305,6 +305,27 @@ export function deriveTaskStatus(
         break;
       case "checkpoint_rolled_back":
         break;
+      case "workflow_patched":
+        status = "queued";
+        stage = event.resume_stage;
+        stepIndex = event.resume_step_index;
+        round = null;
+        activeRunId = null;
+        break;
+      case "subtasks_spawned":
+        status = "queued";
+        stage = event.resume_stage;
+        stepIndex = event.resume_step_index;
+        round = null;
+        activeRunId = null;
+        break;
+      case "stage_fast_forwarded":
+        status = "queued";
+        stage = event.to_stage;
+        stepIndex = event.to_step_index ?? null;
+        round = null;
+        activeRunId = null;
+        break;
     }
   }
 

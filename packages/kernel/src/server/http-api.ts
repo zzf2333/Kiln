@@ -270,6 +270,7 @@ export interface HttpApiDependencies {
   onTaskCancelled?: (taskId: string) => Promise<void> | void;
   onTaskDeleted?: (taskId: string, card: TaskCard) => Promise<void> | void;
   onBeforeDecisionApply?: (taskId: string) => Promise<void> | void;
+  onApproveSubtaskSplit?: (taskId: string, decisionId: string) => Promise<void> | void;
   onSettingsUpdated?: (
     section: "roles" | "limits" | "pricing" | "providers" | "roster",
   ) => Promise<void> | void;
@@ -627,6 +628,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     onTaskCancelled,
     onTaskDeleted,
     onBeforeDecisionApply,
+    onApproveSubtaskSplit,
     onSettingsUpdated,
     getActiveAcceptEnv,
     triggerTaskRetro,
@@ -3012,6 +3014,21 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       (pending.reason === "upstream_cancelled" || pending.category === "upstream_cancelled");
 
     await Promise.resolve(onBeforeDecisionApply?.(taskId));
+
+    if (pending.reason === "subtask_split_approval") {
+      if (selectedOption.id === "opt-approve-subtask-split" && onApproveSubtaskSplit) {
+        await Promise.resolve(onApproveSubtaskSplit(taskId, pending.id));
+        const nextCard = store.readTaskCard(taskId);
+        const nextState = deriveTaskStatus(nextCard, store.readStateEvents(taskId));
+        return c.json({
+          ok: true,
+          taskId,
+          state: nextState,
+          pendingDecision: pendingDecisions.get(taskId),
+        });
+      }
+      fs.rmSync(store.paths.pendingSubtaskSplitYaml(taskId), { force: true });
+    }
 
     const isTokenLimitExceeded =
       pending.reason === "max_tokens_exceeded" || pending.question.includes("max_tokens_exceeded");

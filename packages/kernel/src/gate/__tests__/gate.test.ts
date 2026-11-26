@@ -26,7 +26,9 @@ import {
   cleanupGitWorktree,
   computeFrozenSnapshot,
   detectFrozenFilesChanged,
+  evaluateDeterministicFastForward,
   inspectGitWorktreeChanges,
+  isChildScopeSubsetOfParent,
   isHostTargetWithinScope,
   matchesAnyGlobPattern,
   normalizeRepoRelativePath,
@@ -2301,5 +2303,103 @@ describe("runVerificationGate end-to-end", () => {
     } finally {
       store.close();
     }
+  });
+
+  it("enforces strict structural child scope subset checks (isChildScopeSubsetOfParent)", () => {
+    expect(
+      isChildScopeSubsetOfParent(["packages/kernel/src/server/a.ts"], ["packages/kernel/"]),
+    ).toBe(true);
+    expect(isChildScopeSubsetOfParent(["packages/kernel/src/**"], ["packages/kernel/**"])).toBe(
+      true,
+    );
+    expect(isChildScopeSubsetOfParent(["src/index.ts"], ["src/index.ts"])).toBe(true);
+    expect(isChildScopeSubsetOfParent(["src/foo.ts"], ["src/*.ts"])).toBe(true);
+    // Rejects ** under single-level * wildcard, depth mismatch, and unbalanced braces (fail-closed)
+    expect(isChildScopeSubsetOfParent(["src/**"], ["src/*.ts"])).toBe(false);
+    expect(isChildScopeSubsetOfParent(["src/nested/foo.ts"], ["src/*.ts"])).toBe(false);
+    expect(isChildScopeSubsetOfParent(["src/a.ts", "apps/web/b.ts"], ["src/**"])).toBe(false);
+    expect(isChildScopeSubsetOfParent(["src/{a.ts"], ["src/**"])).toBe(false);
+  });
+
+  it("evaluates 0-Token deterministic fast-forward safely and protects runtime source", () => {
+    expect(
+      evaluateDeterministicFastForward({
+        changedPaths: ["README.md", "docs/workflow-and-protocol.md"],
+        gatePassed: true,
+        frozenFilesChanged: [],
+        humanAccept: false,
+        workspaceMode: "git_worktree",
+      }),
+    ).toEqual({ fastForward: true, reason: "docs_only" });
+
+    expect(
+      evaluateDeterministicFastForward({
+        changedPaths: ["packages/kernel/src/__tests__/sample.test.ts", "evals/review/cases.toml"],
+        gatePassed: true,
+        frozenFilesChanged: [],
+        humanAccept: false,
+        workspaceMode: "git_worktree",
+      }),
+    ).toEqual({ fastForward: true, reason: "tests_only" });
+
+    expect(
+      evaluateDeterministicFastForward({
+        changedPaths: ["packages/protocol/src/card.ts"],
+        gatePassed: true,
+        frozenFilesChanged: [],
+        humanAccept: false,
+        workspaceMode: "git_worktree",
+      }),
+    ).toEqual({ fastForward: false });
+
+    expect(
+      evaluateDeterministicFastForward({
+        changedPaths: ["docs/guide.md"],
+        gatePassed: true,
+        frozenFilesChanged: ["tests/frozen.test.ts"],
+        humanAccept: false,
+        workspaceMode: "git_worktree",
+      }),
+    ).toEqual({ fastForward: false });
+
+    expect(
+      evaluateDeterministicFastForward({
+        changedPaths: ["docs/guide.md"],
+        gatePassed: true,
+        frozenFilesChanged: [],
+        humanAccept: true,
+        workspaceMode: "git_worktree",
+      }),
+    ).toEqual({ fastForward: false });
+
+    expect(
+      evaluateDeterministicFastForward({
+        changedPaths: ["src/app.txt"],
+        gatePassed: true,
+        frozenFilesChanged: [],
+        humanAccept: false,
+        workspaceMode: "git_worktree",
+      }),
+    ).toEqual({ fastForward: false });
+
+    expect(
+      evaluateDeterministicFastForward({
+        changedPaths: ["REVIEW.md"],
+        gatePassed: true,
+        frozenFilesChanged: [],
+        humanAccept: false,
+        workspaceMode: "git_worktree",
+      }),
+    ).toEqual({ fastForward: false });
+
+    expect(
+      evaluateDeterministicFastForward({
+        changedPaths: ["docs/guide.md"],
+        gatePassed: true,
+        frozenFilesChanged: [],
+        humanAccept: false,
+        workspaceMode: "scratch_dir",
+      }),
+    ).toEqual({ fastForward: false });
   });
 });

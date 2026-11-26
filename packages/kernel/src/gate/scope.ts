@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import type { WorkspaceMode } from "@kiln/protocol";
 import { realpathCanonical } from "../store/fs-atomic.js";
 
 export interface ScopeCheckResult {
@@ -540,4 +541,194 @@ export function detectFrozenFilesChanged(
     hashMatched,
     currentSnapshot,
   };
+}
+
+interface ExpandedScopeBranch {
+  normalized: string;
+  isDirectoryOnly: boolean;
+}
+
+function expandScopePatternBranches(rawPattern: string): ExpandedScopeBranch[] {
+  if (typeof rawPattern !== "string") {
+    throw new Error("Invalid scope pattern: expected string");
+  }
+  assertNoControlChars(rawPattern, "scope pattern");
+  const posix = rawPattern.replace(/\\/g, "/");
+  const isDirectoryOnly = posix.endsWith("/");
+  const normalized = normalizeRepoRelativePath(posix);
+  if (normalized.includes("{") && !normalized.includes("}")) {
+    throw new Error(`Invalid scope brace pattern "${rawPattern}"`);
+  }
+  if (normalized.includes("}") && !normalized.includes("{")) {
+    throw new Error(`Invalid scope brace pattern "${rawPattern}"`);
+  }
+  const expanded = expandBraces(normalized);
+  return expanded.map((item) => ({
+    normalized: item,
+    isDirectoryOnly,
+  }));
+}
+
+function isSingleScopeBranchWithinParent(c: ExpandedScopeBranch, p: ExpandedScopeBranch): boolean {
+  if (
+    c.normalized.includes("{") ||
+    c.normalized.includes("}") ||
+    p.normalized.includes("{") ||
+    p.normalized.includes("}")
+  ) {
+    return false;
+  }
+
+  const cSegs = c.normalized.split("/").filter((s) => s.length > 0 && s !== ".");
+  const pSegs = p.normalized.split("/").filter((s) => s.length > 0 && s !== ".");
+
+  const pIsRecursiveTree =
+    p.isDirectoryOnly ||
+    p.normalized === "**" ||
+    (pSegs.length >= 2 &&
+      pSegs[pSegs.length - 1] === "**" &&
+      !hasGlobSyntax(pSegs.slice(0, -1).join("/")));
+
+  if (pIsRecursiveTree) {
+    if (p.normalized === "**") {
+      return true;
+    }
+    const pDir = p.isDirectoryOnly ? p.normalized : pSegs.slice(0, -1).join("/");
+    if (!pDir || hasGlobSyntax(pDir)) {
+      return false;
+    }
+    return c.normalized === pDir || c.normalized.startsWith(`${pDir}/`);
+  }
+
+  if (!p.isDirectoryOnly && !hasGlobSyntax(p.normalized)) {
+    return !c.isDirectoryOnly && !hasGlobSyntax(c.normalized) && c.normalized === p.normalized;
+  }
+
+  if (!p.isDirectoryOnly && hasGlobSyntax(p.normalized) && !pSegs.includes("**")) {
+    if (c.isDirectoryOnly || cSegs.includes("**") || cSegs.length !== pSegs.length) {
+      return false;
+    }
+    for (let i = 0; i < pSegs.length; i++) {
+      const pSeg = pSegs[i]!;
+      const cSeg = cSegs[i]!;
+      if (cSeg === pSeg) {
+        continue;
+      }
+      if (hasGlobSyntax(cSeg) || !compileSegmentRegex(pSeg).test(cSeg)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Strictly checks structural containment of every child scope pattern inside `parentScope`.
+ * Fails closed (`false`) if `parentScope` only allows a single-level wildcard (`*.ts`) while a child
+ * attempts recursive traversal (`**`), or on any unexpanded brace / malformed pattern.
+ */
+export function isChildScopeSubsetOfParent(
+  childScope: readonly string[],
+  parentScope: readonly string[],
+): boolean {
+  if (childScope.length === 0 || parentScope.length === 0) {
+    return false;
+  }
+
+  try {
+    const childBranches: ExpandedScopeBranch[] = [];
+    for (const rawChild of childScope) {
+      childBranches.push(...expandScopePatternBranches(rawChild));
+    }
+    const parentBranches: ExpandedScopeBranch[] = [];
+    for (const rawParent of parentScope) {
+      parentBranches.push(...expandScopePatternBranches(rawParent));
+    }
+    if (childBranches.length === 0 || parentBranches.length === 0) {
+      return false;
+    }
+    return childBranches.every((c) =>
+      parentBranches.some((p) => isSingleScopeBranchWithinParent(c, p)),
+    );
+  } catch {
+    return false;
+  }
+}
+
+const DOCS_ONLY_FAST_FORWARD_PATTERNS = [
+  "**/*.md",
+  "**/*.mdx",
+  "*.md",
+  "*.mdx",
+  "docs/**",
+  "LICENSE*",
+  ".gitignore",
+] as const;
+
+const TESTS_ONLY_FAST_FORWARD_PATTERNS = [
+  "**/*.test.ts",
+  "**/*.test.tsx",
+  "**/*.test.js",
+  "**/*.test.mjs",
+  "**/*.spec.ts",
+  "**/*.spec.tsx",
+  "**/__tests__/**",
+  "evals/**",
+] as const;
+
+export interface EvaluateDeterministicFastForwardInput {
+  changedPaths: readonly string[];
+  gatePassed: boolean;
+  frozenFilesChanged: readonly string[];
+  humanAccept: boolean;
+  workspaceMode: WorkspaceMode;
+}
+
+export type EvaluateDeterministicFastForwardResult =
+  | { fastForward: false }
+  | { fastForward: true; reason: "docs_only" | "tests_only" };
+
+/**
+ * Deterministically detects whether verified physical file changes qualify for 0-Token
+ * stage fast-forwarding (`docs_only` or `tests_only`), never skipping runtime `packages/protocol/src/**`.
+ */
+export function evaluateDeterministicFastForward(
+  input: EvaluateDeterministicFastForwardInput,
+): EvaluateDeterministicFastForwardResult {
+  if (
+    !input.gatePassed ||
+    input.frozenFilesChanged.length > 0 ||
+    input.humanAccept ||
+    input.changedPaths.length === 0 ||
+    input.workspaceMode !== "git_worktree"
+  ) {
+    return { fastForward: false };
+  }
+
+  const normalizedPaths: string[] = [];
+  for (const raw of input.changedPaths) {
+    try {
+      normalizedPaths.push(normalizeRepoRelativePath(raw));
+    } catch {
+      return { fastForward: false };
+    }
+  }
+
+  if (
+    normalizedPaths.every(
+      (p) =>
+        matchesAnyGlobPattern(p, DOCS_ONLY_FAST_FORWARD_PATTERNS) &&
+        !matchesAnyGlobPattern(p, ["evals/**", "REVIEW.md"]),
+    )
+  ) {
+    return { fastForward: true, reason: "docs_only" };
+  }
+
+  if (normalizedPaths.every((p) => matchesAnyGlobPattern(p, TESTS_ONLY_FAST_FORWARD_PATTERNS))) {
+    return { fastForward: true, reason: "tests_only" };
+  }
+
+  return { fastForward: false };
 }
