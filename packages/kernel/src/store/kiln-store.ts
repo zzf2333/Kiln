@@ -1347,6 +1347,78 @@ export class KilnStore {
     fs.rmSync(this.paths.taskDir(safeTaskId), { recursive: true, force: true });
   }
 
+  /**
+   * Permanently deletes a task's disk directory, host backups, and workspace.
+   * Preserves historical usage telemetry in `chat-usage.ndjson` / `usage_turns` by default
+   * so billing totals survive `rebuildIndexFromDisk()`, unless `purgeUsage: true`.
+   */
+  deleteTask(
+    taskId: string,
+    options?: { purgeUsage?: boolean },
+  ): {
+    deleted: true;
+    purgedUsage: boolean;
+  } {
+    const safeTaskId = assertSafeSegment(taskId, "taskId");
+    const purgeUsage = options?.purgeUsage === true;
+
+    if (purgeUsage) {
+      if (fs.existsSync(this.paths.chatUsageNdjson)) {
+        const remaining = readNdjsonValidated(
+          this.paths.chatUsageNdjson,
+          ChatUsageDiskEntrySchema,
+        ).filter((entry) => entry.task_id !== safeTaskId);
+        if (remaining.length === 0) {
+          fs.rmSync(this.paths.chatUsageNdjson, { force: true });
+        } else {
+          writeFileAtomic(
+            this.paths.chatUsageNdjson,
+            remaining.map((entry) => JSON.stringify(entry)).join("\n") + "\n",
+          );
+        }
+      }
+    } else {
+      const existingKeys = new Set<string>();
+      if (fs.existsSync(this.paths.chatUsageNdjson)) {
+        for (const entry of readNdjsonValidated(
+          this.paths.chatUsageNdjson,
+          ChatUsageDiskEntrySchema,
+        )) {
+          if (entry.event.kind === "usage") {
+            existingKeys.add(`${entry.run_id}\0${entry.event.turnId}`);
+          }
+        }
+      }
+      const runs = scanTaskRuns(this.paths, safeTaskId);
+      for (const run of runs) {
+        if (!run.runMeta) continue;
+        for (const ev of run.events) {
+          if (ev.kind !== "usage") continue;
+          const dedupeKey = `${run.runMeta.run_id}\0${ev.turnId}`;
+          if (existingKeys.has(dedupeKey)) continue;
+          existingKeys.add(dedupeKey);
+          const diskEntry = ChatUsageDiskEntrySchema.parse({
+            run_id: run.runMeta.run_id,
+            task_id: safeTaskId,
+            stage: run.runMeta.stage ?? null,
+            roster_role: run.runMeta.roster_role ?? null,
+            session_reused: Boolean(run.runMeta.session_reused),
+            event: ev,
+          });
+          ensureDir(this.paths.usageDir);
+          appendNdjsonLine(this.paths.chatUsageNdjson, diskEntry);
+        }
+      }
+    }
+
+    this.sqlite.deleteTaskIndex(safeTaskId, { purgeUsage });
+    fs.rmSync(this.paths.taskDir(safeTaskId), { recursive: true, force: true });
+    fs.rmSync(this.paths.backupDir(safeTaskId), { recursive: true, force: true });
+    fs.rmSync(this.paths.workspaceDir(safeTaskId), { recursive: true, force: true });
+
+    return { deleted: true, purgedUsage: purgeUsage };
+  }
+
   close(): void {
     if (this._sqlite) {
       this._sqlite.close();

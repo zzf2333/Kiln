@@ -65,6 +65,7 @@ import {
   type SyncPricingRequest,
   type SyncPricingResponse,
   type TailscaleStatusResponse,
+  type TaskCard,
   type TaskRetroReport,
 } from "@kiln/protocol";
 import {
@@ -267,6 +268,7 @@ export interface HttpApiDependencies {
     interrupted: boolean;
   }>;
   onTaskCancelled?: (taskId: string) => Promise<void> | void;
+  onTaskDeleted?: (taskId: string, card: TaskCard) => Promise<void> | void;
   onBeforeDecisionApply?: (taskId: string) => Promise<void> | void;
   onSettingsUpdated?: (
     section: "roles" | "limits" | "pricing" | "providers" | "roster",
@@ -623,6 +625,7 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
     onTaskPaused,
     onTaskSteered,
     onTaskCancelled,
+    onTaskDeleted,
     onBeforeDecisionApply,
     onSettingsUpdated,
     getActiveAcceptEnv,
@@ -2816,6 +2819,51 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       taskId,
       state: result.state,
       waitingDownstreamTaskIds: result.waitingDownstreamTaskIds,
+    });
+  });
+
+  app.delete("/api/tasks/:id", async (c) => {
+    const taskId = requireExistingTask(c.req.param("id"));
+    const card = store.readTaskCard(taskId);
+    const derived = deriveTaskStatus(card, store.readStateEvents(taskId));
+    if (derived.status === "running") {
+      throw new ServerHttpError(409, {
+        error: "task_running",
+        taskId,
+        message: `任务 "${taskId}" 正在运行中，请先暂停或取消后再删除`,
+      });
+    }
+
+    const dependentTaskIds = store
+      .listTasks()
+      .filter((row) => row.id !== taskId && store.readTaskCard(row.id).depends_on.includes(taskId))
+      .map((row) => row.id);
+    if (dependentTaskIds.length > 0) {
+      throw new ServerHttpError(409, {
+        error: "task_has_dependents",
+        taskId,
+        dependentTaskIds,
+        message: `任务 "${taskId}" 被下游任务（${dependentTaskIds.join(", ")}）依赖，请先解除或清理下游任务后再删除`,
+      });
+    }
+
+    const rawPurge = c.req.query("purge_usage");
+    const purgeUsage = rawPurge === "true" || rawPurge === "1";
+
+    await Promise.resolve(onTaskDeleted?.(taskId, card));
+    pendingDecisions.remove(taskId);
+    const res = store.deleteTask(taskId, { purgeUsage });
+    caffeinate.syncRunningCount(countRunningLeafTasks(store));
+    sseHub.publish({
+      type: "task.deleted",
+      taskId,
+    });
+
+    return c.json({
+      ok: true,
+      deleted: true,
+      id: taskId,
+      purgedUsage: res.purgedUsage,
     });
   });
 

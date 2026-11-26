@@ -344,6 +344,16 @@ export async function cancelTask(taskId: string, reason?: string): Promise<void>
   });
 }
 
+export async function deleteTask(
+  taskId: string,
+  options?: { purgeUsage?: boolean },
+): Promise<{ ok: true; deleted: true; id: string; purgedUsage: boolean }> {
+  const qs = options?.purgeUsage ? "?purge_usage=true" : "";
+  return await requestJson(`/api/tasks/${encodeURIComponent(taskId)}${qs}`, {
+    method: "DELETE",
+  });
+}
+
 export async function updatePriority(
   taskId: string,
   priority: Priority,
@@ -933,6 +943,7 @@ export function subscribeSseEvents(handlers: SseSubscriptionHandlers): () => voi
 
   const eventTypes: SseEvent["type"][] = [
     "task.updated",
+    "task.deleted",
     "rate.tick",
     "decision.requested",
     "run.event",

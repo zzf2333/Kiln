@@ -3643,4 +3643,137 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     expect(committed.ok).toBe(true);
     expect(committed.card.contract.accept_files_hash).toBe("pending");
   });
+
+  it("DELETE /api/tasks/:id enforces running/dependent guards, emits task.deleted, and preserves or purges usage", async () => {
+    const kilnHome = makeTempDir();
+    tempDirs.push(kilnHome);
+    const server = new KilndServer({
+      kilnHome,
+      port: 0,
+      tokenSecret: "delete-task-secret-0123456789abc",
+    });
+    servers.push(server);
+    await server.start();
+
+    const sseEvents: SseEvent[] = [];
+    const unsubscribe = server.sseHub.subscribe((ev) => sseEvents.push(ev));
+
+    const parentCard = makeTaskCard({ id: "t-del-parent", title: "Parent task" });
+    const childCard = makeTaskCard({
+      id: "t-del-child",
+      title: "Dependent child",
+      depends_on: ["t-del-parent"],
+    });
+    const purgeCard = makeTaskCard({ id: "t-del-purge", title: "Purge task" });
+    server.store.createTask(parentCard, "# Parent");
+    server.store.createTask(childCard, "# Child");
+    server.store.createTask(purgeCard, "# Purge");
+
+    server.store.persistRunBeforeDispatch(
+      makeRunMeta({ task_id: parentCard.id, run_id: "run-del-parent" }),
+      "001-implement",
+    );
+    server.store.recordRunEvent(parentCard.id, "001-implement", {
+      kind: "usage",
+      at: "2026-11-26T01:00:00.000Z",
+      turnId: "turn-keep-1",
+      agent: "codex",
+      model: "gpt-5.4",
+      inputTokens: 1_000,
+      cachedInputTokens: 200,
+      outputTokens: 100,
+    });
+
+    // 1. Running task -> 409 task_running
+    const runningRes = await requestHttp(server, `/api/tasks/${parentCard.id}`, {
+      method: "DELETE",
+    });
+    expect(runningRes.status).toBe(409);
+    expect((await readJson(runningRes)).error).toBe("task_running");
+
+    // 2. Cancel parent -> now stopped, but child still depends on it -> 409 task_has_dependents
+    const cancelRes = await requestHttp(server, `/api/tasks/${parentCard.id}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: "test cancel" }),
+    });
+    expect(cancelRes.status).toBe(200);
+
+    const depRes = await requestHttp(server, `/api/tasks/${parentCard.id}`, {
+      method: "DELETE",
+    });
+    expect(depRes.status).toBe(409);
+    expect((await readJson(depRes)).error).toBe("task_has_dependents");
+
+    // Record usage on purgeCard before deleting child and purgeCard
+    server.store.persistRunBeforeDispatch(
+      makeRunMeta({ task_id: purgeCard.id, run_id: "run-del-purge" }),
+      "001-implement",
+    );
+    server.store.recordRunEvent(purgeCard.id, "001-implement", {
+      kind: "usage",
+      at: "2026-11-26T01:05:00.000Z",
+      turnId: "turn-purge-1",
+      agent: "codex",
+      model: "gpt-5.4",
+      inputTokens: 2_000,
+      cachedInputTokens: 0,
+      outputTokens: 200,
+    });
+    await requestHttp(server, `/api/tasks/${purgeCard.id}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: "test cancel purge" }),
+    });
+
+    // Delete child first, then parent with default usage preservation
+    const delChildRes = await requestHttp(server, `/api/tasks/${childCard.id}`, {
+      method: "DELETE",
+    });
+    expect(delChildRes.status).toBe(200);
+
+    ensureDir(server.store.paths.workspaceDir(parentCard.id));
+    ensureDir(server.store.paths.backupDir(parentCard.id));
+    const delParentRes = await requestHttp(server, `/api/tasks/${parentCard.id}`, {
+      method: "DELETE",
+    });
+    expect(delParentRes.status).toBe(200);
+    expect(await readJson(delParentRes)).toEqual({
+      ok: true,
+      deleted: true,
+      id: parentCard.id,
+      purgedUsage: false,
+    });
+    expect(fs.existsSync(server.store.paths.taskDir(parentCard.id))).toBe(false);
+    expect(fs.existsSync(server.store.paths.workspaceDir(parentCard.id))).toBe(false);
+    expect(fs.existsSync(server.store.paths.backupDir(parentCard.id))).toBe(false);
+    expect(sseEvents.some((ev) => ev.type === "task.deleted" && ev.taskId === parentCard.id)).toBe(
+      true,
+    );
+
+    // Default delete preserves usage across SQLite rebuild
+    server.store.rebuildIndexFromDisk();
+    let turns = server.store.listUsageTurns();
+    expect(turns.some((t) => t.task_id === parentCard.id && t.turn_id === "turn-keep-1")).toBe(
+      true,
+    );
+
+    // Explicit ?purge_usage=true removes usage from both chat-usage.ndjson and usage_turns
+    const delPurgeRes = await requestHttp(server, `/api/tasks/${purgeCard.id}?purge_usage=true`, {
+      method: "DELETE",
+    });
+    expect(delPurgeRes.status).toBe(200);
+    expect(await readJson(delPurgeRes)).toEqual({
+      ok: true,
+      deleted: true,
+      id: purgeCard.id,
+      purgedUsage: true,
+    });
+    server.store.rebuildIndexFromDisk();
+    turns = server.store.listUsageTurns();
+    expect(turns.some((t) => t.task_id === purgeCard.id)).toBe(false);
+    expect(turns.some((t) => t.task_id === parentCard.id)).toBe(true);
+
+    unsubscribe();
+  });
 });

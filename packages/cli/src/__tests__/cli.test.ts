@@ -2039,4 +2039,86 @@ describe("@kiln/cli", () => {
     expect(readNewLogTail(logFile, offset, 19)).toBe("named pipe failure");
     expect(readNewLogTail(path.join(docRoot, "missing.log"), 0)).toBe("");
   });
+
+  it("supports `kiln rm` in online and offline modes with safety checks and --purge-usage", async () => {
+    const h = makeTestHarness("kiln-cli-rm-");
+    await h.server.start();
+    const fetchImpl = createInProcessFetch(h.server);
+
+    const tDone = makeTaskCard({ id: "t-cli-rm-1", title: "Delete online task" });
+    const tDepParent = makeTaskCard({ id: "t-cli-rm-parent", title: "Dep parent" });
+    const tDepChild = makeTaskCard({
+      id: "t-cli-rm-child",
+      title: "Dep child",
+      depends_on: ["t-cli-rm-parent"],
+    });
+    const tRun = makeTaskCard({ id: "t-cli-rm-run", title: "Running task" });
+
+    h.server.store.createTask(tDone, "# Done brief");
+    h.server.store.createTask(tDepParent, "# Parent brief");
+    h.server.store.createTask(tDepChild, "# Child brief");
+    h.server.store.createTask(tRun, "# Running brief");
+    h.server.store.persistRunBeforeDispatch(
+      makeRunMeta({ task_id: tRun.id, run_id: "run-rm-active" }),
+      "001-implement",
+    );
+
+    const missingOnline = await runCli(["rm", "t-missing"], {
+      kilnHome: h.kilnHome,
+      fetchImpl,
+      isDaemonRunning: () => true,
+    });
+    expect(missingOnline.exitCode).toBe(1);
+
+    const runningOnline = await runCli(["rm", tRun.id], {
+      kilnHome: h.kilnHome,
+      fetchImpl,
+      isDaemonRunning: () => true,
+    });
+    expect(runningOnline.exitCode).toBe(1);
+    expect(runningOnline.stderr).toContain("正在运行中");
+
+    const okOnline = await runCli(["rm", tDone.id, "--json"], {
+      kilnHome: h.kilnHome,
+      fetchImpl,
+      isDaemonRunning: () => true,
+    });
+    expect(okOnline.exitCode).toBe(0);
+    expect(okOnline.data).toEqual({
+      deleted: true,
+      id: tDone.id,
+      purgedUsage: false,
+      mode: "online",
+    });
+    expect(fs.existsSync(h.server.store.paths.taskDir(tDone.id))).toBe(false);
+
+    await h.server.stop();
+
+    const blockedParentOffline = await runCli(["rm", tDepParent.id], {
+      kilnHome: h.kilnHome,
+      isDaemonRunning: () => false,
+    });
+    expect(blockedParentOffline.exitCode).toBe(1);
+    expect(blockedParentOffline.stderr).toContain("depended on by downstream task(s)");
+
+    const blockedRunningOffline = await runCli(["rm", tRun.id], {
+      kilnHome: h.kilnHome,
+      isDaemonRunning: () => false,
+    });
+    expect(blockedRunningOffline.exitCode).toBe(1);
+    expect(blockedRunningOffline.stderr).toContain("Cannot remove running task");
+
+    const okOffline = await runCli(["rm", tDepChild.id, "--purge-usage", "--json"], {
+      kilnHome: h.kilnHome,
+      isDaemonRunning: () => false,
+    });
+    expect(okOffline.exitCode).toBe(0);
+    expect(okOffline.data).toEqual({
+      deleted: true,
+      id: tDepChild.id,
+      purgedUsage: true,
+      mode: "offline",
+    });
+    expect(fs.existsSync(path.join(h.kilnHome, "tasks", tDepChild.id))).toBe(false);
+  });
 });

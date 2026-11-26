@@ -757,6 +757,24 @@ export function DetailView() {
               取消
             </button>
           ) : null}
+          {taskState.status !== "running" ? (
+            <button
+              type="button"
+              className="btn btn-danger"
+              onClick={() => {
+                if (
+                  typeof window === "undefined" ||
+                  window.confirm(
+                    `确认删除任务「${card.title}」(${card.id})？工作区与历史回执将一并移除。`,
+                  )
+                ) {
+                  void store.deleteTask(card.id);
+                }
+              }}
+            >
+              删除
+            </button>
+          ) : null}
         </>
       }
     >

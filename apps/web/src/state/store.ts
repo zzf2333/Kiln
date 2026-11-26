@@ -52,6 +52,7 @@ import {
   deleteDraft as apiDeleteDraft,
   deleteDraftAttachment as apiDeleteDraftAttachment,
   deleteSpace as apiDeleteSpace,
+  deleteTask as apiDeleteTask,
   detectProviders as apiDetectProviders,
   discoverSpaces as apiDiscoverSpaces,
   executeGitDeliver as apiExecuteGitDeliver,
@@ -1918,6 +1919,28 @@ export class KilnWebStore {
       return;
     }
 
+    if (event.type === "task.deleted") {
+      const nextTasks = this.state.tasks.filter((t) => t.id !== event.taskId);
+      const nextPending = this.state.pendingDecisions.filter((d) => d.task_id !== event.taskId);
+      const nextDetails = { ...this.state.taskDetails };
+      delete nextDetails[event.taskId];
+      const viewingDeleted =
+        this.state.taskId === event.taskId &&
+        (this.state.view === "detail" || this.state.view === "resolve");
+      this.setState({
+        tasks: nextTasks,
+        pendingDecisions: nextPending,
+        taskDetails: nextDetails,
+        runningCount: computeRunningLeafCount(nextTasks),
+        ...(viewingDeleted ? { view: "board", taskId: null } : {}),
+      });
+      if (viewingDeleted && typeof window !== "undefined") {
+        window.location.hash = "";
+      }
+      void this.bootstrap();
+      return;
+    }
+
     if (event.type === "decision.requested") {
       void this.bootstrap();
       if (this.state.taskId === event.taskId) {
@@ -2610,6 +2633,33 @@ export class KilnWebStore {
       }
     } catch (err) {
       this.showToast(err instanceof Error ? err.message : "取消任务失败");
+    }
+  }
+
+  async deleteTask(taskId: string, options?: { purgeUsage?: boolean }): Promise<boolean> {
+    try {
+      await apiDeleteTask(taskId, options);
+      const nextDetails = { ...this.state.taskDetails };
+      delete nextDetails[taskId];
+      const nextTasks = this.state.tasks.filter((t) => t.id !== taskId);
+      const nextPending = this.state.pendingDecisions.filter((d) => d.task_id !== taskId);
+      const viewingDeleted = this.state.taskId === taskId;
+      this.setState({
+        tasks: nextTasks,
+        pendingDecisions: nextPending,
+        taskDetails: nextDetails,
+        runningCount: computeRunningLeafCount(nextTasks),
+        ...(viewingDeleted ? { view: "board", taskId: null } : {}),
+      });
+      if (viewingDeleted && typeof window !== "undefined") {
+        window.location.hash = "";
+      }
+      this.showToast("已删除任务");
+      await this.bootstrap();
+      return true;
+    } catch (err) {
+      this.showToast(err instanceof Error ? err.message : "删除任务失败");
+      return false;
     }
   }
 

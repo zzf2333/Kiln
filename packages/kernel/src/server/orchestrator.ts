@@ -53,6 +53,7 @@ import {
 } from "../backend/index.js";
 import {
   checkScope,
+  cleanupTaskCheckpoints,
   computeFrozenSnapshot,
   createGitWorktreeCheckpoint,
   isHostTargetWithinScope,
@@ -735,6 +736,30 @@ export class KilnOrchestrator {
       await op.promise.catch(() => {});
       if (this.inFlightOperations.get(safeTaskId)?.runId === op.runId) {
         this.inFlightOperations.delete(safeTaskId);
+      }
+    }
+  }
+
+  async cleanupDeletedTask(taskId: string, card: TaskCard): Promise<void> {
+    const safeTaskId = assertSafeSegment(taskId, "taskId");
+    this.rateTracker.clearTask(safeTaskId);
+    this.warmPool.evictTask(safeTaskId);
+    await this.stopAcceptEnv(safeTaskId).catch(() => {});
+    this.activeAcceptEnvConfigs.delete(safeTaskId);
+    if (card.workspace_mode === "git_worktree") {
+      const space = this.store.readSpace(card.space);
+      if (space?.repo_path && fs.existsSync(space.repo_path)) {
+        const worktreeDir = this.getGitWorktreeDir(safeTaskId);
+        if (fs.existsSync(worktreeDir)) {
+          await runGitCommand(
+            ["worktree", "remove", "--force", worktreeDir],
+            space.repo_path,
+          ).catch(() => "");
+        }
+        await runGitCommand(["branch", "-D", `kiln/${safeTaskId}`], space.repo_path).catch(
+          () => "",
+        );
+        await cleanupTaskCheckpoints(space.repo_path, safeTaskId).catch(() => 0);
       }
     }
   }

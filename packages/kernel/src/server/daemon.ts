@@ -387,6 +387,9 @@ export class KilndServer {
         this.orchestrator.handleTaskTerminatedRetro(taskId);
         void this.orchestrator.wake();
       },
+      onTaskDeleted: async (taskId, card) => {
+        await this.orchestrator.cleanupDeletedTask(taskId, card);
+      },
       triggerTaskRetro: (taskId, useAi) => this.orchestrator.triggerTaskRetro(taskId, { useAi }),
       onBeforeDecisionApply: async (taskId) => {
         await this.orchestrator.abortActiveRun(taskId);

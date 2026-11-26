@@ -6258,4 +6258,171 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       "2. 需要额外保护哪些目录？：选 A、B（保留 Raycast；保留 OrbStack）",
     );
   });
+
+  it("deletes non-running task from DetailView and handles task.deleted SSE events", async () => {
+    const originalConfirm = window.confirm;
+    const confirmMock = vi.fn(() => true);
+    Object.defineProperty(window, "confirm", {
+      value: confirmMock,
+      configurable: true,
+      writable: true,
+    });
+    let deletedCalled = false;
+    let sseDeleted = false;
+    const baseBootstrap = makeBaseBootstrap({
+      tasks: [
+        {
+          id: "t-del-ui",
+          space: "local",
+          parent_id: null,
+          title: "待删除的本地任务",
+          priority: "P2",
+          effective_priority: "P2",
+          track: "L1",
+          workspace_mode: "host_scoped",
+          status: "waiting",
+          stage: "deliver",
+          round: 1,
+          active_run_id: null,
+          contract_version: 1,
+          depends_on: [],
+          created_at: "2026-11-25T05:00:00.000Z",
+          updated_at: "2026-11-25T05:00:00.000Z",
+          tokens: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+          cost_usd: 0,
+        },
+        {
+          id: "t-sse-del",
+          space: "local",
+          parent_id: null,
+          title: "SSE 删除目标",
+          priority: "P2",
+          effective_priority: "P2",
+          track: "L1",
+          workspace_mode: "host_scoped",
+          status: "done",
+          stage: "deliver",
+          round: 1,
+          active_run_id: null,
+          contract_version: 1,
+          depends_on: [],
+          created_at: "2026-11-25T05:00:00.000Z",
+          updated_at: "2026-11-25T05:00:00.000Z",
+          tokens: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+          cost_usd: 0,
+        },
+      ],
+    });
+
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof Request ? input.url : "";
+      if (url === "/api/bootstrap") {
+        return jsonResponse(
+          deletedCalled
+            ? makeBaseBootstrap({ tasks: sseDeleted ? [] : [baseBootstrap.tasks[1]!] })
+            : baseBootstrap,
+        );
+      }
+      if (url === "/api/tasks/t-del-ui" && init?.method === "DELETE") {
+        deletedCalled = true;
+        return jsonResponse({ ok: true, deleted: true, id: "t-del-ui", purgedUsage: false });
+      }
+      if (url === "/api/tasks/t-del-ui" && (!init?.method || init.method === "GET")) {
+        return jsonResponse({
+          card: {
+            schema_version: 1,
+            id: "t-del-ui",
+            title: "待删除的本地任务",
+            space: "local",
+            priority: "P2",
+            track: "L1",
+            workspace_mode: "host_scoped",
+            parent: null,
+            depends_on: [],
+            contract_version: 1,
+            contract: {
+              goal: "Cleanup",
+              end: "Done",
+              accept_cmd: "echo ok",
+              accept_files_hash: "pending",
+              scope: ["/tmp/cleanup"],
+              deliver: { mode: "manual", cmd: null },
+              human_accept: false,
+              external_actions: "ask",
+            },
+            limits: {
+              retries_per_stage: 2,
+              review_rounds: 2,
+              advisor_calls: 1,
+              max_tokens: 250000,
+            },
+            created_at: "2026-11-25T05:00:00.000Z",
+            updated_at: "2026-11-25T05:00:00.000Z",
+          },
+          state: {
+            status: "waiting",
+            stage: "deliver",
+            round: 1,
+            activeRunId: null,
+            priority: "P2",
+            effectivePriority: "P2",
+            track: "L1",
+            contractVersion: 1,
+            updatedAt: "2026-11-25T05:00:00.000Z",
+          },
+          brief: "# Brief",
+          decisions: "",
+          pendingDecision: null,
+          ledgerProposals: [],
+          runs: [],
+          usageTurns: [],
+          usage: {
+            totals: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+            byModel: {},
+            todayCostUsd: 0,
+            totalCostUsd: 0,
+          },
+          chatMessages: [],
+        });
+      }
+      if (url.includes("/api/tasks/t-del-ui/chat")) {
+        return jsonResponse({ messages: [] });
+      }
+      if (url.includes("/api/chat/commands")) {
+        return jsonResponse({ commands: [], mcpServers: [] });
+      }
+      return jsonResponse({});
+    });
+
+    render(<App />);
+    const cardTitle = await screen.findByText("待删除的本地任务");
+    fireEvent.click(cardTitle);
+
+    const deleteBtn = await screen.findByRole("button", { name: "删除" });
+    fireEvent.click(deleteBtn);
+
+    await waitFor(() => {
+      expect(confirmMock).toHaveBeenCalledTimes(1);
+      expect(deletedCalled).toBe(true);
+      expect(screen.queryByText("待删除的本地任务")).toBeNull();
+    });
+
+    expect(screen.getByText("SSE 删除目标")).toBeTruthy();
+    sseDeleted = true;
+    const es = MockEventSource.instances.at(-1)!;
+    es.emit("task.deleted", {
+      seq: 301,
+      type: "task.deleted",
+      taskId: "t-sse-del",
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText("SSE 删除目标")).toBeNull();
+    });
+    Object.defineProperty(window, "confirm", {
+      value: originalConfirm,
+      configurable: true,
+      writable: true,
+    });
+  });
 });

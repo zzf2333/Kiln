@@ -360,14 +360,22 @@ export class KilnSqliteIndex {
     });
   }
 
-  deleteTaskIndex(id: string): void {
+  deleteTaskIndex(id: string, options?: { purgeUsage?: boolean }): void {
+    const sqls =
+      options?.purgeUsage === false
+        ? [
+            `DELETE FROM stage_leases WHERE task_id = ?`,
+            `DELETE FROM host_path_locks WHERE task_id = ?`,
+            `DELETE FROM tasks_index WHERE id = ?`,
+          ]
+        : [
+            `DELETE FROM stage_leases WHERE task_id = ?`,
+            `DELETE FROM host_path_locks WHERE task_id = ?`,
+            `DELETE FROM usage_turns WHERE task_id = ?`,
+            `DELETE FROM tasks_index WHERE id = ?`,
+          ];
     this.db.transaction(() => {
-      for (const sql of [
-        `DELETE FROM stage_leases WHERE task_id = ?`,
-        `DELETE FROM host_path_locks WHERE task_id = ?`,
-        `DELETE FROM usage_turns WHERE task_id = ?`,
-        `DELETE FROM tasks_index WHERE id = ?`,
-      ]) {
+      for (const sql of sqls) {
         const stmt = this.db.prepare(sql);
         try {
           stmt.run(id);

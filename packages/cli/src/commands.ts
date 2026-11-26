@@ -223,6 +223,7 @@ const GLOBAL_HELP = [
   "        [--track <L1|L2>] [--mode <mode>] [--id <id>]",
   "  decide [task-id] [--option <id>] [--rationale <t>] List or submit pending decisions",
   "        [--apply-ledger] [--decision <id>]",
+  "  rm <task-id> [--purge-usage] [--json]               Delete a non-running task (preserves usage by default)",
   "  space <list|add|rm> [args]                         Manage project spaces",
   "  remote <status|enable|disable|pair|devices|revoke|tailscale>",
   "                                                     Manage tunnel-agnostic remote mobile access",
@@ -262,6 +263,7 @@ const COMMAND_HELP: Record<string, string> = {
     "  kiln remote tailscale [--port <port>] [--host <host>] [--json]",
   ].join("\n"),
   doctor: "Usage: kiln doctor [--port <port>] [--host <host>] [--json]",
+  rm: "Usage: kiln rm <task-id> [--purge-usage] [--port <port>] [--host <host>] [--json]",
   service:
     "Usage: kiln service <install|uninstall|status> [--platform <darwin|linux|win32>] [--label <label>] [--service-name <name>]",
   uninstall: "Usage: kiln uninstall [--purge-data] [--platform <darwin|linux|win32>]",
@@ -1901,6 +1903,147 @@ async function handleSpace(
   );
 }
 
+async function handleRm(
+  args: readonly string[],
+  options: CliRuntimeOptions,
+  io: ReturnType<typeof createOutputCollector>,
+): Promise<CliRunResult> {
+  const parsed = parseArgs({
+    args: [...args],
+    options: {
+      "purge-usage": { type: "boolean", default: false },
+      port: { type: "string", short: "p" },
+      host: { type: "string" },
+      json: { type: "boolean", default: false },
+      help: { type: "boolean", short: "h", default: false },
+    },
+    strict: true,
+    allowPositionals: true,
+  });
+
+  if (parsed.values.help) {
+    io.out(COMMAND_HELP.rm!);
+    return { exitCode: 0, stdout: io.getStdout(), stderr: io.getStderr() };
+  }
+
+  if (parsed.positionals.length !== 1) {
+    throw new CliUsageError("rm requires <task-id>", COMMAND_HELP.rm);
+  }
+  const taskId = parseSafeCliSegment(parsed.positionals[0]!, "taskId", COMMAND_HELP.rm);
+  const purgeUsage = Boolean(parsed.values["purge-usage"]);
+
+  const kilnHome = resolveCliKilnHome(options);
+  const host = parseHostValue(parsed.values.host, options.host);
+  const port = parsePortValue(parsed.values.port, options.port ?? DEFAULT_KILND_PORT, false);
+  const baseUrl = buildBaseUrl(host, port);
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  const explicitRunning = options.isDaemonRunning ? await options.isDaemonRunning() : null;
+
+  if (explicitRunning !== false) {
+    let res: Response | null = null;
+    try {
+      res = await fetchWithTimeout(
+        fetchImpl,
+        `${baseUrl}/api/tasks/${encodeURIComponent(taskId)}${purgeUsage ? "?purge_usage=true" : ""}`,
+        { method: "DELETE" },
+        API_TIMEOUT_MS,
+      );
+    } catch {
+      res = null;
+    }
+
+    if (res !== null) {
+      if (!res.ok) {
+        io.err(`Failed to remove task "${taskId}": ${await readErrorMessage(res)}`);
+        return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+      }
+      const body = (await res.json()) as { purgedUsage?: boolean };
+      const resolvedPurge = body.purgedUsage ?? purgeUsage;
+      if (parsed.values.json) {
+        io.out(
+          JSON.stringify(
+            { deleted: true, id: taskId, purgedUsage: resolvedPurge, mode: "online" },
+            null,
+            2,
+          ),
+        );
+      } else {
+        io.out(
+          `Removed task "${taskId}" (online${resolvedPurge ? ", usage purged" : ", usage preserved"}).`,
+        );
+      }
+      return {
+        exitCode: 0,
+        stdout: io.getStdout(),
+        stderr: io.getStderr(),
+        data: { deleted: true, id: taskId, purgedUsage: resolvedPurge, mode: "online" },
+      };
+    }
+  }
+
+  const store = new KilnStore({ kilnHome });
+  try {
+    const existing = store.listTasks().find((row) => row.id === taskId);
+    if (!existing) {
+      io.err(`Task "${taskId}" does not exist`);
+      return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+    }
+    const card = store.readTaskCard(taskId);
+    const derived = deriveTaskStatus(card, store.readStateEvents(taskId));
+    if (derived.status === "running") {
+      io.err(`Cannot remove running task "${taskId}"; pause or cancel it first`);
+      return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+    }
+    const dependentTaskIds = store
+      .listTasks()
+      .filter((row) => row.id !== taskId && store.readTaskCard(row.id).depends_on.includes(taskId))
+      .map((row) => row.id);
+    if (dependentTaskIds.length > 0) {
+      io.err(
+        `Cannot remove task "${taskId}": depended on by downstream task(s) (${dependentTaskIds.join(", ")})`,
+      );
+      return { exitCode: 1, stdout: io.getStdout(), stderr: io.getStderr() };
+    }
+    if (card.workspace_mode === "git_worktree") {
+      const space = store.readSpace(card.space);
+      if (space?.repo_path && fs.existsSync(space.repo_path)) {
+        const worktreeDir = store.paths.workspaceDir(taskId);
+        if (fs.existsSync(worktreeDir)) {
+          await execFileAsync("git", ["worktree", "remove", "--force", worktreeDir], {
+            cwd: space.repo_path,
+          }).catch(() => {});
+        }
+        await execFileAsync("git", ["branch", "-D", `kiln/${taskId}`], {
+          cwd: space.repo_path,
+        }).catch(() => {});
+      }
+    }
+    new PendingDecisionStore(store).remove(taskId);
+    const deleted = store.deleteTask(taskId, { purgeUsage });
+    if (parsed.values.json) {
+      io.out(
+        JSON.stringify(
+          { deleted: true, id: taskId, purgedUsage: deleted.purgedUsage, mode: "offline" },
+          null,
+          2,
+        ),
+      );
+    } else {
+      io.out(
+        `Removed task "${taskId}" (offline${deleted.purgedUsage ? ", usage purged" : ", usage preserved"}).`,
+      );
+    }
+    return {
+      exitCode: 0,
+      stdout: io.getStdout(),
+      stderr: io.getStderr(),
+      data: { deleted: true, id: taskId, purgedUsage: deleted.purgedUsage, mode: "offline" },
+    };
+  } finally {
+    store.close();
+  }
+}
+
 async function fetchLocalRemoteApi(
   fetchImpl: typeof fetch,
   url: string,
@@ -3111,6 +3254,8 @@ export async function runCli(
         return await handleDraft(rest, options, io);
       case "decide":
         return await handleDecide(rest, options, io);
+      case "rm":
+        return await handleRm(rest, options, io);
       case "space":
         return await handleSpace(rest, options, io);
       case "remote":

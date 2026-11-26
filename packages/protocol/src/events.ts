@@ -162,6 +162,11 @@ export const SseEventSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     seq: z.number().int().positive(),
+    type: z.literal("task.deleted"),
+    taskId: z.string().min(1),
+  }),
+  z.object({
+    seq: z.number().int().positive(),
     type: z.literal("rate.tick"),
     rates: z.record(z.string().min(1), z.number().nonnegative()),
     totals: z.object({
