@@ -317,8 +317,20 @@ function buildStageCognitiveDirective(params: {
   cwd: string;
   rosterRoleId?: string;
   hasResearchDoc?: boolean;
+  round?: number;
+  hasAdvisorOrHumanDecision?: boolean;
+  hasDownstreamHumanApproval?: boolean;
 }): string {
-  const { stage, card, cwd, rosterRoleId, hasResearchDoc } = params;
+  const {
+    stage,
+    card,
+    cwd,
+    rosterRoleId,
+    hasResearchDoc,
+    round = 1,
+    hasAdvisorOrHumanDecision = false,
+    hasDownstreamHumanApproval = false,
+  } = params;
   if (stage === "research") {
     return [
       `### 阶段认知与自由度模式 · 前置调研阶段 (research · advisor) · 高密度代码地图`,
@@ -349,7 +361,13 @@ function buildStageCognitiveDirective(params: {
     ].join("\n");
   }
   if (stage === "advise") {
-    return `### 阶段认知与自由度模式：顾问裁决模式（advise · 只读）\n- 当前正在只读分析目标工作区 ${cwd}、产品方案、历史裁决与触发上下文。\n- 严禁直接修改源码或暂存文件；严禁擅自更改交付目标、扩大 contract.scope 或越过人类红线。\n- 请在已授权契约内给出明确可执行的单一选型建议并提交 outcome: resolved（可通过 target_stage 指定回到 implement 或 review）；若判定必须修改契约（requires_contract_change: true）、扩大 scope（requires_scope_expansion: true）或需人类批准红线副作用（requires_human_approval: true），请如实在 frontmatter 标明或提交 outcome: need_decision，由内核转交本人拍板。`;
+    return [
+      `### 阶段认知与自由度模式：顾问裁决模式（advise · 只读）`,
+      `- 当前正在只读分析目标工作区 ${cwd}、产品方案、历史裁决与触发上下文。`,
+      `- 严禁直接修改源码或暂存文件；严禁擅自更改交付目标、扩大 contract.scope 或越过人类红线。`,
+      `- **收敛效率纪律**：仅聚焦触发本次阻塞的争议点做定点只读核查，严禁对无关文件或整台宿主机从头全量重扫；裁决正文须精炼可执行，勿复述上下文里已有的长段背景。`,
+      `- 请在已授权契约内给出明确可执行的单一选型建议并提交 outcome: resolved（可通过 target_stage 指定回到 implement 或 review）；若判定必须修改契约（requires_contract_change: true）、扩大 scope（requires_scope_expansion: true）或需人类批准红线副作用（requires_human_approval: true），请如实在 frontmatter 标明或提交 outcome: need_decision，由内核转交本人拍板。`,
+    ].join("\n");
   }
   if (stage === "verify") {
     return `### 阶段认知与自由度模式：独立测试增强（verify · ${rosterRoleId ?? "tester"}）\n- 工作区位于 ${cwd}。请聚焦补充或核查测试覆盖与边界用例，严禁改动 contract.scope 之外文件、严禁篡改冻结测试文件、严禁跳过真实验证。\n- 完成后提交 worker 角色回执，Kiln 内核仍将统一重跑确定性验收门禁（accept_cmd）与范围/冻结校验。`;
@@ -358,7 +376,24 @@ function buildStageCognitiveDirective(params: {
     return `### 阶段认知与自由度模式：合并交付准备（deliver · ${rosterRoleId ?? "deliverer"}）\n- 工作区位于 ${cwd}。你仅可在隔离工作树内完成提交整理或合并前冲突预检，严禁在工作树内执行 git push 或修改主仓库。\n- 完成后提交 worker 角色回执，最终合并、审批与交付落盘由 Kiln 内核确定性执行。`;
   }
   if (stage === "review") {
-    return `### 阶段认知与自由度模式：独立对抗审查（review · 只读冷隔离）\n- 请从独立挑刺视角审查改动是否严格满足 BRIEF 与交付契约、是否存在隐蔽边界缺陷/并发竞态以及测试是否真实有效。\n- 严禁修改工作区文件，提交 reviewer 角色回执。`;
+    const lines = [
+      `### 阶段认知与自由度模式：独立对抗审查（review · 只读冷隔离 · round ${round}）`,
+      `- 请审查改动是否满足 BRIEF 与交付契约、是否存在真实可复现缺陷以及测试是否真实有效；严禁修改工作区文件，提交 reviewer 角色回执。`,
+      `- **P1 严格分级红线**：仅**确定性可复现错误、真实数据误删/损坏风险、安全边界绕过、崩溃或明确违反契约**才可标为 P0/P1 并阻塞放行；低概率理论并发假想、风格措辞或提示性建议${
+        hasDownstreamHumanApproval ? "（且本任务产物具备可逆隔离或下游人工审批把关）" : ""
+      }一律归为 **P2**（\`p0: 0, p1: 0, verdict: pass\`），严禁拿低概率假想竞态阻塞交付。`,
+    ];
+    if (hasAdvisorOrHumanDecision) {
+      lines.push(
+        `- **尊重已生效裁决**：上方「历史裁决」中由 \`advisor\` 或 \`human\` 明确拍板的取舍与排除边界属于已授权基线，**严禁在审查中推翻或二次否定**；仅核验实现是否忠实落地该裁决及是否引入新回归。`,
+      );
+    }
+    if (round >= 2) {
+      lines.push(
+        `- **第 ${round} 轮复核收敛模式**：请对照下方「上轮审查缺陷清单」优先验证上轮指出的 P0/P1 是否已修复、修补是否引入新回归；**严禁为退回而另起炉灶新造边缘理论级 P1**。若上轮 P0/P1 均已修复且无确定性严重缺陷，请果断给出 \`verdict: pass\`。`,
+      );
+    }
+    return lines.join("\n");
   }
   if (stage === "accept") {
     return `### 阶段认知与自由度模式：真实用户黑盒验收（accept · 只读黑盒）\n- 请从真实用户入口严格按 BRIEF 场景与边界逐项验证交付产物与体验，严禁修改源码，提交 verifier 角色回执。`;
@@ -367,6 +402,61 @@ function buildStageCognitiveDirective(params: {
     return `### 阶段认知与自由度模式：异常研判（triage · 只读）\n- 请基于失败事实与磁盘日志判定根因并给出 retry / escalate_advisor / ask_human 建议，严禁修改工作区文件，提交 triage 角色回执。`;
   }
   return `### 阶段认知与自由度模式：严格收敛执行（implement）\n- 请严格遵循定稿方案与交付契约做最小完整落地，严禁越过 \`contract.scope\` 或自行扩大需求边界；若触发方案中的 \`Re-plan if\` 条件或发现不可逾越前提，请立即通过 \`need_decision\` 上报而非盲目强改。`;
+}
+
+/**
+ * Strips duplicated YAML frontmatter `rationale` payloads from append-only `decisions.md`
+ * entries before embedding them in HANDOFF.md, keeping full readable bodies intact.
+ */
+export function formatDecisionsForHandoff(rawDecisions: string): string {
+  const trimmed = rawDecisions.trim();
+  if (!trimmed) return "";
+  const lines = trimmed.split(/\r?\n/);
+  const out: string[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const isStartBoundary = lines[i] === "---" && (i === 0 || lines[i - 1]?.trim() === "");
+    if (isStartBoundary) {
+      let closeIdx = -1;
+      for (let j = i + 1; j < lines.length; j += 1) {
+        if (lines[j] === "---") {
+          closeIdx = j;
+          break;
+        }
+      }
+      if (closeIdx > i + 1) {
+        const fmLines = lines.slice(i + 1, closeIdx);
+        const hasDecisionMeta = fmLines.some((l) =>
+          /^(?:decider|decided_at|schema_version):/.test(l),
+        );
+        if (hasDecisionMeta) {
+          const metaMap: Record<string, string> = {};
+          for (const l of fmLines) {
+            const m = /^(id|decider|contract_version|action|decided_at):\s*(.+)$/.exec(l);
+            if (m) metaMap[m[1]!] = m[2]!.trim();
+          }
+          const parts = [
+            metaMap.id ? `id=${metaMap.id}` : "",
+            metaMap.decider ? `decider=${metaMap.decider}` : "",
+            metaMap.contract_version ? `v${metaMap.contract_version}` : "",
+            metaMap.action ? `action=${metaMap.action}` : "",
+            metaMap.decided_at ? `at=${metaMap.decided_at}` : "",
+          ].filter(Boolean);
+          out.push(parts.length > 0 ? `[裁决记录 · ${parts.join(" | ")}]` : "[裁决记录]");
+          i = closeIdx + 1;
+          continue;
+        }
+      }
+    }
+    out.push(lines[i]!);
+    i += 1;
+  }
+
+  return out
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 /**
@@ -408,7 +498,15 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
     stage !== "plan" && stage !== "research"
       ? (readOptionalText(store.paths.planMd(card.id)) ?? "")
       : "";
-  const decisions = readOptionalText(store.paths.decisionsMd(card.id)) ?? "";
+  const rawDecisions = readOptionalText(store.paths.decisionsMd(card.id)) ?? "";
+  const decisions = rawDecisions ? formatDecisionsForHandoff(rawDecisions) : "";
+  const hasAdvisorOrHumanDecision =
+    decisions.length > 0 &&
+    /decider=(advisor|human)|技术顾问裁决|最终决定与重跑范围/.test(decisions);
+  const hasDownstreamHumanApproval =
+    card.workspace_mode === "host_scoped" ||
+    Boolean(card.contract.human_accept) ||
+    Boolean(card.workflow?.steps.some((s) => s.kind === "approval"));
   const ledger = store.readLedger(card.space);
   const activeLedgerEntries = ledger ? selectActiveLedgerEntriesForHandoff(ledger.entries) : [];
   const ledgerText =
@@ -548,9 +646,11 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
       ? [`## 上轮门禁失败摘要`, previousFailureSummary.trim()].join("\n")
       : "";
 
+  const reviewDeltaHeading =
+    stage === "review" ? "## 上轮审查缺陷清单（本轮复核收敛基线）" : "## 上轮审查退回摘要";
   const reviewDeltaSection =
     previousReviewSummary && previousReviewSummary.trim().length > 0
-      ? [`## 上轮审查退回摘要`, previousReviewSummary.trim()].join("\n")
+      ? [reviewDeltaHeading, previousReviewSummary.trim()].join("\n")
       : "";
 
   const acceptDeltaSection =
@@ -631,6 +731,9 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
       cwd,
       rosterRoleId,
       hasResearchDoc: researchDoc.trim().length > 0,
+      round,
+      hasAdvisorOrHumanDecision,
+      hasDownstreamHumanApproval,
     }),
     ``,
     ...(advisorContextSection ? [advisorContextSection, ``] : []),

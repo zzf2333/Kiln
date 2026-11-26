@@ -1777,4 +1777,101 @@ describe("TaskStateMachine integration with real KilnStore and SQLite disk rebui
     );
     expect(legacyRetry.action).toBe("retry_stage");
   });
+
+  it("extracts reviewer failure fingerprints from numbered P0/P1 findings and routes review_rounds_exceeded to advisor before triage/human", () => {
+    const numberedFp1 = computeReviewerFailureFingerprint(
+      {
+        run_id: "r-rev-num1",
+        contract_version: 2,
+        reviewed_ref: "HEAD",
+        verdict: "changes_requested",
+        p0: 0,
+        p1: 2,
+        p2: 0,
+      },
+      [
+        "## 结论",
+        "退回",
+        "",
+        "## 缺陷清单",
+        "1. P1 · OpenVPN Connect 的系统组件回执未纳入排除判断。",
+        "2. P1 — `cleanup.sh:373` activity() 丢弃 team 与 app_groups。",
+      ].join("\n"),
+    );
+    expect(numberedFp1).toBe(
+      "review:P1:cleanup.sh:373|P1:openvpn connect 的系统组件回执未纳入排除判断",
+    );
+
+    const structuredFp = computeReviewerFailureFingerprint(
+      {
+        run_id: "r-rev-struct",
+        contract_version: 2,
+        reviewed_ref: "HEAD",
+        verdict: "changes_requested",
+        p0: 0,
+        p1: 1,
+        p2: 1,
+        findings: [
+          {
+            severity: "P1",
+            title: "OpenVPN 未排除",
+            location: "staged/report.md:148",
+          },
+          {
+            severity: "P2",
+            title: "风格提示",
+            location: "staged/report.md:10",
+          },
+        ],
+      },
+      "## 缺陷清单\n无",
+    );
+    expect(structuredFp).toBe("review:P1:staged/report.md:148");
+
+    const wfCard = makeTaskCard({
+      id: "t-rev-adv",
+      track: "L2",
+      limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 5_000_000 },
+    });
+
+    const routeToAdvisor = evaluateReviewerStageOutcome(
+      wfCard,
+      {
+        run_id: "r-rev-exceeded",
+        contract_version: 1,
+        reviewed_ref: "HEAD",
+        verdict: "changes_requested",
+        p0: 0,
+        p1: 1,
+        p2: 0,
+      },
+      { stageRetries: 0, reviewRounds: 2, advisorCalls: 0, totalTokens: 10_000 },
+      { consecutiveSameFailureCount: 1, advisorAvailable: true, triageAttempted: false },
+    );
+    expect(routeToAdvisor).toMatchObject({
+      action: "invoke_advisor",
+      level: "L2",
+      reason: "review_rounds_exceeded",
+    });
+
+    const afterAdvisorExhausted = evaluateReviewerStageOutcome(
+      wfCard,
+      {
+        run_id: "r-rev-exceeded-2",
+        contract_version: 1,
+        reviewed_ref: "HEAD",
+        verdict: "changes_requested",
+        p0: 0,
+        p1: 1,
+        p2: 0,
+      },
+      { stageRetries: 0, reviewRounds: 2, advisorCalls: 1, totalTokens: 20_000 },
+      { consecutiveSameFailureCount: 1, advisorAvailable: true, triageAttempted: true },
+    );
+    expect(afterAdvisorExhausted).toMatchObject({
+      action: "wait_human",
+      level: "L3",
+      reason: "review_rounds_exceeded",
+    });
+  });
 });

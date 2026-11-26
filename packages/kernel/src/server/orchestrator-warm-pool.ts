@@ -27,6 +27,9 @@ export interface WarmSessionEntry {
   cwd: string;
   rosterRoleId: string | undefined;
   contractVersion: number;
+  stepIndex?: number | null;
+  stepLabel?: string | undefined;
+  customInstructions?: string | undefined;
   lastRunId: string;
   reuseCount: number;
   lastContextPercent: number | null;
@@ -41,6 +44,9 @@ export interface WarmSessionMatchQuery {
   cwd: string;
   rosterRoleId: string | undefined;
   contractVersion: number;
+  stepIndex?: number | null;
+  stepLabel?: string | undefined;
+  customInstructions?: string | undefined;
 }
 
 interface StoredWarmEntry extends WarmSessionEntry {
@@ -157,7 +163,10 @@ export class WarmSessionPool {
       entry.model !== query.model ||
       entry.cwd !== normalizeWarmCwd(query.cwd) ||
       entry.rosterRoleId !== query.rosterRoleId ||
-      entry.contractVersion !== query.contractVersion;
+      entry.contractVersion !== query.contractVersion ||
+      (entry.stepIndex ?? null) !== (query.stepIndex ?? null) ||
+      (entry.stepLabel ?? "") !== (query.stepLabel ?? "") ||
+      (entry.customInstructions ?? "") !== (query.customInstructions ?? "");
     const overWatermark =
       (entry.lastContextPercent !== null &&
         entry.lastContextPercent >= WARM_CONTEXT_PERCENT_LIMIT) ||

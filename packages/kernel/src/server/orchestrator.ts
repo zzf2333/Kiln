@@ -78,6 +78,7 @@ import {
   evaluateWorkerStageOutcome,
   getTaskPipelineStages,
   handleExecutionFailure,
+  nextTaskStageAfter,
   type StageCounters,
 } from "../state/index.js";
 import {
@@ -420,6 +421,10 @@ export class KilnOrchestrator {
   private readonly recentSpaceCompletedAtMs = new Map<string, number>();
   private readonly sessionKeyByRunId = new Map<string, string>();
   private readonly reuseCountByRunId = new Map<string, number>();
+  private readonly warmStepMetaByRunId = new Map<
+    string,
+    { stepIndex: number | null; stepLabel?: string; customInstructions?: string }
+  >();
   private readonly stallCheckIntervalMs: number;
   private readonly nowMs: () => number;
 
@@ -1531,7 +1536,7 @@ export class KilnOrchestrator {
     previousAcceptSummary: string | null;
     previousAcceptImagePaths: RunAttachmentInput[];
   } {
-    if (stage !== "implement") {
+    if (stage !== "implement" && stage !== "review") {
       return {
         previousFailureSummary: null,
         previousReviewSummary: null,
@@ -1548,6 +1553,7 @@ export class KilnOrchestrator {
     for (let i = runs.length - 1; i >= 0; i--) {
       const r = runs[i]!;
       if (
+        stage === "implement" &&
         previousFailureSummary === null &&
         (r.meta.stage === "implement" || r.meta.stage === "verify")
       ) {
@@ -1593,7 +1599,7 @@ export class KilnOrchestrator {
           }
         }
       }
-      if (previousAcceptSummary === null && r.meta.stage === "accept") {
+      if (stage === "implement" && previousAcceptSummary === null && r.meta.stage === "accept") {
         const acceptReport = readYamlOptional(
           this.store.paths.runAcceptReportYaml(taskId, r.dirName),
           AcceptVerificationReportSchema,
@@ -2347,8 +2353,6 @@ export class KilnOrchestrator {
       plan.stage === "implement" &&
       plan.role === "worker" &&
       !assignment.freshContext &&
-      assignment.stepLabel === undefined &&
-      assignment.customInstructions === undefined &&
       caps.warmSessionReuse === true &&
       !this.hasConsecutiveSameGateFailure(plan.taskId, plan.card, 2);
 
@@ -2362,6 +2366,9 @@ export class KilnOrchestrator {
             cwd: workspace.cwd,
             rosterRoleId: assignment.rosterRoleId,
             contractVersion: plan.contractVersion,
+            stepIndex: plan.stepIndex,
+            stepLabel: assignment.stepLabel,
+            customInstructions: assignment.customInstructions,
           },
           Date.now(),
           this.getWarmCacheTtlMs(),
@@ -2429,6 +2436,13 @@ export class KilnOrchestrator {
 
       this.sessionKeyByRunId.set(runId, warmEntry.sessionKey);
       this.reuseCountByRunId.set(runId, warmEntry.reuseCount + 1);
+      this.warmStepMetaByRunId.set(runId, {
+        stepIndex: plan.stepIndex,
+        ...(assignment.stepLabel !== undefined ? { stepLabel: assignment.stepLabel } : {}),
+        ...(assignment.customInstructions !== undefined
+          ? { customInstructions: assignment.customInstructions }
+          : {}),
+      });
       this.startingBackendCount += 1;
       let sendSucceeded = false;
       try {
@@ -2437,6 +2451,7 @@ export class KilnOrchestrator {
       } catch {
         this.sessionKeyByRunId.delete(runId);
         this.reuseCountByRunId.delete(runId);
+        this.warmStepMetaByRunId.delete(runId);
         void backend.cancel(warmEntry.sessionRef).catch(() => {});
         warmEntry = null;
       } finally {
@@ -2449,7 +2464,7 @@ export class KilnOrchestrator {
       }
     }
 
-    if (!canTryWarm) {
+    if (plan.stage === "implement" && !canTryWarm) {
       this.warmPool.evictTask(plan.taskId);
     }
 
@@ -2511,6 +2526,13 @@ export class KilnOrchestrator {
     if (coldSessionKey !== undefined) {
       this.sessionKeyByRunId.set(runId, coldSessionKey);
       this.reuseCountByRunId.set(runId, 0);
+      this.warmStepMetaByRunId.set(runId, {
+        stepIndex: plan.stepIndex,
+        ...(assignment.stepLabel !== undefined ? { stepLabel: assignment.stepLabel } : {}),
+        ...(assignment.customInstructions !== undefined
+          ? { customInstructions: assignment.customInstructions }
+          : {}),
+      });
     }
 
     const mcpServers: McpStdioMountSpec[] | undefined = caps.mcpInjection
@@ -3075,9 +3097,11 @@ export class KilnOrchestrator {
     this.recentSpaceCompletedAtMs.set(card.space, Date.now());
     const sessionKey = this.sessionKeyByRunId.get(runMeta.run_id);
     const reuseCount = this.reuseCountByRunId.get(runMeta.run_id) ?? 0;
+    const warmStepMeta = this.warmStepMetaByRunId.get(runMeta.run_id);
     const lastContextPercent = this.latestContextPercentByRunId.get(runMeta.run_id) ?? null;
     this.sessionKeyByRunId.delete(runMeta.run_id);
     this.reuseCountByRunId.delete(runMeta.run_id);
+    this.warmStepMetaByRunId.delete(runMeta.run_id);
     this.latestContextPercentByRunId.delete(runMeta.run_id);
 
     if (
@@ -3117,6 +3141,9 @@ export class KilnOrchestrator {
             cwd,
             rosterRoleId: latestRunMeta.roster_role,
             contractVersion: latestRunMeta.contract_version,
+            stepIndex: warmStepMeta?.stepIndex ?? latestRunMeta.step_index ?? null,
+            stepLabel: warmStepMeta?.stepLabel,
+            customInstructions: warmStepMeta?.customInstructions,
             lastRunId: latestRunMeta.run_id,
             reuseCount,
             lastContextPercent,
@@ -4334,6 +4361,7 @@ export class KilnOrchestrator {
         ? (computeReviewerFailureFingerprint(parsedReceipt.frontmatter, parsedReceipt.body) ??
           reviewDecision.reason)
         : reviewDecision.reason;
+      const isRoundsExceeded = reviewDecision.reason === "review_rounds_exceeded";
       this.writeAdvisorRequest(taskId, {
         schema_version: 1,
         contract_version: card.contract_version,
@@ -4341,9 +4369,11 @@ export class KilnOrchestrator {
         source_stage: "review",
         source_run_id: runMeta.run_id,
         source_role: "reviewer",
-        category: "stuck_loop",
+        category: isRoundsExceeded ? "design_tradeoff" : "stuck_loop",
         reason: reviewDecision.reason,
-        question: `任务 "${card.title}" 独立审查连续 ${consecutiveSameFailureCount} 次因同类缺陷未能放行（${reviewDecision.reason}），请在不更改目标与 scope 的前提下裁决破局方向。`,
+        question: isRoundsExceeded
+          ? `任务 "${card.title}" 独立审查已达上限轮次仍未放行（${reviewDecision.reason}），请在不更改交付目标与 scope 的前提下裁决争议取舍并明确收敛方向。`
+          : `任务 "${card.title}" 独立审查连续 ${consecutiveSameFailureCount} 次因同类缺陷未能放行（${reviewDecision.reason}），请在不更改目标与 scope 的前提下裁决破局方向。`,
         options: [],
         failure_fingerprint: failureFp,
         consecutive_failures: consecutiveSameFailureCount,
@@ -4361,6 +4391,51 @@ export class KilnOrchestrator {
       }
     }
 
+    const nextStepAfterReview = nextWorkflowStepAfter(
+      card,
+      runMeta.step_index ?? null,
+      "review",
+      card.track,
+    );
+    const proceedStage =
+      nextStepAfterReview?.stage ?? nextTaskStageAfter(card, "review", card.track);
+    const proceedLabel =
+      proceedStage === "deliver"
+        ? card.workspace_mode === "host_scoped"
+          ? "忽略剩余审查意见，直接进入交付审批"
+          : "忽略剩余审查意见，直接进入交付"
+        : proceedStage === "accept"
+          ? "忽略剩余审查意见，直接进入真实验收"
+          : "忽略剩余审查意见，直接推进下一阶段";
+
+    const reviewEscalationOptions = [
+      {
+        id: "opt-rework",
+        label: "退回实施继续修复",
+        action: "resume" as const,
+        target_stage: "implement" as const,
+        recommended: true,
+      },
+      ...(proceedStage && proceedStage !== "implement" && proceedStage !== "review"
+        ? [
+            {
+              id: "opt-accept-and-proceed",
+              label: proceedLabel,
+              action: "resume" as const,
+              target_stage: proceedStage,
+              cost_note: "由人类接管拍板，跳过剩余非致命审查意见并进入下一阶段",
+              recommended: false,
+            },
+          ]
+        : []),
+      {
+        id: "opt-cancel",
+        label: "取消任务",
+        action: "cancel" as const,
+        recommended: false,
+      },
+    ];
+
     const pending = PendingDecisionSchema.parse({
       id: `dec-${randomUUID().slice(0, 8)}`,
       task_id: taskId,
@@ -4369,21 +4444,7 @@ export class KilnOrchestrator {
       reason: reviewDecision.reason,
       category: "review_escalation",
       question: `任务 "${card.title}" 独立审查未通过且达到升级条件 (${reviewDecision.reason})，请拍板决定。`,
-      options: [
-        {
-          id: "opt-rework",
-          label: "退回实施继续修复",
-          action: "resume",
-          target_stage: "implement",
-          recommended: true,
-        },
-        {
-          id: "opt-cancel",
-          label: "取消任务",
-          action: "cancel",
-          recommended: false,
-        },
-      ],
+      options: reviewEscalationOptions,
       created_at: new Date().toISOString(),
     });
     this.transitionTaskToWaiting(taskId, pending, guard);

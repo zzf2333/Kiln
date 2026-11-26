@@ -17,6 +17,7 @@ import { FakeBackend } from "../../backend/index.js";
 import { computeFrozenSnapshot } from "../../gate/index.js";
 import { KilnStore, deriveTaskStatus, readYamlOptional } from "../../store/index.js";
 import { KilndServer } from "../index.js";
+import { formatDecisionsForHandoff } from "../orchestrator-handoff.js";
 
 function git(args: readonly string[], cwd?: string): string {
   return execFileSync("git", [...args], {
@@ -1233,5 +1234,280 @@ describe("Orchestrator enhancements: step_index, tester/deliverer agent modes, a
     );
     expect(styleHandoff).toContain("槽位专属指令 (风格建议)");
     expect(styleHandoff).toContain("仅记录风格优化建议，不阻塞合入");
+  });
+
+  it("deduplicates decisions.md in handoff, puts round>=2 review into convergence mode, and offers direct proceed option on review_escalation", async () => {
+    const rawDecisions = serializeFrontmatterMarkdown(
+      {
+        schema_version: 1,
+        id: "dec-dup-1",
+        task_id: "t-dup",
+        contract_version: 2,
+        category: "gate_failure_escalation",
+        decider: "human",
+        action: "resume",
+        affected_stages: ["implement"],
+        rationale: "长段重复说明-ONLY-SHOULD-APPEAR-ONCE",
+        decided_at: "2026-11-25T13:58:33.263Z",
+      },
+      [
+        "## 待决问题 (dec-dup-1)",
+        "",
+        "### 最终决定与重跑范围",
+        "",
+        "- 说明: 长段重复说明-ONLY-SHOULD-APPEAR-ONCE",
+      ].join("\n"),
+    );
+    const compacted = formatDecisionsForHandoff(rawDecisions);
+    expect(compacted).toContain(
+      "[裁决记录 · id=dec-dup-1 | decider=human | v2 | action=resume | at=2026-11-25T13:58:33.263Z]",
+    );
+    expect(compacted.match(/长段重复说明-ONLY-SHOULD-APPEAR-ONCE/g)).toHaveLength(1);
+
+    const kilnHome = makeTempDir("kiln-rev-esc-proceed-");
+    const targetDir = makeTempDir("kiln-rev-esc-host-");
+    const targetFile = path.join(targetDir, "staged-target.txt");
+    const fakeBackend = makeEnhancementBackend();
+    let revTurn = 0;
+
+    const server = new KilndServer({
+      kilnHome,
+      host: "127.0.0.1",
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: true,
+      tokenSecret: "enhancements-rev-proceed-secret-0123456789",
+      approvalHandler: async (req, ctx) => {
+        const token =
+          fakeBackend
+            .getRecordedSpecs()
+            .filter((s) => s.taskId === ctx.taskId)
+            .at(-1)?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+        const stagedDir = server.store.paths.stagedDir(ctx.taskId);
+        fs.mkdirSync(stagedDir, { recursive: true });
+
+        if (req.action === "host_impl") {
+          fs.writeFileSync(path.join(stagedDir, "staged-target.txt"), "safe-staged-content\n");
+          const res = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: serializeFrontmatterMarkdown(
+                {
+                  run_id: ctx.runId,
+                  contract_version: ctx.card.contract_version,
+                  outcome: "completed",
+                  input_ref: "host_scoped",
+                  output_ref: stagedDir,
+                  changed_paths: [targetFile],
+                  accept_result: "skipped",
+                  is_bugfix: false,
+                  complexity_escalate: false,
+                },
+                "## 改动说明\n完成暂存\n\n## 验证命令与真实输出\nok\n\n## 未完成或待决问题\n无\n",
+              ),
+            }),
+          });
+          expect(res.status).toBe(200);
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "host_rev_reject") {
+          revTurn += 1;
+          const defectText =
+            revTurn === 1 ? "1. P1 · 理论边角竞争假想" : "1. P1 · 另一条新增低概率假想";
+          const res = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: serializeFrontmatterMarkdown(
+                {
+                  run_id: ctx.runId,
+                  contract_version: ctx.card.contract_version,
+                  reviewed_ref: stagedDir,
+                  verdict: "changes_requested",
+                  p0: 0,
+                  p1: 1,
+                  p2: 0,
+                },
+                [
+                  "## 结论",
+                  "仍有 P1 意见",
+                  "",
+                  "## 缺陷清单",
+                  defectText,
+                  "",
+                  "## 测试真实性与复现核查",
+                  "dry-run 通过",
+                ].join("\n"),
+              ),
+            }),
+          });
+          expect(res.status).toBe(200);
+          await ctx.backend.answer(req.id, true);
+        }
+      },
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    server.store.writeConfig("roles", {
+      schema_version: 1,
+      heterogeneous_review: false,
+      roles: {
+        worker: {
+          backend_id: "fake",
+          agent: "codex",
+          model: "gpt-5.4",
+          allow_full_access_fallback: false,
+        },
+        reviewer: {
+          backend_id: "fake",
+          agent: "codex",
+          model: "gpt-5.4",
+          allow_full_access_fallback: false,
+        },
+      },
+    });
+
+    for (let i = 0; i < 2; i += 1) {
+      fakeBackend.enqueueScript(
+        [
+          { kind: "approval", action: "host_impl", detail: `impl-${i + 1}` },
+          { kind: "exit", reason: "completed" },
+        ],
+        { role: "worker" },
+      );
+      fakeBackend.enqueueScript(
+        [
+          { kind: "approval", action: "host_rev_reject", detail: `rev-${i + 1}` },
+          { kind: "exit", reason: "completed" },
+        ],
+        { role: "reviewer" },
+      );
+    }
+
+    const now = new Date().toISOString();
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-rev-proceed",
+        title: "审查升级直接放行交付审批",
+        space: "local",
+        priority: "P2",
+        track: "L2",
+        workspace_mode: "host_scoped",
+        parent: null,
+        depends_on: [],
+        workflow: {
+          schema_version: 1,
+          preset: "host_op",
+          steps: [
+            {
+              kind: "loop",
+              max_rounds: 2,
+              stuck_threshold: 2,
+              steps: [
+                {
+                  kind: "agent",
+                  stage: "implement",
+                  role: "worker",
+                  fresh_context: false,
+                  mode: "dry_run_only",
+                },
+                { kind: "gate", stage: "verify", check: "staged_only" },
+                {
+                  kind: "agent",
+                  stage: "review",
+                  role: "reviewer",
+                  fresh_context: true,
+                },
+              ],
+            },
+            {
+              kind: "approval",
+              stage: "deliver",
+              show: ["staged_diff", "sha256"],
+            },
+            {
+              kind: "command",
+              stage: "deliver",
+              apply_staged: true,
+              run_deliver_cmd: false,
+              verify_sha256: true,
+              final_accept_gate: true,
+            },
+          ],
+        },
+        contract_version: 1,
+        contract: {
+          goal: "安全暂存写入",
+          end: "文件落盘通过验收",
+          accept_cmd: `grep -q safe-staged-content ${targetFile}`,
+          accept_files_hash: "sha256:init",
+          scope: [targetFile],
+          deliver: { mode: "manual", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: {
+          retries_per_stage: 2,
+          review_rounds: 2,
+          advisor_calls: 0,
+          max_tokens: 5_000_000,
+        },
+        created_at: now,
+        updated_at: now,
+      },
+      "# Brief",
+    );
+
+    await server.start();
+    await waitUntil(
+      () => server.pendingDecisions.get("t-rev-proceed")?.reason === "review_rounds_exceeded",
+      "t-rev-proceed hits review_rounds_exceeded",
+    );
+
+    const rev2Handoff = fs.readFileSync(
+      server.store.paths.handoffMd("t-rev-proceed", "004-review"),
+      "utf8",
+    );
+    expect(rev2Handoff).toContain("P1 严格分级红线");
+    expect(rev2Handoff).toContain("第 2 轮复核收敛模式");
+    expect(rev2Handoff).toContain("上轮审查缺陷清单（本轮复核收敛基线）");
+    expect(rev2Handoff).toContain("理论边角竞争假想");
+
+    const pending = server.pendingDecisions.get("t-rev-proceed")!;
+    const proceedOpt = pending.options.find((o) => o.id === "opt-accept-and-proceed");
+    expect(proceedOpt).toMatchObject({
+      label: "忽略剩余审查意见，直接进入交付审批",
+      action: "resume",
+      target_stage: "deliver",
+    });
+
+    // Choosing opt-accept-and-proceed enters the human deliver approval gate (does NOT bypass approval)
+    const decideRes = await server.app.request(
+      new Request("http://127.0.0.1/api/tasks/t-rev-proceed/decide", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          decision_id: pending.id,
+          option_id: "opt-accept-and-proceed",
+          action: "resume",
+          rationale: "人工核查后忽略理论 P1，进入交付审批",
+        }),
+      }),
+    );
+    expect(decideRes.status).toBe(200);
+
+    await waitUntil(
+      () =>
+        server.pendingDecisions.get("t-rev-proceed")?.category === "host_scoped_apply" ||
+        server.pendingDecisions.get("t-rev-proceed")?.reason === "host_scoped_approval",
+      "t-rev-proceed reaches deliver approval",
+    );
+    expect(fs.existsSync(targetFile)).toBe(false);
   });
 });

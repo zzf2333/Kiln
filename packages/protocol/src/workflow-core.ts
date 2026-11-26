@@ -499,7 +499,7 @@ export function buildWorkflowPreset(
         deliverApproval: true,
         hostTwoPhase: true,
         hasDeliverCmd: options.hasDeliverCmd ?? false,
-        maxRounds: options.maxRounds,
+        maxRounds: options.maxRounds ?? 2,
         stuckThreshold: options.stuckThreshold,
       });
     case "standard_dev":

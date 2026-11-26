@@ -118,29 +118,44 @@ export function computeReviewerFailureFingerprint(
     return null;
   }
 
-  if (body) {
+  const signatures: string[] = [];
+  if (Array.isArray(frontmatter.findings)) {
+    for (const f of frontmatter.findings) {
+      if (f.severity !== "P0" && f.severity !== "P1") continue;
+      const token = (f.location?.trim() || f.title.trim()).toLowerCase().slice(0, 64);
+      if (token.length > 0) {
+        signatures.push(`${f.severity}:${token}`);
+      }
+    }
+  }
+
+  if (signatures.length === 0 && body) {
     const defectSection = extractDefectListBody(body);
-    const signatures: string[] = [];
+    const findingLineRe =
+      /^(?:(?:[-*•]|\d+[.)、])\s*)?(?:\*\*)?(?:\[(P[01])\]|(P[01])(?:\*\*)?\s*[—–\-·:：])\s*(.+)$/i;
     for (const rawLine of defectSection.split(/\r?\n/)) {
       const line = rawLine.trim();
-      const levelMatch = /^[-*]?\s*\[(P[01])\]\s*(.+)$/i.exec(line);
+      const levelMatch = findingLineRe.exec(line);
       if (!levelMatch) {
         continue;
       }
-      const level = levelMatch[1]!.toUpperCase();
-      const rest = levelMatch[2]!.trim();
+      const level = (levelMatch[1] ?? levelMatch[2] ?? "").toUpperCase();
+      const rest = levelMatch[3]!.trim();
       const backtickMatch = /`([^`]+)`/.exec(rest);
-      const token = (backtickMatch?.[1] ?? rest.split(/\s+[—–-]\s+/)[0] ?? rest)
+      const clause = (backtickMatch?.[1] ?? rest.split(/\s*[—–\-·。:：]\s*/)[0] ?? rest)
+        .replace(/^\*\*|\*\*$/g, "")
         .trim()
-        .toLowerCase();
-      if (token.length > 0) {
-        signatures.push(`${level}:${token}`);
+        .toLowerCase()
+        .slice(0, 64);
+      if (level && clause.length > 0) {
+        signatures.push(`${level}:${clause}`);
       }
     }
-    const uniqueSorted = Array.from(new Set(signatures)).sort().slice(0, 5);
-    if (uniqueSorted.length > 0) {
-      return `review:${uniqueSorted.join("|")}`;
-    }
+  }
+
+  const uniqueSorted = Array.from(new Set(signatures)).sort().slice(0, 5);
+  if (uniqueSorted.length > 0) {
+    return `review:${uniqueSorted.join("|")}`;
   }
 
   return `review:p0=${frontmatter.p0}:p1=${frontmatter.p1}`;
@@ -912,6 +927,17 @@ export function evaluateReviewerStageOutcome(
       targetStage: "implement",
       nextReviewRound: counters.reviewRounds + 1,
       reason: reworkReason,
+    };
+  }
+
+  if (options?.advisorAvailable && counters.advisorCalls < card.limits.advisor_calls) {
+    return {
+      action: "invoke_advisor",
+      level: "L2",
+      passed: false,
+      forgedPassIgnored,
+      reason: "review_rounds_exceeded",
+      breaker,
     };
   }
 

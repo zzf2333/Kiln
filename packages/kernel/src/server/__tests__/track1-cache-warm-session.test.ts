@@ -18,6 +18,7 @@ import { TaskStateMachine } from "../../state/index.js";
 import { KilnStore, readYamlOptional } from "../../store/index.js";
 import { KilndServer } from "../index.js";
 import { buildHandoffPayload } from "../orchestrator-handoff.js";
+import { WarmSessionPool } from "../orchestrator-warm-pool.js";
 import { computeUsageSnapshot } from "../pending-decisions.js";
 
 function git(args: readonly string[], cwd?: string): string {
@@ -748,5 +749,359 @@ describe("Track 1: B1 layered HANDOFF, B2 warm session reuse & sessionKey MCP au
     } finally {
       rebuiltStore.close();
     }
+  });
+
+  it("matches WarmSessionPool by stepIndex, stepLabel, and customInstructions and reuses labeled workflow implement steps", async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "kiln-warm-step-"));
+    tempDirs.push(repoDir);
+    const pool = new WarmSessionPool();
+    const dummyBackend = new FakeBackend({ defaultTurnScript: [] });
+
+    pool.park(
+      {
+        taskId: "t-step-pool",
+        sessionRef: { backendId: "fake", sessionId: "s-step-1" },
+        sessionKey: "sk-1",
+        backend: dummyBackend,
+        backendId: "fake",
+        agent: "codex",
+        model: "gpt-5.4",
+        cwd: repoDir,
+        rosterRoleId: "ops_sec",
+        contractVersion: 1,
+        stepIndex: 0,
+        stepLabel: "扫描残留并暂存",
+        customInstructions: "仅写入 staged/",
+        lastRunId: "r-1",
+        reuseCount: 0,
+        lastContextPercent: 10,
+        lastUsedAtMs: Date.now(),
+      },
+      300_000,
+    );
+
+    const mismatched = pool.takeMatching({
+      taskId: "t-step-pool",
+      backendId: "fake",
+      agent: "codex",
+      model: "gpt-5.4",
+      cwd: repoDir,
+      rosterRoleId: "ops_sec",
+      contractVersion: 1,
+      stepIndex: 0,
+      stepLabel: "另一个步骤名称",
+      customInstructions: "仅写入 staged/",
+    });
+    expect(mismatched).toBeNull();
+
+    pool.park(
+      {
+        taskId: "t-step-pool",
+        sessionRef: { backendId: "fake", sessionId: "s-step-2" },
+        sessionKey: "sk-2",
+        backend: dummyBackend,
+        backendId: "fake",
+        agent: "codex",
+        model: "gpt-5.4",
+        cwd: repoDir,
+        rosterRoleId: "ops_sec",
+        contractVersion: 1,
+        stepIndex: 0,
+        stepLabel: "扫描残留并暂存",
+        customInstructions: "仅写入 staged/",
+        lastRunId: "r-2",
+        reuseCount: 0,
+        lastContextPercent: 10,
+        lastUsedAtMs: Date.now(),
+      },
+      300_000,
+    );
+
+    const matched = pool.takeMatching({
+      taskId: "t-step-pool",
+      backendId: "fake",
+      agent: "codex",
+      model: "gpt-5.4",
+      cwd: repoDir,
+      rosterRoleId: "ops_sec",
+      contractVersion: 1,
+      stepIndex: 0,
+      stepLabel: "扫描残留并暂存",
+      customInstructions: "仅写入 staged/",
+    });
+    expect(matched?.sessionRef.sessionId).toBe("s-step-2");
+
+    // End-to-end: host_scoped workflow implement step with label & instructions reuses warm session on round 2 rework
+    const kilnHome = fs.mkdtempSync(path.join(os.tmpdir(), "kiln-warm-labeled-e2e-"));
+    tempDirs.push(kilnHome);
+    const targetFile = path.join(repoDir, "cleanup-note.txt");
+
+    let implTurn = 0;
+    const fakeBackend = makeWarmCapableBackend();
+
+    const server = new KilndServer({
+      kilnHome,
+      host: "127.0.0.1",
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: true,
+      tokenSecret: "track1-labeled-warm-secret-0123456789",
+      approvalHandler: async (req, ctx) => {
+        const specs = fakeBackend.getRecordedSpecs().filter((s) => s.taskId === ctx.taskId);
+        const tokenSpec =
+          ctx.role === "worker"
+            ? specs.find((s) => s.role === "worker")
+            : specs.filter((s) => s.role === ctx.role).at(-1);
+        const token = tokenSpec?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+        const stagedDir = server.store.paths.stagedDir(ctx.taskId);
+        fs.mkdirSync(stagedDir, { recursive: true });
+
+        if (req.action === "impl_r1_fail_rev") {
+          implTurn += 1;
+          fs.writeFileSync(path.join(stagedDir, "cleanup-note.txt"), "draft v1\n");
+          const res = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: serializeFrontmatterMarkdown(
+                {
+                  run_id: ctx.runId,
+                  contract_version: ctx.card.contract_version,
+                  outcome: "completed",
+                  input_ref: "host_scoped",
+                  output_ref: stagedDir,
+                  changed_paths: [targetFile],
+                  accept_result: "skipped",
+                  is_bugfix: false,
+                  complexity_escalate: false,
+                },
+                "## 改动说明\n初版暂存\n\n## 验证命令与真实输出\nok\n\n## 未完成或待决问题\n无\n",
+              ),
+            }),
+          });
+          expect(res.status).toBe(200);
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "rev_r1_reject") {
+          const res = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: serializeFrontmatterMarkdown(
+                {
+                  run_id: ctx.runId,
+                  contract_version: ctx.card.contract_version,
+                  reviewed_ref: stagedDir,
+                  verdict: "changes_requested",
+                  p0: 0,
+                  p1: 1,
+                  p2: 0,
+                },
+                "## 结论\n退回修复\n\n## 缺陷清单\n1. P1 · 修复字段\n\n## 测试真实性与复现核查\nok\n",
+              ),
+            }),
+          });
+          expect(res.status).toBe(200);
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "impl_r2_warm_fix") {
+          implTurn += 1;
+          fs.writeFileSync(path.join(stagedDir, "cleanup-note.txt"), "fixed v2\n");
+          const res = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: serializeFrontmatterMarkdown(
+                {
+                  run_id: ctx.runId,
+                  contract_version: ctx.card.contract_version,
+                  outcome: "completed",
+                  input_ref: "host_scoped",
+                  output_ref: stagedDir,
+                  changed_paths: [targetFile],
+                  accept_result: "skipped",
+                  is_bugfix: false,
+                  complexity_escalate: false,
+                },
+                "## 改动说明\n热会话修复\n\n## 验证命令与真实输出\nok\n\n## 未完成或待决问题\n无\n",
+              ),
+            }),
+          });
+          expect(res.status).toBe(200);
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        if (req.action === "rev_r2_pass") {
+          const res = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeReviewerReceiptMarkdown({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                reviewed_ref: stagedDir,
+                verdict: "pass",
+              }),
+            }),
+          });
+          expect(res.status).toBe(200);
+          await ctx.backend.answer(req.id, true);
+        }
+      },
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    server.store.writeConfig("roles", {
+      schema_version: 1,
+      heterogeneous_review: false,
+      roles: {
+        worker: {
+          backend_id: "fake",
+          agent: "codex",
+          model: "gpt-5.4",
+          allow_full_access_fallback: false,
+        },
+        reviewer: {
+          backend_id: "fake",
+          agent: "codex",
+          model: "gpt-5.4",
+          allow_full_access_fallback: false,
+        },
+      },
+    });
+
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "impl_r1_fail_rev", detail: "r1" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-labeled-warm", turnNumber: 1 },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "impl_r2_warm_fix", detail: "r2" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-labeled-warm", turnNumber: 2 },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "rev_r1_reject", detail: "rev1" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-labeled-warm", role: "reviewer" },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "rev_r2_pass", detail: "rev2" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-labeled-warm", role: "reviewer" },
+    );
+
+    const now = new Date().toISOString();
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-labeled-warm",
+        title: "带步骤标签的热会话复用",
+        space: "local",
+        priority: "P2",
+        track: "L2",
+        workspace_mode: "host_scoped",
+        parent: null,
+        depends_on: [],
+        workflow: {
+          schema_version: 1,
+          preset: "host_op",
+          steps: [
+            {
+              kind: "loop",
+              max_rounds: 2,
+              stuck_threshold: 2,
+              steps: [
+                {
+                  kind: "agent",
+                  label: "只读扫描并暂存",
+                  stage: "implement",
+                  role: "worker",
+                  fresh_context: false,
+                  mode: "dry_run_only",
+                  instructions: "仅写入 staged/",
+                },
+                { kind: "gate", stage: "verify", check: "staged_only" },
+                {
+                  kind: "agent",
+                  label: "独立复核",
+                  stage: "review",
+                  role: "reviewer",
+                  fresh_context: true,
+                },
+              ],
+            },
+            {
+              kind: "approval",
+              stage: "deliver",
+              show: ["staged_diff", "sha256"],
+            },
+            {
+              kind: "command",
+              stage: "deliver",
+              apply_staged: true,
+              run_deliver_cmd: false,
+              verify_sha256: true,
+              final_accept_gate: true,
+            },
+          ],
+        },
+        contract_version: 1,
+        contract: {
+          goal: "生成暂存备注",
+          end: "审批落盘",
+          accept_cmd: `grep -q fixed ${targetFile}`,
+          accept_files_hash: "sha256:init",
+          scope: [targetFile],
+          deliver: { mode: "manual", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: {
+          retries_per_stage: 2,
+          review_rounds: 2,
+          advisor_calls: 0,
+          max_tokens: 5_000_000,
+        },
+        created_at: now,
+        updated_at: now,
+      },
+      "# Labeled warm reuse",
+    );
+
+    await server.start();
+    await waitUntil(
+      () => server.store.getTaskIndex("t-labeled-warm")?.status === "waiting",
+      "t-labeled-warm waiting for deliver approval",
+    );
+    expect(implTurn).toBe(2);
+    expect(
+      fakeBackend
+        .getRecordedSpecs()
+        .filter((s) => s.taskId === "t-labeled-warm" && s.role === "worker"),
+    ).toHaveLength(1);
+    expect(fakeBackend.getRecordedSends()).toHaveLength(1);
+    const impl2Meta = readYamlOptional(
+      server.store.paths.runYaml("t-labeled-warm", "003-implement"),
+      RunMetaSchema,
+    );
+    expect(impl2Meta?.session_reused).toBe(true);
   });
 });

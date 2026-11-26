@@ -1939,7 +1939,7 @@ export class KilnChatEngine {
         ? `- 当前为 **L1 快车道**：保持 1–2 轮高效收敛，避免过度访谈；生成精简 4 段设计稿（目标与改动、边界约束、方案要点、验收命令）并尽快补齐全部契约字段。`
         : `- 当前为 **L2 标准交付**：确保业务规则、多状态流转、异常边界与人工兜底全部梳理清晰，直至 open_questions 清零；BRIEF.md 固定采用 5 段结构：\n  ## 1. 目标与用户场景\n  ## 2. 已确认规则与关键流程 / 边界\n  ## 3. 选定落地方案与关键取舍\n  ## 4. 范围边界（做什么 / 明确不做什么）\n  ## 5. 可观察验收场景`,
       `自动补全与安全边界：用户已在前端通过 Tab 选定了项目空间、优先级或轨道；请主动替用户推导并回填 title、end、accept_cmd、scope、non_goals、depends_on、open_questions 与 brief_markdown，严禁私自调用 commit_card 直接建卡（必须由用户点击「开始推进」确认）。`,
-      `5. **可组合流程蓝图预设**：按任务复杂度优先选用 4 套配方之一：\`quick\`（快速通道：实施→验真→交付，适合简单脚本/小改）、\`host_op\`（本机两阶段操作：实施暂存 dry-run→staged_only 门禁→单一交付审批后由内核原子落盘+执行+终审）、\`standard_dev\`（标准开发：实施⇄审查循环→交付，默认项目开发）、\`full_delivery\`（完整交付：顾问出方案 PLAN.md→实施⇄审查→独立验收→交付审批）。跨模块深挖可前置加入 \`research\` 节点（\`research -> plan\`），由 \`researcher\` 先补齐深层代码地图后再交 \`architect\` 设计 \`PLAN.md\`。若为 \`host_op\` 涉及本机实际执行命令，应把待执行命令放入 \`contract.deliver: { mode: "run_cmd", cmd: "..." }\`、把最终校验命令放入 \`contract.accept_cmd\`，Phase 1 只生成暂存脚本与校验报告，切勿让正式宿主验收命令在审批落盘前执行。`,
+      `5. **可组合流程蓝图预设**：按任务复杂度优先选用 4 套配方之一：\`quick\`（快速通道：实施→验真→交付，适合简单脚本/小改）、\`host_op\`（本机两阶段操作：实施暂存 dry-run→staged_only 门禁→单一交付审批后由内核原子落盘+执行+终审，**自身已有可逆隔离与最终人工交付审批，默认无需叠加重型多轮审查**；如确需加 \`review\`，\`loop.max_rounds\` 保持 \`2\`）、\`standard_dev\`（标准开发：实施⇄审查循环→交付，默认项目开发）、\`full_delivery\`（完整交付：顾问出方案 PLAN.md→实施⇄审查→独立验收→交付审批）。跨模块深挖可前置加入 \`research\` 节点（\`research -> plan\`），由 \`researcher\` 先补齐深层代码地图后再交 \`architect\` 设计 \`PLAN.md\`。若为 \`host_op\` 涉及本机实际执行命令，应把待执行命令放入 \`contract.deliver: { mode: "run_cmd", cmd: "..." }\`、把最终校验命令放入 \`contract.accept_cmd\`，Phase 1 只生成暂存脚本与校验报告，切勿让正式宿主验收命令在审批落盘前执行。`,
     ].join("\n");
 
     const rosterConfig = this.store.readEffectiveRosterConfig();
