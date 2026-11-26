@@ -634,6 +634,30 @@ export function DetailView() {
 
   const restoreErr = state.restoreResult && !state.restoreResult.ok ? state.restoreResult : null;
 
+  const stateEventsList = detail.stateEvents ?? [];
+  const latestWorkflowPatch = [...stateEventsList]
+    .reverse()
+    .find(
+      (ev): ev is Extract<typeof ev, { type: "workflow_patched" }> =>
+        ev.type === "workflow_patched" && ev.contract_version === card.contract_version,
+    );
+  const latestSubtasksSpawned = [...stateEventsList]
+    .reverse()
+    .find(
+      (ev): ev is Extract<typeof ev, { type: "subtasks_spawned" }> =>
+        ev.type === "subtasks_spawned" && ev.contract_version === card.contract_version,
+    );
+  const latestFastForward = [...stateEventsList]
+    .reverse()
+    .find(
+      (ev): ev is Extract<typeof ev, { type: "stage_fast_forwarded" }> =>
+        ev.type === "stage_fast_forwarded",
+    );
+  const childTasks = state.tasks.filter((t) => t.parent_id === card.id);
+  const completedChildCount = childTasks.filter((t) => t.status === "done").length;
+  const totalSplitCount =
+    childTasks.length > 0 ? childTasks.length : (latestSubtasksSpawned?.child_task_ids.length ?? 0);
+
   const latestExternalEvent =
     taskState.status === "external" && detail.stateEvents
       ? [...detail.stateEvents]
@@ -797,6 +821,23 @@ export function DetailView() {
                   : `合并队列 #${detail.mergeQueueEntry.position}`}
               </span>
             ) : null}
+            {latestWorkflowPatch ? (
+              <span className="chip chip-ok" title={latestWorkflowPatch.rationale}>
+                顾问已动态重排流程
+              </span>
+            ) : null}
+            {latestSubtasksSpawned || childTasks.length > 0 ? (
+              <span
+                className={`chip ${totalSplitCount > 0 && completedChildCount === totalSplitCount ? "chip-ok" : "chip-warn"}`}
+              >
+                {`已裂变子卡 ${completedChildCount}/${totalSplitCount} 完成`}
+              </span>
+            ) : null}
+            {latestFastForward ? (
+              <span className="chip chip-ok">
+                {`0-Token 快进 · ${latestFastForward.reason === "docs_only" ? "纯文档变更" : "纯测试变更"}`}
+              </span>
+            ) : null}
           </div>
           <div className="d-sub">
             <PrioritySelect
@@ -856,6 +897,37 @@ export function DetailView() {
             ))}
           </div>
         </section>
+
+        {childTasks.length > 0 ? (
+          <section className="align-panel" aria-label="并行裂变子卡">
+            <div className="align-top">
+              <b>{`并行裂变子卡 (${completedChildCount}/${childTasks.length})`}</b>
+              <span className="align-txt">
+                子卡合入父工作树并全部完成后，父卡将自动唤醒执行总集成验收
+              </span>
+            </div>
+            <div className="log" style={{ marginTop: "8px" }}>
+              {childTasks.map((child) => {
+                const childChip = STATUS_CHIP[child.status];
+                return (
+                  <div key={child.id} className="log-item">
+                    <button
+                      type="button"
+                      className="link mono"
+                      onClick={() => store.openTask(child.id)}
+                    >
+                      {child.id}
+                    </button>
+                    <span>
+                      {child.title} · <span className={`chip ${childChip[1]}`}>{childChip[0]}</span>
+                      {child.stage ? ` · ${stageMeta(child.stage).label}` : ""}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        ) : null}
 
         {(() => {
           let latestAcceptRun: TaskRunDetail | null = null;
@@ -2293,8 +2365,13 @@ export function DetailView() {
                           <span className="mono">{fmtTime(ev.at)}</span>
                           <span>
                             <b>{ev.type}</b>
-                            {"reason" in ev && ev.reason ? ` · ${ev.reason}` : ""}
-                            {"stage" in ev && ev.stage ? ` · ${stageMeta(ev.stage).label}` : ""}
+                            {ev.type === "workflow_patched"
+                              ? ` · 保留前缀 ${ev.preserved_prefix_steps} 步 → ${stageMeta(ev.resume_stage).label}（${ev.rationale}）`
+                              : ev.type === "subtasks_spawned"
+                                ? ` · 裂变 ${ev.child_task_ids.length} 张子卡 (${ev.child_task_ids.join(", ")}) → 集成屏障 ${stageMeta(ev.resume_stage).label}`
+                                : ev.type === "stage_fast_forwarded"
+                                  ? ` · 跳过 ${stageMeta(ev.skipped_stage).label} → ${stageMeta(ev.to_stage).label} (${ev.reason === "docs_only" ? "纯文档变更" : "纯测试变更"})`
+                                  : `${"reason" in ev && ev.reason ? ` · ${ev.reason}` : ""}${"stage" in ev && ev.stage ? ` · ${stageMeta(ev.stage).label}` : ""}`}
                           </span>
                         </div>
                       ))}

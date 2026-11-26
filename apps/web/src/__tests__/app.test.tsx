@@ -6425,4 +6425,197 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       writable: true,
     });
   });
+
+  it("renders Track 6 badges, clickable child task list, and readable state events in DetailView", async () => {
+    const baseBootstrap = makeBaseBootstrap({
+      tasks: [
+        {
+          id: "t-parent-ui",
+          space: "kiln",
+          parent_id: null,
+          title: "Track 6 父任务卡",
+          priority: "P1",
+          effective_priority: "P1",
+          track: "L2",
+          workspace_mode: "git_worktree",
+          status: "queued",
+          stage: "deliver",
+          round: 1,
+          active_run_id: null,
+          contract_version: 1,
+          depends_on: ["t-child-1", "t-child-2"],
+          created_at: "2026-11-26T00:00:00.000Z",
+          updated_at: "2026-11-26T00:05:00.000Z",
+          tokens: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+          cost_usd: 0,
+        },
+        {
+          id: "t-child-1",
+          space: "kiln",
+          parent_id: "t-parent-ui",
+          title: "子卡一",
+          priority: "P1",
+          effective_priority: "P1",
+          track: "L1",
+          workspace_mode: "git_worktree",
+          status: "done",
+          stage: "deliver",
+          round: 1,
+          active_run_id: null,
+          contract_version: 1,
+          depends_on: [],
+          created_at: "2026-11-26T00:01:00.000Z",
+          updated_at: "2026-11-26T00:03:00.000Z",
+          tokens: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+          cost_usd: 0,
+        },
+        {
+          id: "t-child-2",
+          space: "kiln",
+          parent_id: "t-parent-ui",
+          title: "子卡二",
+          priority: "P1",
+          effective_priority: "P1",
+          track: "L1",
+          workspace_mode: "git_worktree",
+          status: "running",
+          stage: "implement",
+          round: 1,
+          active_run_id: "run-c2-1",
+          contract_version: 1,
+          depends_on: [],
+          created_at: "2026-11-26T00:01:00.000Z",
+          updated_at: "2026-11-26T00:04:00.000Z",
+          tokens: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+          cost_usd: 0,
+        },
+      ],
+    });
+
+    const openedTaskIds: string[] = [];
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof Request ? input.url : "";
+      if (url === "/api/bootstrap") {
+        return jsonResponse(baseBootstrap);
+      }
+      if (url === "/api/tasks/t-parent-ui" || url === "/api/tasks/t-child-1") {
+        const isChild = url.endsWith("t-child-1");
+        openedTaskIds.push(isChild ? "t-child-1" : "t-parent-ui");
+        return jsonResponse({
+          card: {
+            schema_version: 1,
+            id: isChild ? "t-child-1" : "t-parent-ui",
+            title: isChild ? "子卡一" : "Track 6 父任务卡",
+            space: "kiln",
+            priority: "P1",
+            track: isChild ? "L1" : "L2",
+            workspace_mode: "git_worktree",
+            parent: isChild ? "t-parent-ui" : null,
+            depends_on: isChild ? [] : ["t-child-1", "t-child-2"],
+            contract_version: 1,
+            contract: {
+              goal: "Goal",
+              end: "End",
+              accept_cmd: "echo ok",
+              accept_files_hash: "pending",
+              scope: ["src/**"],
+              deliver: { mode: "merge_main", cmd: null },
+              human_accept: false,
+              external_actions: "ask",
+            },
+            limits: {
+              retries_per_stage: 2,
+              review_rounds: 2,
+              advisor_calls: 1,
+              max_tokens: 250000,
+            },
+            created_at: "2026-11-26T00:00:00.000Z",
+            updated_at: "2026-11-26T00:05:00.000Z",
+          },
+          state: {
+            status: isChild ? "done" : "queued",
+            stage: "deliver",
+            round: 1,
+            activeRunId: null,
+            priority: "P1",
+            effectivePriority: "P1",
+            track: isChild ? "L1" : "L2",
+            contractVersion: 1,
+            updatedAt: "2026-11-26T00:05:00.000Z",
+          },
+          stateEvents: isChild
+            ? []
+            : [
+                {
+                  type: "workflow_patched",
+                  at: "2026-11-26T00:01:00.000Z",
+                  run_id: "run-adv-1",
+                  contract_version: 1,
+                  preserved_prefix_steps: 1,
+                  new_total_steps: 4,
+                  resume_stage: "plan",
+                  resume_step_index: 1,
+                  rationale: "Need explicit plan before retry",
+                },
+                {
+                  type: "subtasks_spawned",
+                  at: "2026-11-26T00:02:00.000Z",
+                  run_id: "run-plan-1",
+                  contract_version: 1,
+                  child_task_ids: ["t-child-1", "t-child-2"],
+                  base_ref_sha: "abc1234",
+                  resume_stage: "verify",
+                  resume_step_index: 2,
+                },
+                {
+                  type: "stage_fast_forwarded",
+                  at: "2026-11-26T00:05:00.000Z",
+                  skipped_stage: "accept",
+                  skipped_step_index: 3,
+                  to_stage: "deliver",
+                  to_step_index: 4,
+                  reason: "tests_only",
+                  changed_paths: ["src/__tests__/a.test.ts"],
+                },
+              ],
+          brief: "# Brief",
+          decisions: "",
+          pendingDecision: null,
+          ledgerProposals: [],
+          runs: [],
+          usageTurns: [],
+          usage: {
+            totals: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+            byModel: {},
+            todayCostUsd: 0,
+            totalCostUsd: 0,
+          },
+          chatMessages: [],
+        });
+      }
+      if (url.includes("/chat")) {
+        return jsonResponse({ messages: [] });
+      }
+      if (url.includes("/api/chat/commands")) {
+        return jsonResponse({ commands: [], mcpServers: [] });
+      }
+      return jsonResponse({});
+    });
+
+    render(<App />);
+    const parentCardBtn = await screen.findByText("Track 6 父任务卡");
+    fireEvent.click(parentCardBtn);
+
+    expect(await screen.findByText("顾问已动态重排流程")).toBeTruthy();
+    expect(screen.getByText("已裂变子卡 1/2 完成")).toBeTruthy();
+    expect(screen.getByText("0-Token 快进 · 纯测试变更")).toBeTruthy();
+    expect(screen.getByText(/保留前缀 1 步/)).toBeTruthy();
+    expect(screen.getByText(/裂变 2 张子卡/)).toBeTruthy();
+
+    const childBtn = screen.getByRole("button", { name: "t-child-1" });
+    fireEvent.click(childBtn);
+    await waitFor(() => {
+      expect(openedTaskIds).toContain("t-child-1");
+    });
+  });
 });
