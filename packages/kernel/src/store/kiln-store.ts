@@ -326,6 +326,9 @@ export function deriveTaskStatus(
         round = null;
         activeRunId = null;
         break;
+
+      case "contract_tests_locked":
+        break;
     }
   }
 

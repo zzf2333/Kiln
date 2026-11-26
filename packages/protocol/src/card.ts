@@ -579,6 +579,15 @@ export const StateEventSchema = z.discriminatedUnion("type", [
     reason: z.enum(["docs_only", "tests_only"]),
     changed_paths: z.array(z.string()),
   }),
+  z.object({
+    type: z.literal("contract_tests_locked"),
+    at: z.string().min(1),
+    contract_version: z.number().int().positive(),
+    run_id: z.string().min(1),
+    test_files: z.array(z.string().min(1)),
+    accept_files_hash: z.string().min(1),
+    commit_sha: z.string().min(1).optional(),
+  }),
 ]);
 export type StateEvent = z.infer<typeof StateEventSchema>;
 

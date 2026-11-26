@@ -224,6 +224,22 @@ export class KilnPaths {
     return path.join(this.taskDir(taskId), "PLAN.md");
   }
 
+  planCandidateAMd(taskId: string): string {
+    return path.join(this.taskDir(taskId), "PLAN_CANDIDATE_A.md");
+  }
+
+  planCandidateBMd(taskId: string): string {
+    return path.join(this.taskDir(taskId), "PLAN_CANDIDATE_B.md");
+  }
+
+  dualSynthesisYaml(taskId: string): string {
+    return path.join(this.taskDir(taskId), "DUAL_SYNTHESIS.yaml");
+  }
+
+  contextMapMd(taskId: string): string {
+    return path.join(this.taskDir(taskId), "CONTEXT_MAP.md");
+  }
+
   researchMd(taskId: string): string {
     return path.join(this.taskDir(taskId), "RESEARCH.md");
   }

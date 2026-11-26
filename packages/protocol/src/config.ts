@@ -696,7 +696,7 @@ const DEFAULT_ROSTER_SEED: Record<
     enabled: true,
     name: "独立测试",
     stage: "verify",
-    secondary_stages: [],
+    secondary_stages: ["implement"],
     perm: "kernel_gate",
     traits: "默认确定性内核 0 Token 跑冻结门禁；高并发或缺单测时可切 Agent 补用例",
     mode: "kernel",

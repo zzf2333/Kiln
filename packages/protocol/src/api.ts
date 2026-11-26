@@ -539,3 +539,35 @@ export const ResolveTaskChecklistRequestSchema = z.object({
   advance_after_waive: z.boolean().default(false),
 });
 export type ResolveTaskChecklistRequest = z.infer<typeof ResolveTaskChecklistRequestSchema>;
+
+export const DualSynthesisCandidateSummarySchema = z.object({
+  brain: z.enum(["A", "B"]),
+  agent: z.string().min(1),
+  model: z.string().min(1).optional(),
+  outcome: z.enum(["completed", "need_decision", "failed", "skipped"]),
+  summary: z.string().optional(),
+  run_id: z.string().min(1).optional(),
+});
+export type DualSynthesisCandidateSummary = z.infer<typeof DualSynthesisCandidateSummarySchema>;
+
+export const DualSynthesisStatusSchema = z.enum([
+  "synthesized",
+  "adopted_single",
+  "fallback_single",
+  "awaiting_decision",
+  "failed",
+]);
+export type DualSynthesisStatus = z.infer<typeof DualSynthesisStatusSchema>;
+
+export const DualSynthesisRecordSchema = z.object({
+  schema_version: z.literal(1).default(1),
+  stage: z.enum(["plan", "advise"]),
+  run_id: z.string().min(1),
+  contract_version: z.number().int().positive(),
+  status: DualSynthesisStatusSchema,
+  reused_brain_a_session: z.boolean().default(false),
+  created_at: z.string().min(1),
+  candidates: z.array(DualSynthesisCandidateSummarySchema),
+  note: z.string().optional(),
+});
+export type DualSynthesisRecord = z.infer<typeof DualSynthesisRecordSchema>;

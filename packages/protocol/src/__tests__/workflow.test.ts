@@ -3,6 +3,7 @@ import {
   ADVISOR_ELIGIBLE_DECISION_CATEGORIES,
   AdvisorReceiptFrontmatterSchema,
   PendingSubtaskSplitSchema,
+  createDefaultBuiltinRosterMetadata,
   StateEventSchema,
   WorkflowBlueprintSchema,
   applyAdvisorWorkflowPatch,
@@ -924,5 +925,146 @@ describe("workflow composable blueprint schemas & helpers", () => {
       "review",
       "deliver",
     ]);
+  });
+
+  it("supports Track 7 E1 test_first_lock and E2 dual_synthesis workflow invariants", () => {
+    const bp = WorkflowBlueprintSchema.parse(
+      buildWorkflowPreset("full_delivery", {
+        includePlan: true,
+        dualSynthesis: true,
+        testFirstLock: true,
+      }),
+    );
+    const flat = flattenWorkflowSteps(bp);
+    expect(
+      flat.map((n) => `${n.stage}${n.kind === "agent" && n.mode ? `(${n.mode})` : ""}`),
+    ).toEqual([
+      "plan",
+      "implement(test_first_lock)",
+      "implement",
+      "verify",
+      "review",
+      "accept",
+      "deliver",
+      "deliver",
+    ]);
+    const toggles = extractWorkflowToggles(bp);
+    expect(toggles.dualSynthesis).toBe(true);
+    expect(toggles.testFirstLock).toBe(true);
+    expect(createDefaultBuiltinRosterMetadata().tester.secondary_stages).toContain("implement");
+
+    // Rejects test_first_lock without fresh_context=true
+    expect(
+      validateWorkflowBlueprint({
+        schema_version: 1,
+        preset: "custom",
+        steps: [
+          {
+            kind: "agent",
+            stage: "implement",
+            role: "worker",
+            fresh_context: false,
+            mode: "test_first_lock",
+          },
+          { kind: "agent", stage: "implement", role: "worker", fresh_context: false },
+          { kind: "gate", stage: "verify", check: "full" },
+          {
+            kind: "command",
+            stage: "deliver",
+            apply_staged: false,
+            run_deliver_cmd: false,
+            verify_sha256: false,
+            final_accept_gate: false,
+          },
+        ],
+      }).ok,
+    ).toBe(false);
+
+    // Rejects test_first_lock not followed by normal implement before verify gate
+    expect(
+      validateWorkflowBlueprint({
+        schema_version: 1,
+        preset: "custom",
+        steps: [
+          {
+            kind: "agent",
+            stage: "implement",
+            role: "worker",
+            fresh_context: true,
+            mode: "test_first_lock",
+          },
+          { kind: "gate", stage: "verify", check: "full" },
+          {
+            kind: "command",
+            stage: "deliver",
+            apply_staged: false,
+            run_deliver_cmd: false,
+            verify_sha256: false,
+            final_accept_gate: false,
+          },
+        ],
+      }).ok,
+    ).toBe(false);
+
+    // Rejects dual_synthesis on non-plan stage
+    expect(
+      validateWorkflowBlueprint({
+        schema_version: 1,
+        preset: "custom",
+        steps: [
+          {
+            kind: "agent",
+            stage: "research",
+            role: "advisor",
+            fresh_context: true,
+            plan_mode: "dual_synthesis",
+          },
+          { kind: "agent", stage: "implement", role: "worker", fresh_context: false },
+          { kind: "gate", stage: "verify", check: "full" },
+          {
+            kind: "command",
+            stage: "deliver",
+            apply_staged: false,
+            run_deliver_cmd: false,
+            verify_sha256: false,
+            final_accept_gate: false,
+          },
+        ],
+      }).ok,
+    ).toBe(false);
+
+    // Rejects combining test_first_lock with host_op two-phase modes
+    expect(
+      validateWorkflowBlueprint({
+        schema_version: 1,
+        preset: "host_op",
+        steps: [
+          {
+            kind: "agent",
+            stage: "implement",
+            role: "worker",
+            fresh_context: true,
+            mode: "test_first_lock",
+          },
+          {
+            kind: "agent",
+            stage: "implement",
+            role: "worker",
+            fresh_context: false,
+            mode: "dry_run_only",
+          },
+          { kind: "gate", stage: "verify", check: "staged_only" },
+          { kind: "approval", stage: "deliver", show: ["staged_diff"] },
+          {
+            kind: "command",
+            stage: "deliver",
+            apply_staged: true,
+            run_deliver_cmd: false,
+            verify_sha256: false,
+            final_accept_gate: true,
+          },
+        ],
+      }).ok,
+    ).toBe(false);
   });
 });

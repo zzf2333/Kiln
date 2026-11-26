@@ -21,6 +21,7 @@ import {
   type VerifierCapability,
 } from "@kiln/protocol";
 import type { KilnStore } from "../store/index.js";
+import { parseContextMapHeader } from "./context-map.js";
 import { selectActiveLedgerEntriesForHandoff } from "./improvements.js";
 import { readOptionalText } from "./pending-decisions.js";
 
@@ -608,6 +609,17 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
     } else {
       artifactSections.push(`## 技术实施方案 (PLAN.md)\n${planDoc}`);
     }
+  }
+  const contextMapDoc =
+    stage !== "accept" ? readOptionalText(store.paths.contextMapMd(card.id)) : null;
+  if (contextMapDoc) {
+    const counts = parseContextMapHeader(contextMapDoc);
+    const statsLabel = counts
+      ? `（Scope ${counts.scope} 文件 / 关联单测 ${counts.tests} 个 / 反向引用 ${counts.importers} 处 / Scope 外调用 ${counts.oos} 处）`
+      : "";
+    artifactSections.push(
+      `## 代码地图索引 (CONTEXT_MAP.md 指针)\n- 路径：${store.paths.contextMapMd(card.id)}${statsLabel}\n- 如需定位 Scope 导出骨架、反向调用爆炸半径或关联单测，请按需 read_file 读取上述文件（本轮未全量内联以节省上下文）。`,
+    );
   }
 
   const workspacePathLine =

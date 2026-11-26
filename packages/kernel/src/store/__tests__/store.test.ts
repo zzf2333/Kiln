@@ -1107,7 +1107,41 @@ describe("KilnStore concurrency, contract bump, locks, usage, and isolation", ()
         changed_paths: ["docs/readme.md"],
       });
 
+      const cardLocked = makeTaskCard({ id: "t-track7-locked" });
+      store.createTask(cardLocked, "# Locked test-first task");
+      store.appendStateEvent("t-track7-locked", {
+        type: "running",
+        at: "2026-11-26T00:04:00.000Z",
+        stage: "implement",
+        step_index: 0,
+        round: 1,
+        run_id: "run-tfl-1",
+      });
+      store.appendStateEvent("t-track7-locked", {
+        type: "contract_tests_locked",
+        at: "2026-11-26T00:04:30.000Z",
+        contract_version: 1,
+        run_id: "run-tfl-1",
+        test_files: ["src/__tests__/feature.test.ts"],
+        accept_files_hash: "sha256:abc123",
+      });
+      store.appendStateEvent("t-track7-locked", {
+        type: "resumed",
+        at: "2026-11-26T00:04:35.000Z",
+        stage: "implement",
+        step_index: 1,
+      });
+
       store.rebuildIndexFromDisk();
+
+      const lockedState = deriveTaskStatus(
+        store.readTaskCard("t-track7-locked"),
+        store.readStateEvents("t-track7-locked"),
+      );
+      expect(lockedState.status).toBe("queued");
+      expect(lockedState.stage).toBe("implement");
+      expect(lockedState.stepIndex).toBe(1);
+      expect(store.getTaskIndex("t-track7-locked")?.status).toBe("queued");
 
       const patchState = deriveTaskStatus(
         store.readTaskCard("t-track6-patch"),

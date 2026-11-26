@@ -47,6 +47,7 @@ import {
   type VerifierCapability,
   type WorkflowAgentNode,
 } from "@kiln/protocol";
+import { generateAndWriteContextMap } from "./context-map.js";
 import {
   FullAccessOnlyProviderError,
   IneligibleRoleAgentError,
@@ -1449,7 +1450,38 @@ export class KilnOrchestrator {
     }
   }
 
+  private async refreshTaskContextMap(
+    card: Pick<TaskCard, "id" | "workspace_mode" | "contract">,
+    worktreePath: string,
+    inputRef?: string,
+  ): Promise<void> {
+    if (card.workspace_mode !== "git_worktree" || !fs.existsSync(worktreePath)) {
+      return;
+    }
+    try {
+      await generateAndWriteContextMap({
+        card,
+        worktreePath,
+        outputPath: this.store.paths.contextMapMd(card.id),
+        ...(inputRef ? { inputRef } : {}),
+      });
+    } catch {
+      // Best-effort context map never blocks task progression.
+    }
+  }
+
   private async prepareWorkspaceForPlan(
+    card: TaskCard,
+    stage: StageId,
+  ): Promise<{ cwd: string; inputRef?: string }> {
+    const prep = await this.prepareWorkspaceForPlanInner(card, stage);
+    if (card.workspace_mode === "git_worktree") {
+      await this.refreshTaskContextMap(card, prep.cwd, prep.inputRef);
+    }
+    return prep;
+  }
+
+  private async prepareWorkspaceForPlanInner(
     card: TaskCard,
     stage: StageId,
   ): Promise<{ cwd: string; inputRef?: string }> {
@@ -4343,6 +4375,9 @@ export class KilnOrchestrator {
         stage: effectiveStage,
         round: runMeta.round,
       }).catch(() => {});
+      if (effectiveStage === "implement") {
+        await this.refreshTaskContextMap(latestCard, worktreePath, effectiveGateInputRef);
+      }
     }
 
     if (stageDecision.action === "advance_stage") {

@@ -41,7 +41,8 @@ export interface WorkflowAgentNode {
   stage: WorkflowAgentStage;
   role: WorkflowAgentRole;
   fresh_context: boolean;
-  mode?: "normal" | "dry_run_only";
+  mode?: "normal" | "dry_run_only" | "test_first_lock";
+  plan_mode?: "single" | "dual_synthesis";
   roster_role?: string;
   rationale?: string;
   binding?: WorkflowNodeBinding;
@@ -116,6 +117,8 @@ export interface WorkflowPresetOptions {
   humanAccept?: boolean;
   includeResearch?: boolean;
   includePlan?: boolean;
+  dualSynthesis?: boolean;
+  testFirstLock?: boolean;
   deliverApproval?: boolean;
   hasDeliverCmd?: boolean;
   maxRounds?: number;
@@ -126,6 +129,8 @@ export interface ComposableWorkflowOptions {
   preset?: WorkflowPreset;
   includeResearch?: boolean;
   includePlan: boolean;
+  dualSynthesis?: boolean;
+  testFirstLock?: boolean;
   includeReview: boolean;
   includeAccept: boolean;
   acceptMode?: "verifier" | "approval";
@@ -386,6 +391,17 @@ export function buildCustomWorkflow(options: ComposableWorkflowOptions): Workflo
       stage: "plan",
       role: "advisor",
       fresh_context: true,
+      ...(options.dualSynthesis ? { plan_mode: "dual_synthesis" as const } : {}),
+    });
+  }
+
+  if (!hostTwoPhase && options.testFirstLock) {
+    steps.push({
+      kind: "agent",
+      stage: "implement",
+      role: "worker",
+      fresh_context: true,
+      mode: "test_first_lock",
     });
   }
 
@@ -474,12 +490,20 @@ export function buildWorkflowPreset(
   preset: Exclude<WorkflowPreset, "custom">,
   options: WorkflowPresetOptions = {},
 ): WorkflowBlueprint {
+  const sharedPlanning = {
+    ...(options.includeResearch !== undefined ? { includeResearch: options.includeResearch } : {}),
+    ...(options.includePlan !== undefined ? { includePlan: options.includePlan } : {}),
+    ...(options.dualSynthesis !== undefined ? { dualSynthesis: options.dualSynthesis } : {}),
+    ...(options.testFirstLock !== undefined ? { testFirstLock: options.testFirstLock } : {}),
+  };
   switch (preset) {
     case "quick":
       return buildCustomWorkflow({
         preset: "quick",
         includeResearch: options.includeResearch ?? false,
         includePlan: options.includePlan ?? false,
+        ...(options.dualSynthesis !== undefined ? { dualSynthesis: options.dualSynthesis } : {}),
+        ...(options.testFirstLock !== undefined ? { testFirstLock: options.testFirstLock } : {}),
         includeReview: false,
         includeAccept: options.humanAccept ?? false,
         acceptMode: "approval",
@@ -494,6 +518,7 @@ export function buildWorkflowPreset(
         preset: "host_op",
         includeResearch: options.includeResearch ?? false,
         includePlan: options.includePlan ?? false,
+        ...(options.dualSynthesis !== undefined ? { dualSynthesis: options.dualSynthesis } : {}),
         includeReview: false,
         includeAccept: false,
         deliverApproval: true,
@@ -505,6 +530,7 @@ export function buildWorkflowPreset(
     case "standard_dev":
       return buildCustomWorkflow({
         preset: "standard_dev",
+        ...sharedPlanning,
         includeResearch: options.includeResearch ?? false,
         includePlan: options.includePlan ?? false,
         includeReview: true,
@@ -519,6 +545,7 @@ export function buildWorkflowPreset(
     case "full_delivery":
       return buildCustomWorkflow({
         preset: "full_delivery",
+        ...sharedPlanning,
         includeResearch: options.includeResearch ?? false,
         includePlan: options.includePlan ?? true,
         includeReview: true,
@@ -591,6 +618,12 @@ export function extractWorkflowToggles(blueprint: WorkflowBlueprint): Composable
     preset: blueprint.preset,
     includeResearch: flat.some((n) => n.kind === "agent" && n.stage === "research"),
     includePlan: flat.some((n) => n.kind === "agent" && n.stage === "plan"),
+    dualSynthesis: flat.some(
+      (n) => n.kind === "agent" && n.stage === "plan" && n.plan_mode === "dual_synthesis",
+    ),
+    testFirstLock: flat.some(
+      (n) => n.kind === "agent" && n.stage === "implement" && n.mode === "test_first_lock",
+    ),
     includeReview: flat.some((n) => n.kind === "agent" && n.stage === "review"),
     includeAccept: Boolean(acceptAgent || acceptApproval),
     acceptMode: acceptAgent ? "verifier" : "approval",
@@ -657,6 +690,9 @@ export function validateWorkflowBlueprint(
   let hasImplement = false;
   let seenDeliverApproval = false;
   let seenStagedOnlyGate = false;
+  let seenDryRunImpl = false;
+  let seenTestFirstLock = false;
+  let pendingTestFirstIdx = -1;
   let seenFinalAcceptGateAfterStaged = false;
   let maxStageRankSeen = -1;
   let pendingResearchIdx = -1;
@@ -679,8 +715,31 @@ export function validateWorkflowBlueprint(
           `Stage "${node.stage}" (role "${node.role}") at node[${i}] must run with fresh_context=true`,
         );
       }
+      if (node.plan_mode === "dual_synthesis" && node.stage !== "plan") {
+        errors.push(`plan_mode="dual_synthesis" at node[${i}] is only supported on stage "plan"`);
+      }
+      if (node.mode === "test_first_lock") {
+        seenTestFirstLock = true;
+        if (node.stage !== "implement") {
+          errors.push(
+            `mode="test_first_lock" at node[${i}] is only supported on stage "implement"`,
+          );
+        }
+        if (!node.fresh_context) {
+          errors.push(
+            `Implement node[${i}] with mode="test_first_lock" must run with fresh_context=true`,
+          );
+        }
+        pendingTestFirstIdx = i;
+      }
       if (node.stage === "implement") {
         hasImplement = true;
+        if (node.mode === "dry_run_only") {
+          seenDryRunImpl = true;
+        }
+        if ((node.mode ?? "normal") === "normal") {
+          pendingTestFirstIdx = -1;
+        }
         if (firstImplementIdx === -1) {
           firstImplementIdx = i;
         }
@@ -698,6 +757,12 @@ export function validateWorkflowBlueprint(
         pendingPlanIdx = i;
       }
     } else if (node.kind === "gate") {
+      if (pendingTestFirstIdx !== -1) {
+        errors.push(
+          `Implement node[${pendingTestFirstIdx}] with mode="test_first_lock" must be followed by a normal "implement" node before verify gate`,
+        );
+        pendingTestFirstIdx = -1;
+      }
       if (node.check === "staged_only") {
         seenStagedOnlyGate = true;
       }
@@ -734,6 +799,14 @@ export function validateWorkflowBlueprint(
   }
   if (pendingPlanIdx !== -1) {
     errors.push('Stage "plan" must appear before "implement"');
+  }
+  if (pendingTestFirstIdx !== -1) {
+    errors.push(
+      `Implement node[${pendingTestFirstIdx}] with mode="test_first_lock" must be followed by a normal "implement" node before delivery`,
+    );
+  }
+  if (seenTestFirstLock && (seenStagedOnlyGate || seenDryRunImpl)) {
+    errors.push('mode="test_first_lock" cannot be combined with host_op two-phase staging modes');
   }
   if (seenStagedOnlyGate && !seenFinalAcceptGateAfterStaged) {
     errors.push(
@@ -1066,7 +1139,9 @@ export function getVerifyGateCheckMode(card: WorkflowCardLike): "full" | "staged
   return "full";
 }
 
-export function getImplementAgentMode(card: WorkflowCardLike): "normal" | "dry_run_only" {
+export function getImplementAgentMode(
+  card: WorkflowCardLike,
+): "normal" | "dry_run_only" | "test_first_lock" {
   const flat = flattenWorkflowSteps(resolveTaskWorkflow(card));
   for (let i = flat.length - 1; i >= 0; i--) {
     const node = flat[i]!;
