@@ -910,10 +910,15 @@ export function DetailView() {
               {childTasks.map((child) => {
                 const childChip = STATUS_CHIP[child.status];
                 return (
-                  <div key={child.id} className="log-item">
+                  <div
+                    key={child.id}
+                    className="log-item"
+                    style={{ gridTemplateColumns: "auto 1fr", alignItems: "center" }}
+                  >
                     <button
                       type="button"
                       className="link mono"
+                      style={{ whiteSpace: "nowrap" }}
                       onClick={() => store.openTask(child.id)}
                     >
                       {child.id}

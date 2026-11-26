@@ -100,7 +100,7 @@ export function buildReceiptTemplateSection(params: {
       );
       fieldNotes = [
         "- `run_id` / `contract_version`: 提交时务必替换为末尾「本轮执行指令」给出的真实值",
-        "- `outcome`: 仅允许 `completed` | `need_decision`",
+        "- `outcome`: 仅允许 `completed` | `need_decision`（若提交 `need_decision`，尤其是 file-protocol 工作区如 `pi`，可在 frontmatter 附带 `category` 如 `workflow_replan` / `technical_ambiguity` / `implementation_choice` 与 `question`，由内核自动唤醒 `advisor`）",
         "- `accept_result`: 仅允许 `pass` | `fail` | `skipped`",
         "- `changed_paths`: 字符串数组（相对路径，或 `host_scoped` 下的绝对白名单路径）",
         "- `is_bugfix`: 布尔值；若为 `true`，必须额外包含非空的 `## 修前复现证据` 二级标题章节",
@@ -222,7 +222,7 @@ export function buildReceiptTemplateSection(params: {
         "- `outcome`: 仅允许 `resolved` | `need_decision`",
         "- `chosen_approach`: 非空字符串",
         "- `decision_kind` / `target_stage`: 可选；`decision_kind` 支持 `plan` | `technical_ambiguity` | `review_deadlock` | `stuck_recovery` | `workflow_replan` | `subtask_split`；`target_stage` 仅限 `implement` | `review`",
-        "- `workflow_patch` (可选，与 `spawn_subtasks` 互斥): 动态重排剩余流程蓝图 `{ rationale, replace_remaining_steps }`，可插入 `research` / `plan`、切换 `debugger`/`frontend_ui` 等角色或补加 `review`，严禁删除既有 `accept` 或 `deliver`",
+        '- `workflow_patch` (可选，与 `spawn_subtasks` 互斥): 动态重排剩余流程 `{ rationale, replace_remaining_steps }`（严禁删除既有 `accept`/`deliver`）。`replace_remaining_steps` 元素必须严格符合 `WorkflowStep`：`{ kind: "agent", stage: "research", role: "advisor", fresh_context: true, roster_role?: "researcher" | "debugger" }`、`{ kind: "agent", stage: "plan", role: "advisor", fresh_context: true }`、`{ kind: "agent", stage: "implement", role: "worker", fresh_context: false, roster_role?: "main_dev" | "fast_fix" | "frontend_ui" | "doc_writer" }`、`{ kind: "gate", stage: "verify", check: "full" }`、`{ kind: "agent", stage: "review", role: "reviewer", fresh_context: true }`',
         "- `spawn_subtasks` (可选，与 `workflow_patch` 互斥): 2–12 张并行/有向依赖子卡提案 `[{ temp_id, title, depends_on_temp_ids, roster_role?, include_review, contract: { goal, end, scope, accept_cmd? }, brief_markdown }]`（2–4 张且 scope 属父卡严格子集时自动裂变并行）",
         "- `requires_contract_change` / `requires_scope_expansion` / `requires_human_approval`: 布尔值（默认 `false`；任一为 `true` 将触发内核护栏转交人类批准）",
       ];
@@ -369,7 +369,7 @@ function buildStageCognitiveDirective(params: {
       `- 当前正在只读分析目标工作区 ${cwd}、产品方案、历史裁决与触发上下文。`,
       `- 严禁直接修改源码或暂存文件；严禁擅自更改交付目标、扩大 contract.scope 或越过人类红线。`,
       `- **收敛效率纪律**：仅聚焦触发本次阻塞的争议点做定点只读核查，严禁对无关文件或整台宿主机从头全量重扫；裁决正文须精炼可执行，勿复述上下文里已有的长段背景。`,
-      `- 若当前问题源于流程步骤/角色不适配（如缺少前置调研/方案、需要换 \`debugger\`/\`frontend_ui\`），可在 \`outcome: resolved\` 中附 \`workflow_patch\` 重排剩余流程；若发现需拆解多模块，可附 \`spawn_subtasks\`（不与 \`workflow_patch\` 同用）。`,
+      `- 若当前问题源于流程步骤/角色不适配（如缺少前置调研 \`researcher\`/\`debugger\`、缺少 \`plan\`、或需切换实施角色 \`main_dev\`/\`fast_fix\`/\`frontend_ui\`/\`doc_writer\`），可在 \`outcome: resolved\` 中附 \`workflow_patch\` 重排剩余流程；若发现需拆解多模块，可附 \`spawn_subtasks\`（不与 \`workflow_patch\` 同用）。`,
       `- 请在已授权契约内给出明确可执行的单一选型建议并提交 outcome: resolved（可通过 target_stage 指定回到 implement 或 review）；若判定必须修改契约（requires_contract_change: true）、扩大 scope（requires_scope_expansion: true）或需人类批准红线副作用（requires_human_approval: true），请如实在 frontmatter 标明或提交 outcome: need_decision，由内核转交本人拍板。`,
     ].join("\n");
   }
