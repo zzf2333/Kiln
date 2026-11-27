@@ -543,10 +543,6 @@ export function resolveDualSynthesisPeerAssignment(
   }
 
   const selected = distinct.find((cand) => {
-    const caps = options?.agentCapabilitiesMap?.get(cand.provider);
-    if (caps !== undefined && !caps.mcpInjection) {
-      return true;
-    }
     if (!options?.isCoolingDown) {
       return true;
     }

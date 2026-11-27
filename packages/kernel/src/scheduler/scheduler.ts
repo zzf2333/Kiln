@@ -412,7 +412,58 @@ function computeNextStageAndRound(
         }
       }
     }
-    const resolved = resolveWorkflowStepAt(card, hintStepIndex, derived.stage, derived.track);
+    const resolvedInitial = resolveWorkflowStepAt(
+      card,
+      hintStepIndex,
+      derived.stage,
+      derived.track,
+    );
+    let resolved = resolvedInitial;
+    if (
+      hintStepIndex === null &&
+      derived.stage === "implement" &&
+      resolvedInitial?.node.kind === "agent" &&
+      resolvedInitial.node.mode === "test_first_lock"
+    ) {
+      let contractTestsLocked = false;
+      for (const ev of events) {
+        if (
+          ev.type === "contract_tests_locked" &&
+          ev.contract_version === derived.contractVersion
+        ) {
+          contractTestsLocked = true;
+        } else if (ev.type === "contract_updated" && ev.to_version === derived.contractVersion) {
+          contractTestsLocked = false;
+        } else if (
+          ev.type === "workflow_patched" &&
+          (ev.contract_version === undefined || ev.contract_version === derived.contractVersion)
+        ) {
+          const flatAfterPatch = getWorkflowFlatSteps(card, derived.track);
+          const remaining = flatAfterPatch.slice(ev.resume_step_index);
+          if (
+            remaining.some(
+              (n) => n.kind === "agent" && n.stage === "implement" && n.mode === "test_first_lock",
+            )
+          ) {
+            contractTestsLocked = false;
+          }
+        }
+      }
+      if (contractTestsLocked) {
+        const flat = getWorkflowFlatSteps(card, derived.track);
+        for (let i = resolvedInitial.stepIndex + 1; i < flat.length; i++) {
+          const candidateNode = flat[i]!;
+          if (
+            candidateNode.kind === "agent" &&
+            candidateNode.stage === "implement" &&
+            (candidateNode.mode ?? "normal") !== "test_first_lock"
+          ) {
+            resolved = { stepIndex: i, node: candidateNode };
+            break;
+          }
+        }
+      }
+    }
     if (resolved) {
       stage = resolved.node.stage;
       stepIndex = resolved.stepIndex;
@@ -1046,8 +1097,13 @@ export class KilnScheduler {
                       !(this.providerHealth?.isInCooldown(cand.provider, nowMs) ?? false),
                   ) ?? distinct[0];
                 if (chosen) {
+                  const {
+                    backendId: _staleBackendId,
+                    reasoningEffort: _staleEffort,
+                    ...baseAssignment
+                  } = roleAssignment;
                   roleAssignment = {
-                    ...roleAssignment,
+                    ...baseAssignment,
                     ...(chosen.backend_id !== undefined ? { backendId: chosen.backend_id } : {}),
                     agent: chosen.provider,
                     model: chosen.model,

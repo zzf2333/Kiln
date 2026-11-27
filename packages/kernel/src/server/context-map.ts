@@ -173,7 +173,23 @@ function walkRepoFilesBounded(rootDir: string, deadlineMs: number, limit = 1500)
   return out;
 }
 
-function readHeadSnippet(absPath: string): string | null {
+function isSafeWorktreeFile(absPath: string, realRoot: string): boolean {
+  try {
+    const stat = fs.lstatSync(absPath);
+    if (stat.isSymbolicLink() || !stat.isFile()) {
+      return false;
+    }
+    const realTarget = fs.realpathSync(absPath);
+    return realTarget === realRoot || realTarget.startsWith(`${realRoot}${path.sep}`);
+  } catch {
+    return false;
+  }
+}
+
+function readHeadSnippet(absPath: string, realRoot: string): string | null {
+  if (!isSafeWorktreeFile(absPath, realRoot)) {
+    return null;
+  }
   try {
     const fd = fs.openSync(absPath, "r");
     try {
@@ -352,6 +368,15 @@ export async function generateAndWriteContextMap(params: {
 
   let allRepoFiles: string[] = [];
   let deltaSet = new Set<string>();
+  const realWorktreeRoot = fs.existsSync(params.worktreePath)
+    ? (() => {
+        try {
+          return fs.realpathSync(params.worktreePath);
+        } catch {
+          return path.resolve(params.worktreePath);
+        }
+      })()
+    : path.resolve(params.worktreePath);
 
   if (fs.existsSync(params.worktreePath)) {
     const gitTimeout = Math.min(80, Math.max(25, remainingMs() * 0.6));
@@ -428,7 +453,7 @@ export async function generateAndWriteContextMap(params: {
       break;
     }
     const content = isSourceCodePath(rel)
-      ? readHeadSnippet(path.join(params.worktreePath, rel))
+      ? readHeadSnippet(path.join(params.worktreePath, rel), realWorktreeRoot)
       : null;
     const symbols = content ? extractExportSymbols(rel, content) : [];
     deltaLines.push(symbols.length > 0 ? `- \`${rel}\`: ${symbols.join(", ")}` : `- \`${rel}\``);
@@ -443,7 +468,7 @@ export async function generateAndWriteContextMap(params: {
     if (!isSourceCodePath(rel) || isTestPath(rel)) {
       continue;
     }
-    const content = readHeadSnippet(path.join(params.worktreePath, rel));
+    const content = readHeadSnippet(path.join(params.worktreePath, rel), realWorktreeRoot);
     if (!content) {
       continue;
     }
@@ -479,7 +504,7 @@ export async function generateAndWriteContextMap(params: {
       break;
     }
     scannedCount += 1;
-    const content = readHeadSnippet(path.join(params.worktreePath, candidate));
+    const content = readHeadSnippet(path.join(params.worktreePath, candidate), realWorktreeRoot);
     if (!content) {
       continue;
     }

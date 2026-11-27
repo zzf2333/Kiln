@@ -1056,7 +1056,7 @@ function stripHostTwoPhaseWorkflow(
   dropRosterRoles?: ReadonlySet<string>,
 ): WorkflowBlueprint {
   const toggles = extractWorkflowToggles(workflow);
-  if (!toggles.hostTwoPhase) {
+  if (!toggles.hostTwoPhase && !toggles.testFirstLock) {
     return preserveWorkflowAssignments(workflow, workflow, {
       preserveResearch: true,
       ...(dropRosterRoles ? { dropRosterRoles } : {}),
@@ -1072,6 +1072,7 @@ function stripHostTwoPhaseWorkflow(
     ...toggles,
     preset: nextPreset,
     hostTwoPhase: false,
+    testFirstLock: false,
     deliverApproval: hasDeliverCmd ? toggles.deliverApproval : false,
     hasDeliverCmd,
   });
@@ -2961,6 +2962,9 @@ export class KilnWebStore {
     };
     if (!merged.includePlan) {
       merged.dualSynthesis = false;
+    }
+    if (cur.workspace_mode !== "git_worktree") {
+      merged.testFirstLock = false;
     }
     if (merged.hostTwoPhase) {
       merged.deliverApproval = true;

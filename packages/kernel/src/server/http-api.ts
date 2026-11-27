@@ -1833,12 +1833,31 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       brief,
       plan,
       research,
-      dualSynthesis: readYamlOptional(
-        store.paths.dualSynthesisYaml(taskId),
-        DualSynthesisRecordSchema,
-      ),
-      planCandidateA: readOptionalText(store.paths.planCandidateAMd(taskId)),
-      planCandidateB: readOptionalText(store.paths.planCandidateBMd(taskId)),
+      dualSynthesis: (() => {
+        const dual = readYamlOptional(
+          store.paths.dualSynthesisYaml(taskId),
+          DualSynthesisRecordSchema,
+        );
+        return dual && dual.contract_version === card.contract_version ? dual : null;
+      })(),
+      planCandidateA: (() => {
+        const dual = readYamlOptional(
+          store.paths.dualSynthesisYaml(taskId),
+          DualSynthesisRecordSchema,
+        );
+        return dual && dual.contract_version === card.contract_version
+          ? readOptionalText(store.paths.planCandidateAMd(taskId))
+          : null;
+      })(),
+      planCandidateB: (() => {
+        const dual = readYamlOptional(
+          store.paths.dualSynthesisYaml(taskId),
+          DualSynthesisRecordSchema,
+        );
+        return dual && dual.contract_version === card.contract_version
+          ? readOptionalText(store.paths.planCandidateBMd(taskId))
+          : null;
+      })(),
       retro: retroReport ? { report: retroReport, markdown: retroMd } : null,
       attachments: card.attachments ?? [],
       checkpoints,
@@ -3088,25 +3107,36 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       selectedOption.action === "resume" &&
       (selectedOption.id === "opt-adopt-brain-a" || selectedOption.id === "opt-adopt-brain-b")
     ) {
+      const existingDual = readYamlOptional(
+        store.paths.dualSynthesisYaml(taskId),
+        DualSynthesisRecordSchema,
+      );
       const candidatePath =
         selectedOption.id === "opt-adopt-brain-a"
           ? store.paths.planCandidateAMd(taskId)
           : store.paths.planCandidateBMd(taskId);
       const chosenMarkdown = readOptionalText(candidatePath);
+      const chosenLabel = selectedOption.id === "opt-adopt-brain-a" ? "Brain A" : "Brain B";
       if (chosenMarkdown && chosenMarkdown.trim().length > 0) {
-        writeFileAtomic(store.paths.planMd(taskId), chosenMarkdown);
+        if (existingDual?.stage === "advise") {
+          const decPath = store.paths.decisionsMd(taskId);
+          const existingDec = readOptionalText(decPath) ?? "";
+          const block = `## 人工拍板采纳双脑顾问方案 (${chosenLabel})\n\n${chosenMarkdown.trim()}\n`;
+          writeFileAtomic(
+            decPath,
+            existingDec.trim().length > 0 ? `${existingDec.trimEnd()}\n\n${block}` : block,
+          );
+        } else {
+          writeFileAtomic(store.paths.planMd(taskId), chosenMarkdown);
+        }
       }
-      const existingDual = readYamlOptional(
-        store.paths.dualSynthesisYaml(taskId),
-        DualSynthesisRecordSchema,
-      );
       if (existingDual) {
         writeYamlAtomic(
           store.paths.dualSynthesisYaml(taskId),
           DualSynthesisRecordSchema.parse({
             ...existingDual,
             status: "adopted_single",
-            note: `人工拍板采用 ${selectedOption.id === "opt-adopt-brain-a" ? "Brain A" : "Brain B"} 候选方案`,
+            note: `人工拍板采用 ${chosenLabel} 候选方案`,
           }),
           DualSynthesisRecordSchema,
         );

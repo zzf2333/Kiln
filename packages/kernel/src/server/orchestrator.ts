@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -456,6 +456,7 @@ export class KilnOrchestrator {
   private readonly inFlightOperations = new Map<string, InFlightStageOperation>();
   private readonly abortingBeforeDispatch = new Set<string>();
   private readonly advisorPreRunDirtySignatures = new Map<string, string>();
+  private readonly testFirstLockPreHeadByRunId = new Map<string, string>();
   private readonly activeAuxiliaryReceipts = new Map<
     string,
     { taskId: string; contractVersion: number; rawMarkdown?: string }
@@ -468,6 +469,7 @@ export class KilnOrchestrator {
       role: RoleId;
       backend: ExecutionBackend;
       sessionRef: SessionRef;
+      lastEventAtMs: number;
     }
   >();
   private readonly activeAcceptEnvs = new Map<string, AcceptEnvSession>();
@@ -811,15 +813,17 @@ export class KilnOrchestrator {
     }
     if (op) {
       op.abortController.abort();
-      await op.promise.catch(() => {});
-      if (this.inFlightOperations.get(safeTaskId)?.runId === op.runId) {
-        this.inFlightOperations.delete(safeTaskId);
-      }
     }
     for (const [auxKey, aux] of this.auxiliaryActiveHandles.entries()) {
       if (aux.taskId === safeTaskId) {
         this.auxiliaryActiveHandles.delete(auxKey);
         await aux.backend.cancel(aux.sessionRef).catch(() => {});
+      }
+    }
+    if (op) {
+      await op.promise.catch(() => {});
+      if (this.inFlightOperations.get(safeTaskId)?.runId === op.runId) {
+        this.inFlightOperations.delete(safeTaskId);
       }
     }
   }
@@ -955,6 +959,28 @@ export class KilnOrchestrator {
 
         if (evalResult.action === "abort_dead" || evalResult.action === "abort_hard_timeout") {
           await this.recoverStalledRun(handle, evalResult, probeResult);
+        }
+      }
+
+      const auxHandles = Array.from(this.auxiliaryActiveHandles.entries());
+      for (const [auxKey, aux] of auxHandles) {
+        if (this.stopped || !this.auxiliaryActiveHandles.has(auxKey)) {
+          continue;
+        }
+        const silentMs = Math.max(0, this.nowMs() - aux.lastEventAtMs);
+        if (silentMs < stallTimeoutMs) {
+          continue;
+        }
+        const probeResult = await probeSessionWithTimeout(aux.backend, aux.sessionRef);
+        const evalResult = evaluateRunStallState({
+          silentMs: Math.max(0, this.nowMs() - aux.lastEventAtMs),
+          stallTimeoutMs,
+          alreadyWarned: silentMs >= stallTimeoutMs * 2,
+          probeResult,
+        });
+        if (evalResult.action === "abort_dead" || evalResult.action === "abort_hard_timeout") {
+          this.auxiliaryActiveHandles.delete(auxKey);
+          await aux.backend.cancel(aux.sessionRef).catch(() => {});
         }
       }
     } finally {
@@ -2846,6 +2872,18 @@ export class KilnOrchestrator {
     };
 
     if (
+      dispatchImplementMode === "test_first_lock" &&
+      plan.card.workspace_mode === "git_worktree"
+    ) {
+      const preHead = (
+        await runGitCommand(["-C", workspace.cwd, "rev-parse", "HEAD"]).catch(() => "")
+      ).trim();
+      if (preHead.length > 0) {
+        this.testFirstLockPreHeadByRunId.set(runId, preHead);
+      }
+    }
+
+    if (
       (plan.stage === "plan" ||
         plan.stage === "advise" ||
         plan.stage === "research" ||
@@ -3011,6 +3049,9 @@ export class KilnOrchestrator {
     const capsA = await backendA.capabilities(primaryAssignment.agent);
     assertRoleAgentEligible("advisor", primaryAssignment.agent, capsA);
 
+    fs.rmSync(this.store.paths.planCandidateAMd(plan.taskId), { force: true });
+    fs.rmSync(this.store.paths.planCandidateBMd(plan.taskId), { force: true });
+
     const handoff = this.buildHandoffPayload({
       card: plan.card,
       runId,
@@ -3087,18 +3128,57 @@ export class KilnOrchestrator {
       const runIdA = `${runId}-cand-a`;
       const runIdB = `${runId}-cand-b`;
       const registeredSessions: Array<{ backend: ExecutionBackend; sessionRef: SessionRef }> = [];
+      const rateLimitHits: Array<{
+        backendId: string;
+        agent: string;
+        model: string;
+      }> = [];
 
       const consumeTurnEvents = async (
         brainTag: "A" | "B" | "S",
         backend: ExecutionBackend,
         sessionRef: SessionRef,
+        assign: { agent: string; model: string },
         turnSeqTag: string,
       ): Promise<Extract<RunEvent, { kind: "exit" }> | null> => {
         let exitEv: Extract<RunEvent, { kind: "exit" }> | null = null;
+        const auxKey = `${backend.backendId}:${sessionRef.sessionId}`;
         try {
           for await (const ev of backend.events(sessionRef)) {
             if (signal.aborted) {
               break;
+            }
+            const auxEntry = this.auxiliaryActiveHandles.get(auxKey);
+            if (auxEntry) {
+              auxEntry.lastEventAtMs = this.nowMs();
+            }
+            if (ev.kind === "rate_limited") {
+              rateLimitHits.push({
+                backendId: backend.backendId,
+                agent: assign.agent,
+                model: assign.model,
+              });
+              this.scheduler.markRateLimited(
+                {
+                  backendId: backend.backendId,
+                  agent: assign.agent,
+                  model: assign.model,
+                },
+                this.rateLimitCooldownMs,
+              );
+              const untilIso =
+                this.providerHealth?.recordRateLimit(ev.provider, {
+                  ...(ev.until !== undefined ? { until: ev.until } : {}),
+                  ...(ev.detail !== undefined ? { detail: ev.detail } : {}),
+                }) ?? ev.until;
+              this.sseHub.publish({
+                type: "provider.status",
+                providerId: ev.provider,
+                status: "cooldown",
+                ...(untilIso !== undefined ? { cooldownUntil: untilIso } : {}),
+                ...(ev.detail !== undefined ? { detail: ev.detail } : {}),
+                at: ev.at,
+              });
             }
             const normalizedEv: RunEvent =
               ev.kind === "usage"
@@ -3116,14 +3196,45 @@ export class KilnOrchestrator {
             });
             if (ev.kind === "exit") {
               exitEv = ev;
+              if (ev.reason === "failed" && ev.detail && isRateLimitErrorMessage(ev.detail)) {
+                rateLimitHits.push({
+                  backendId: backend.backendId,
+                  agent: assign.agent,
+                  model: assign.model,
+                });
+                this.scheduler.markRateLimited(
+                  {
+                    backendId: backend.backendId,
+                    agent: assign.agent,
+                    model: assign.model,
+                  },
+                  this.rateLimitCooldownMs,
+                );
+              }
             }
           }
         } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (isRateLimitErrorMessage(msg)) {
+            rateLimitHits.push({
+              backendId: backend.backendId,
+              agent: assign.agent,
+              model: assign.model,
+            });
+            this.scheduler.markRateLimited(
+              {
+                backendId: backend.backendId,
+                agent: assign.agent,
+                model: assign.model,
+              },
+              this.rateLimitCooldownMs,
+            );
+          }
           exitEv = {
             kind: "exit",
             at: new Date().toISOString(),
             reason: "failed",
-            detail: err instanceof Error ? err.message : String(err),
+            detail: msg,
           };
         }
         return exitEv;
@@ -3141,6 +3252,7 @@ export class KilnOrchestrator {
         mcpServers: McpStdioMountSpec[] | undefined;
         caps: BackendCapabilities;
         error?: string;
+        policyError?: string;
       }
 
       const runCandidateBrain = async (
@@ -3150,6 +3262,34 @@ export class KilnOrchestrator {
         auxRunId: string,
       ): Promise<AuxCandidateResult> => {
         const caps = await backend.capabilities(assign.agent);
+        try {
+          assertRoleAgentEligible("advisor", assign.agent, caps);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            brain,
+            agent: assign.agent,
+            model: assign.model,
+            backend,
+            sessionRef: null,
+            exitEvent: null,
+            rawReceipt: null,
+            parsed: null,
+            mcpServers: undefined,
+            caps,
+            error: msg,
+            ...(err instanceof IneligibleRoleAgentError ? { policyError: msg } : {}),
+          };
+        }
+
+        const candReceiptPath = path.join(
+          this.store.paths.runDir(plan.taskId, runDirName),
+          `RECEIPT_CAND_${brain}.md`,
+        );
+        if (!caps.mcpInjection) {
+          fs.rmSync(candReceiptPath, { force: true });
+        }
+
         const mcpServers: McpStdioMountSpec[] | undefined = caps.mcpInjection
           ? [
               {
@@ -3177,13 +3317,38 @@ export class KilnOrchestrator {
           contractVersion: plan.contractVersion,
         });
 
+        const candHandoff = this.buildHandoffPayload({
+          card: plan.card,
+          runId: auxRunId,
+          runDirName,
+          stage,
+          round: plan.round,
+          role: "advisor",
+          cwd: workspace.cwd,
+          inputRef: workspace.inputRef,
+          mcpEnabled: caps.mcpInjection,
+          ...(!caps.mcpInjection ? { receiptPathOverride: candReceiptPath } : {}),
+          ...(assign.rosterRoleId !== undefined ? { rosterRoleId: assign.rosterRoleId } : {}),
+          ...(assign.stepLabel !== undefined ? { stepLabel: assign.stepLabel } : {}),
+          ...(assign.customInstructions !== undefined
+            ? { customInstructions: assign.customInstructions }
+            : {}),
+        });
+
         const candPrompt = [
-          handoff.fullMarkdown,
+          candHandoff.fullMarkdown,
           ``,
           `---`,
           `### 双脑并行独立草案指令（Brain ${brain} · ${assign.agent}/${assign.model}）`,
-          `- 当前运行处于 E2 方案层双脑博弈独立起草阶段（只读），你的临时 \`run_id\` 为 \`${auxRunId}\`。`,
-          `- 提交回执时请务必将 frontmatter 中的 \`run_id\` 设为 \`${auxRunId}\`；严禁修改工作区文件。`,
+          `- 当前运行处于 E2 方案层双脑博弈独立起草阶段（只读），你的独立 \`run_id\` 为 \`${auxRunId}\`。`,
+          ...(caps.mcpInjection
+            ? [
+                `- 请调用 \`wb_submit_receipt\` 提交 \`advisor\` 回执，务必将 frontmatter 中的 \`run_id\` 设为 \`${auxRunId}\`。`,
+              ]
+            : [
+                `- 请将 \`advisor\` 回执直接写入独立路径：\`${candReceiptPath}\`（勿写主 \`RECEIPT.md\`），并将 frontmatter 中的 \`run_id\` 设为 \`${auxRunId}\`。`,
+              ]),
+          `- 如需人工拍板分歧，请直接通过 \`advisor\` 回执提交 \`outcome: need_decision\`（勿调用 \`wb_ask_decision\`）；严禁修改工作区文件。`,
         ].join("\n");
 
         const attachments = resolveRunAttachmentInputs(this.store, {
@@ -3208,19 +3373,11 @@ export class KilnOrchestrator {
           ...(attachments.length > 0 ? { attachments } : {}),
         };
 
-        let sessionRef: SessionRef | null = null;
-        this.startingBackendCount += 1;
-        try {
-          sessionRef = await backend.start(auxSpec);
-          registeredSessions.push({ backend, sessionRef });
-          this.auxiliaryActiveHandles.set(`${backend.backendId}:${sessionRef.sessionId}`, {
-            taskId: plan.taskId,
-            runId: auxRunId,
-            role: "advisor",
-            backend,
-            sessionRef,
-          });
-        } catch (err) {
+        if (
+          signal.aborted ||
+          this.stopped ||
+          !this.isRunStillCurrent(plan.taskId, runId, plan.contractVersion)
+        ) {
           return {
             brain,
             agent: assign.agent,
@@ -3232,15 +3389,86 @@ export class KilnOrchestrator {
             parsed: null,
             mcpServers,
             caps,
-            error: err instanceof Error ? err.message : String(err),
+            error: "aborted_before_start",
+          };
+        }
+
+        let sessionRef: SessionRef | null = null;
+        this.startingBackendCount += 1;
+        try {
+          sessionRef = await backend.start(auxSpec);
+          if (
+            signal.aborted ||
+            this.stopped ||
+            !this.isRunStillCurrent(plan.taskId, runId, plan.contractVersion)
+          ) {
+            await backend.cancel(sessionRef).catch(() => {});
+            return {
+              brain,
+              agent: assign.agent,
+              model: assign.model,
+              backend,
+              sessionRef: null,
+              exitEvent: null,
+              rawReceipt: null,
+              parsed: null,
+              mcpServers,
+              caps,
+              error: "aborted_after_start",
+            };
+          }
+          registeredSessions.push({ backend, sessionRef });
+          this.auxiliaryActiveHandles.set(`${backend.backendId}:${sessionRef.sessionId}`, {
+            taskId: plan.taskId,
+            runId: auxRunId,
+            role: "advisor",
+            backend,
+            sessionRef,
+            lastEventAtMs: this.nowMs(),
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          const isPolicyErr =
+            err instanceof FullAccessOnlyProviderError || err instanceof IneligibleRoleAgentError;
+          if (!isPolicyErr && isRateLimitErrorMessage(msg)) {
+            rateLimitHits.push({
+              backendId: backend.backendId,
+              agent: assign.agent,
+              model: assign.model,
+            });
+            this.scheduler.markRateLimited(
+              {
+                backendId: backend.backendId,
+                agent: assign.agent,
+                model: assign.model,
+              },
+              this.rateLimitCooldownMs,
+            );
+          }
+          return {
+            brain,
+            agent: assign.agent,
+            model: assign.model,
+            backend,
+            sessionRef: null,
+            exitEvent: null,
+            rawReceipt: null,
+            parsed: null,
+            mcpServers,
+            caps,
+            error: msg,
+            ...(isPolicyErr ? { policyError: msg } : {}),
           };
         } finally {
           this.startingBackendCount = Math.max(0, this.startingBackendCount - 1);
           this.flushDeferredApprovals();
         }
 
-        const exitEvent = await consumeTurnEvents(brain, backend, sessionRef, "cand");
-        const rawReceipt = this.activeAuxiliaryReceipts.get(auxRunId)?.rawMarkdown ?? null;
+        const exitEvent = await consumeTurnEvents(brain, backend, sessionRef, assign, "cand");
+        let rawReceipt = this.activeAuxiliaryReceipts.get(auxRunId)?.rawMarkdown ?? null;
+        if (!rawReceipt && !caps.mcpInjection) {
+          rawReceipt = readOptionalText(candReceiptPath);
+        }
         const parsed = rawReceipt ? parseAndValidateReceipt("advisor", rawReceipt) : null;
         return {
           brain,
@@ -3262,7 +3490,11 @@ export class KilnOrchestrator {
           runCandidateBrain("B", peerBackend, peerAssignment, runIdB),
         ]);
 
-        if (signal.aborted || !this.isRunStillCurrent(plan.taskId, runId, plan.contractVersion)) {
+        if (
+          signal.aborted ||
+          this.stopped ||
+          !this.isRunStillCurrent(plan.taskId, runId, plan.contractVersion)
+        ) {
           this.syncCaffeinate();
           return;
         }
@@ -3277,6 +3509,37 @@ export class KilnOrchestrator {
             runMeta,
             guard,
           });
+          return;
+        }
+
+        const policyErrorMessage = resA.policyError ?? resB.policyError;
+        if (policyErrorMessage && !(resA.parsed?.ok || resB.parsed?.ok)) {
+          const decision = PendingDecisionSchema.parse({
+            id: `dec-${randomUUID().slice(0, 8)}`,
+            task_id: plan.taskId,
+            run_id: runId,
+            contract_version: plan.contractVersion,
+            reason: "backend_policy_blocked",
+            category: "backend_policy",
+            question: `${policyErrorMessage}。请在设置调整角色配置后继续推进或取消任务。`,
+            options: [
+              {
+                id: "opt-retry",
+                label: "已调整配置，重新派发",
+                action: "resume",
+                target_stage: stage,
+                recommended: true,
+              },
+              {
+                id: "opt-cancel",
+                label: "取消任务",
+                action: "cancel",
+                recommended: false,
+              },
+            ],
+            created_at: new Date().toISOString(),
+          });
+          this.transitionTaskToWaiting(plan.taskId, decision, guard);
           return;
         }
 
@@ -3363,21 +3626,35 @@ export class KilnOrchestrator {
           }
         };
 
-        if (aNeedDec || bNeedDec) {
-          const dualRecord = DualSynthesisRecordSchema.parse({
-            schema_version: 1,
-            stage,
-            run_id: runId,
-            contract_version: plan.contractVersion,
-            status: "awaiting_decision",
-            reused_brain_a_session: false,
-            created_at: new Date().toISOString(),
-            candidates: candidatesSummary,
-            note: "至少一侧大脑提出需人类拍板分歧，等待人工择优或重审",
-          });
+        const enterDualNeedDecision = (
+          summaryList: DualSynthesisCandidateSummary[],
+          headline: string,
+        ): void => {
+          const guardA = resA.parsed?.ok
+            ? evaluateAdvisorAuthorityGuard(resA.parsed.frontmatter)
+            : { allowed: true as const };
+          const guardB = resB.parsed?.ok
+            ? evaluateAdvisorAuthorityGuard(resB.parsed.frontmatter)
+            : { allowed: true as const };
+          const guardNotes = [
+            ...(!guardA.allowed ? [`- ⚠️ Brain A 护栏提示：${guardA.detail}`] : []),
+            ...(!guardB.allowed ? [`- ⚠️ Brain B 护栏提示：${guardB.detail}`] : []),
+          ];
+          const effectiveHeadline =
+            guardNotes.length > 0 ? `${headline}\n${guardNotes.join("\n")}` : headline;
           writeYamlAtomic(
             this.store.paths.dualSynthesisYaml(plan.taskId),
-            dualRecord,
+            DualSynthesisRecordSchema.parse({
+              schema_version: 1,
+              stage,
+              run_id: runId,
+              contract_version: plan.contractVersion,
+              status: "awaiting_decision",
+              reused_brain_a_session: false,
+              created_at: new Date().toISOString(),
+              candidates: summaryList,
+              note: "双脑阶段提出需人类拍板分歧，等待人工择优或重审",
+            }),
             DualSynthesisRecordSchema,
           );
           const pending = PendingDecisionSchema.parse({
@@ -3387,9 +3664,7 @@ export class KilnOrchestrator {
             contract_version: plan.contractVersion,
             reason: "dual_synthesis_need_decision",
             category: "design_tradeoff",
-            question: [
-              `双脑博弈${stage === "plan" ? "方案" : "顾问"}阶段出现待决分歧（A: ${resA.parsed?.ok ? resA.parsed.frontmatter.chosen_approach : "失败"}；B: ${resB.parsed?.ok ? resB.parsed.frontmatter.chosen_approach : "失败"}），请直接拍板采纳候选方案 A / B 或重试：`,
-            ].join("\n"),
+            question: effectiveHeadline,
             options: [
               ...(resA.parsed?.ok
                 ? [
@@ -3398,7 +3673,7 @@ export class KilnOrchestrator {
                       label: `采纳 Brain A 方案 (${primaryAssignment.agent}/${primaryAssignment.model}) 并继续实施`,
                       action: "resume" as const,
                       target_stage: "implement" as const,
-                      recommended: !aNeedDec,
+                      recommended: !aNeedDec && guardA.allowed,
                     },
                   ]
                 : []),
@@ -3409,7 +3684,7 @@ export class KilnOrchestrator {
                       label: `采纳 Brain B 方案 (${peerAssignment.agent}/${peerAssignment.model}) 并继续实施`,
                       action: "resume" as const,
                       target_stage: "implement" as const,
-                      recommended: aNeedDec && !bNeedDec,
+                      recommended: aNeedDec && !bNeedDec && guardB.allowed,
                     },
                   ]
                 : []),
@@ -3429,16 +3704,40 @@ export class KilnOrchestrator {
             ],
             created_at: new Date().toISOString(),
           });
+          if (stage === "advise") {
+            this.clearAdvisorRequest(plan.taskId);
+          }
           this.transitionTaskToWaiting(plan.taskId, pending, guard);
+        };
+
+        if (aNeedDec || bNeedDec) {
+          enterDualNeedDecision(
+            candidatesSummary,
+            `双脑博弈${stage === "plan" ? "方案" : "顾问"}阶段出现待决分歧（A: ${resA.parsed?.ok ? resA.parsed.frontmatter.chosen_approach : "失败"}；B: ${resB.parsed?.ok ? resB.parsed.frontmatter.chosen_approach : "失败"}），请直接拍板采纳候选方案 A / B 或重试：`,
+          );
           return;
         }
 
         if (aResolved && bResolved && resA.parsed?.ok && resB.parsed?.ok) {
+          const synthReceiptPath = path.join(
+            this.store.paths.runDir(plan.taskId, runDirName),
+            "RECEIPT_SYNTH.md",
+          );
+          if (!resA.caps.mcpInjection) {
+            fs.rmSync(synthReceiptPath, { force: true });
+          }
+
           const synthesisPrompt = [
             `### E2 双脑博弈合成指令（请基于 Brain A 与 Brain B 的独立草案合成终版方案）`,
             `- 请对比 Brain A（你自身上一轮方案）与异构 Brain B（${peerAssignment.agent}/${peerAssignment.model}）方案的优缺点，取长补短收敛为唯一可执行方案。`,
             `- 回执正文开头**必须保留** 3 行以内 \`> **双脑博弈合成摘要**\` 引用块说明采纳与权衡要点。`,
-            `- 提交 \`advisor\` 回执时请务必将 \`run_id\` 设为 \`${runIdA}\`、\`contract_version\` 设为 \`${plan.contractVersion}\`、\`outcome\` 设为 \`resolved\`。`,
+            ...(resA.caps.mcpInjection
+              ? [
+                  `- 请调用 \`wb_submit_receipt\` 提交 \`advisor\` 回执，务必将 \`run_id\` 设为 \`${runIdA}\`、\`contract_version\` 设为 \`${plan.contractVersion}\`、\`outcome\` 设为 \`resolved\`。`,
+                ]
+              : [
+                  `- 请将合成后的 \`advisor\` 回执写入 \`${synthReceiptPath}\`，并将 \`run_id\` 设为 \`${runIdA}\`、\`contract_version\` 设为 \`${plan.contractVersion}\`、\`outcome\` 设为 \`resolved\`。`,
+                ]),
             ``,
             `#### Brain B 候选方案 (${peerAssignment.agent}/${peerAssignment.model})`,
             `- chosen_approach: ${resB.parsed.frontmatter.chosen_approach}`,
@@ -3457,15 +3756,53 @@ export class KilnOrchestrator {
             try {
               await backendA.send(resA.sessionRef, synthesisPrompt);
               reusedBrainASession = true;
-              await consumeTurnEvents("S", backendA, resA.sessionRef, "synth");
+              await consumeTurnEvents("S", backendA, resA.sessionRef, primaryAssignment, "synth");
               synthRaw = this.activeAuxiliaryReceipts.get(runIdA)?.rawMarkdown ?? null;
+              if (!synthRaw && !resA.caps.mcpInjection) {
+                synthRaw = readOptionalText(synthReceiptPath);
+              }
             } catch {
               reusedBrainASession = false;
               synthRaw = null;
             }
           }
 
+          if (
+            signal.aborted ||
+            this.stopped ||
+            !this.isRunStillCurrent(plan.taskId, runId, plan.contractVersion)
+          ) {
+            this.syncCaffeinate();
+            return;
+          }
+
+          const postSynthMutated = await this.detectAdvisorWorkspaceMutation(
+            this.store.readTaskCard(plan.taskId),
+            runId,
+          );
+          if (postSynthMutated) {
+            this.escalateAdvisorWorkspaceMutation({
+              taskId: plan.taskId,
+              stage,
+              card: this.store.readTaskCard(plan.taskId),
+              runMeta,
+              guard,
+            });
+            return;
+          }
+
           const synthParsedCheck = synthRaw ? parseAndValidateReceipt("advisor", synthRaw) : null;
+          if (synthParsedCheck?.ok && synthParsedCheck.frontmatter.outcome === "need_decision") {
+            if (synthRaw) {
+              writeFileAtomic(this.store.paths.planCandidateAMd(plan.taskId), synthRaw);
+            }
+            enterDualNeedDecision(
+              candidatesSummary,
+              `双脑合成阶段提出需人类拍板事项（${synthParsedCheck.frontmatter.chosen_approach}），请直接拍板或重试：`,
+            );
+            return;
+          }
+
           let resolvedSynthRaw: string;
           if (synthParsedCheck?.ok && synthRaw) {
             resolvedSynthRaw = synthRaw;
@@ -3564,6 +3901,27 @@ export class KilnOrchestrator {
           return;
         }
 
+        if (rateLimitHits.length > 0) {
+          const rateNow = new Date().toISOString();
+          writeFileAtomic(
+            path.join(this.store.paths.runDir(plan.taskId, runDirName), "RATE_LIMITED"),
+            `${rateNow}\n`,
+          );
+          this.store.sqlite.expireActiveLeaseByTask(plan.taskId, rateNow, "expired");
+          if (!this.isRunStillCurrent(plan.taskId, runId, plan.contractVersion)) {
+            this.syncCaffeinate();
+            return;
+          }
+          this.store.appendStateEvent(plan.taskId, {
+            type: "queued",
+            at: rateNow,
+          });
+          this.syncCaffeinate();
+          this.publishTaskUpdated(plan.taskId, { status: "queued", stage });
+          void this.wake();
+          return;
+        }
+
         writeYamlAtomic(
           this.store.paths.dualSynthesisYaml(plan.taskId),
           DualSynthesisRecordSchema.parse({
@@ -3585,6 +3943,7 @@ export class KilnOrchestrator {
         this.activeAuxiliaryReceipts.delete(runIdB);
         for (const { backend, sessionRef } of registeredSessions) {
           this.auxiliaryActiveHandles.delete(`${backend.backendId}:${sessionRef.sessionId}`);
+          await backend.cancel(sessionRef).catch(() => {});
         }
         if (this.inFlightOperations.get(plan.taskId)?.runId === runId) {
           this.inFlightOperations.delete(plan.taskId);
@@ -5603,13 +5962,15 @@ export class KilnOrchestrator {
       return;
     }
 
-    const rollbackRef = "HEAD";
+    const recordedPreHead = this.testFirstLockPreHeadByRunId.get(runMeta.run_id);
+    this.testFirstLockPreHeadByRunId.delete(runMeta.run_id);
+    const preHeadSha = recordedPreHead && recordedPreHead.length > 0 ? recordedPreHead : "HEAD";
     const rollbackWorktree = async () => {
-      await runGitCommand(["-C", worktreePath, "reset", "--hard", rollbackRef]).catch(() => {});
+      await runGitCommand(["-C", worktreePath, "reset", "--hard", preHeadSha]).catch(() => {});
       await runGitCommand(["-C", worktreePath, "clean", "-fd"]).catch(() => {});
     };
 
-    const gitChanges = await inspectGitWorktreeChanges(worktreePath, rollbackRef);
+    const gitChanges = await inspectGitWorktreeChanges(worktreePath, preHeadSha);
     const changedPaths = gitChanges.changedPaths;
     const isTestFilePath = (p: string): boolean =>
       /\.(test|spec)\.[^./]+$/i.test(p) || /(^|\/)(__tests__|evals)\//.test(p);
@@ -5618,15 +5979,65 @@ export class KilnOrchestrator {
     const scopeCheck = checkScope(changedPaths, card.contract.scope);
     const space = this.store.readSpace(card.space);
     const freezePatterns = space?.freeze_patterns ?? [];
+    const activeLock = this.getActiveContractTestsLock(taskId, card.contract_version);
+    const unlockedTestFiles = new Set<string>();
+    if (activeLock === null) {
+      for (const ev of this.store.readStateEvents(taskId)) {
+        if (ev.type === "contract_tests_locked" && ev.contract_version === card.contract_version) {
+          for (const tf of ev.test_files) {
+            unlockedTestFiles.add(tf);
+          }
+        }
+      }
+    }
+    const effectiveFreezePatterns = freezePatterns;
+    const effectiveBaselineSnapshot: FrozenSnapshot | undefined = (() => {
+      if (activeLock !== null || unlockedTestFiles.size === 0 || !baselineSnapshot) {
+        return baselineSnapshot;
+      }
+      if (freezePatterns.length === 0) {
+        return undefined;
+      }
+      const retainedFiles = baselineSnapshot.files.filter(
+        (f) => !unlockedTestFiles.has(f.path) || checkScope([f.path], freezePatterns).ok,
+      );
+      if (retainedFiles.length === 0) {
+        return undefined;
+      }
+      const retainedDigest = createHash("sha256")
+        .update(
+          JSON.stringify({
+            version: 1,
+            acceptCmd: card.contract.accept_cmd,
+            files: retainedFiles.map((f) => ({
+              path: f.path,
+              exists: f.exists,
+              sha256: f.sha256,
+            })),
+          }),
+        )
+        .digest("hex");
+      return {
+        hash: `sha256:${retainedDigest}`,
+        acceptCmd: card.contract.accept_cmd,
+        files: retainedFiles,
+      };
+    })();
+    const effectiveBaselineHash = effectiveBaselineSnapshot
+      ? effectiveBaselineSnapshot.hash
+      : "sha256:empty";
+
     let frozenFilesChanged: string[] = [];
-    if (freezePatterns.length > 0 || baselineSnapshot !== undefined) {
+    if (effectiveFreezePatterns.length > 0 || effectiveBaselineSnapshot !== undefined) {
       const frozenCheck = detectFrozenFilesChanged({
         rootDir: worktreePath,
-        freezePatterns,
+        freezePatterns: effectiveFreezePatterns,
         acceptCmd: card.contract.accept_cmd,
-        baselineHash: card.contract.accept_files_hash,
+        baselineHash: effectiveBaselineHash,
         changedPaths,
-        baselineSnapshot,
+        ...(effectiveBaselineSnapshot !== undefined
+          ? { baselineSnapshot: effectiveBaselineSnapshot }
+          : {}),
       });
       frozenFilesChanged = frozenCheck.frozenFilesChanged;
     }
@@ -5713,7 +6124,7 @@ export class KilnOrchestrator {
     const mergedFreezePatterns = Array.from(
       new Set([
         ...freezePatterns,
-        ...(baselineSnapshot?.files.map((f) => f.path) ?? []),
+        ...(effectiveBaselineSnapshot?.files.map((f) => f.path) ?? []),
         ...changedPaths,
       ]),
     );

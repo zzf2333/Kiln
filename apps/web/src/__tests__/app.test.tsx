@@ -6901,6 +6901,12 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     expect(preview).toContain("双脑方案(顾问)");
     expect(preview).toContain("红绿建测锁定");
 
+    // Switching to local scratch_dir must hide & clear 红绿建测锁定
+    const localModeBtn = screen.getByRole("button", { name: "本机 / 临时任务" });
+    fireEvent.click(localModeBtn);
+    expect(screen.queryByRole("button", { name: "红绿建测锁定" })).toBeNull();
+    expect(screen.getByLabelText("流程预览").textContent ?? "").not.toContain("红绿建测锁定");
+
     // Check DetailView renders Track 7 badges, timeline event, and candidate comparison drawer
     window.location.hash = "#task=t-track7-ui";
     fireEvent(window, new HashChangeEvent("hashchange"));
@@ -6912,5 +6918,128 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     fireEvent.click(drawerSummary);
     await screen.findByText(/Codex 草案/);
     await screen.findByText(/Claude 草案/);
+  });
+
+  it("在双脑待决且尚无 PLAN.md 时仍在 DetailView 展开渲染候选方案对照", async () => {
+    const baseBootstrap = makeBaseBootstrap();
+    baseBootstrap.tasks = [
+      {
+        id: "t-track7-wait",
+        title: "Track 7 待决双脑对照",
+        space: "kiln",
+        parent_id: null,
+        priority: "P1",
+        effective_priority: "P1",
+        track: "L1",
+        workspace_mode: "git_worktree",
+        status: "waiting",
+        stage: "plan",
+        round: 1,
+        active_run_id: null,
+        contract_version: 1,
+        depends_on: [],
+        created_at: "2026-11-26T00:00:00.000Z",
+        updated_at: "2026-11-26T00:05:00.000Z",
+        tokens: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+        cost_usd: 0,
+      },
+    ];
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof Request ? input.url : "";
+      if (url === "/api/bootstrap") {
+        return jsonResponse(baseBootstrap);
+      }
+      if (url === "/api/tasks/t-track7-wait") {
+        return jsonResponse({
+          card: {
+            schema_version: 1,
+            id: "t-track7-wait",
+            title: "Track 7 待决双脑对照",
+            space: "kiln",
+            priority: "P1",
+            track: "L1",
+            workspace_mode: "git_worktree",
+            parent: null,
+            depends_on: [],
+            contract_version: 1,
+            workflow: buildWorkflowPreset("quick", { includePlan: true, dualSynthesis: true }),
+            contract: {
+              goal: "Compare A vs B without PLAN.md",
+              end: "done",
+              accept_cmd: "echo ok",
+              accept_files_hash: "pending",
+              scope: ["src/**"],
+              deliver: { mode: "merge_main", cmd: null },
+              human_accept: false,
+              external_actions: "ask",
+            },
+            limits: {
+              retries_per_stage: 2,
+              review_rounds: 2,
+              advisor_calls: 2,
+              max_tokens: 200_000,
+            },
+            created_at: "2026-11-26T00:00:00.000Z",
+            updated_at: "2026-11-26T00:05:00.000Z",
+          },
+          state: {
+            taskId: "t-track7-wait",
+            status: "waiting",
+            stage: "plan",
+            stepIndex: 0,
+            round: 1,
+            track: "L1",
+            priority: "P1",
+            contractVersion: 1,
+            activeRunId: null,
+            waitingReason: "dual_synthesis_need_decision",
+          },
+          brief: "# Goal\nCompare",
+          plan: null,
+          research: null,
+          planCandidateA: "# Brain A 空数组返回 null",
+          planCandidateB: "# Brain B 空数组抛异常",
+          dualSynthesis: {
+            schema_version: 1,
+            stage: "plan",
+            run_id: "run-wait",
+            contract_version: 1,
+            status: "awaiting_decision",
+            reused_brain_a_session: false,
+            created_at: "2026-11-26T00:02:00.000Z",
+            candidates: [
+              { brain: "A", agent: "codex", model: "gpt-5.4", outcome: "need_decision" },
+              { brain: "B", agent: "claude", model: "claude-sonnet-4-6", outcome: "completed" },
+            ],
+          },
+          decisions: "",
+          pendingDecision: null,
+          ledgerProposals: [],
+          runs: [],
+          usageTurns: [],
+          usage: {
+            totals: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+            byModel: {},
+            todayCostUsd: 0,
+            totalCostUsd: 0,
+          },
+          chatMessages: [],
+        });
+      }
+      if (url.includes("/chat")) {
+        return jsonResponse({ messages: [] });
+      }
+      if (url.includes("/api/chat/commands")) {
+        return jsonResponse({ commands: [], mcpServers: [] });
+      }
+      return jsonResponse({});
+    });
+
+    window.location.hash = "#task=t-track7-wait";
+    render(<App />);
+
+    await screen.findByText(/查看双脑候选方案对照/);
+    await screen.findByText(/Brain A 空数组返回 null/);
+    await screen.findByText(/Brain B 空数组抛异常/);
   });
 });

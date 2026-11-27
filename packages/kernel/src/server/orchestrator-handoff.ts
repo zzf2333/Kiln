@@ -284,6 +284,7 @@ export interface BuildHandoffParams {
   acceptEnvContext?: AcceptEnvHandoffContext | null;
   implementMode?: "normal" | "dry_run_only" | "test_first_lock";
   lockedContractTests?: readonly string[];
+  receiptPathOverride?: string;
 }
 
 function buildLayer0WorkspaceSafetyNote(card: TaskCard, role: RoleId, stage: StageId): string {
@@ -327,6 +328,7 @@ function buildStageCognitiveDirective(params: {
   hasDownstreamHumanApproval?: boolean;
   implementMode?: "normal" | "dry_run_only" | "test_first_lock";
   lockedContractTests?: readonly string[];
+  receiptPathOverride?: string;
 }): string {
   const {
     stage,
@@ -523,6 +525,7 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
     acceptEnvContext,
     implementMode,
     lockedContractTests,
+    receiptPathOverride,
   } = params;
 
   const brief = readOptionalText(store.paths.briefMd(card.id)) ?? "";
@@ -811,7 +814,9 @@ export function buildHandoffPayload(params: BuildHandoffParams): HandoffPayload 
     ...(rosterRoleId ? [`- roster_role: ${rosterRoleId}`] : []),
     `- contract_version: ${card.contract_version}`,
     ...(inputRef ? [`- input_ref: ${inputRef}`] : []),
-    ...(!mcpEnabled ? [`- 本轮回执写入路径：${store.paths.receiptMd(card.id, runDirName)}`] : []),
+    ...(!mcpEnabled
+      ? [`- 本轮回执写入路径：${receiptPathOverride ?? store.paths.receiptMd(card.id, runDirName)}`]
+      : []),
     `- 提交回执时请将 frontmatter 中的 \`run_id\` 设为 \`${runId}\`、\`contract_version\` 设为 \`${card.contract_version}\`。`,
     ``,
     buildStageCognitiveDirective({

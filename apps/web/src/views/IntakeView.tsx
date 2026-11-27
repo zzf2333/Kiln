@@ -931,7 +931,7 @@ export function IntakeView() {
                               双脑博弈方案
                             </button>
                           ) : null}
-                          {!wfToggles.hostTwoPhase ? (
+                          {intakeForm.workspace_mode === "git_worktree" ? (
                             <button
                               type="button"
                               className={`chip-tab ${wfToggles.testFirstLock ? "on" : ""}`}

@@ -15,6 +15,7 @@ import {
 } from "@kiln/protocol";
 import { FakeBackend } from "../../backend/index.js";
 import { computeFrozenSnapshot } from "../../gate/index.js";
+import { resolveDualSynthesisPeerAssignment } from "../../scheduler/role-resolver.js";
 import { KilnStore, readYamlOptional } from "../../store/index.js";
 import { generateAndWriteContextMap, parseContextMapHeader } from "../context-map.js";
 import { KilndServer } from "../index.js";
@@ -616,6 +617,11 @@ describe("Track 7 E1: test_first_lock physical red-green test isolation", () => 
             ),
           );
         } else if (req.action === "red_unlocked_v2") {
+          // Verify previously locked test file can also be updated after workflow_patched unlock
+          fs.writeFileSync(
+            path.join(wtPath, "src", "core", "__tests__", "mul.test.ts"),
+            "// REQUIRE_MULTIPLY\n// updated after unlock\nexport const ok = true;\n",
+          );
           fs.writeFileSync(
             path.join(wtPath, "src", "core", "__tests__", "sub.test.ts"),
             "// REQUIRE_SUBTRACT\nexport const ok = true;\n",
@@ -626,7 +632,7 @@ describe("Track 7 E1: test_first_lock physical red-green test isolation", () => 
               contract_version: ctx.card.contract_version,
               input_ref: baseSha,
               output_ref: baseSha,
-              changed_paths: ["src/core/__tests__/sub.test.ts"],
+              changed_paths: ["src/core/__tests__/mul.test.ts", "src/core/__tests__/sub.test.ts"],
             }),
           );
         } else if (req.action === "impl_final_green") {
@@ -1582,5 +1588,311 @@ describe("Track 7 E2: plan-level dual_synthesis & 2nd-advise auto-upgrade", () =
     expect(json.dualSynthesis?.status).toBe("synthesized");
     expect(json.dualSynthesis?.reused_brain_a_session).toBe(true);
     expect(fakeBackend.getRecordedSends()).toHaveLength(1);
+  }, 20_000);
+
+  it("respects cooldown for non-MCP peers, supports file-protocol RECEIPT_CAND_B.md, and aborts active dual runs without deadlocking", async () => {
+    const rosterWithNonMcp = makeTrack7Roster();
+    rosterWithNonMcp.roster.architect = {
+      ...rosterWithNonMcp.roster.architect!,
+      primary: { provider: "codex", model: "gpt-5.4", backend_id: "fake" },
+      fallbacks: [
+        { provider: "pi", model: "zai/glm-5", backend_id: "fake" },
+        { provider: "claude", model: "claude-sonnet-4-6", backend_id: "fake" },
+      ],
+    };
+    const peerRespectsCooldown = resolveDualSynthesisPeerAssignment(
+      rosterWithNonMcp,
+      "plan",
+      { agent: "codex", model: "gpt-5.4" },
+      {
+        agentCapabilitiesMap: new Map([
+          [
+            "pi",
+            {
+              interactiveChat: true,
+              approvals: true,
+              mcpInjection: false,
+              usageCacheBreakdown: true,
+              interrupt: true,
+              readOnlySandbox: true,
+              warmSessionReuse: false,
+              imageInput: false,
+            },
+          ],
+          [
+            "claude",
+            {
+              interactiveChat: true,
+              approvals: true,
+              mcpInjection: true,
+              usageCacheBreakdown: true,
+              interrupt: true,
+              readOnlySandbox: true,
+              warmSessionReuse: false,
+              imageInput: false,
+            },
+          ],
+        ]),
+        isCoolingDown: (key) => key.agent === "pi",
+      },
+    );
+    expect(peerRespectsCooldown?.agent).toBe("claude");
+
+    const kilnHome = makeTempDir("kiln-e2-file-home-");
+    const repoDir = makeTempDir("kiln-e2-file-repo-");
+    const baseSha = initSampleGitRepo(repoDir);
+    const acceptCmd = "echo ok";
+    const snap = computeFrozenSnapshot(repoDir, [], acceptCmd);
+    const fakeBackend = new FakeBackend({
+      backendId: "fake",
+      agents: [
+        {
+          id: "codex",
+          label: "Codex",
+          capabilities: {
+            interactiveChat: true,
+            approvals: true,
+            mcpInjection: true,
+            usageCacheBreakdown: true,
+            interrupt: true,
+            readOnlySandbox: true,
+            warmSessionReuse: true,
+            imageInput: false,
+          },
+          modes: [{ id: "auto", label: "Auto" }],
+          defaultModeId: "auto",
+        },
+        {
+          id: "pi",
+          label: "Pi",
+          capabilities: {
+            interactiveChat: false,
+            approvals: true,
+            mcpInjection: false,
+            usageCacheBreakdown: true,
+            interrupt: true,
+            readOnlySandbox: true,
+            warmSessionReuse: false,
+            imageInput: false,
+          },
+          modes: [],
+          defaultModeId: null,
+        },
+      ],
+      models: {
+        codex: [{ id: "gpt-5.4", label: "GPT-5.4", thinkingOptions: [] }],
+        pi: [{ id: "zai/glm-5", label: "GLM-5", thinkingOptions: [] }],
+      },
+    });
+
+    const server = new KilndServer({
+      kilnHome,
+      host: "127.0.0.1",
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: true,
+      tokenSecret: "e2-file-secret-0123456789abcdef",
+      approvalHandler: async (req, ctx) => {
+        const wtPath = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
+        const matchedSpec = fakeBackend.getRecordedSpecs().find((s) => s.runId === ctx.runId);
+        const token = matchedSpec?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+
+        if (req.action === "file_cand_a" || req.action === "file_synth") {
+          const res = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: serializeFrontmatterMarkdown(
+                {
+                  run_id: ctx.runId,
+                  contract_version: ctx.card.contract_version,
+                  outcome: "resolved",
+                  chosen_approach:
+                    req.action === "file_cand_a" ? "Brain A MCP 草案" : "融合 MCP+文件双脑终版",
+                },
+                req.action === "file_cand_a"
+                  ? "## 技术取舍\nA MCP\n\n## 授权裁决\nA\n"
+                  : "> **双脑博弈合成摘要**：MCP Brain A 与文件协议 Brain B 成功合成。\n\n## 技术取舍\n合成\n\n## 授权裁决\n执行\n",
+              ),
+            }),
+          });
+          expect(res.status).toBe(200);
+        } else if (req.action === "file_cand_b") {
+          const prompt = matchedSpec?.prompt ?? "";
+          const pathMatch = /RECEIPT_CAND_B\.md/.exec(prompt);
+          expect(pathMatch).not.toBeNull();
+          const lineMatch = /`([^`\n]*RECEIPT_CAND_B\.md)`/.exec(prompt);
+          expect(lineMatch?.[1]).toBeTruthy();
+          fs.writeFileSync(
+            lineMatch![1]!,
+            serializeFrontmatterMarkdown(
+              {
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                outcome: "resolved",
+                chosen_approach: "Brain B 文件协议草案",
+              },
+              "## 技术取舍\nPi file protocol 草案\n\n## 授权裁决\n补充测试\n",
+            ),
+            "utf8",
+          );
+        } else if (req.action === "file_impl") {
+          fs.appendFileSync(path.join(wtPath, "src", "core", "calc.ts"), "\n// file e2 done\n");
+          const res = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeWorkerReceipt({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                input_ref: baseSha,
+                output_ref: "HEAD",
+                changed_paths: ["src/core/calc.ts"],
+              }),
+            }),
+          });
+          expect(res.status).toBe(200);
+        } else if (req.action === "hang_to_abort") {
+          // Intentionally pause task mid-flight while candidate turn awaits approval
+          void server.app.request(`/api/tasks/${ctx.taskId}/pause`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}",
+          });
+          return;
+        }
+        await ctx.backend.answer(req.id, true);
+      },
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "sp-e2-file",
+      name: "E2 File Protocol Space",
+      repo_path: repoDir,
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    });
+    const fileRoster = makeTrack7Roster();
+    fileRoster.roster.architect!.fallbacks = [
+      { provider: "pi", model: "zai/glm-5", backend_id: "fake" },
+    ];
+    fileRoster.roster.advisor!.fallbacks = [
+      { provider: "pi", model: "zai/glm-5", backend_id: "fake" },
+    ];
+    server.store.writeConfig("roster", fileRoster);
+    server.store.writeConfig("limits", makeDefaultLimits(4));
+
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "file_cand_a", detail: "A" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-e2-file", role: "advisor", agent: "codex", turnNumber: 1 },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "file_synth", detail: "Synth" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-e2-file", role: "advisor", agent: "codex", turnNumber: 2 },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "file_cand_b", detail: "B file" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-e2-file", role: "advisor", agent: "pi", turnNumber: 1 },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "file_impl", detail: "impl" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-e2-file", role: "worker" },
+    );
+
+    const now = new Date().toISOString();
+    const cardFile = TaskCardSchema.parse({
+      schema_version: 1,
+      id: "t-e2-file",
+      title: "E2 file protocol B",
+      space: "sp-e2-file",
+      priority: "P1",
+      track: "L1",
+      workspace_mode: "git_worktree",
+      parent: null,
+      depends_on: [],
+      contract_version: 1,
+      workflow: buildWorkflowPreset("quick", {
+        includePlan: true,
+        dualSynthesis: true,
+      }),
+      contract: {
+        goal: "Test file-protocol Brain B",
+        end: "done",
+        accept_cmd: acceptCmd,
+        accept_files_hash: snap.hash,
+        scope: ["src/core/**"],
+        deliver: { mode: "merge_main", cmd: null },
+        human_accept: false,
+        external_actions: "ask",
+      },
+      limits: {
+        retries_per_stage: 2,
+        review_rounds: 2,
+        advisor_calls: 2,
+        max_tokens: 5_000_000,
+      },
+      created_at: now,
+      updated_at: now,
+    });
+    server.stateMachine.createTask(cardFile, "# E2 File\n");
+    await server.start();
+
+    await waitUntil(
+      () => server.store.getTaskIndex("t-e2-file")?.status === "done",
+      "E2 file-protocol task done",
+    );
+    const resFile = await server.app.request("/api/tasks/t-e2-file");
+    const jsonFile = (await resFile.json()) as {
+      dualSynthesis: { status: string; reused_brain_a_session: boolean } | null;
+      planCandidateB: string | null;
+    };
+    expect(jsonFile.dualSynthesis?.status).toBe("synthesized");
+    expect(jsonFile.dualSynthesis?.reused_brain_a_session).toBe(true);
+    expect(jsonFile.planCandidateB).toContain("Brain B 文件协议草案");
+
+    // Verify aborting an in-flight dual_synthesis run completes immediately without deadlocking
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "hang_to_abort", detail: "pause triggers abort" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-e2-abort", role: "advisor", agent: "codex" },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "hang_to_abort", detail: "B waits" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-e2-abort", role: "advisor", agent: "pi" },
+    );
+    const cardAbort = TaskCardSchema.parse({
+      ...cardFile,
+      id: "t-e2-abort",
+      title: "E2 non-deadlock pause",
+    });
+    server.stateMachine.createTask(cardAbort, "# E2 Abort\n");
+    await server.orchestrator.wake();
+    await waitUntil(
+      () => server.store.getTaskIndex("t-e2-abort")?.status === "paused",
+      "E2 task paused cleanly via abortActiveRun without deadlock",
+    );
   }, 20_000);
 });

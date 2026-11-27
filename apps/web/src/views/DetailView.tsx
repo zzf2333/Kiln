@@ -2375,48 +2375,51 @@ export function DetailView() {
                 <div style={{ maxHeight: "260px", overflowY: "auto" }}>
                   <MarkdownContent text={detail.plan} />
                 </div>
-                {dualSynthesis || detail.planCandidateA || detail.planCandidateB ? (
-                  <details style={{ marginTop: "10px" }}>
-                    <summary style={{ cursor: "pointer", fontSize: "12.5px", fontWeight: 500 }}>
-                      查看双脑候选方案对照（PLAN_CANDIDATE_A vs B
-                      {dualSynthesis?.candidates.length
-                        ? ` · ${dualSynthesis.candidates.map((c) => `${c.brain}:${c.model}`).join(" / ")}`
-                        : ""}
-                      ）
-                    </summary>
-                    <div
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
-                        gap: "10px",
-                        marginTop: "8px",
-                      }}
-                    >
-                      {detail.planCandidateA ? (
-                        <div
-                          className="panel"
-                          style={{ padding: "8px", maxHeight: "220px", overflowY: "auto" }}
-                        >
-                          <div className="mono" style={{ fontSize: "11px", marginBottom: "4px" }}>
-                            Brain A (PLAN_CANDIDATE_A.md)
-                          </div>
-                          <MarkdownContent text={detail.planCandidateA} />
+              </section>
+            ) : null}
+
+            {dualSynthesis || detail.planCandidateA || detail.planCandidateB ? (
+              <section aria-label="双脑候选方案对照">
+                <details open={dualSynthesis?.status === "awaiting_decision"}>
+                  <summary style={{ cursor: "pointer", fontSize: "12.5px", fontWeight: 500 }}>
+                    查看双脑候选方案对照（PLAN_CANDIDATE_A vs B
+                    {dualSynthesis?.candidates.length
+                      ? ` · ${dualSynthesis.candidates.map((c) => `${c.brain}:${c.model ?? c.agent}`).join(" / ")}`
+                      : ""}
+                    ）
+                  </summary>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+                      gap: "10px",
+                      marginTop: "8px",
+                    }}
+                  >
+                    {detail.planCandidateA ? (
+                      <div
+                        className="panel"
+                        style={{ padding: "8px", maxHeight: "220px", overflowY: "auto" }}
+                      >
+                        <div className="mono" style={{ fontSize: "11px", marginBottom: "4px" }}>
+                          Brain A (PLAN_CANDIDATE_A.md)
                         </div>
-                      ) : null}
-                      {detail.planCandidateB ? (
-                        <div
-                          className="panel"
-                          style={{ padding: "8px", maxHeight: "220px", overflowY: "auto" }}
-                        >
-                          <div className="mono" style={{ fontSize: "11px", marginBottom: "4px" }}>
-                            Brain B (PLAN_CANDIDATE_B.md)
-                          </div>
-                          <MarkdownContent text={detail.planCandidateB} />
+                        <MarkdownContent text={detail.planCandidateA} />
+                      </div>
+                    ) : null}
+                    {detail.planCandidateB ? (
+                      <div
+                        className="panel"
+                        style={{ padding: "8px", maxHeight: "220px", overflowY: "auto" }}
+                      >
+                        <div className="mono" style={{ fontSize: "11px", marginBottom: "4px" }}>
+                          Brain B (PLAN_CANDIDATE_B.md)
                         </div>
-                      ) : null}
-                    </div>
-                  </details>
-                ) : null}
+                        <MarkdownContent text={detail.planCandidateB} />
+                      </div>
+                    ) : null}
+                  </div>
+                </details>
               </section>
             ) : null}
 
