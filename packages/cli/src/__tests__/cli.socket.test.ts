@@ -15,7 +15,7 @@ describe("@kiln/cli OS local IPC graceful shutdown smoke suite", () => {
 
   afterEach(() => {
     while (tempDirs.length > 0) {
-      fs.rmSync(tempDirs.pop()!, { recursive: true, force: true });
+      fs.rmSync(tempDirs.pop()!, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 

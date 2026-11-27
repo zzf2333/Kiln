@@ -57,13 +57,17 @@ const CODEX_DESCRIPTOR: BackendAgentDescriptor = {
 
 describe("Track 5 [B11] GitHub Issue import & PR feedback bridge", () => {
   const servers: KilndServer[] = [];
+  const stores: KilnStore[] = [];
 
   afterEach(async () => {
     for (const s of servers.splice(0)) {
       await s.stop().catch(() => {});
     }
+    for (const st of stores.splice(0)) {
+      st.close();
+    }
     for (const d of tempDirs.splice(0)) {
-      fs.rmSync(d, { recursive: true, force: true });
+      fs.rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -98,6 +102,7 @@ describe("Track 5 [B11] GitHub Issue import & PR feedback bridge", () => {
     createFakeGitRepoWithOrigin(repoPath);
 
     const store = new KilnStore({ kilnHome: home });
+    stores.push(store);
     store.writeSpace({
       schema_version: 1,
       id: "kiln",
@@ -243,6 +248,7 @@ describe("Track 5 [B11] GitHub Issue import & PR feedback bridge", () => {
     createFakeGitRepoWithOrigin(repoPath);
 
     const store = new KilnStore({ kilnHome: home });
+    stores.push(store);
     store.writeSpace({
       schema_version: 1,
       id: "kiln",

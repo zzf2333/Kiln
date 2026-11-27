@@ -292,7 +292,7 @@ function findBinaryOnSystem(
     for (const extra of [
       "/opt/homebrew/bin",
       "/usr/local/bin",
-      path.join(homedir, ".local", "bin"),
+      path.posix.join(homedir.replaceAll("\\", "/"), ".local", "bin"),
     ]) {
       if (!searchDirs.includes(extra)) {
         searchDirs.push(extra);
@@ -347,10 +347,13 @@ function resolvePlatformTerminalCandidates(
     probe.findBinary ?? ((binaryName: string) => findBinaryOnSystem(binaryName, platform, homedir));
 
   if (platform === "darwin") {
-    const macAppDirs = ["/Applications", path.join(homedir, "Applications")];
+    const macAppDirs = [
+      "/Applications",
+      path.posix.join(homedir.replaceAll("\\", "/"), "Applications"),
+    ];
     const findMacApp = (appName: string): string | null =>
       findFirstExistingPath(
-        macAppDirs.map((dir) => path.join(dir, appName)),
+        macAppDirs.map((dir) => path.posix.join(dir, appName)),
         pathExists,
       );
 
@@ -471,7 +474,7 @@ function resolvePlatformTerminalCandidates(
   if (platform === "win32") {
     const localAppData = process.env.LOCALAPPDATA?.trim() ?? "";
     const wtFromAppData = localAppData
-      ? path.join(localAppData, "Microsoft", "WindowsApps", "wt.exe")
+      ? path.win32.join(localAppData, "Microsoft", "WindowsApps", "wt.exe")
       : "";
     const wtBin =
       findBinary("wt.exe") ??

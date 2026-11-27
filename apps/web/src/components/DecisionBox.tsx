@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { DecisionAction, PendingDecision } from "@kiln/protocol/web";
 import type { SubmitDecisionPayload } from "../api/types";
 import { fmtTime, stageMeta } from "../state/format";
@@ -30,13 +30,14 @@ export function DecisionBox({ decision, onSubmit, onOpenResolve }: DecisionBoxPr
   const [rationale, setRationale] = useState<string>(decision.resolution_summary ?? "");
   const [submitting, setSubmitting] = useState<boolean>(false);
 
-  useEffect(() => {
-    setSelectedOptionId(
-      decision.options.find((o) => o.recommended)?.id ?? decision.options[0]?.id ?? "",
-    );
+  const syncKey = `${decision.id}|${decision.updated_at ?? ""}|${decision.resolution_summary ?? ""}|${optionsSig}`;
+  const [lastSyncKey, setLastSyncKey] = useState<string>(syncKey);
+  if (syncKey !== lastSyncKey) {
+    setLastSyncKey(syncKey);
+    setSelectedOptionId(defaultOptId);
     setApplyLedgerRule(false);
     setRationale(decision.resolution_summary ?? "");
-  }, [decision.id, decision.updated_at, decision.resolution_summary, optionsSig]);
+  }
 
   const selectedOption =
     decision.options.find((o) => o.id === selectedOptionId) ?? decision.options[0];

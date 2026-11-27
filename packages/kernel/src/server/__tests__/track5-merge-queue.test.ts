@@ -136,14 +136,18 @@ function makeDeliverCard(params: {
 
 describe("Track 5 [B12.2] Multi-slice serial merge queue (Refinery)", () => {
   const servers: KilndServer[] = [];
+  const stores: KilnStore[] = [];
 
   afterEach(async () => {
     for (const s of servers.splice(0)) {
       await s.orchestrator.stop().catch(() => {});
       await s.stop().catch(() => {});
     }
+    for (const st of stores.splice(0)) {
+      st.close();
+    }
     for (const d of tempDirs.splice(0)) {
-      fs.rmSync(d, { recursive: true, force: true });
+      fs.rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -197,6 +201,7 @@ describe("Track 5 [B12.2] Multi-slice serial merge queue (Refinery)", () => {
 
     const home = createTempDir("kiln-b12-snap-");
     const store = new KilnStore({ kilnHome: home });
+    stores.push(store);
     const repoPath = createTempDir("kiln-b12-snap-repo-");
     initTempGitRepo(repoPath, { "README.md": "init\n" });
     store.writeSpace({
@@ -294,6 +299,7 @@ describe("Track 5 [B12.2] Multi-slice serial merge queue (Refinery)", () => {
     initTempGitRepo(repoPath, { "README.md": "init\n" });
 
     const store = new KilnStore({ kilnHome: home });
+    stores.push(store);
     store.writeSpace({
       schema_version: 1,
       id: "proj",
@@ -357,6 +363,7 @@ describe("Track 5 [B12.2] Multi-slice serial merge queue (Refinery)", () => {
     });
 
     const store = new KilnStore({ kilnHome: home });
+    stores.push(store);
     store.writeSpace({
       schema_version: 1,
       id: "proj",
@@ -450,6 +457,7 @@ describe("Track 5 [B12.2] Multi-slice serial merge queue (Refinery)", () => {
     });
 
     const store = new KilnStore({ kilnHome: home });
+    stores.push(store);
     store.writeSpace({
       schema_version: 1,
       id: "proj",

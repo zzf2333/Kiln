@@ -63,13 +63,17 @@ async function waitUntil(
 
 describe("Track 5 [B10] USD budget circuit breakers", () => {
   const servers: KilndServer[] = [];
+  const stores: KilnStore[] = [];
 
   afterEach(async () => {
     for (const s of servers.splice(0)) {
       await s.stop().catch(() => {});
     }
+    for (const st of stores.splice(0)) {
+      st.close();
+    }
     for (const d of tempDirs.splice(0)) {
-      fs.rmSync(d, { recursive: true, force: true });
+      fs.rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -95,6 +99,7 @@ describe("Track 5 [B10] USD budget circuit breakers", () => {
 
     const home = createTempDir("kiln-b10-disk-");
     const store = new KilnStore({ kilnHome: home });
+    stores.push(store);
     store.writeConfig(
       "pricing",
       PricingConfigSchema.parse({
@@ -243,6 +248,7 @@ describe("Track 5 [B10] USD budget circuit breakers", () => {
     registry.register(fakeBackend);
 
     const store = new KilnStore({ kilnHome: home });
+    stores.push(store);
     store.writeConfig(
       "pricing",
       PricingConfigSchema.parse({
@@ -450,6 +456,7 @@ describe("Track 5 [B10] USD budget circuit breakers", () => {
     registry.register(fakeBackend);
 
     const store = new KilnStore({ kilnHome: home });
+    stores.push(store);
     store.writeConfig(
       "pricing",
       PricingConfigSchema.parse({

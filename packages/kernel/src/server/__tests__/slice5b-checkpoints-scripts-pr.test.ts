@@ -213,7 +213,7 @@ describe("Slice 5b: Implicit Git Checkpoints, Streaming Scripts, Commit->Push->P
       await servers.pop()!.stop();
     }
     while (tempDirs.length > 0) {
-      fs.rmSync(tempDirs.pop()!, { recursive: true, force: true });
+      fs.rmSync(tempDirs.pop()!, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 

@@ -30,7 +30,7 @@ describe("Track 3 OS multi-process accept_entry & observer proxy suite (requires
       await s.stop().catch(() => {});
     }
     for (const d of tempDirs.splice(0)) {
-      fs.rmSync(d, { recursive: true, force: true });
+      fs.rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 

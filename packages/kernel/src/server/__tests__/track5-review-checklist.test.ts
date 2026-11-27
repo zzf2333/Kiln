@@ -15,10 +15,14 @@ import { SseHub } from "../sse.js";
 import { createHttpApiApp } from "../http-api.js";
 
 const tempDirs: string[] = [];
+const stores: KilnStore[] = [];
 
 afterEach(() => {
+  for (const st of stores.splice(0, stores.length)) {
+    st.close();
+  }
   for (const dir of tempDirs.splice(0, tempDirs.length)) {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -26,6 +30,7 @@ function setupTestServer() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "kiln-b12-4-"));
   tempDirs.push(home);
   const store = new KilnStore({ kilnHome: home });
+  stores.push(store);
   const stateMachine = new TaskStateMachine(store);
   const pendingDecisions = new PendingDecisionStore(store);
   const sseHub = new SseHub();

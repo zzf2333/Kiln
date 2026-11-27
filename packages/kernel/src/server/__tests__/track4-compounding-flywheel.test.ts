@@ -314,15 +314,21 @@ function seedFinishedTask(
 }
 
 describe("Track 4 compounding flywheel (B13 + B14 + B15)", () => {
+  const stores: KilnStore[] = [];
+
   afterEach(() => {
+    for (const st of stores.splice(0)) {
+      st.close();
+    }
     for (const d of tempDirs.splice(0)) {
-      fs.rmSync(d, { recursive: true, force: true });
+      fs.rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
   it("extracts 0-Token deterministic RETRO, detects high-signal & 5 attributions, and enriches via cold read-only AI retro", async () => {
     const home = createTempDir("kiln-t4-retro-");
     const store = new KilnStore({ kilnHome: home });
+    stores.push(store);
     store.writeSpace(makeSpace("proj-a"));
 
     seedFinishedTask(store, {
@@ -428,6 +434,7 @@ describe("Track 4 compounding flywheel (B13 + B14 + B15)", () => {
   it("blocks cheating proposals, enforces 20-entry bounded ledger & human approval before injecting HANDOFF/intake", async () => {
     const home = createTempDir("kiln-t4-guard-");
     const store = new KilnStore({ kilnHome: home });
+    stores.push(store);
     store.writeSpace(makeSpace("proj-a"));
 
     // Anti-cheating checks
@@ -587,6 +594,7 @@ describe("Track 4 compounding flywheel (B13 + B14 + B15)", () => {
   it("computes cross-task analytics, records policy history, flags regressions, and executes one-click rollback", () => {
     const home = createTempDir("kiln-t4-analytics-");
     const store = new KilnStore({ kilnHome: home });
+    stores.push(store);
     store.writeSpace(makeSpace("proj-a"));
 
     // Seed 3 clean baseline tasks BEFORE policy change
@@ -678,6 +686,7 @@ describe("Track 4 compounding flywheel (B13 + B14 + B15)", () => {
   it("exposes end-to-end Track 4 HTTP APIs (space checklist/scenarios, task retro, improvements approve/dismiss/rollback)", async () => {
     const home = createTempDir("kiln-t4-http-");
     const store = new KilnStore({ kilnHome: home });
+    stores.push(store);
     const repoPath = createTempDir("kiln-t4-http-repo-");
     execFileSync("git", ["init", "-q"], { cwd: repoPath });
 

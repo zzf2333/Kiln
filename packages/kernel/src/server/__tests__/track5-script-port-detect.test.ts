@@ -33,13 +33,17 @@ const CODEX_DESCRIPTOR: BackendAgentDescriptor = {
 
 describe("Track 5 [B12.3] Script local port detection & bootstrap stall summary", () => {
   const servers: KilndServer[] = [];
+  const stores: KilnStore[] = [];
 
   afterEach(async () => {
     for (const s of servers.splice(0)) {
       await s.stop().catch(() => {});
     }
+    for (const st of stores.splice(0)) {
+      st.close();
+    }
     for (const d of tempDirs.splice(0)) {
-      fs.rmSync(d, { recursive: true, force: true });
+      fs.rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -48,6 +52,7 @@ describe("Track 5 [B12.3] Script local port detection & bootstrap stall summary"
     const repoPath = createTempDir("kiln-b123-repo-");
 
     const store = new KilnStore({ kilnHome: home });
+    stores.push(store);
     store.writeSpace({
       schema_version: 1,
       id: "demo",

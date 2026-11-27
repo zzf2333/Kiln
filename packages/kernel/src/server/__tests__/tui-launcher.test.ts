@@ -30,7 +30,7 @@ describe("Native TUI launcher, run overview I/O summary & local-only open-tui en
       await servers.pop()!.stop();
     }
     while (tempDirs.length > 0) {
-      fs.rmSync(tempDirs.pop()!, { recursive: true, force: true });
+      fs.rmSync(tempDirs.pop()!, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -655,7 +655,7 @@ describe("Native TUI launcher, run overview I/O summary & local-only open-tui en
         "agent: codex",
         "model: gpt-6-luna",
         "backend_id: paseo",
-        `cwd: ${repoDir}`,
+        `cwd: ${JSON.stringify(repoDir)}`,
         "session_ref:",
         "  backendId: paseo",
         "  sessionId: paseo-internal-1",
@@ -801,13 +801,14 @@ describe("Native TUI launcher, run overview I/O summary & local-only open-tui en
     };
 
     const macCalls: Array<{ file: string; args: readonly string[] }> = [];
+    const macCodexHome = "/Users/dev/.kiln/agent-homes/codex";
     await launchNativeAgentTui({
       kilnHome,
       taskId: "t-iso-tui",
       runDir: "001-implement",
       agent: "codex",
       providerSessionId: "0195a3f1-iso",
-      codexHome: isolatedCodexHome,
+      codexHome: macCodexHome,
       cwd: repoDir,
       homedir: root,
       platform: "darwin",
@@ -818,7 +819,7 @@ describe("Native TUI launcher, run overview I/O summary & local-only open-tui en
       },
     });
     const macScriptContent = fs.readFileSync(macCalls[0]!.args[0]!, "utf8");
-    expect(macScriptContent).toContain(`export CODEX_HOME='${isolatedCodexHome}'`);
+    expect(macScriptContent).toContain(`export CODEX_HOME='${macCodexHome}'`);
     expect(macScriptContent).toContain("exec 'codex' 'resume' '0195a3f1-iso'");
 
     const winCalls: Array<{ file: string; args: readonly string[] }> = [];
@@ -923,7 +924,7 @@ describe("Native TUI launcher, run overview I/O summary & local-only open-tui en
         "agent: codex",
         "model: gpt-5.4",
         "backend_id: composite",
-        `cwd: ${repoDir}`,
+        `cwd: ${JSON.stringify(repoDir)}`,
         "session_ref:",
         "  backendId: composite",
         "  sessionId: codex-1",

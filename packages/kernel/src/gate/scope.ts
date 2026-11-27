@@ -352,6 +352,13 @@ function isInsideCanonicalRoot(canonicalTarget: string, canonicalRoot: string): 
   return canonicalTarget === canonicalRoot || canonicalTarget.startsWith(prefix);
 }
 
+function normalizeFrozenFileBytes(buf: Buffer): Buffer {
+  if (buf.includes(0x00) || !buf.includes(0x0d)) {
+    return buf;
+  }
+  return Buffer.from(buf.toString("latin1").replaceAll("\r\n", "\n"), "latin1");
+}
+
 function collectRepoFiles(canonicalRoot: string, includeNodeModules: boolean): string[] {
   const collected: string[] = [];
 
@@ -436,7 +443,7 @@ export function computeFrozenSnapshot(
         continue;
       }
 
-      const content = fs.readFileSync(absPath);
+      const content = normalizeFrozenFileBytes(fs.readFileSync(absPath));
       entryMap.set(relPath, {
         path: relPath,
         exists: true,

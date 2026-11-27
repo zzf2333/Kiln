@@ -38,7 +38,7 @@ describe("@kiln/mcp OS Unix Domain Socket smoke suite (requires unsandboxed conn
       });
     }
     while (tempDirs.length > 0) {
-      fs.rmSync(tempDirs.pop()!, { recursive: true, force: true });
+      fs.rmSync(tempDirs.pop()!, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 

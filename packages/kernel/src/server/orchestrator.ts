@@ -5473,6 +5473,8 @@ export class KilnOrchestrator {
       ) {
         if (worktreePath && fs.existsSync(worktreePath) && activeTestsLock.test_files.length > 0) {
           await runGitCommand([
+            "-c",
+            "core.autocrlf=false",
             "-C",
             worktreePath,
             "checkout",

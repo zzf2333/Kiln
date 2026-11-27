@@ -342,6 +342,55 @@ describe("scope & frozen snapshot", () => {
     expect(delDetectionWithBaseline.hashMatched).toBe(false);
     expect(delDetectionWithBaseline.frozenFilesChanged).toEqual(["tests/a.test.ts"]);
   });
+
+  it("normalizes CRLF/LF in frozen text test files while still detecting binary edits and substantive test edits", () => {
+    const repo = makeTempDir("kiln-frozen-crlf-");
+    fs.mkdirSync(path.join(repo, "tests"), { recursive: true });
+    const textTest = path.join(repo, "tests", "line.test.ts");
+    const binAsset = path.join(repo, "tests", "fixture.bin");
+    fs.writeFileSync(textTest, "expect(1).toBe(1);\nexpect(2).toBe(2);\n");
+    fs.writeFileSync(binAsset, Buffer.from([0x00, 0x0d, 0x0a, 0x41]));
+
+    const lfBaseline = computeFrozenSnapshot(repo, ["tests/*.test.ts", "tests/*.bin"], "pnpm test");
+
+    // Simulate Windows core.autocrlf=true checkout converting LF -> CRLF without changing test logic
+    fs.writeFileSync(textTest, "expect(1).toBe(1);\r\nexpect(2).toBe(2);\r\n");
+    const crlfDetection = detectFrozenFilesChanged({
+      rootDir: repo,
+      freezePatterns: ["tests/*.test.ts", "tests/*.bin"],
+      acceptCmd: "pnpm test",
+      baselineHash: lfBaseline.hash,
+      baselineSnapshot: lfBaseline,
+      changedPaths: [],
+    });
+    expect(crlfDetection.hashMatched).toBe(true);
+    expect(crlfDetection.frozenFilesChanged).toEqual([]);
+
+    // Substantive change to text file must still be caught
+    fs.writeFileSync(textTest, "expect(1).toBe(1);\r\nexpect(2).toBe(3);\r\n");
+    const textChanged = detectFrozenFilesChanged({
+      rootDir: repo,
+      freezePatterns: ["tests/*.test.ts", "tests/*.bin"],
+      acceptCmd: "pnpm test",
+      baselineHash: lfBaseline.hash,
+      baselineSnapshot: lfBaseline,
+    });
+    expect(textChanged.hashMatched).toBe(false);
+    expect(textChanged.frozenFilesChanged).toEqual(["tests/line.test.ts"]);
+
+    // Restore text file, then modify binary file containing NUL byte around \r\n -> must be caught
+    fs.writeFileSync(textTest, "expect(1).toBe(1);\r\nexpect(2).toBe(2);\r\n");
+    fs.writeFileSync(binAsset, Buffer.from([0x00, 0x0a, 0x41]));
+    const binChanged = detectFrozenFilesChanged({
+      rootDir: repo,
+      freezePatterns: ["tests/*.test.ts", "tests/*.bin"],
+      acceptCmd: "pnpm test",
+      baselineHash: lfBaseline.hash,
+      baselineSnapshot: lfBaseline,
+    });
+    expect(binChanged.hashMatched).toBe(false);
+    expect(binChanged.frozenFilesChanged).toEqual(["tests/fixture.bin"]);
+  });
 });
 
 describe("command-runner isolation & process group kill", () => {

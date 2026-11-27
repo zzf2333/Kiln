@@ -131,7 +131,7 @@ export async function createGitWorktreeCheckpoint(
   });
 
   try {
-    await runGit(["-C", input.worktreePath, "add", "-A"], { env });
+    await runGit(["-c", "core.autocrlf=false", "-C", input.worktreePath, "add", "-A"], { env });
     const treeSha = (await runGit(["-C", input.worktreePath, "write-tree"], { env })).trim();
     const message =
       input.message ?? `kiln checkpoint: ${input.taskId} ${input.stage} r${input.round} (${key})`;
@@ -269,7 +269,16 @@ export async function rollbackGitWorktreeToCheckpoint(
     throw new CheckpointNotFoundError(ref);
   }
 
-  await runGit(["-C", input.worktreePath, "read-tree", "--reset", "-u", commitSha]);
+  await runGit([
+    "-c",
+    "core.autocrlf=false",
+    "-C",
+    input.worktreePath,
+    "read-tree",
+    "--reset",
+    "-u",
+    commitSha,
+  ]);
   // Clean non-ignored untracked files added after the checkpoint; omit -x to keep .env / node_modules.
   await runGit(["-C", input.worktreePath, "clean", "-fd"]);
   await runGit(["-C", input.worktreePath, "reset", "--mixed", "HEAD"]);

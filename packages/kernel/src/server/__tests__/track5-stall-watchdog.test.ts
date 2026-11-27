@@ -76,14 +76,18 @@ async function waitUntil(
 
 describe("Track 5 [B12.1] Run heartbeat stall watchdog (Witness)", () => {
   const servers: KilndServer[] = [];
+  const stores: KilnStore[] = [];
 
   afterEach(async () => {
     for (const s of servers.splice(0)) {
       await s.orchestrator.stop().catch(() => {});
       await s.stop().catch(() => {});
     }
+    for (const st of stores.splice(0)) {
+      st.close();
+    }
     for (const d of tempDirs.splice(0)) {
-      fs.rmSync(d, { recursive: true, force: true });
+      fs.rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -180,6 +184,7 @@ describe("Track 5 [B12.1] Run heartbeat stall watchdog (Witness)", () => {
     registry.register(fakeBackend);
 
     const store = new KilnStore({ kilnHome: home });
+    stores.push(store);
     store.writeConfig(
       "roles",
       RolesConfigSchema.parse({
@@ -379,6 +384,7 @@ describe("Track 5 [B12.1] Run heartbeat stall watchdog (Witness)", () => {
     registry.register(fakeBackend);
 
     const store = new KilnStore({ kilnHome: home });
+    stores.push(store);
     store.writeConfig(
       "roles",
       RolesConfigSchema.parse({

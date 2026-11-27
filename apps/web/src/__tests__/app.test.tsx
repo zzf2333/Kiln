@@ -5387,10 +5387,10 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
 
     await waitFor(() => {
       expect(screen.getByText("已按讨论同步")).toBeTruthy();
+      expect(screen.getByText("最终拍板：放宽预算并补全 manifest")).toBeTruthy();
+      const noteInput = screen.getByLabelText("补充说明（可选）") as HTMLTextAreaElement;
+      expect(noteInput.value).toBe("按推荐方案：放宽 max_tokens 到 800k 并补写 manifest");
     });
-    expect(screen.getByText("最终拍板：放宽预算并补全 manifest")).toBeTruthy();
-    const noteInput = screen.getByLabelText("补充说明（可选）") as HTMLTextAreaElement;
-    expect(noteInput.value).toBe("按推荐方案：放宽 max_tokens 到 800k 并补写 manifest");
 
     const readyBtn = screen.getByRole("button", { name: "按推荐方案立即执行" });
     fireEvent.click(readyBtn);
