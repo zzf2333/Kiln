@@ -155,3 +155,28 @@ risk = "high"
 files = ["packages/kernel/src/state/escalation.ts"]
 defect = "evaluateReviewerStageOutcome 在判断 effectivePassed 之前先检查 counters.totalTokens >= card.limits.max_tokens，导致独立审查已无阻塞缺陷通过（verdict=pass, p0=0, p1=0）的任务仍被拦截进入 wait_human(max_tokens_exceeded) 并由编排器误报审查未通过且默认推荐退回实施重修。"
 
+[[cases]]
+id = "R20"
+intro = "847178e664902778df497d1923a399e13760808b"
+fix = ["8292dc2c63bbff80203f58a4db10babe8d109073"]
+risk = "high"
+files = ["packages/kernel/src/gate/scope.ts"]
+defect = "computeFrozenSnapshot 对文本冻结测试文件直接按原始字节计算 SHA256，在 Windows core.autocrlf=true 环境下文件经 git checkout 检出为 CRLF 后与写入时的 LF 哈希不一致，导致未改测试却误报 frozen_files_changed。"
+
+[[cases]]
+id = "R21"
+intro = "a1cf6bebfdb428ed708786d96c72b52ce35ea1ae"
+fix = ["8292dc2c63bbff80203f58a4db10babe8d109073"]
+risk = "high"
+files = ["packages/kernel/src/gate/checkpoints.ts"]
+defect = "createGitWorktreeCheckpoint 与 rollbackGitWorktreeToCheckpoint 执行 git add/read-tree 时未显式设置 core.autocrlf=false，导致在 Windows core.autocrlf=true 下回滚隐式快照会将原 LF 工作树文件改写为 CRLF。"
+
+[[cases]]
+id = "R22"
+intro = "9962ed9e80999b93053649bf92f52b10c8cef0d3"
+fix = ["8292dc2c63bbff80203f58a4db10babe8d109073"]
+risk = "high"
+files = ["packages/kernel/src/server/tui-launcher.ts"]
+defect = "resolvePlatformTerminalCandidates 与 findBinaryOnSystem 在按目标 platform 探测终端路径时混用宿主 path.join 而非 path.posix.join/path.win32.join，在跨平台环境下产生反斜杠混合路径导致终端可用性误判。"
+
+
