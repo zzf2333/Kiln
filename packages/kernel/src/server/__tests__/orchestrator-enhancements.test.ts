@@ -15,8 +15,13 @@ import {
   type TaskCard,
 } from "@kiln/protocol";
 import { FakeBackend } from "../../backend/index.js";
-import { computeFrozenSnapshot } from "../../gate/index.js";
-import { KilnStore, deriveTaskStatus, readYamlOptional } from "../../store/index.js";
+import { computeFrozenSnapshot, toHostStagedRelativePath } from "../../gate/index.js";
+import {
+  KilnStore,
+  deriveTaskStatus,
+  readYamlOptional,
+  realpathCanonical,
+} from "../../store/index.js";
 import { KilndServer } from "../index.js";
 import { captureHostEnvironmentSnapshot } from "../host-snapshot.js";
 import { formatDecisionsForHandoff } from "../orchestrator-handoff.js";
@@ -255,7 +260,7 @@ describe("Orchestrator enhancements: step_index, tester/deliverer agent modes, a
       await servers.pop()!.stop();
     }
     while (tempDirs.length > 0) {
-      fs.rmSync(tempDirs.pop()!, { recursive: true, force: true });
+      fs.rmSync(tempDirs.pop()!, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -1695,7 +1700,7 @@ describe("Orchestrator enhancements: step_index, tester/deliverer agent modes, a
     expect(["ok", "unavailable"]).toContain(savedSnap.running_processes.status);
 
     const workerSpec = fakeBackend.getRecordedSpecs().find((s) => s.taskId === "t-host-snap");
-    const expectedStaged = fs.realpathSync(
+    const expectedStaged = realpathCanonical(
       path.join(kilnHome, "workspaces", "t-host-snap", "staged"),
     );
     expect(workerSpec?.allowedWriteRoots).toEqual([expectedStaged]);
@@ -1763,9 +1768,9 @@ describe("Orchestrator enhancements: step_index, tester/deliverer agent modes, a
   it("allows host_scoped host_op with non-existent directory scope without trailing slash to pass staged_only gate in round 1", async () => {
     const kilnHome = makeTempDir();
     tempDirs.push(kilnHome);
-    const nonExistentHostDir = fs.realpathSync(kilnHome) + "/host-future-cleanup";
-    const expectedCleanupTarget = `${nonExistentHostDir}/cleanup.sh`;
-    const expectedManifestTarget = `${nonExistentHostDir}/manifest.json`;
+    const nonExistentHostDir = path.join(realpathCanonical(kilnHome), "host-future-cleanup");
+    const expectedCleanupTarget = path.join(nonExistentHostDir, "cleanup.sh");
+    const expectedManifestTarget = path.join(nonExistentHostDir, "manifest.json");
 
     const fakeBackend = new FakeBackend({ defaultTurnScript: [] });
     const server = new KilndServer({
@@ -1783,7 +1788,7 @@ describe("Orchestrator enhancements: step_index, tester/deliverer agent modes, a
               .filter((s) => s.taskId === ctx.taskId)
               .at(-1)?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
           const stagedDir = server.store.paths.stagedDir(ctx.taskId);
-          const nestedDir = path.join(stagedDir, nonExistentHostDir.replace(/^\/+/, ""));
+          const nestedDir = path.join(stagedDir, toHostStagedRelativePath(nonExistentHostDir));
           fs.mkdirSync(nestedDir, { recursive: true });
           fs.writeFileSync(path.join(nestedDir, "cleanup.sh"), "#!/bin/bash\necho dry-run\n");
           fs.writeFileSync(path.join(nestedDir, "manifest.json"), '{"targets":["a"]}\n');

@@ -41,6 +41,7 @@ import {
   runVerificationGate,
   stageHostScopedChanges,
   terminateProcessTree,
+  toHostStagedRelativePath,
   verifyScratchWorkspace,
 } from "../index.js";
 
@@ -192,6 +193,40 @@ function makeWorkerReceiptMarkdown(
 
   return serializeFrontmatterMarkdown(fm, sections);
 }
+
+describe("toHostStagedRelativePath", () => {
+  it.each([
+    ["C:\\Users\\runneradmin\\AppData\\Local\\Temp\\x", "C/Users/runneradmin/AppData/Local/Temp/x"],
+    ["d:/work/a.txt", "d/work/a.txt"],
+    ["C:\\", "C"],
+    ["C:", "C"],
+    ["/Users/saonian/host-future/cleanup.sh", "Users/saonian/host-future/cleanup.sh"],
+    ["///var/tmp/./x", "var/tmp/x"],
+    ["///var/tmp/x", "var/tmp/x"],
+  ])("maps %j to %j", (input, expected) => {
+    expect(toHostStagedRelativePath(input)).toBe(expected);
+  });
+
+  it("expands home paths with either separator", () => {
+    const home = toHostStagedRelativePath(os.homedir());
+    expect(toHostStagedRelativePath("~")).toBe(home);
+    expect(toHostStagedRelativePath("~/cleanup.sh")).toBe(`${home}/cleanup.sh`);
+    expect(toHostStagedRelativePath("~\\cleanup.sh")).toBe(`${home}/cleanup.sh`);
+  });
+
+  it.each([
+    ["", /non-empty/],
+    ["foo/bar", /absolute path/],
+    ["C:foo", /absolute path/],
+    ["C:\\a\\..\\..\\etc", /traversal/],
+    ["/a/../../etc", /traversal/],
+    ["~/../etc", /traversal/],
+    ["/bad\0path", /control characters/],
+    ["/bad\npath", /control characters/],
+  ])("rejects %j", (input, error) => {
+    expect(() => toHostStagedRelativePath(input)).toThrow(error);
+  });
+});
 
 describe("scope & frozen snapshot", () => {
   it("normalizes POSIX relative paths and blocks traversal, NUL, and absolute paths", () => {

@@ -188,14 +188,39 @@ function isInsideCanonicalDir(canonicalTarget: string, canonicalDir: string): bo
   return canonicalTarget === canonicalDir || canonicalTarget.startsWith(prefix);
 }
 
-function expandHomeAndValidateHostInput(rawPath: string, label: string): string {
+function validateHostPathInput(rawPath: string, label: string): void {
   if (typeof rawPath !== "string" || rawPath.trim().length === 0) {
     throw new Error(`Invalid ${label}: path must be a non-empty string`);
   }
   if (rawPath.includes("\0") || /[\u0000-\u001f\u007f]/.test(rawPath)) {
     throw new Error(`Invalid ${label}: control characters are forbidden`);
   }
+}
 
+/** Maps a host path to a staged-relative path without resolving host filesystem entries. */
+export function toHostStagedRelativePath(hostAbsPath: string): string {
+  validateHostPathInput(hostAbsPath, "host path");
+
+  let normalized = hostAbsPath.replace(/\\/g, "/");
+  if (normalized === "~" || normalized.startsWith("~/")) {
+    // Keep the original segments so home expansion cannot hide traversal.
+    normalized = os.homedir().replace(/\\/g, "/") + normalized.slice(1);
+  }
+
+  const drive = /^([A-Za-z]):(?:\/(.*))?$/.exec(normalized);
+  const rest = drive ? (drive[2] ?? "") : /^\/+(.*)$/.exec(normalized)?.[1];
+  if (rest === undefined) {
+    throw new Error(`Invalid host path "${hostAbsPath}": must be an absolute path`);
+  }
+  if (rest.split("/").includes("..")) {
+    throw new Error(`Invalid host path "${hostAbsPath}": parent traversal ".." is forbidden`);
+  }
+
+  return normalizeRepoRelativePath(drive ? `${drive[1]}/${rest}` : rest);
+}
+
+function expandHomeAndValidateHostInput(rawPath: string, label: string): string {
+  validateHostPathInput(rawPath, label);
   let expanded = rawPath;
   if (rawPath === "~") {
     expanded = os.homedir();
