@@ -212,9 +212,15 @@ describe("@kiln/mcp server & client", () => {
     expect(wbPlanTool?.inputSchema.properties).toHaveProperty("brief_markdown");
     expect(wbPlanTool?.inputSchema.properties).toHaveProperty("open_questions");
     expect(Array.isArray(wbPlanTool?.inputSchema.anyOf)).toBe(true);
-    expect(
-      Array.isArray(wbPlanTool?.inputSchema.anyOf) ? wbPlanTool.inputSchema.anyOf.length : -1,
-    ).toBe(5);
+    const wbPlanAnyOf = Array.isArray(wbPlanTool?.inputSchema.anyOf)
+      ? wbPlanTool.inputSchema.anyOf
+      : [];
+    expect(wbPlanAnyOf).toHaveLength(5);
+    expect(wbPlanTool?.inputSchema.additionalProperties).toBe(false);
+    for (const branch of wbPlanAnyOf) {
+      expect(branch).toBeTypeOf("object");
+      expect(branch as Record<string, unknown>).not.toHaveProperty("additionalProperties");
+    }
     const modeProp = wbPlanTool?.inputSchema.properties?.mode as { enum?: string[] } | undefined;
     expect(modeProp?.enum).toContain("commit_split_cards");
     expect(modeProp?.enum).toContain("update_decision");
@@ -416,6 +422,48 @@ describe("@kiln/mcp server & client", () => {
       expect(req.headers.Authorization).toBe(`Bearer ${token}`);
       expect(req.headers["Content-Type"]).toBe("application/json");
     }
+  });
+
+  it("strips host-injected toolSummary metadata without failing schema validation", async () => {
+    const captured: CapturedRpcRequest[] = [];
+    const pair = await connectMcpPair({
+      token: "tok-tool-summary",
+      transport: async (req) => {
+        captured.push({ ...req, parsedBody: JSON.parse(req.rawBody) as unknown });
+        return { status: 200, body: { ok: true, endpoint: req.path } };
+      },
+    });
+    cleanups.push(pair.close);
+
+    const ctxResult = await pair.mcpClient.callTool({
+      name: "wb_get_context",
+      arguments: { toolSummary: "Read task context" },
+    });
+    expect(ctxResult.isError).toBeFalsy();
+
+    const planResult = await pair.mcpClient.callTool({
+      name: "wb_plan",
+      arguments: {
+        toolSummary: "Update intake draft",
+        mode: "upsert_draft",
+        draft_id: "d-options",
+        title: "CLI 输出格式化",
+        space: "qa",
+        priority: "P2",
+      },
+    });
+    expect(planResult.isError).toBeFalsy();
+
+    expect(captured).toHaveLength(2);
+    expect(captured[0]!.parsedBody).toEqual({});
+    expect(captured[1]!.parsedBody).toEqual({
+      mode: "upsert_draft",
+      draft_id: "d-options",
+      title: "CLI 输出格式化",
+      space: "qa",
+      priority: "P2",
+    });
+    expect(captured[1]!.parsedBody).not.toHaveProperty("toolSummary");
   });
 
   it("blocks invalid wb_plan and unknown tools client-side without invoking RPC", async () => {

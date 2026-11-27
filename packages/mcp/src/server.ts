@@ -111,11 +111,22 @@ function buildToolInputSchema(tool: McpToolName): ToolInputSchema {
       ],
     };
 
+    const normalizedAnyOf = Array.isArray(unionJson.anyOf)
+      ? unionJson.anyOf.map((branch) => {
+          if (branch && typeof branch === "object" && !Array.isArray(branch)) {
+            const { additionalProperties: _ap, ...rest } = branch as Record<string, unknown>;
+            return rest;
+          }
+          return branch;
+        })
+      : unionJson.anyOf;
+
     return {
       type: "object",
       properties: mergedProperties,
       required: ["mode"],
-      anyOf: unionJson.anyOf,
+      additionalProperties: false,
+      anyOf: normalizedAnyOf,
     };
   }
 
@@ -212,9 +223,13 @@ export function createKilnMcpServer(options: CreateKilnMcpServerOptions): Server
 
     const tool = parsedTool.data;
     const rawArgs = request.params.arguments ?? {};
+    const sanitizedArgs =
+      typeof rawArgs === "object" && rawArgs !== null && !Array.isArray(rawArgs)
+        ? (({ toolSummary: _toolSummary, ...rest }) => rest)(rawArgs as Record<string, unknown>)
+        : rawArgs;
 
     try {
-      const validatedArgs = MCP_TOOL_INPUT_SCHEMAS[tool].parse(rawArgs);
+      const validatedArgs = MCP_TOOL_INPUT_SCHEMAS[tool].parse(sanitizedArgs);
       const result = await options.client.callTool(tool, validatedArgs);
       return {
         content: [
