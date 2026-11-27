@@ -119,3 +119,27 @@ fix = ["aaf992978ba43029ef30e4c5270f228846c28b71"]
 risk = "high"
 files = ["packages/mcp/src/server.ts"]
 defect = "buildToolInputSchema('wb_plan') 导出的 anyOf 各分支携带 additionalProperties=false，当 ACP/MCP 宿主（如 agy）仅在顶层 properties/required 注入 toolSummary 包装字段时，所有 anyOf 分支均因未声明 toolSummary 而拒绝工具调用，且服务端入参校验未剥离该宿主元数据。"
+
+[[cases]]
+id = "R16"
+intro = "d483afc93d626a094a5bb73cb766c1500ee41ce3"
+fix = ["21a9521fff6716aeb85997d4dcd23065b483d17a"]
+risk = "high"
+files = ["apps/desktop/src/model.ts"]
+defect = "pathContainsDir 在 caseInsensitive=false 时误用宿主 path.delimiter 分割 PATH 字符串，且 normalizeDirForPathCompare 未统一正反斜杠、重复分隔符、Windows 盘符/UNC 根与空目标目录边界，导致跨平台路径等价比较误判。"
+
+[[cases]]
+id = "R17"
+intro = "376f4e1a03b6bc1a5627763b7d4fc819e00bcead"
+fix = ["1a79c3138f37efaab0386d395d78e782bb0a2729"]
+risk = "high"
+files = ["packages/kernel/src/backend/acp/acp-backend.ts"]
+defect = "AcpBackend.closeChild 调用 terminateProcessTree 后未等待子进程 close/退出事件收敛且未销毁 stdio 句柄即返回，随后执行 fs.rmSync(tmpCwd) 时因 Windows 文件句柄仍被占用而触发 EPERM/EBUSY。"
+
+[[cases]]
+id = "R18"
+intro = "842b261cbed3ccb24bc1eb1c215a4c063dd11799"
+fix = ["d9068e6d72674d3648f178d7ef1630f37067679e"]
+risk = "high"
+files = ["packages/kernel/src/server/orchestrator-warm-pool.ts", "packages/kernel/src/server/orchestrator.ts"]
+defect = "WarmSessionPool 与 KilnOrchestrator.canonicalizeWorkspacePath 使用 fs.realpathSync 且直接精确比对 cwd，未调用 realpathCanonical 规范化 Windows 8.3 短路径及盘符/斜杠大小写，导致热会话键与工作区目录比较误失配。"
