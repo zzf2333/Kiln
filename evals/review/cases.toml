@@ -103,3 +103,11 @@ fix = ["c0d27dd9cb585a116a90261303be58318a747dd3"]
 risk = "high"
 files = ["packages/kernel/src/server/orchestrator-deliver.ts"]
 defect = "B17 裂变子卡交付时仅当父工作树存在且父卡 contract_version 未变时才合入 kiln/<parentId>，一旦父卡契约升版或取消删除导致条件失配即静默降级回退合入 space.default_branch，致使未经总验收的子卡切片越权污染主仓库主分支。"
+
+[[cases]]
+id = "R14"
+intro = "b6145e09c536fc7c3b89eeec637a1413bc4f00da"
+fix = ["5b381522e284690f379a1ff5541525ab9a591edb"]
+risk = "high"
+files = ["packages/kernel/src/server/orchestrator.ts"]
+defect = "abortActiveRun 在双脑并发阶段先 await op.promise 再取消 auxiliaryActiveHandles 导致任务暂停/取消时死锁挂起，且合成轮被中止后未复检 signal.aborted 即覆写 DUAL_SYNTHESIS.yaml 为 synthesized。"
