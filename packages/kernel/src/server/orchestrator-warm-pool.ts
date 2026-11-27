@@ -1,15 +1,7 @@
-import fs from "node:fs";
 import path from "node:path";
 import type { SessionRef } from "@kiln/protocol";
 import type { ExecutionBackend } from "../backend/index.js";
-
-function normalizeWarmCwd(cwd: string): string {
-  try {
-    return fs.realpathSync(cwd);
-  } catch {
-    return path.resolve(cwd);
-  }
-}
+import { realpathCanonical } from "../store/fs-atomic.js";
 
 export const DEFAULT_WARM_CACHE_TTL_MS = 300_000;
 export const DEFAULT_MAX_IDLE_WARM_SESSIONS = 3;
@@ -61,10 +53,36 @@ export class WarmSessionPool {
   private readonly entries = new Map<string, StoredWarmEntry>();
   private readonly maxIdleSessions: number;
   private readonly now: () => number;
+  private readonly platform: NodeJS.Platform;
+  private readonly realpathFn: (cwd: string) => string;
 
-  constructor(options?: { maxIdleSessions?: number; now?: () => number }) {
+  constructor(options?: {
+    maxIdleSessions?: number;
+    now?: () => number;
+    platform?: NodeJS.Platform;
+    realpathFn?: (cwd: string) => string;
+  }) {
     this.maxIdleSessions = options?.maxIdleSessions ?? DEFAULT_MAX_IDLE_WARM_SESSIONS;
     this.now = options?.now ?? (() => Date.now());
+    this.platform = options?.platform ?? process.platform;
+    this.realpathFn = options?.realpathFn ?? realpathCanonical;
+  }
+
+  private normalizeWarmCwd(cwd: string): string {
+    try {
+      return this.realpathFn(cwd);
+    } catch {
+      return path.resolve(cwd);
+    }
+  }
+
+  private normalizeWarmCwdForMatch(cwd: string): string {
+    const canonical = this.normalizeWarmCwd(cwd);
+    if (this.platform !== "win32") return canonical;
+
+    const windowsCwd = canonical.replaceAll("/", "\\").toLowerCase();
+    if (/^[a-z]:\\+$/.test(windowsCwd)) return windowsCwd.slice(0, 3);
+    return windowsCwd.replace(/\\+$/, "");
   }
 
   private clearTimer(entry: StoredWarmEntry): void {
@@ -93,7 +111,7 @@ export class WarmSessionPool {
     const boundedTtl = Math.max(1_000, ttlMs);
     const stored: StoredWarmEntry = {
       ...entry,
-      cwd: normalizeWarmCwd(entry.cwd),
+      cwd: this.normalizeWarmCwd(entry.cwd),
       idleTimer: null,
     };
     const timer = setTimeout(() => {
@@ -161,7 +179,7 @@ export class WarmSessionPool {
       entry.backendId !== query.backendId ||
       entry.agent !== query.agent ||
       entry.model !== query.model ||
-      entry.cwd !== normalizeWarmCwd(query.cwd) ||
+      this.normalizeWarmCwdForMatch(entry.cwd) !== this.normalizeWarmCwdForMatch(query.cwd) ||
       entry.rosterRoleId !== query.rosterRoleId ||
       entry.contractVersion !== query.contractVersion ||
       (entry.stepIndex ?? null) !== (query.stepIndex ?? null) ||

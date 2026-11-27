@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   RosterConfigSchema,
   RunMetaSchema,
@@ -233,7 +233,7 @@ describe("Track 1: B1 layered HANDOFF, B2 warm session reuse & sessionKey MCP au
       await servers.pop()!.stop();
     }
     while (tempDirs.length > 0) {
-      fs.rmSync(tempDirs.pop()!, { recursive: true, force: true });
+      fs.rmSync(tempDirs.pop()!, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -723,9 +723,9 @@ describe("Track 1: B1 layered HANDOFF, B2 warm session reuse & sessionKey MCP au
     // Verify usage_turns + computeUsageSnapshot stage/warm observability AND survival across rebuildIndexFromDisk()
     await server.stop();
     const sqliteFile = path.join(kilnHome, "index.sqlite");
-    fs.rmSync(sqliteFile, { force: true });
-    fs.rmSync(`${sqliteFile}-wal`, { force: true });
-    fs.rmSync(`${sqliteFile}-shm`, { force: true });
+    for (const file of [sqliteFile, `${sqliteFile}-wal`, `${sqliteFile}-shm`]) {
+      fs.rmSync(file, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
 
     const rebuiltStore = new KilnStore({ kilnHome });
     rebuiltStore.rebuildIndexFromDisk();
@@ -749,6 +749,95 @@ describe("Track 1: B1 layered HANDOFF, B2 warm session reuse & sessionKey MCP au
     } finally {
       rebuiltStore.close();
     }
+  });
+
+  describe("WarmSessionPool cwd matching", () => {
+    function parkSession(pool: WarmSessionPool, cwd: string) {
+      const backend = new FakeBackend({ defaultTurnScript: [] });
+      const cancel = vi.spyOn(backend, "cancel").mockResolvedValue(undefined);
+      const query = {
+        taskId: "t-cwd-pool",
+        backendId: "fake",
+        agent: "codex",
+        model: "gpt-5.4",
+        rosterRoleId: undefined,
+        contractVersion: 1,
+      };
+      const sessionRef = { backendId: "fake", sessionId: "s-cwd-1" };
+      pool.park({
+        ...query,
+        cwd,
+        sessionRef,
+        sessionKey: "sk-cwd-1",
+        backend,
+        lastRunId: "r-1",
+        reuseCount: 0,
+        lastContextPercent: 10,
+        lastUsedAtMs: Date.now(),
+      });
+      return { cancel, match: (cwd: string) => pool.takeMatching({ ...query, cwd }), sessionRef };
+    }
+
+    it("reuses a session parked through a directory symlink", () => {
+      const target = makeTempDir("kiln-warm-real-");
+      const link = path.join(makeTempDir("kiln-warm-link-"), "worktree");
+      fs.symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
+      const { cancel, match, sessionRef } = parkSession(new WarmSessionPool(), link);
+
+      expect(match(target)).toMatchObject({ cwd: fs.realpathSync.native(target), sessionRef });
+      expect(cancel).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      {
+        name: "an 8.3 short path",
+        parked: "C:\\Users\\RUNNER~1\\wt",
+        query: "C:\\Users\\runneradmin\\wt",
+      },
+      {
+        name: "different casing",
+        parked: "c:\\Users\\RunnerAdmin\\wt",
+        query: "C:\\Users\\runneradmin\\wt",
+      },
+      {
+        name: "forward slashes and a trailing separator",
+        parked: "C:\\Users\\RunnerAdmin\\wt",
+        query: "C:/Users/runneradmin/wt/",
+      },
+    ])("reuses a win32 session across $name and preserves the display cwd", ({ parked, query }) => {
+      const canonicalCwd = "C:\\Users\\RunnerAdmin\\wt";
+      const pool = new WarmSessionPool({
+        platform: "win32",
+        realpathFn: (cwd) => (cwd === "C:\\Users\\RUNNER~1\\wt" ? canonicalCwd : cwd),
+      });
+      const { cancel, match, sessionRef } = parkSession(pool, parked);
+
+      expect(match(query)).toMatchObject({
+        cwd: parked.includes("RUNNER~1") ? canonicalCwd : parked,
+        sessionRef,
+      });
+      expect(cancel).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      {
+        platform: "win32",
+        parked: "C:\\Users\\RunnerAdmin\\wt",
+        query: "C:\\Users\\runneradmin\\other",
+      },
+      { platform: "linux", parked: "/worktrees/wt", query: "/worktrees/other" },
+      { platform: "linux", parked: "/worktrees/WT", query: "/worktrees/wt" },
+    ] as const)(
+      "evicts a $platform session when $parked differs from $query",
+      ({ platform, parked, query }) => {
+        const pool = new WarmSessionPool({ platform, realpathFn: (cwd) => cwd });
+        const { cancel, match, sessionRef } = parkSession(pool, parked);
+
+        expect(match(query)).toBeNull();
+        expect(cancel).toHaveBeenCalledExactlyOnceWith(sessionRef);
+        expect(match(parked)).toBeNull();
+      },
+    );
   });
 
   it("matches WarmSessionPool by stepIndex, stepLabel, and customInstructions and reuses labeled workflow implement steps", async () => {

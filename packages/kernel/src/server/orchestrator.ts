@@ -115,6 +115,7 @@ import {
   ensureDir,
   readNdjsonValidated,
   readYamlOptional,
+  realpathCanonical,
   writeFileAtomic,
   writeYamlAtomic,
   type DerivedTaskState,
@@ -1533,7 +1534,7 @@ export class KilnOrchestrator {
 
   private canonicalizeWorkspacePath(dir: string): string {
     try {
-      return fs.realpathSync(dir);
+      return realpathCanonical(dir);
     } catch {
       return path.resolve(dir);
     }
