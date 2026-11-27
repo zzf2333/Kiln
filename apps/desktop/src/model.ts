@@ -618,9 +618,20 @@ export function renderWindowsCliShim(input: {
 }
 
 function normalizeDirForPathCompare(dir: string, caseInsensitive: boolean): string {
-  const trimmed = dir.replace(/[/\\]+$/, "");
-  const effective = trimmed.length > 0 ? trimmed : dir;
-  return caseInsensitive ? effective.toLowerCase() : effective;
+  if (dir.length === 0) return "";
+  if (!caseInsensitive) {
+    const collapsed = dir.replace(/\/+/g, "/");
+    return collapsed === "/" ? "/" : collapsed.replace(/\/$/, "");
+  }
+
+  const win = dir.replace(/\//g, "\\");
+  if (/^\\+$/.test(win)) return "\\";
+
+  const hasUncPrefix = win.length >= 3 && win.startsWith("\\\\") && win[2] !== "\\";
+  const body = (hasUncPrefix ? win.slice(2) : win).replace(/\\+/g, "\\");
+  const rebuilt = hasUncPrefix ? `\\\\${body}` : body;
+  const trimmed = /^[a-zA-Z]:\\$/.test(rebuilt) ? rebuilt : rebuilt.replace(/\\$/, "");
+  return trimmed.toLowerCase();
 }
 
 export function pathContainsDir(
@@ -629,8 +640,9 @@ export function pathContainsDir(
   caseInsensitive: boolean,
 ): boolean {
   if (!pathEnv) return false;
-  const sep = caseInsensitive ? ";" : path.delimiter;
   const needle = normalizeDirForPathCompare(targetDir, caseInsensitive);
+  if (needle.length === 0) return false;
+  const sep = caseInsensitive ? ";" : ":";
   return pathEnv
     .split(sep)
     .filter((entry) => entry.length > 0)
