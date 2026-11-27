@@ -1,6 +1,6 @@
 {
   "name": "@kiln/desktop",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "private": true,
   "description": "Kiln desktop workbench (Electron)",
   "author": "Kiln Contributors",

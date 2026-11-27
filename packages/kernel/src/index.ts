@@ -1,4 +1,4 @@
-export const KERNEL_VERSION = "0.0.6";
+export const KERNEL_VERSION = "0.0.7";
 export * from "./backend/index.js";
 export * from "./gate/index.js";
 export * from "./scheduler/index.js";
