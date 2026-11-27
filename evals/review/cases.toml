@@ -141,5 +141,17 @@ id = "R18"
 intro = "842b261cbed3ccb24bc1eb1c215a4c063dd11799"
 fix = ["d9068e6d72674d3648f178d7ef1630f37067679e"]
 risk = "high"
-files = ["packages/kernel/src/server/orchestrator-warm-pool.ts", "packages/kernel/src/server/orchestrator.ts"]
+files = [
+  "packages/kernel/src/server/orchestrator-warm-pool.ts",
+  "packages/kernel/src/server/orchestrator.ts",
+]
 defect = "WarmSessionPool 与 KilnOrchestrator.canonicalizeWorkspacePath 使用 fs.realpathSync 且直接精确比对 cwd，未调用 realpathCanonical 规范化 Windows 8.3 短路径及盘符/斜杠大小写，导致热会话键与工作区目录比较误失配。"
+
+[[cases]]
+id = "R19"
+intro = "847178e664902778df497d1923a399e13760808b"
+fix = ["5e54c6f08d8cbdddb780ff21694c9f63bdabacb0"]
+risk = "high"
+files = ["packages/kernel/src/state/escalation.ts"]
+defect = "evaluateReviewerStageOutcome 在判断 effectivePassed 之前先检查 counters.totalTokens >= card.limits.max_tokens，导致独立审查已无阻塞缺陷通过（verdict=pass, p0=0, p1=0）的任务仍被拦截进入 wait_human(max_tokens_exceeded) 并由编排器误报审查未通过且默认推荐退回实施重修。"
+
