@@ -2,7 +2,9 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_MAX_CARD_TOKENS,
   DevicesConfigSchema,
+  LimitsConfigSchema,
   RemoteConfigSchema,
   RolesConfigSchema,
   createDefaultRemoteConfig,
@@ -176,6 +178,10 @@ describe("config, events, and zero-node-dependency invariant", () => {
     // Verify browser-safe @kiln/protocol/web exports stay zero-Zod while exposing constants & types
     expect(webExports.DEFAULT_REMOTE_PORT).toBe(4311);
     expect(webExports.DEFAULT_LOCAL_PORT).toBe(4310);
+    expect(webExports.DEFAULT_MAX_CARD_TOKENS).toBe(2_000_000);
+    expect(LimitsConfigSchema.parse({ schema_version: 1 }).max_card_tokens).toBe(
+      DEFAULT_MAX_CARD_TOKENS,
+    );
     expect(webExports.REMOTE_NOTIFICATION_CHANNELS).toEqual(["bark", "ntfy", "webhook"]);
     expect(webExports.DEFAULT_REMOTE_NOTIFICATION_PRIORITIES).toEqual(["P0", "P1"]);
     expect(webExports.SHA256_HEX_RE.test(validHash)).toBe(true);

@@ -25,6 +25,7 @@ import {
 import { KilndServer } from "../index.js";
 import { captureHostEnvironmentSnapshot } from "../host-snapshot.js";
 import { formatDecisionsForHandoff } from "../orchestrator-handoff.js";
+import { resolveCardLimits } from "../pending-decisions.js";
 
 function git(args: readonly string[], cwd?: string): string {
   return execFileSync("git", [...args], {
@@ -1913,5 +1914,152 @@ describe("Orchestrator enhancements: step_index, tester/deliverer agent modes, a
       [expectedCleanupTarget, expectedManifestTarget].sort(),
     );
     expect(fs.existsSync(nonExistentHostDir)).toBe(false);
+  });
+
+  it("uses 2_000_000 as default max_card_tokens and prioritizes forward progression when gatePassed hits max_tokens_exceeded", async () => {
+    const kilnHome = makeTempDir("kiln-tokencap-gatepass-");
+    const { repoPath, baseCommit } = initGitRepo("tokencap-gatepass");
+    const acceptCmd =
+      "node -e \"const fs=require('fs'); process.exit(fs.readFileSync('src/api.ts','utf8').includes('2') ? 0 : 1)\"";
+    const snap = computeFrozenSnapshot(repoPath, [], acceptCmd);
+    const fakeBackend = new FakeBackend();
+
+    const server = new KilndServer({
+      kilnHome,
+      host: "127.0.0.1",
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: true,
+      tokenSecret: "tokencap-gatepass-secret-0123456789abcd",
+      approvalHandler: async (req, ctx) => {
+        const wtPath = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
+        const token =
+          fakeBackend.getRecordedSpecs().find((s) => s.runId === ctx.runId)?.mcpServers?.[0]?.env
+            ?.KILN_RUN_TOKEN ?? "";
+
+        if (req.action === "worker_over_cap") {
+          fs.writeFileSync(path.join(wtPath, "src", "api.ts"), "export const api = 2;\n");
+          server.store.recordChatUsage(
+            { runId: ctx.runId, taskId: ctx.taskId, stage: "implement" },
+            {
+              kind: "usage",
+              at: new Date().toISOString(),
+              turnId: "turn-over-cap",
+              agent: "codex",
+              model: "gpt-5.4",
+              inputTokens: 12_000,
+              cachedInputTokens: 0,
+              outputTokens: 1_000,
+              reasoningTokens: 0,
+            },
+          );
+          const res = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: makeWorkerReceiptMarkdown({
+                run_id: ctx.runId,
+                contract_version: ctx.card.contract_version,
+                input_ref: baseCommit,
+                output_ref: "HEAD",
+                changed_paths: ["src/api.ts"],
+              }),
+            }),
+          });
+          expect(res.status).toBe(200);
+          await ctx.backend.answer(req.id, true);
+        }
+      },
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "kiln",
+      name: "Kiln",
+      repo_path: repoPath,
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    });
+    server.store.writeConfig("roles", {
+      schema_version: 1,
+      heterogeneous_review: false,
+      roles: {
+        worker: {
+          backend_id: "fake",
+          agent: "codex",
+          model: "gpt-5.4",
+          allow_full_access_fallback: false,
+        },
+        reviewer: {
+          backend_id: "fake",
+          agent: "codex",
+          model: "gpt-5.4",
+          allow_full_access_fallback: false,
+        },
+      },
+    });
+    expect(resolveCardLimits(server.store).max_tokens).toBe(2_000_000);
+    await server.start();
+
+    fakeBackend.enqueueScript(
+      [
+        {
+          kind: "approval",
+          action: "worker_over_cap",
+          detail: "write api.ts and exceed max_tokens",
+        },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-worker-gate-pass-tokencap", role: "worker" },
+    );
+
+    server.stateMachine.createTask(
+      TaskCardSchema.parse({
+        schema_version: 1,
+        id: "t-worker-gate-pass-tokencap",
+        title: "Worker gate pass over token cap",
+        space: "kiln",
+        priority: "P2",
+        track: "L2",
+        workspace_mode: "git_worktree",
+        contract_version: 1,
+        contract: {
+          goal: "Modify api.ts cleanly",
+          end: "api.ts returns 2",
+          accept_cmd: acceptCmd,
+          accept_files_hash: snap.hash,
+          scope: ["src/**"],
+          deliver: { mode: "merge_main", cmd: null },
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 10_000 },
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }),
+      "# Brief\n",
+    );
+    await server.orchestrator.wake();
+
+    await waitUntil(
+      () =>
+        server.pendingDecisions.get("t-worker-gate-pass-tokencap")?.reason ===
+        "max_tokens_exceeded",
+      "t-worker-gate-pass-tokencap pauses at max_tokens_exceeded after passing gate",
+    );
+
+    const pending = server.pendingDecisions.get("t-worker-gate-pass-tokencap");
+    expect(pending).toBeTruthy();
+    expect(pending?.category).toBe("gate_failure_escalation");
+    expect(pending?.question).toContain("实施与确定性门禁已通过");
+    expect(pending?.options[0]).toMatchObject({
+      id: "opt-send-review",
+      action: "resume",
+      target_stage: "review",
+      recommended: true,
+    });
+    expect(pending?.options.find((o) => o.id === "opt-retry-implement")?.recommended).toBe(false);
   });
 });

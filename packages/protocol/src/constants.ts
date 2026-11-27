@@ -265,6 +265,8 @@ export type ImprovementProposalStatus = (typeof IMPROVEMENT_PROPOSAL_STATUSES)[n
 
 export const MAX_ACTIVE_LEDGER_INJECT = 20;
 
+export const DEFAULT_MAX_CARD_TOKENS = 2_000_000;
+
 export const TUI_TERMINAL_IDS = [
   "auto",
   "ghostty",

@@ -728,6 +728,47 @@ describe("Escalation chain, circuit breaker, advisor authorization, and gate ver
       forgedPassIgnored: false,
       nextStage: "accept",
     });
+
+    // Clean pass (p0=0, p1=0) advances even when totalTokens >= max_tokens
+    const cleanPassOverTokens = evaluateReviewerStageOutcome(
+      l2Card,
+      makeReviewerReceipt({ verdict: "pass", p0: 0, p1: 0, p2: 1 }),
+      makeCounters({ totalTokens: 500_000 }),
+    );
+    expect(cleanPassOverTokens).toEqual({
+      action: "advance_stage",
+      level: "none",
+      passed: true,
+      forgedPassIgnored: false,
+      nextStage: "deliver",
+    });
+
+    // Failed or forged-pass review at max_tokens still waits for human with passed: false
+    const changesRequestedAtCap = evaluateReviewerStageOutcome(
+      l2Card,
+      makeReviewerReceipt({ verdict: "changes_requested", p0: 0, p1: 1 }),
+      makeCounters({ totalTokens: 250_000 }),
+    );
+    expect(changesRequestedAtCap).toMatchObject({
+      action: "wait_human",
+      level: "L3",
+      passed: false,
+      forgedPassIgnored: false,
+      reason: "max_tokens_exceeded",
+    });
+
+    const forgedPassAtCap = evaluateReviewerStageOutcome(
+      l2Card,
+      makeReviewerReceipt({ verdict: "pass", p0: 0, p1: 1 }),
+      makeCounters({ totalTokens: 250_000 }),
+    );
+    expect(forgedPassAtCap).toMatchObject({
+      action: "wait_human",
+      level: "L3",
+      passed: false,
+      forgedPassIgnored: true,
+      reason: "max_tokens_exceeded",
+    });
   });
 });
 

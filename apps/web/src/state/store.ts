@@ -2,6 +2,7 @@ import { createContext } from "react";
 import { useContext, useEffect, useState } from "react";
 import {
   ATTACHMENT_MIME_TYPES,
+  DEFAULT_MAX_CARD_TOKENS,
   MAX_ATTACHMENT_BYTES,
   WORKFLOW_BINDING_KEYS,
   WORKFLOW_PRESETS,
@@ -468,7 +469,7 @@ const DEFAULT_LIMITS: LimitsConfig = {
   retries_per_stage: 2,
   review_rounds: 2,
   advisor_calls: 1,
-  max_card_tokens: 250_000,
+  max_card_tokens: DEFAULT_MAX_CARD_TOKENS,
 };
 
 const DEFAULT_ROLES: RolesConfig = {

@@ -853,17 +853,6 @@ export function evaluateReviewerStageOutcome(
   const forgedPassIgnored = receipt.verdict === "pass" && hasBlockingIssues;
   const effectivePassed = receipt.verdict === "pass" && !hasBlockingIssues;
 
-  if (counters.totalTokens >= card.limits.max_tokens) {
-    return {
-      action: "wait_human",
-      level: "L3",
-      passed: effectivePassed,
-      forgedPassIgnored,
-      reason: "max_tokens_exceeded",
-      breaker,
-    };
-  }
-
   if (effectivePassed) {
     return {
       action: "advance_stage",
@@ -871,6 +860,17 @@ export function evaluateReviewerStageOutcome(
       passed: true,
       forgedPassIgnored: false,
       nextStage: nextTaskStageAfter(card, "review", reviewTrack),
+    };
+  }
+
+  if (counters.totalTokens >= card.limits.max_tokens) {
+    return {
+      action: "wait_human",
+      level: "L3",
+      passed: false,
+      forgedPassIgnored,
+      reason: "max_tokens_exceeded",
+      breaker,
     };
   }
 

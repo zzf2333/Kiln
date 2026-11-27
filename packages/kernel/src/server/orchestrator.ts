@@ -5700,6 +5700,96 @@ export class KilnOrchestrator {
       }
     }
 
+    const gatePassedTokenCap =
+      stageDecision.gatePassed && stageDecision.reason === "max_tokens_exceeded";
+    const afterCurrentStep = nextWorkflowStepAfter(
+      latestCard,
+      runMeta.step_index ?? null,
+      effectiveStage,
+      stageDecision.effectiveTrack,
+    );
+    const afterVerifyStep =
+      afterCurrentStep?.stage === "verify"
+        ? nextWorkflowStepAfter(
+            latestCard,
+            afterCurrentStep.stepIndex,
+            "verify",
+            stageDecision.effectiveTrack,
+          )
+        : afterCurrentStep;
+    const fallbackTargetStage =
+      afterVerifyStep?.stage ??
+      nextTaskStageAfter(latestCard, "verify", stageDecision.effectiveTrack);
+    const proceedTargetStage: StageId = hasReviewInPipeline
+      ? "review"
+      : fallbackTargetStage &&
+          fallbackTargetStage !== "implement" &&
+          fallbackTargetStage !== "verify"
+        ? fallbackTargetStage
+        : "deliver";
+
+    const gateDecisionQuestion = gatePassedTokenCap
+      ? `任务 "${latestCard.title}" 实施与确定性门禁已通过，但触及单卡 Token 软上限 (max_tokens_exceeded)，请确认是否继续推进下一阶段。`
+      : `任务 "${latestCard.title}" 门禁或实施异常 (${stageDecision.reason})，请选择后续处理方式。`;
+
+    const gateDecisionOptions = gatePassedTokenCap
+      ? [
+          hasReviewInPipeline
+            ? {
+                id: "opt-send-review",
+                label: "转入独立审查",
+                action: "resume" as const,
+                target_stage: "review" as const,
+                recommended: true,
+              }
+            : {
+                id: "opt-proceed-next",
+                label: proceedTargetStage === "accept" ? "进入真实验收" : "进入交付",
+                action: "resume" as const,
+                target_stage: proceedTargetStage,
+                recommended: true,
+              },
+          {
+            id: "opt-retry-implement",
+            label: "退回实施阶段修复",
+            action: "resume" as const,
+            target_stage: "implement" as const,
+            recommended: false,
+          },
+          {
+            id: "opt-cancel",
+            label: "取消任务",
+            action: "cancel" as const,
+            recommended: false,
+          },
+        ]
+      : [
+          {
+            id: "opt-retry-implement",
+            label: "退回实施阶段修复",
+            action: "resume" as const,
+            target_stage: "implement" as const,
+            recommended: true,
+          },
+          ...(hasReviewInPipeline
+            ? [
+                {
+                  id: "opt-send-review",
+                  label: "转入独立审查",
+                  action: "resume" as const,
+                  target_stage: "review" as const,
+                  recommended: false,
+                },
+              ]
+            : []),
+          {
+            id: "opt-cancel",
+            label: "取消任务",
+            action: "cancel" as const,
+            recommended: false,
+          },
+        ];
+
     const pending = PendingDecisionSchema.parse({
       id: `dec-${randomUUID().slice(0, 8)}`,
       task_id: taskId,
@@ -5707,33 +5797,8 @@ export class KilnOrchestrator {
       contract_version: latestCard.contract_version,
       reason: stageDecision.reason,
       category: stageDecision.escalateToL2 ? "frozen_test_escalation" : "gate_failure_escalation",
-      question: `任务 "${latestCard.title}" 门禁或实施异常 (${stageDecision.reason})，请选择后续处理方式。`,
-      options: [
-        {
-          id: "opt-retry-implement",
-          label: "退回实施阶段修复",
-          action: "resume",
-          target_stage: "implement",
-          recommended: true,
-        },
-        ...(hasReviewInPipeline
-          ? [
-              {
-                id: "opt-send-review",
-                label: "转入独立审查",
-                action: "resume" as const,
-                target_stage: "review" as const,
-                recommended: false,
-              },
-            ]
-          : []),
-        {
-          id: "opt-cancel",
-          label: "取消任务",
-          action: "cancel",
-          recommended: false,
-        },
-      ],
+      question: gateDecisionQuestion,
+      options: gateDecisionOptions,
       created_at: new Date().toISOString(),
     });
     this.transitionTaskToWaiting(taskId, pending, guard);

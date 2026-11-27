@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
+  DEFAULT_MAX_CARD_TOKENS,
   PRIORITY_RANK,
   PendingDecisionSchema,
   RoleIdSchema,
@@ -124,7 +125,7 @@ export function resolveCardLimits(store: KilnStore, override?: CardLimits): Card
     retries_per_stage: configured?.retries_per_stage ?? 2,
     review_rounds: configured?.review_rounds ?? 2,
     advisor_calls: configured?.advisor_calls ?? 1,
-    max_tokens: configured?.max_card_tokens ?? 250_000,
+    max_tokens: configured?.max_card_tokens ?? DEFAULT_MAX_CARD_TOKENS,
     ...(configured?.max_card_cost_usd !== undefined
       ? { max_cost_usd: configured.max_card_cost_usd }
       : {}),
