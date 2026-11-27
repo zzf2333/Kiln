@@ -105,8 +105,11 @@ export function verifyBackendContract(
     });
 
     afterEach(async () => {
-      await harness.cleanup?.();
-      await harness.backend.dispose?.();
+      try {
+        await harness.backend.dispose?.();
+      } finally {
+        await harness.cleanup?.();
+      }
     });
 
     it("1. streams ordered RunEvents after start() and ends with exactly one exit event", async () => {

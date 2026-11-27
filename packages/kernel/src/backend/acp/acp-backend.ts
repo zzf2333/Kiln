@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -65,6 +65,7 @@ import {
 
 const DEFAULT_CANCEL_TIMEOUT_MS = 3_000;
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
+const CHILD_CLOSE_TIMEOUT_MS = 1_500;
 
 export const BASE_ACP_CAPABILITIES: BackendCapabilities = {
   interactiveChat: true,
@@ -363,6 +364,8 @@ export class AcpBackend implements ProviderTelemetryBackend {
   private readonly probeOptions: ProbeCliBinaryOptions | undefined;
 
   private readonly sessions = new Map<string, AcpSessionState>();
+  private readonly childTerminations = new WeakMap<ChildProcess, Promise<void>>();
+  private readonly finishChildTermination = new WeakMap<ChildProcess, () => void>();
   private readonly approvalHandlers = new Set<ApprovalHandler>();
   private readonly pendingApprovals = new Map<string, PendingAcpApproval>();
 
@@ -406,6 +409,30 @@ export class AcpBackend implements ProviderTelemetryBackend {
     });
     // Prevent unhandled EPIPE error events if the child terminates mid-write.
     child.stdin?.on("error", () => {});
+    this.childTerminations.set(
+      child,
+      new Promise<void>((resolve) => {
+        if (child.exitCode != null || child.signalCode != null) {
+          resolve();
+          return;
+        }
+        const finish = () => {
+          child.off("close", finish);
+          child.off("error", finish);
+          child.off("exit", finish);
+          this.finishChildTermination.delete(child);
+          resolve();
+        };
+        this.finishChildTermination.set(child, finish);
+        child.once("close", finish);
+        child.once("error", finish);
+        // Node emits close after exit and stdio shutdown. EventEmitter doubles may emit only exit.
+        const exitFallback = child instanceof ChildProcess ? null : finish;
+        if (exitFallback) {
+          child.once("exit", exitFallback);
+        }
+      }),
+    );
     return child;
   }
 
@@ -421,6 +448,24 @@ export class AcpBackend implements ProviderTelemetryBackend {
       // Ignore stdin close errors.
     }
     await terminateProcessTree(child.pid).catch(() => false);
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      if (this.finishChildTermination.has(child)) {
+        await Promise.race([
+          this.childTerminations.get(child),
+          new Promise<void>((resolve) => {
+            timeout = setTimeout(resolve, CHILD_CLOSE_TIMEOUT_MS);
+            timeout.unref?.();
+          }),
+        ]);
+      }
+    } finally {
+      clearTimeout(timeout);
+      this.finishChildTermination.get(child)?.();
+      child.stdin?.destroy();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    }
   }
 
   private connectSdkClient(
@@ -512,15 +557,22 @@ export class AcpBackend implements ProviderTelemetryBackend {
 
     try {
       child = this.spawnAcpChild(binaryProbe.resolvedPath, args, tmpCwd, env);
-      child.once("error", (err) => {
+      const probeChild = child;
+      const onError = (err: Error) => {
         rejectSpawnErr?.(err instanceof Error ? err : new Error(String(err)));
-      });
-      child.once("exit", (code, signal) => {
+      };
+      const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
         rejectSpawnErr?.(
           new Error(
             `ACP probe process exited before handshake (code=${code ?? "null"}, signal=${signal ?? "null"})`,
           ),
         );
+      };
+      probeChild.once("error", onError);
+      probeChild.once("exit", onExit);
+      void this.childTerminations.get(probeChild)?.then(() => {
+        probeChild.off("error", onError);
+        probeChild.off("exit", onExit);
       });
       const connected = this.connectSdkClient(child);
       connection = connected.connection;
@@ -598,7 +650,7 @@ export class AcpBackend implements ProviderTelemetryBackend {
       if (child) {
         await this.closeChild(child, connection);
       }
-      fs.rmSync(tmpCwd, { recursive: true, force: true });
+      fs.rmSync(tmpCwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   }
 
@@ -759,12 +811,18 @@ export class AcpBackend implements ProviderTelemetryBackend {
     };
     this.sessions.set(sessionId, session);
 
-    child.once("error", (err) => {
+    const onError = (err: Error) => {
       this.handleProcessClosed(session, err.message);
-    });
-    child.once("close", (code, signal) => {
+    };
+    const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
       const detail = `ACP agent exited unexpectedly (code=${code ?? "null"}, signal=${signal ?? "null"})`;
       this.handleProcessClosed(session, detail);
+    };
+    child.once("error", onError);
+    child.once("close", onClose);
+    void this.childTerminations.get(child)?.then(() => {
+      child.off("error", onError);
+      child.off("close", onClose);
     });
 
     try {

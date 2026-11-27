@@ -1,10 +1,10 @@
-import type { ChildProcess } from "node:child_process";
+import { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDefaultProvidersConfig, type ProvidersConfig, type RunEvent } from "@kiln/protocol";
 import { verifyBackendContract } from "./contract.suite.js";
 import { AcpBackend } from "../acp/index.js";
@@ -803,9 +803,13 @@ process.stdin.on("data", (chunk) => {
 
 afterAll(() => {
   if (fixtureDir) {
-    fs.rmSync(fixtureDir, { recursive: true, force: true });
+    rmDirSafe(fixtureDir);
   }
 });
+
+function rmDirSafe(dir: string): void {
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
 
 function makeTempWs(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -920,7 +924,7 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
         },
         followUpMessage: "turn two",
       }),
-      cleanup: () => fs.rmSync(cwd, { recursive: true, force: true }),
+      cleanup: () => rmDirSafe(cwd),
     };
   });
 
@@ -984,7 +988,7 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
         },
         followUpMessage: "turn two",
       }),
-      cleanup: () => fs.rmSync(cwd, { recursive: true, force: true }),
+      cleanup: () => rmDirSafe(cwd),
     };
   });
 
@@ -1039,7 +1043,7 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
         },
         followUpMessage: "turn two",
       }),
-      cleanup: () => fs.rmSync(cwd, { recursive: true, force: true }),
+      cleanup: () => rmDirSafe(cwd),
     };
   });
 
@@ -1149,7 +1153,7 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
       ).toBe(true);
     } finally {
       await backend.dispose();
-      fs.rmSync(cwd, { recursive: true, force: true });
+      rmDirSafe(cwd);
     }
   });
 
@@ -1259,7 +1263,7 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
       );
     } finally {
       await backend.dispose();
-      fs.rmSync(cwd, { recursive: true, force: true });
+      rmDirSafe(cwd);
     }
   });
 
@@ -1385,7 +1389,7 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
     } finally {
       await backend.dispose();
       await fullAccessBackend.dispose();
-      fs.rmSync(parent, { recursive: true, force: true });
+      rmDirSafe(parent);
     }
   });
 
@@ -1462,7 +1466,7 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
       expect(fs.existsSync(spawnLog.mcpConfigPath)).toBe(false);
     } finally {
       await backend.dispose();
-      fs.rmSync(cwd, { recursive: true, force: true });
+      rmDirSafe(cwd);
     }
   });
 
@@ -1515,7 +1519,7 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
       expect(afterAgents.some((a) => a.id === "pi")).toBe(false);
     } finally {
       await backend.dispose();
-      fs.rmSync(cwd, { recursive: true, force: true });
+      rmDirSafe(cwd);
     }
   });
 
@@ -1566,7 +1570,7 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
       });
     } finally {
       await backend.dispose();
-      fs.rmSync(cwd, { recursive: true, force: true });
+      rmDirSafe(cwd);
     }
   });
 
@@ -1670,7 +1674,7 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
       );
     } finally {
       await backend.dispose();
-      fs.rmSync(outer, { recursive: true, force: true });
+      rmDirSafe(outer);
     }
   });
 
@@ -1739,7 +1743,7 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
       }
     } finally {
       await backend.dispose();
-      fs.rmSync(cwd, { recursive: true, force: true });
+      rmDirSafe(cwd);
     }
   });
 
@@ -1758,8 +1762,104 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
       await proc.close(200);
       expect(proc.isAlive).toBe(false);
     } finally {
-      fs.rmSync(cwd, { recursive: true, force: true });
+      rmDirSafe(cwd);
     }
+  });
+
+  describe("ACP child teardown", () => {
+    function trackChild(child: ChildProcess) {
+      const streams = {
+        stdin: new PassThrough(),
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+      };
+      Object.assign(child, streams);
+      const backend = new AcpBackend({
+        provider: makeProvidersConfig().providers.find((p) => p.id === "agy")!,
+        spawnFn: () => child,
+      });
+      backend["spawnAcpChild"](process.execPath, [], fixtureDir, {});
+      const expectReleased = () => {
+        expect(Object.values(streams).every((stream) => stream.destroyed)).toBe(true);
+        expect(child.eventNames()).toEqual([]);
+        expect(vi.getTimerCount()).toBe(0);
+      };
+      return { close: () => backend["closeChild"](child), expectReleased };
+    }
+
+    it("waits for close even when a Node child emits exit first", async () => {
+      vi.useFakeTimers();
+      try {
+        const child = new ChildProcess();
+        const { close, expectReleased } = trackChild(child);
+        const settled = vi.fn();
+        const closing = close().then(settled);
+        child.emit("exit", 0, null);
+        await vi.advanceTimersByTimeAsync(0);
+        const returnedBeforeClose = settled.mock.calls.length > 0;
+        child.emit("close", 0, null);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(returnedBeforeClose).toBe(false);
+        expect(settled).toHaveBeenCalledOnce();
+        await closing;
+        expectReleased();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it.each([
+      "exit code already set",
+      "close before teardown",
+      "exit during teardown",
+      "spawn error",
+    ])("finishes without advancing the timeout with %s", async (scenario) => {
+      vi.useFakeTimers();
+      try {
+        const child = new EventEmitter() as unknown as ChildProcess;
+        if (scenario === "exit code already set") {
+          Object.assign(child, { exitCode: 0 });
+        }
+        const { close, expectReleased } = trackChild(child);
+        if (scenario === "close before teardown") {
+          child.emit("close", 0, null);
+        }
+        if (scenario === "exit during teardown") {
+          queueMicrotask(() => child.emit("exit", 0, null));
+        }
+        if (scenario === "spawn error") {
+          child.once("error", () => {});
+          queueMicrotask(() => child.emit("error", new Error("spawn EACCES")));
+        }
+        const settled = vi.fn();
+        const closing = close().then(settled);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(settled).toHaveBeenCalledOnce();
+        await closing;
+        expectReleased();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("releases streams, timer and listeners when the child never signals termination", async () => {
+      vi.useFakeTimers();
+      try {
+        const child = new EventEmitter() as unknown as ChildProcess;
+        const { close, expectReleased } = trackChild(child);
+        const settled = vi.fn();
+        const closing = close().then(settled);
+        await vi.advanceTimersByTimeAsync(1_499);
+        const returnedBeforeTimeout = settled.mock.calls.length > 0;
+        await vi.advanceTimersByTimeAsync(1);
+        expect(returnedBeforeTimeout).toBe(false);
+        expect(settled).toHaveBeenCalledOnce();
+        await closing;
+        expectReleased();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it("degrades probeProvider cleanly when spawned ACP child emits error event", async () => {
@@ -1839,7 +1939,7 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
       expect(claudeThinking?.chars).toBe("pondering".length);
     } finally {
       await composite.dispose();
-      fs.rmSync(cwd, { recursive: true, force: true });
+      rmDirSafe(cwd);
     }
   });
 
@@ -1899,7 +1999,7 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
       );
       expect(fs.existsSync(path.join(isolated, "instructions.md"))).toBe(false);
     } finally {
-      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      rmDirSafe(tmpRoot);
     }
   });
 
@@ -2030,7 +2130,7 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
       await backend.dispose();
       await composite.dispose();
       await overrideBackend.dispose();
-      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      rmDirSafe(tmpRoot);
     }
   });
 
@@ -2078,7 +2178,7 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
       expect(reviewerRef.meta?.modeId).toBe("read-only");
     } finally {
       await backend.dispose();
-      fs.rmSync(cwd, { recursive: true, force: true });
+      rmDirSafe(cwd);
     }
   });
 });
