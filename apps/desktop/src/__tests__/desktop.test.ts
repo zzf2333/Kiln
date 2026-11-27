@@ -384,6 +384,72 @@ describe("@kiln/desktop Electron core model & daemon client", () => {
     expect(childDirs).toContain("/opt/homebrew/opt/node@22/bin");
   });
 
+  it("normalizes cross-platform PATH entries and directory targets deterministically", () => {
+    expect
+      .soft(pathContainsDir("/usr/bin:/Users/me/.local/bin/", "/Users/me/.local/bin", false))
+      .toBe(true);
+    expect.soft(pathContainsDir("/usr/bin:/opt/kiln;v2/", "/opt/kiln;v2", false)).toBe(true);
+    expect.soft(pathContainsDir("/usr/bin:/opt/kiln;v2/", "/opt/kiln", false)).toBe(false);
+    expect
+      .soft(pathContainsDir("/usr/bin:/Users/me/.local/bin/", "/Users/ME/.local/bin", false))
+      .toBe(false);
+    expect.soft(pathContainsDir("///:/usr/bin", "/", false)).toBe(true);
+    expect.soft(pathContainsDir("/:/usr/bin", "///", false)).toBe(true);
+    expect.soft(pathContainsDir("/usr//local///bin/:/bin", "/usr/local/bin", false)).toBe(true);
+    expect.soft(pathContainsDir("/opt/dir\\a:/usr/bin", "/opt/dir/a", false)).toBe(false);
+    expect.soft(pathContainsDir("/opt/dir\\:/usr/bin", "/opt/dir", false)).toBe(false);
+
+    expect
+      .soft(
+        pathContainsDir(
+          "C:\\Windows\\System32;C:\\Users\\Me\\AppData\\Local\\Kiln\\bin\\",
+          "C:/Users/Me/AppData/Local/Kiln/bin",
+          true,
+        ),
+      )
+      .toBe(true);
+    expect
+      .soft(
+        pathContainsDir(
+          "C:/Users/Me/AppData/Local/Kiln/bin/;C:\\Windows\\System32",
+          "C:\\Users\\Me\\AppData\\Local\\Kiln\\bin",
+          true,
+        ),
+      )
+      .toBe(true);
+    expect
+      .soft(
+        pathContainsDir(
+          "C:\\Windows;c:/users/me//appdata/local/kiln/bin/",
+          "C:\\Users\\Me\\AppData\\Local\\Kiln\\bin\\",
+          true,
+        ),
+      )
+      .toBe(true);
+    expect.soft(pathContainsDir("C:\\;C:\\Windows\\System32", "C:/", true)).toBe(true);
+    expect.soft(pathContainsDir("C:\\\\;C:\\Windows\\System32", "c:\\", true)).toBe(true);
+    expect.soft(pathContainsDir("C:\\;C:\\Windows\\System32", "C:", true)).toBe(false);
+    expect.soft(pathContainsDir("///;C:\\Windows", "\\", true)).toBe(true);
+    expect
+      .soft(pathContainsDir("//server/share/bin/;C:\\Windows", "\\\\server\\share\\bin", true))
+      .toBe(true);
+    expect
+      .soft(pathContainsDir("\\server\\share\\bin;C:\\Windows", "\\\\server\\share\\bin", true))
+      .toBe(false);
+
+    expect.soft(pathContainsDir(null, "/usr/bin", false)).toBe(false);
+    expect.soft(pathContainsDir(undefined, "C:\\Windows", true)).toBe(false);
+    expect.soft(pathContainsDir("", "/usr/bin", false)).toBe(false);
+    expect.soft(pathContainsDir("::/usr/bin::", "", false)).toBe(false);
+    expect.soft(pathContainsDir(";;C:\\Windows;;", "", true)).toBe(false);
+    expect
+      .soft(
+        pathContainsDir("C:\\Users\\Me\\Kiln\\bin2;C:\\Windows", "C:\\Users\\Me\\Kiln\\bin", true),
+      )
+      .toBe(false);
+    expect.soft(pathContainsDir("/usr/local/bin2:/usr/bin", "/usr/local/bin", false)).toBe(false);
+  });
+
   it("includes valid macOS Retina tray template icons and desktop app icons", () => {
     const assetsDir = path.resolve(import.meta.dirname, "../../assets");
     const readPngDimensions = (filePath: string): { width: number; height: number } => {
