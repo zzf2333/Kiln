@@ -111,3 +111,11 @@ fix = ["5b381522e284690f379a1ff5541525ab9a591edb"]
 risk = "high"
 files = ["packages/kernel/src/server/orchestrator.ts"]
 defect = "abortActiveRun 在双脑并发阶段先 await op.promise 再取消 auxiliaryActiveHandles 导致任务暂停/取消时死锁挂起，且合成轮被中止后未复检 signal.aborted 即覆写 DUAL_SYNTHESIS.yaml 为 synthesized。"
+
+[[cases]]
+id = "R15"
+intro = "739bfcaf41d1d2aa92182f675bcfc32b09d1c178"
+fix = ["aaf992978ba43029ef30e4c5270f228846c28b71"]
+risk = "high"
+files = ["packages/mcp/src/server.ts"]
+defect = "buildToolInputSchema('wb_plan') 导出的 anyOf 各分支携带 additionalProperties=false，当 ACP/MCP 宿主（如 agy）仅在顶层 properties/required 注入 toolSummary 包装字段时，所有 anyOf 分支均因未声明 toolSummary 而拒绝工具调用，且服务端入参校验未剥离该宿主元数据。"
