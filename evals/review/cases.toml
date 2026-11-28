@@ -188,3 +188,18 @@ files = ["packages/kernel/src/server/mcp-rpc.ts"]
 defect = "McpRpcServer.handlePlan 在扩展 wb_plan 支持 commit_split_cards 并与 upsert_draft/commit_card 共用 MCP_ROLE_ALLOWLIST 时，仅对 update_contract/update_decision 校验 taskId 绑定范围，未校验建草稿与建卡分支的 claims.role === 'intake'，导致仅绑定单张待决任务的 resolver/triage 角色可越权调用 wb_plan 创建新任务卡。"
 
 
+[[cases]]
+id = "R24"
+intro = "847178e664902778df497d1923a399e13760808b"
+fix = ["fd59a14e1b8728bd0ba7b4ed1e5ecee5fb7fec05"]
+risk = "high"
+files = ["packages/kernel/src/gate/host-scoped.ts"]
+defect = "stageHostScopedChanges 与 applyApprovedHostScopedChanges 仅记录并恢复宿主机既有目标文件的 file_mode，未采集 staged/ 暂存文件的 staged_file_mode，导致新建宿主机可执行脚本（existed_before=false）经 writeFileAtomic 落盘后丢失 +x 可执行权限位。"
+
+[[cases]]
+id = "R25"
+intro = "72e698abd1a5be643cd626cf515dc156abda3de8"
+fix = ["fd59a14e1b8728bd0ba7b4ed1e5ecee5fb7fec05"]
+risk = "medium"
+files = ["apps/web/src/state/store.ts"]
+defect = "resolveDraftTarget 直接以 extractWorkflowToggles(workflow).hostTwoPhase（任意单个交付节点标记如 final_accept_gate=true 即返回 true）判定 hasHostWorkflow，且 sendIntakeChat 无条件用其覆盖已选定的项目空间，导致项目立项对话回包偶带 final_accept_gate=true 时静默将草稿切回 local / host_scoped（host_op）。"
