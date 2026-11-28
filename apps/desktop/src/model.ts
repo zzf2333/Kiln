@@ -617,6 +617,47 @@ export function renderWindowsCliShim(input: {
   return `@echo off\r\n"${escapedExe}" %*\r\n`;
 }
 
+export function renderBundledPosixCliLauncher(): string {
+  return [
+    "#!/bin/sh",
+    "set -eu",
+    'SOURCE="$0"',
+    'while [ -L "$SOURCE" ]; do',
+    '  DIR="$(CDPATH= cd -- "$(dirname -- "$SOURCE")" && pwd)"',
+    '  TARGET="$(readlink "$SOURCE")"',
+    '  case "$TARGET" in',
+    '    /*) SOURCE="$TARGET" ;;',
+    '    *) SOURCE="$DIR/$TARGET" ;;',
+    "  esac",
+    "done",
+    'BIN_DIR="$(CDPATH= cd -- "$(dirname -- "$SOURCE")" && pwd)"',
+    'RUNTIME_DIR="$(CDPATH= cd -- "$BIN_DIR/.." && pwd)"',
+    'BUNDLE_ROOT="$(CDPATH= cd -- "$RUNTIME_DIR/../.." && pwd)"',
+    'if [ -x "$BUNDLE_ROOT/MacOS/Kiln" ]; then',
+    '  ELECTRON_BIN="$BUNDLE_ROOT/MacOS/Kiln"',
+    'elif [ -x "$BUNDLE_ROOT/Kiln" ]; then',
+    '  ELECTRON_BIN="$BUNDLE_ROOT/Kiln"',
+    "else",
+    '  echo "kiln: unable to locate Kiln Electron executable near $BUNDLE_ROOT" >&2',
+    "  exit 1",
+    "fi",
+    'exec env ELECTRON_RUN_AS_NODE=1 "$ELECTRON_BIN" "$RUNTIME_DIR/kiln-cli.mjs" "$@"',
+    "",
+  ].join("\n");
+}
+
+export function renderBundledWindowsCliLauncher(): string {
+  return [
+    "@echo off",
+    "setlocal",
+    'for %%I in ("%~dp0..") do set "RUNTIME_DIR=%%~fI"',
+    'for %%I in ("%RUNTIME_DIR%\\..\\..") do set "BUNDLE_ROOT=%%~fI"',
+    'set "ELECTRON_RUN_AS_NODE=1"',
+    '"%BUNDLE_ROOT%\\Kiln.exe" "%RUNTIME_DIR%\\kiln-cli.mjs" %*',
+    "",
+  ].join("\r\n");
+}
+
 function normalizeDirForPathCompare(dir: string, caseInsensitive: boolean): string {
   if (dir.length === 0) return "";
   if (!caseInsensitive) {

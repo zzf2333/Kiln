@@ -388,6 +388,20 @@ function canonicalOrResolved(targetPath: string): string {
   }
 }
 
+function isBundledLauncherPairedWithExe(bundledLauncher: string, targetExe: string): boolean {
+  if (!fs.existsSync(bundledLauncher)) {
+    return false;
+  }
+  const runtimeDir = path.dirname(path.dirname(canonicalOrResolved(bundledLauncher)));
+  const bundleRoot = canonicalOrResolved(path.resolve(runtimeDir, "..", ".."));
+  const macOsExe = path.join(bundleRoot, "MacOS", "Kiln");
+  const linuxExe = path.join(bundleRoot, "Kiln");
+  return (
+    (fs.existsSync(macOsExe) && canonicalOrResolved(macOsExe) === targetExe) ||
+    (fs.existsSync(linuxExe) && canonicalOrResolved(linuxExe) === targetExe)
+  );
+}
+
 export function installPosixCliWrappers(
   invocation: KilnInvocation,
   binDir: string,
@@ -401,6 +415,7 @@ export function installPosixCliWrappers(
     ? canonicalOrResolved(invocation.prefixArgs[0])
     : null;
   fs.mkdirSync(binDir, { recursive: true });
+  const canonicalBinDir = canonicalOrResolved(binDir);
 
   const body = renderPosixCliWrapper({
     executable: targetExe,
@@ -410,8 +425,32 @@ export function installPosixCliWrappers(
 
   for (const name of ["kiln", "kl"]) {
     const linkPath = path.join(binDir, name);
-    // Skip replacing if targetExe itself is the same path
-    if (canonicalOrResolved(linkPath) === targetExe && !entrypoint) {
+    const canonicalDestPath = path.join(canonicalBinDir, name);
+    const bundledLauncher =
+      invocation.sourceKind === "bundled_runtime" && entrypoint
+        ? path.join(path.dirname(entrypoint), "bin", name)
+        : null;
+    if (bundledLauncher && isBundledLauncherPairedWithExe(bundledLauncher, targetExe)) {
+      const targetLauncher = canonicalOrResolved(bundledLauncher);
+      if (canonicalDestPath === targetLauncher) {
+        continue;
+      }
+      const tmpLink = path.join(binDir, `.${name}.kiln-tmp-${process.pid}`);
+      fs.rmSync(tmpLink, { force: true });
+      fs.symlinkSync(targetLauncher, tmpLink);
+      try {
+        fs.renameSync(tmpLink, linkPath);
+      } catch (err) {
+        fs.rmSync(tmpLink, { force: true });
+        throw err;
+      }
+      continue;
+    }
+    // Skip replacing if targetExe itself is the same physical path
+    if (
+      (canonicalDestPath === targetExe || canonicalOrResolved(linkPath) === targetExe) &&
+      !entrypoint
+    ) {
       continue;
     }
     atomicWriteFile(linkPath, body, 0o755);
