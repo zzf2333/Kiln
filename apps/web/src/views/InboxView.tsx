@@ -2,10 +2,11 @@ import { PRIORITY_RANK } from "@kiln/protocol/web";
 import { useState } from "react";
 import { DecisionBox } from "../components/DecisionBox";
 import { InboxIcon } from "../components/Icons";
+import { MarkdownContent } from "../components/MarkdownContent";
 import { MiniRail } from "../components/MiniRail";
 import { PrioritySelect } from "../components/PrioritySelect";
 import { ViewFrame } from "../components/ViewFrame";
-import { TRACK_LABEL, fmtRelativeSince } from "../state/format";
+import { TRACK_LABEL, fmtRelativeSince, summarizeDecisionQuestion } from "../state/format";
 import { useKilnStore } from "../state/store";
 
 export function InboxView() {
@@ -62,8 +63,7 @@ export function InboxView() {
                   <p>
                     {t.summary ||
                       (dec ? `${dec.category} · ${dec.reason}` : null) ||
-                      t.waiting_reason ||
-                      "等待人工裁决"}
+                      summarizeDecisionQuestion(t.waiting_reason).headline}
                   </p>
                 </button>
               );
@@ -112,7 +112,9 @@ export function InboxView() {
                 />
               ) : (
                 <div className="decision">
-                  <p className="decision-q">{selectedTask.waiting_reason ?? "等待人工裁决"}</p>
+                  <div className="decision-q">
+                    <MarkdownContent text={selectedTask.waiting_reason ?? "等待人工裁决"} />
+                  </div>
                   <div className="decision-actions">
                     <button
                       type="button"

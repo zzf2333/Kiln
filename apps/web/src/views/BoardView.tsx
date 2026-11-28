@@ -13,6 +13,7 @@ import {
   fmtTokens,
   fmtUsd,
   stageMeta,
+  summarizeDecisionQuestion,
 } from "../state/format";
 import { computeTaskCostUsd } from "../state/pricing";
 import { useKilnStore, type PeriodFilter } from "../state/store";
@@ -187,7 +188,7 @@ export function BoardView() {
                 value={t.priority}
                 onChange={(next) => void store.updatePriority(t.id, next)}
               />
-              <span>{spaceName} · 父任务</span>
+              <span className="card-space">{spaceName} · 父任务</span>
             </span>
             <span className="mono">{children.length} 切片</span>
           </div>
@@ -220,6 +221,7 @@ export function BoardView() {
       const waitMs = Date.now() - Date.parse(waitAnchorIso);
       const isOverdue = Number.isFinite(waitMs) && waitMs >= 30 * 60_000;
       const categoryText = waitingCategoryLabel(dec?.category ?? t.waiting_reason);
+      const askSummary = summarizeDecisionQuestion(dec ? dec.question : t.waiting_reason);
       return (
         <article key={t.id} className={`card${p0Class}`} onClick={() => store.openTask(t.id)}>
           <div className="card-meta">
@@ -228,7 +230,7 @@ export function BoardView() {
                 value={t.priority}
                 onChange={(next) => void store.updatePriority(t.id, next)}
               />
-              <span>{spaceName}</span>
+              <span className="card-space">{spaceName}</span>
               {t.parent_id ? <span className="mono">· {t.parent_id}</span> : null}
               <span className="chip">{categoryText}</span>
             </span>
@@ -237,21 +239,16 @@ export function BoardView() {
             </span>
           </div>
           <h3 className="card-title">{t.title}</h3>
-          {dec ? (
-            <div className="ask-box">
-              <div className="ask-q">{dec.question}</div>
-              {recOpt ? (
-                <div className="ask-rec">
-                  <span className="rec">推荐</span>
-                  {recOpt.label}
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <div className="ask-box">
-              <div className="ask-q">{t.waiting_reason ?? "等待人工裁决"}</div>
-            </div>
-          )}
+          <div className="ask-box">
+            <div className="ask-q">{askSummary.headline}</div>
+            {askSummary.detailHint ? <div className="ask-meta">{askSummary.detailHint}</div> : null}
+            {dec && recOpt ? (
+              <div className="ask-rec">
+                <span className="rec">推荐</span>
+                {recOpt.label}
+              </div>
+            ) : null}
+          </div>
           <MiniRail track={t.track} workflow={t.workflow} status={t.status} activeStage={t.stage} />
           <div className="card-actions">
             {dec && recOpt ? (
@@ -325,7 +322,7 @@ export function BoardView() {
                 value={t.priority}
                 onChange={(next) => void store.updatePriority(t.id, next)}
               />
-              <span>
+              <span className="card-space">
                 {spaceName} · {TRACK_LABEL[t.track]}
               </span>
               {t.parent_id ? <span className="mono">· {t.parent_id}</span> : null}
@@ -376,7 +373,7 @@ export function BoardView() {
                 value={t.priority}
                 onChange={(next) => void store.updatePriority(t.id, next)}
               />
-              <span>
+              <span className="card-space">
                 {spaceName} · {TRACK_LABEL[t.track]}
               </span>
               {t.parent_id ? <span className="mono">· {t.parent_id}</span> : null}
@@ -433,7 +430,7 @@ export function BoardView() {
                 value={t.priority}
                 onChange={(next) => void store.updatePriority(t.id, next)}
               />
-              <span>
+              <span className="card-space">
                 {spaceName} · {TRACK_LABEL[t.track]}
               </span>
               {t.parent_id ? <span className="mono">· {t.parent_id}</span> : null}
@@ -461,9 +458,9 @@ export function BoardView() {
                 value={t.priority}
                 onChange={(next) => void store.updatePriority(t.id, next)}
               />
-              <span>{spaceName}</span>
+              <span className="card-space">{spaceName}</span>
             </span>
-            <span>{fmtRelativeSince(t.updated_at)}</span>
+            <span className="wait-badge">{fmtRelativeSince(t.updated_at)}</span>
           </div>
           <h3 className="card-title">{t.title}</h3>
           <p className="card-desc">{t.summary ?? "等待外部回应"}</p>
@@ -481,7 +478,7 @@ export function BoardView() {
       <article key={t.id} className="card card-done" onClick={() => store.openTask(t.id)}>
         <h3 className="card-title">{t.title}</h3>
         <div className="card-foot">
-          <span className="mono">
+          <span className="mono" title={t.delivered_ref ?? undefined}>
             {t.delivered_ref ??
               (t.tokens.total_tokens > 0
                 ? `${fmtTokens(t.tokens.total_tokens)} · ${fmtUsd(taskCost)}`

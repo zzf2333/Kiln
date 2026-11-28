@@ -7,7 +7,7 @@ import { App } from "../app";
 import { detectComposerTrigger } from "../components/ChatComposer";
 import { ChatTimeline } from "../components/ChatTimeline";
 import { MarkdownContent } from "../components/MarkdownContent";
-import { fmtTime } from "../state/format";
+import { fmtTime, summarizeDecisionQuestion } from "../state/format";
 
 type MockFetchHandler = (url: string, init?: RequestInit) => Promise<Response> | Response;
 
@@ -7463,5 +7463,125 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       expect(bootstrapCalls).toBeGreaterThanOrEqual(3);
     });
     expect(screen.getByRole("heading", { name: "Add /api/stats" })).toBeTruthy();
+  });
+
+  it("summarizeDecisionQuestion & BoardView waiting card render compact headline/hint without leaking raw markdown paths", async () => {
+    const multiTargetQ = [
+      '本机任务 "清理本机已卸载 macOS 应用遗留目录与缓存" 已生成暂存修改并备份原文件，批准原子写入并执行吗？',
+      "- 目标路径: /Users/test/.local/share/cleanup/apply.sh (sha256:aaa), /Users/test/.local/share/cleanup/report.md (sha256:bbb), /Users/test/.local/share/cleanup/manifest.json (sha256:ccc), /Users/test/.local/share/cleanup/verify.sh (sha256:ddd)",
+      "- 落盘后执行交付命令: `bash /Users/test/.local/share/cleanup/apply.sh`",
+    ].join("\n");
+    const parsedMulti = summarizeDecisionQuestion(multiTargetQ);
+    expect(parsedMulti.headline).toContain("批准原子写入并执行吗");
+    expect(parsedMulti.detailHint).toBe("涉及 4 个目标文件 · 点开查看完整路径、哈希与 Diff");
+
+    const singleTargetQ = [
+      "批准写入本机配置文件吗？",
+      "- 目标路径: /Users/test/.config/app/settings.json (sha256:1234)",
+    ].join("\n");
+    expect(summarizeDecisionQuestion(singleTargetQ).detailHint).toBe(
+      "目标：settings.json · 点开查看详情与 Diff",
+    );
+
+    const errQ = [
+      "交付命令执行失败（exit=1），已自动回滚宿主机文件，请选择下一步操作。",
+      "- 命令输出摘要: `mv: No such file or directory`",
+    ].join("\n");
+    expect(summarizeDecisionQuestion(errQ).detailHint).toBe(
+      "命令输出：mv: No such file or directory",
+    );
+
+    const now = "2026-11-28T12:00:00.000Z";
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof Request ? input.url : "";
+      if (url.startsWith("/api/bootstrap")) {
+        return jsonResponse(
+          makeBaseBootstrap({
+            spaces: {
+              local: {
+                schema_version: 1,
+                id: "local",
+                name: "本机与临时",
+                default_branch: "main",
+                copy_untracked: [],
+                clone_deps: [],
+                freeze_patterns: [],
+              },
+            },
+            tasks: [
+              {
+                id: "t-wait-style",
+                space: "local",
+                parent_id: null,
+                title: "清理本机已卸载 macOS 应用遗留目录与缓存",
+                priority: "P2",
+                effective_priority: "P2",
+                track: "L2",
+                workspace_mode: "host_scoped",
+                workflow: buildWorkflowPreset("host_op", { hasDeliverCmd: true }),
+                status: "waiting",
+                stage: "deliver",
+                round: 1,
+                active_run_id: null,
+                contract_version: 1,
+                depends_on: [],
+                created_at: now,
+                updated_at: now,
+                tokens: {
+                  input_tokens: 100,
+                  cached_input_tokens: 0,
+                  output_tokens: 20,
+                  total_tokens: 120,
+                },
+                cost_usd: 0.01,
+              },
+            ],
+            pendingDecisions: [
+              {
+                id: "dec-wait-style",
+                task_id: "t-wait-style",
+                contract_version: 1,
+                reason: "host_scoped_approval",
+                category: "host_scoped_apply",
+                question: multiTargetQ,
+                options: [
+                  {
+                    id: "opt-apply",
+                    label: "批准落盘写入宿主机并执行校验",
+                    action: "resume",
+                    target_stage: "deliver",
+                    recommended: true,
+                  },
+                  {
+                    id: "opt-cancel",
+                    label: "取消任务",
+                    action: "cancel",
+                    recommended: false,
+                  },
+                ],
+                created_at: now,
+              },
+            ],
+          }),
+        );
+      }
+      if (url.includes("/api/auth/status")) {
+        return jsonResponse({ remoteEnabled: false, mode: "local" });
+      }
+      return jsonResponse({});
+    });
+
+    window.location.hash = "";
+    const { container } = render(<App />);
+    const card = (
+      await screen.findByRole("heading", { name: "清理本机已卸载 macOS 应用遗留目录与缓存" })
+    ).closest("article")!;
+    expect(within(card).getByRole("combobox", { name: "优先级" }).textContent).toContain("P2");
+    expect(card.querySelector(".card-space")?.textContent).toBe("本机与临时");
+    expect(card.querySelector(".ask-q")?.textContent).toContain("批准原子写入并执行吗");
+    expect(card.querySelector(".ask-meta")?.textContent).toBe(
+      "涉及 4 个目标文件 · 点开查看完整路径、哈希与 Diff",
+    );
+    expect(container.querySelector(".ask-box")?.textContent).not.toContain("`bash");
   });
 });

@@ -348,3 +348,74 @@ export function fmtCooldownShort(raw: string | null | undefined, nowMs = Date.no
   if (hrs < 24) return `冷却 ${hrs}h`;
   return `冷却 ${Math.floor(hrs / 24)}d`;
 }
+
+function cleanInlineMarkdown(line: string): string {
+  return line
+    .replace(/^[-*+]\s+/, "")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\*\*([^*\n]+)\*\*/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function summarizeDecisionQuestion(raw: string | undefined): {
+  headline: string;
+  detailHint?: string;
+} {
+  if (!raw || !raw.trim()) {
+    return { headline: "等待人工裁决" };
+  }
+  const lines = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) {
+    return { headline: "等待人工裁决" };
+  }
+
+  const headline = cleanInlineMarkdown(lines[0]!) || "等待人工裁决";
+  if (lines.length === 1) {
+    return { headline };
+  }
+
+  const restClean: string[] = [];
+  for (const rawLine of lines.slice(1)) {
+    const cmdMatch = /^[-*+]?\s*命令输出摘要\s*[:：]\s*(.+)$/.exec(rawLine);
+    if (cmdMatch) {
+      return {
+        headline,
+        detailHint: `命令输出：${cleanInlineMarkdown(cmdMatch[1]!)}`,
+      };
+    }
+
+    const targetsMatch = /^[-*+]?\s*目标路径\s*[:：]\s*(.+)$/.exec(rawLine);
+    if (targetsMatch) {
+      const items = targetsMatch[1]!
+        .split(/\s*,\s*/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      if (items.length > 1) {
+        return {
+          headline,
+          detailHint: `涉及 ${items.length} 个目标文件 · 点开查看完整路径、哈希与 Diff`,
+        };
+      }
+      if (items.length === 1) {
+        const cleanPath = items[0]!.replace(/\s*\(sha256:[^)]+\)\s*$/, "").trim();
+        const parts = cleanPath.split(/[\\/]/).filter(Boolean);
+        const baseName = parts[parts.length - 1] ?? cleanPath;
+        return {
+          headline,
+          detailHint: `目标：${baseName} · 点开查看详情与 Diff`,
+        };
+      }
+    }
+
+    const cleaned = cleanInlineMarkdown(rawLine);
+    if (cleaned) {
+      restClean.push(cleaned);
+    }
+  }
+
+  return restClean.length > 0 ? { headline, detailHint: restClean.join(" · ") } : { headline };
+}
