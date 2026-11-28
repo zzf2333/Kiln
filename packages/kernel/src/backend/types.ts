@@ -89,7 +89,7 @@ export interface ProviderProbeSnapshot {
 }
 
 export interface ProviderTelemetryBackend extends ExecutionBackend {
-  probeProvider?(): Promise<ProviderProbeSnapshot>;
+  probeProvider?(options?: { forceRefresh?: boolean }): Promise<ProviderProbeSnapshot>;
   readNativeQuota?(): Promise<ProviderNativeQuota | null>;
   listProviderUsage?(): Promise<unknown[]>;
 }

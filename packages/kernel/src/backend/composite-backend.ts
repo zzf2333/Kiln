@@ -181,9 +181,17 @@ function createDefaultAdapter(
         ...(kilnHome !== undefined ? { kilnHome } : {}),
       });
     case "pi_rpc":
-      return new PiRpcBackend({ provider: entry, healthTracker });
+      return new PiRpcBackend({
+        provider: entry,
+        healthTracker,
+        ...(kilnHome !== undefined ? { kilnHome } : {}),
+      });
     case "acp":
-      return new AcpBackend({ provider: entry, healthTracker });
+      return new AcpBackend({
+        provider: entry,
+        healthTracker,
+        ...(kilnHome !== undefined ? { kilnHome } : {}),
+      });
     case "claude_direct":
       return new ClaudeDirectBackend({ provider: entry, healthTracker });
     case "paseo":

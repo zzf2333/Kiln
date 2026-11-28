@@ -28,6 +28,7 @@ import {
   type SessionRef,
 } from "@kiln/protocol";
 import { terminateProcessTree } from "../../gate/command-runner.js";
+import { assertSafeSegment, writeFileAtomic } from "../../store/index.js";
 import type { ProviderHealthTracker } from "../provider-health.js";
 import {
   TurnEventQueue,
@@ -83,11 +84,29 @@ export const BASE_ACP_CAPABILITIES: BackendCapabilities = {
 
 export interface AcpBackendOptions {
   provider: ProviderEntry;
+  kilnHome?: string;
   healthTracker?: ProviderHealthTracker;
   cancelTimeoutMs?: number;
   rpcTimeoutMs?: number;
   spawnFn?: SpawnProcessFn;
   probeOptions?: ProbeCliBinaryOptions;
+}
+
+interface AcpProbeCacheEntry {
+  schemaVersion: 1;
+  signature: {
+    resolvedPath: string;
+    mtimeMs: number;
+    version: string | null;
+    args: string[];
+    env: Array<[string, string]>;
+    customModels: string[];
+  };
+  capabilities: BackendCapabilities;
+  modes: BackendModeDescriptor[];
+  defaultModeId: string | null;
+  models: BackendModelDescriptor[];
+  cachedAt: string;
 }
 
 interface PendingAcpApproval {
@@ -357,6 +376,7 @@ export class AcpBackend implements ProviderTelemetryBackend {
   readonly backendId: string;
 
   private readonly provider: ProviderEntry;
+  private readonly kilnHome: string | undefined;
   private readonly healthTracker: ProviderHealthTracker | undefined;
   private readonly cancelTimeoutMs: number;
   private readonly rpcTimeoutMs: number;
@@ -373,16 +393,81 @@ export class AcpBackend implements ProviderTelemetryBackend {
   private cachedModes: BackendModeDescriptor[] | null = null;
   private cachedDefaultModeId: string | null = null;
   private cachedModels: BackendModelDescriptor[] | null = null;
+  private cachedProbeSignatureJson: string | null = null;
   private disposed = false;
 
   constructor(options: AcpBackendOptions) {
     this.provider = options.provider;
     this.backendId = options.provider.id;
+    this.kilnHome = options.kilnHome;
     this.healthTracker = options.healthTracker;
     this.cancelTimeoutMs = options.cancelTimeoutMs ?? DEFAULT_CANCEL_TIMEOUT_MS;
     this.rpcTimeoutMs = options.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
     this.spawnFn = options.spawnFn;
     this.probeOptions = options.probeOptions;
+  }
+
+  private resolveProbeCacheFile(): string | null {
+    if (!this.kilnHome) {
+      return null;
+    }
+    const safeId = assertSafeSegment(this.provider.id, "providerId");
+    return path.join(path.resolve(this.kilnHome), "cache", `acp-probe-${safeId}.json`);
+  }
+
+  private readProbeCache(expectedSigJson: string): AcpProbeCacheEntry | null {
+    const cacheFile = this.resolveProbeCacheFile();
+    if (!cacheFile) {
+      return null;
+    }
+    try {
+      const raw = fs.readFileSync(cacheFile, "utf8");
+      const parsed = JSON.parse(raw) as Partial<AcpProbeCacheEntry> | null;
+      if (
+        !parsed ||
+        parsed.schemaVersion !== 1 ||
+        !parsed.signature ||
+        JSON.stringify(parsed.signature) !== expectedSigJson ||
+        !parsed.capabilities ||
+        typeof parsed.capabilities !== "object" ||
+        Array.isArray(parsed.capabilities) ||
+        !Array.isArray(parsed.modes) ||
+        !parsed.modes.every(
+          (m) =>
+            Boolean(m) &&
+            typeof m === "object" &&
+            typeof m.id === "string" &&
+            typeof m.label === "string",
+        ) ||
+        !Array.isArray(parsed.models) ||
+        !parsed.models.every(
+          (m) =>
+            Boolean(m) &&
+            typeof m === "object" &&
+            typeof m.id === "string" &&
+            typeof m.label === "string" &&
+            Array.isArray(m.thinkingOptions) &&
+            m.thinkingOptions.every((opt) => typeof opt === "string"),
+        )
+      ) {
+        return null;
+      }
+      return parsed as AcpProbeCacheEntry;
+    } catch {
+      return null;
+    }
+  }
+
+  private writeProbeCache(entry: AcpProbeCacheEntry): void {
+    const cacheFile = this.resolveProbeCacheFile();
+    if (!cacheFile) {
+      return;
+    }
+    try {
+      writeFileAtomic(cacheFile, `${JSON.stringify(entry, null, 2)}\n`);
+    } catch {
+      // Cache persistence is best-effort and must never fail probing.
+    }
   }
 
   private getCommandAndArgs(): { command: string; args: string[] } {
@@ -523,7 +608,7 @@ export class AcpBackend implements ProviderTelemetryBackend {
       : undefined;
   }
 
-  async probeProvider(): Promise<ProviderProbeSnapshot> {
+  async probeProvider(options?: { forceRefresh?: boolean }): Promise<ProviderProbeSnapshot> {
     this.assertNotDisposed();
     const { command, args } = this.getCommandAndArgs();
     const env = buildProcessEnv(this.provider.env);
@@ -544,6 +629,64 @@ export class AcpBackend implements ProviderTelemetryBackend {
         detail: binaryProbe.detail ?? `Command "${command}" not found`,
         capabilities: { ...this.cachedCapabilities },
       };
+    }
+
+    let mtimeMs = 0;
+    try {
+      mtimeMs = fs.statSync(binaryProbe.resolvedPath).mtimeMs;
+    } catch {
+      mtimeMs = 0;
+    }
+    const probeSignature = {
+      resolvedPath: binaryProbe.resolvedPath,
+      mtimeMs,
+      version: binaryProbe.version ?? null,
+      args: [...args],
+      env: Object.entries(this.provider.env).sort(([a], [b]) => a.localeCompare(b)),
+      customModels: [...this.provider.custom_models],
+    };
+    const expectedSigJson = JSON.stringify(probeSignature);
+
+    if (!options?.forceRefresh) {
+      if (
+        this.cachedProbeSignatureJson === expectedSigJson &&
+        this.cachedModels !== null &&
+        this.cachedModes !== null
+      ) {
+        this.healthTracker?.setAvailability(this.provider.id, {
+          available: true,
+          version: probeSignature.version,
+        });
+        return {
+          available: true,
+          version: probeSignature.version,
+          modelsCount: this.cachedModels.length,
+          capabilities: { ...this.cachedCapabilities },
+          nativeQuota: null,
+        };
+      }
+      const diskCached = this.readProbeCache(expectedSigJson);
+      if (diskCached) {
+        this.cachedCapabilities = { ...BASE_ACP_CAPABILITIES, ...diskCached.capabilities };
+        this.cachedModes = diskCached.modes.map((m) => ({ ...m }));
+        this.cachedDefaultModeId = diskCached.defaultModeId;
+        this.cachedModels = diskCached.models.map((m) => ({
+          ...m,
+          thinkingOptions: [...m.thinkingOptions],
+        }));
+        this.cachedProbeSignatureJson = expectedSigJson;
+        this.healthTracker?.setAvailability(this.provider.id, {
+          available: true,
+          version: probeSignature.version,
+        });
+        return {
+          available: true,
+          version: probeSignature.version,
+          modelsCount: this.cachedModels.length,
+          capabilities: { ...this.cachedCapabilities },
+          nativeQuota: null,
+        };
+      }
     }
 
     const tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), "kiln-acp-probe-"));
@@ -617,6 +760,19 @@ export class AcpBackend implements ProviderTelemetryBackend {
         toBackendModels(sessionRes),
         this.provider.custom_models,
       );
+      this.cachedProbeSignatureJson = expectedSigJson;
+      this.writeProbeCache({
+        schemaVersion: 1,
+        signature: probeSignature,
+        capabilities: { ...this.cachedCapabilities },
+        modes: this.cachedModes.map((m) => ({ ...m })),
+        defaultModeId: this.cachedDefaultModeId,
+        models: this.cachedModels.map((m) => ({
+          ...m,
+          thinkingOptions: [...m.thinkingOptions],
+        })),
+        cachedAt: new Date().toISOString(),
+      });
 
       this.healthTracker?.setAvailability(this.provider.id, {
         available: true,
@@ -655,7 +811,7 @@ export class AcpBackend implements ProviderTelemetryBackend {
   }
 
   async refreshProviders(): Promise<void> {
-    await this.probeProvider();
+    await this.probeProvider({ forceRefresh: true });
   }
 
   async listAgents(): Promise<BackendAgentDescriptor[]> {

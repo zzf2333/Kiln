@@ -519,9 +519,10 @@ export class CodexAppServerBackend implements ProviderTelemetryBackend {
       };
     }
     if (this.kilnHome) {
-      const isolatedCodexHome = prepareIsolatedCodexHome(this.kilnHome, {
-        ...(this.sourceCodexHome !== undefined ? { sourceCodexHome: this.sourceCodexHome } : {}),
-      });
+      const isolatedCodexHome = prepareIsolatedCodexHome(
+        this.kilnHome,
+        this.sourceCodexHome !== undefined ? { sourceCodexHome: this.sourceCodexHome } : {},
+      );
       return {
         env: buildProcessEnv(this.provider.env, {
           ...(runEnv ?? {}),

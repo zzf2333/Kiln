@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import {
   type BackendCapabilities,
   type ProviderEntry,
@@ -58,6 +60,7 @@ export const PI_RPC_CAPABILITIES: BackendCapabilities = {
 
 export interface PiRpcBackendOptions {
   provider: ProviderEntry;
+  kilnHome?: string;
   healthTracker?: ProviderHealthTracker;
   cancelTimeoutMs?: number;
   rpcTimeoutMs?: number;
@@ -208,6 +211,7 @@ export class PiRpcBackend implements ProviderTelemetryBackend {
   readonly backendId: string;
 
   private readonly provider: ProviderEntry;
+  private readonly kilnHome: string | undefined;
   private readonly healthTracker: ProviderHealthTracker | undefined;
   private readonly cancelTimeoutMs: number;
   private readonly rpcTimeoutMs: number;
@@ -221,6 +225,7 @@ export class PiRpcBackend implements ProviderTelemetryBackend {
   constructor(options: PiRpcBackendOptions) {
     this.provider = options.provider;
     this.backendId = options.provider.id;
+    this.kilnHome = options.kilnHome;
     this.healthTracker = options.healthTracker;
     this.cancelTimeoutMs = options.cancelTimeoutMs ?? DEFAULT_CANCEL_TIMEOUT_MS;
     this.rpcTimeoutMs = options.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
@@ -397,6 +402,23 @@ export class PiRpcBackend implements ProviderTelemetryBackend {
 
     if (isReadOnly) {
       args.push("--tools", "read,grep,find,ls", "--no-mcp");
+    }
+
+    const hasExplicitSessionFlag =
+      this.provider.args.includes("--session") ||
+      this.provider.args.includes("--session-dir") ||
+      this.provider.args.includes("--no-session");
+    if (!hasExplicitSessionFlag) {
+      if (runSpec.freshContext) {
+        args.push("--no-session");
+      } else if (this.kilnHome) {
+        const sessionDir = path.join(path.resolve(this.kilnHome), "agent-homes", "pi", "sessions");
+        fs.mkdirSync(sessionDir, {
+          recursive: true,
+          ...(process.platform !== "win32" ? { mode: 0o700 } : {}),
+        });
+        args.push("--session-dir", sessionDir);
+      }
     }
 
     return args;

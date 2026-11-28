@@ -2181,4 +2181,142 @@ describe("v0.0.5 Multi-CLI & ACP Backends + CompositeBackend", () => {
       rmDirSafe(cwd);
     }
   });
+
+  it("PiRpcBackend isolates sessions via --no-session on freshContext and --session-dir under kilnHome", async () => {
+    const cwd = makeTempWs("kiln-pi-iso-");
+    const kilnHome = makeTempWs("kiln-pi-home-");
+    const logFile = path.join(cwd, "pi-iso.log");
+    const backend = new PiRpcBackend({
+      kilnHome,
+      provider: {
+        id: "pi",
+        label: "Pi",
+        adapter: "pi_rpc",
+        enabled: true,
+        command: process.execPath,
+        args: [piScript, "--mode", "rpc"],
+        env: { TEST_PI_LOG: logFile },
+        custom_models: [],
+      },
+      cancelTimeoutMs: 1_500,
+    });
+
+    try {
+      const freshRef = await backend.start({
+        runId: "r-pi-fresh",
+        taskId: "t-pi-iso",
+        role: "reviewer",
+        agent: "pi",
+        model: "magpie/group/fast",
+        cwd,
+        prompt: "fresh review",
+        freshContext: true,
+      });
+      await collectAllEvents(backend, freshRef);
+
+      const statefulRef = await backend.start({
+        runId: "r-pi-stateful",
+        taskId: "t-pi-iso",
+        role: "worker",
+        agent: "pi",
+        model: "magpie/group/fast",
+        cwd,
+        prompt: "stateful impl",
+        freshContext: false,
+      });
+      await collectAllEvents(backend, statefulRef);
+
+      const argvLogs = fs
+        .readFileSync(logFile, "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l) as { argv: string[] });
+      expect(argvLogs).toHaveLength(2);
+      expect(argvLogs[0]!.argv).toContain("--no-session");
+      expect(argvLogs[0]!.argv).not.toContain("--session-dir");
+      const expectedSessionsDir = path.join(kilnHome, "agent-homes", "pi", "sessions");
+      expect(argvLogs[1]!.argv).toContain("--session-dir");
+      expect(argvLogs[1]!.argv).toContain(expectedSessionsDir);
+      expect(argvLogs[1]!.argv).not.toContain("--no-session");
+    } finally {
+      await backend.dispose();
+      rmDirSafe(cwd);
+      rmDirSafe(kilnHome);
+    }
+  });
+
+  it("AcpBackend caches probeProvider results under kilnHome and bypasses session/new until forceRefresh", async () => {
+    const tmpRoot = makeTempWs("kiln-acp-probe-cache-");
+    const kilnHome = path.join(tmpRoot, "kiln-home");
+    const logFile = path.join(tmpRoot, "acp-probe.log");
+    fs.mkdirSync(kilnHome, { recursive: true });
+    const provider = {
+      id: "agy",
+      label: "Antigravity CLI",
+      adapter: "acp" as const,
+      enabled: true,
+      command: process.execPath,
+      args: [acpScript],
+      env: { TEST_ACP_LOG: logFile },
+      custom_models: [],
+    };
+    const backend1 = new AcpBackend({ provider, kilnHome });
+    const backend2 = new AcpBackend({ provider, kilnHome });
+    const backendEnvChanged = new AcpBackend({
+      provider: { ...provider, env: { TEST_ACP_LOG: logFile, ACP_PROFILE: "custom" } },
+      kilnHome,
+    });
+    const backendCorrupt = new AcpBackend({
+      provider: { ...provider, env: { TEST_ACP_LOG: logFile, ACP_PROFILE: "custom" } },
+      kilnHome,
+    });
+
+    try {
+      const first = await backend1.probeProvider();
+      expect(first.available).toBe(true);
+      const cacheFile = path.join(kilnHome, "cache", "acp-probe-agy.json");
+      expect(fs.existsSync(cacheFile)).toBe(true);
+
+      const countSessionNew = () =>
+        fs.existsSync(logFile)
+          ? fs
+              .readFileSync(logFile, "utf8")
+              .trim()
+              .split("\n")
+              .filter(Boolean)
+              .map((l) => JSON.parse(l) as { type: string })
+              .filter((r) => r.type === "session_new").length
+          : 0;
+      expect(countSessionNew()).toBe(1);
+
+      const second = await backend2.probeProvider();
+      expect(second.available).toBe(true);
+      expect(countSessionNew()).toBe(1);
+
+      const refreshed = await backend2.probeProvider({ forceRefresh: true });
+      expect(refreshed.available).toBe(true);
+      expect(countSessionNew()).toBe(2);
+
+      // Env change invalidates disk signature and triggers a fresh probe
+      const envChangedProbe = await backendEnvChanged.probeProvider();
+      expect(envChangedProbe.available).toBe(true);
+      expect(countSessionNew()).toBe(3);
+
+      // Corrupted models entry without thinkingOptions falls back cleanly instead of throwing TypeError
+      const parsedCache = JSON.parse(fs.readFileSync(cacheFile, "utf8")) as {
+        models: unknown[];
+      };
+      parsedCache.models = [{ id: "broken", label: "Broken" }];
+      fs.writeFileSync(cacheFile, JSON.stringify(parsedCache), "utf8");
+      const recoveredModels = await backendCorrupt.listModels("agy");
+      expect(recoveredModels.length).toBeGreaterThanOrEqual(1);
+      expect(countSessionNew()).toBe(4);
+    } finally {
+      await backend1.dispose();
+      await backend2.dispose();
+      await backendEnvChanged.dispose();
+      await backendCorrupt.dispose();
+      rmDirSafe(tmpRoot);
+    }
+  });
 });
