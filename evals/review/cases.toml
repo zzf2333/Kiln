@@ -179,4 +179,12 @@ risk = "high"
 files = ["packages/kernel/src/server/tui-launcher.ts"]
 defect = "resolvePlatformTerminalCandidates 与 findBinaryOnSystem 在按目标 platform 探测终端路径时混用宿主 path.join 而非 path.posix.join/path.win32.join，在跨平台环境下产生反斜杠混合路径导致终端可用性误判。"
 
+[[cases]]
+id = "R23"
+intro = "8dceed2688d32a2908ab34d16c516a88a6b0efb1"
+fix = ["3f30af2346b19eeb9a83c83e606d71c9a683ce6e"]
+risk = "high"
+files = ["packages/kernel/src/server/mcp-rpc.ts"]
+defect = "McpRpcServer.handlePlan 在扩展 wb_plan 支持 commit_split_cards 并与 upsert_draft/commit_card 共用 MCP_ROLE_ALLOWLIST 时，仅对 update_contract/update_decision 校验 taskId 绑定范围，未校验建草稿与建卡分支的 claims.role === 'intake'，导致仅绑定单张待决任务的 resolver/triage 角色可越权调用 wb_plan 创建新任务卡。"
+
 
