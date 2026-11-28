@@ -756,7 +756,9 @@ function resolveDraftTarget(
   space: string;
   workspace_mode: Exclude<WorkspaceMode, "external_only">;
 } {
-  const hasHostWorkflow = workflow ? extractWorkflowToggles(workflow).hostTwoPhase : false;
+  const hasHostWorkflow = workflow
+    ? workflow.preset === "host_op" || hasCompleteHostTwoPhaseWorkflow(workflow)
+    : false;
   const isHostScoped = workspaceMode === "host_scoped" || hasHostWorkflow;
   const isLocal = space === "local" || isHostScoped || workspaceMode === "scratch_dir";
   return {
@@ -1172,6 +1174,7 @@ export class KilnWebStore {
   private sseCleanup: (() => void) | null = null;
   private refreshInFlight: Promise<void> | null = null;
   private refreshQueued = false;
+  private mutationEpoch = 0;
   private authProbeInFlight: Promise<void> | null = null;
   private systemThemeCleanup: (() => void) | null = null;
   private intakeRestoredOnce = false;
@@ -1667,7 +1670,12 @@ export class KilnWebStore {
       try {
         do {
           this.refreshQueued = false;
+          const fetchEpoch = this.mutationEpoch;
           const data = await apiFetchBootstrap();
+          if (fetchEpoch !== this.mutationEpoch) {
+            this.refreshQueued = true;
+            continue;
+          }
           const roles = data.settings?.roles ?? data.roles ?? { ...DEFAULT_ROLES, roles: {} };
           const rawRoster = data.settings?.roster ?? data.roster;
           const roster =
@@ -2652,6 +2660,7 @@ export class KilnWebStore {
       const nextTasks = this.state.tasks.filter((t) => t.id !== taskId);
       const nextPending = this.state.pendingDecisions.filter((d) => d.task_id !== taskId);
       const viewingDeleted = this.state.taskId === taskId;
+      this.mutationEpoch += 1;
       this.setState({
         tasks: nextTasks,
         pendingDecisions: nextPending,
@@ -3532,6 +3541,7 @@ export class KilnWebStore {
       const nextDrafts = this.state.drafts.filter((d) => d.id !== draftId);
       clearActiveIntakePersistence();
       const preferred = this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
+      this.mutationEpoch += 1;
       this.setState({
         tasks: nextTasks,
         drafts: nextDrafts,
@@ -3610,6 +3620,8 @@ export class KilnWebStore {
     if (this.guardAttachmentUploadBusy()) return;
     try {
       await apiDeleteDraft(draftId);
+      this.mutationEpoch += 1;
+      this.setState({ drafts: this.state.drafts.filter((d) => d.id !== draftId) });
       if (this.state.intakeDraftId === draftId) {
         await this.resetIntakeSessionState(false);
       }
@@ -3870,6 +3882,7 @@ export class KilnWebStore {
       const nextDrafts = this.state.drafts.filter((d) => d.id !== draftId);
       clearActiveIntakePersistence();
       const preferred = this.state.spaceFilter !== "all" ? this.state.spaceFilter : undefined;
+      this.mutationEpoch += 1;
       this.setState({
         tasks: nextTasks,
         drafts: nextDrafts,
@@ -4026,18 +4039,42 @@ export class KilnWebStore {
 
       const nextForm = { ...this.state.intakeForm };
       if (res.draft) {
-        const target = resolveDraftTarget(
-          res.draft.space || nextForm.space,
-          res.draft.workspace_mode ?? nextForm.workspace_mode,
-          res.draft.workflow ?? nextForm.workflow,
-        );
-        nextForm.mode = target.mode;
-        nextForm.space = target.space;
-        nextForm.workspace_mode = target.workspace_mode;
+        const prevIsProject =
+          nextForm.mode === "project" && Boolean(nextForm.space) && nextForm.space !== "local";
+        if (prevIsProject) {
+          nextForm.mode = "project";
+          nextForm.space =
+            res.draft.space && res.draft.space !== "local" ? res.draft.space : nextForm.space;
+          nextForm.workspace_mode = "git_worktree";
+        } else {
+          const target = resolveDraftTarget(
+            res.draft.space || nextForm.space,
+            res.draft.workspace_mode ?? nextForm.workspace_mode,
+            res.draft.workflow ?? nextForm.workflow,
+          );
+          nextForm.mode = target.mode;
+          nextForm.space = target.space;
+          nextForm.workspace_mode = target.workspace_mode;
+        }
         if (res.draft.title) nextForm.title = res.draft.title;
         if (res.draft.priority) nextForm.priority = res.draft.priority;
         if (res.draft.track && res.draft.track !== "L3") nextForm.track = res.draft.track;
-        if (res.draft.workflow) nextForm.workflow = res.draft.workflow;
+        if (res.draft.workflow) {
+          const wfToggles = extractWorkflowToggles(res.draft.workflow);
+          const hasDeliverCmd =
+            (res.draft.contract.deliver?.mode === "run_cmd"
+              ? res.draft.contract.deliver.cmd
+              : nextForm.deliver_cmd
+            ).trim().length > 0;
+          nextForm.workflow =
+            prevIsProject && (res.draft.workflow.preset === "host_op" || wfToggles.hostTwoPhase)
+              ? stripHostTwoPhaseWorkflow(
+                  res.draft.workflow,
+                  hasDeliverCmd,
+                  this.getHostStagedRoleIds(),
+                )
+              : res.draft.workflow;
+        }
         if (res.draft.contract.end) nextForm.end = res.draft.contract.end;
         if (res.draft.contract.accept_cmd) {
           nextForm.accept_cmd = res.draft.contract.accept_cmd;

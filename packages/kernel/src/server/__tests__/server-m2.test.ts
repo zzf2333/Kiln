@@ -4,7 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SseEventSchema, type RolesConfig, type SseEvent, type TaskCard } from "@kiln/protocol";
+import {
+  SseEventSchema,
+  buildWorkflowPreset,
+  type RolesConfig,
+  type SseEvent,
+  type TaskCard,
+} from "@kiln/protocol";
 import { FakeBackend, type ExecutionBackend } from "../../backend/index.js";
 import { stageHostScopedChanges } from "../../gate/index.js";
 import { writeFileAtomic } from "../../store/index.js";
@@ -3172,5 +3178,158 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     };
     expect(rebuiltDetailJson.state.stage).toBe("implement");
     expect(rebuiltDetailJson.state.status).toBe("queued");
+  });
+
+  it("keeps project draft locked to git_worktree and strips hostTwoPhase fields during wb_plan(upsert_draft)", async () => {
+    const kilnHome = makeTempDir("kiln-wbplan-project-");
+    const repoDir = makeTempDir("kiln-wbplan-repo-");
+    execFileSync("git", ["init", "-b", "main"], { cwd: repoDir });
+    const server = new KilndServer({
+      kilnHome,
+      host: "127.0.0.1",
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: false,
+      tokenSecret: "wbplan-project-lock-secret-0123456",
+    });
+    servers.push(server);
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "demo",
+      name: "Demo Repo",
+      repo_path: repoDir,
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    });
+
+    const upsertHttpRes = await server.app.request(
+      new Request("http://127.0.0.1/api/drafts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: "d-proj-lock",
+          space: "demo",
+          workspace_mode: "git_worktree",
+          intake_open: true,
+        }),
+      }),
+    );
+    expect(upsertHttpRes.status).toBe(201);
+
+    const intakeToken = server.issueRunToken({
+      taskId: "d-proj-lock",
+      runId: "chat-intake-lock",
+      role: "intake",
+      contractVersion: 1,
+    });
+    const hostPoisonedWf = {
+      schema_version: 1 as const,
+      preset: "standard_dev" as const,
+      pm_rationale: "Keep standard_dev for demo",
+      steps: [
+        {
+          kind: "loop" as const,
+          max_rounds: 3,
+          stuck_threshold: 2,
+          steps: [
+            {
+              kind: "agent" as const,
+              stage: "implement" as const,
+              role: "worker" as const,
+              fresh_context: false,
+              roster_role: "main_dev",
+              rationale: "main_dev implements git_worktree changes",
+            },
+            { kind: "gate" as const, stage: "verify" as const, check: "full" as const },
+            {
+              kind: "agent" as const,
+              stage: "review" as const,
+              role: "reviewer" as const,
+              fresh_context: true,
+              roster_role: "reviewer",
+            },
+          ],
+        },
+        {
+          kind: "agent" as const,
+          stage: "accept" as const,
+          role: "verifier" as const,
+          fresh_context: true,
+        },
+        {
+          kind: "command" as const,
+          stage: "deliver" as const,
+          apply_staged: false,
+          run_deliver_cmd: false,
+          verify_sha256: false,
+          final_accept_gate: true,
+        },
+      ],
+    };
+
+    const rpcRes = await server.invokeMcpRpc({
+      method: "POST",
+      url: "/rpc/mcp/wb_plan",
+      headers: {
+        Authorization: `Bearer ${intakeToken}`,
+        "Content-Type": "application/json",
+      },
+      rawBody: JSON.stringify({
+        mode: "upsert_draft",
+        draft_id: "d-proj-lock",
+        title: "Add /api/stats",
+        space: "local",
+        workspace_mode: "host_scoped",
+        workflow: hostPoisonedWf,
+        contract: {
+          goal: "Add stats endpoint",
+          end: "npm test passes",
+          accept_cmd: "npm test",
+          scope: ["src/server.mjs"],
+        },
+      }),
+    });
+    expect(rpcRes.status).toBe(200);
+    const rpcBody = rpcRes.body as {
+      ok: boolean;
+      draft: {
+        space: string;
+        workspace_mode: string;
+        workflow: { preset: string; pm_rationale?: string; steps: unknown[] };
+      };
+    };
+    expect(rpcBody.draft.space).toBe("demo");
+    expect(rpcBody.draft.workspace_mode).toBe("git_worktree");
+    expect(rpcBody.draft.workflow.preset).toBe("standard_dev");
+    expect(rpcBody.draft.workflow.pm_rationale).toBe("Keep standard_dev for demo");
+    const serializedWf = JSON.stringify(rpcBody.draft.workflow);
+    expect(serializedWf).toContain('"check":"full"');
+    expect(serializedWf).toContain('"roster_role":"main_dev"');
+    expect(serializedWf).toContain('"apply_staged":false');
+    expect(serializedWf).toContain('"final_accept_gate":false');
+    expect(serializedWf).not.toContain("staged_only");
+    expect(serializedWf).not.toContain("dry_run_only");
+
+    // Host preset upsert also degrades safely without host_staged roles
+    const hostPresetRpc = await server.invokeMcpRpc({
+      method: "POST",
+      url: "/rpc/mcp/wb_plan",
+      headers: {
+        Authorization: `Bearer ${intakeToken}`,
+        "Content-Type": "application/json",
+      },
+      rawBody: JSON.stringify({
+        mode: "upsert_draft",
+        draft_id: "d-proj-lock",
+        workflow: buildWorkflowPreset("host_op"),
+      }),
+    });
+    expect(hostPresetRpc.status).toBe(200);
+    const storedAfter = server.store.readDraft("d-proj-lock")!;
+    expect(storedAfter.space).toBe("demo");
+    expect(storedAfter.workspace_mode).toBe("git_worktree");
+    expect(storedAfter.workflow?.preset).toBe("quick");
   });
 });

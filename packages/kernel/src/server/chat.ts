@@ -11,10 +11,8 @@ import {
   SessionRefSchema,
   StageIdSchema,
   WorkflowBlueprintSchema,
-  buildCustomWorkflow,
   buildWorkflowPreset,
   extractWorkflowToggles,
-  hasCompleteHostTwoPhaseWorkflow,
   type ChatCommandItem,
   type ChatCommandsResponse,
   type ChatOptionItem,
@@ -28,7 +26,6 @@ import {
   type SpaceConfig,
   type StageId,
   type TaskCard,
-  type WorkflowAgentNode,
   type WorkflowBlueprint,
 } from "@kiln/protocol";
 import {
@@ -71,6 +68,7 @@ import {
   supersedePendingDecisionForRework,
 } from "./pending-decisions.js";
 import type { LiveRateTracker } from "./rate-tracker.js";
+import { alignDraftWorkspaceAndWorkflow } from "./space-inspect.js";
 import type { SseHub } from "./sse.js";
 
 const DEFAULT_BACKEND_QUERY_TIMEOUT_MS = 5_000;
@@ -1512,21 +1510,6 @@ export class KilnChatEngine {
       const latest = this.store.readDraft(params.safeDraftId) ?? params.fallbackDraft;
       const updatedFields: string[] = [];
 
-      let nextWorkspaceMode = latest.workspace_mode;
-      if (latest.space === "local") {
-        if (patch.workspace_mode === "scratch_dir" || patch.workspace_mode === "host_scoped") {
-          nextWorkspaceMode = patch.workspace_mode;
-          updatedFields.push("workspace_mode");
-        } else if (patch.workflow_preset === "host_op" && nextWorkspaceMode !== "host_scoped") {
-          nextWorkspaceMode = "host_scoped";
-          updatedFields.push("workspace_mode");
-        } else if (nextWorkspaceMode === "git_worktree") {
-          nextWorkspaceMode = "scratch_dir";
-        }
-      } else {
-        nextWorkspaceMode = "git_worktree";
-      }
-
       const nextContract = { ...latest.contract };
       if (patch.contract) {
         if (patch.contract.goal !== undefined) {
@@ -1555,79 +1538,49 @@ export class KilnChatEngine {
         }
       }
 
-      let nextWorkflow: WorkflowBlueprint | undefined = latest.workflow;
+      const hasDeliverCmd = nextContract.deliver?.mode === "run_cmd";
+      let candidateWorkflow: WorkflowBlueprint | undefined = latest.workflow;
       if (patch.workflow !== undefined) {
-        nextWorkflow = patch.workflow;
+        candidateWorkflow = patch.workflow;
         updatedFields.push("workflow");
       } else if (patch.workflow_preset !== undefined) {
-        nextWorkflow = buildWorkflowPreset(patch.workflow_preset, {
-          hasDeliverCmd: nextContract.deliver?.mode === "run_cmd",
+        candidateWorkflow = buildWorkflowPreset(patch.workflow_preset, {
+          hasDeliverCmd,
         });
         updatedFields.push("workflow");
       }
 
-      const hasDeliverCmd = nextContract.deliver?.mode === "run_cmd";
-      if (nextWorkflow !== undefined) {
-        const toggles = extractWorkflowToggles(nextWorkflow);
-        if (nextWorkspaceMode === "host_scoped" && !hasCompleteHostTwoPhaseWorkflow(nextWorkflow)) {
-          const prevWorkflow = nextWorkflow;
-          const prevByStage = new Map<string, WorkflowAgentNode>();
-          for (const step of prevWorkflow.steps) {
-            if (step.kind === "agent") {
-              prevByStage.set(step.stage, step);
-            } else if (step.kind === "loop") {
-              for (const inner of step.steps) {
-                if (inner.kind === "agent") {
-                  prevByStage.set(inner.stage, inner);
-                }
-              }
-            }
-          }
-          const rebuilt = buildCustomWorkflow({
-            ...toggles,
-            preset: prevWorkflow.preset === "custom" ? "custom" : "host_op",
-            hostTwoPhase: true,
-            deliverApproval: true,
-            hasDeliverCmd,
-          });
-          const mergeNode = (node: WorkflowAgentNode): WorkflowAgentNode => {
-            const old = prevByStage.get(node.stage);
-            const rosterRole = node.roster_role ?? old?.roster_role;
-            const rationale = node.rationale ?? old?.rationale;
-            return {
-              ...node,
-              ...(rosterRole !== undefined ? { roster_role: rosterRole } : {}),
-              ...(rationale !== undefined ? { rationale } : {}),
-            };
-          };
-          nextWorkflow = {
-            ...rebuilt,
-            steps: rebuilt.steps.map((step) =>
-              step.kind === "agent"
-                ? mergeNode(step)
-                : step.kind === "loop"
-                  ? {
-                      ...step,
-                      steps: step.steps.map((inner) =>
-                        inner.kind === "agent" ? mergeNode(inner) : inner,
-                      ),
-                    }
-                  : step,
-            ),
-            ...(prevWorkflow.pm_rationale !== undefined
-              ? { pm_rationale: prevWorkflow.pm_rationale }
-              : {}),
-          };
-          if (!updatedFields.includes("workflow")) updatedFields.push("workflow");
-        } else if (nextWorkspaceMode !== "host_scoped" && toggles.hostTwoPhase) {
-          nextWorkflow = buildCustomWorkflow({
-            ...toggles,
-            preset: nextWorkflow.preset === "host_op" ? "standard_dev" : nextWorkflow.preset,
-            hostTwoPhase: false,
-            hasDeliverCmd,
-          });
-          if (!updatedFields.includes("workflow")) updatedFields.push("workflow");
-        }
+      const rosterCfg = this.store.readEffectiveRosterConfig();
+      const hostStagedRoleIds = new Set(
+        Object.entries(rosterCfg.roster)
+          .filter(([, entry]) => entry.perm === "host_staged")
+          .map(([id]) => id),
+      );
+      const requestedWorkspaceMode =
+        latest.space === "local"
+          ? patch.workspace_mode === "scratch_dir" || patch.workspace_mode === "host_scoped"
+            ? patch.workspace_mode
+            : patch.workflow_preset === "host_op"
+              ? "host_scoped"
+              : undefined
+          : undefined;
+      const aligned = alignDraftWorkspaceAndWorkflow({
+        existingSpace: latest.space,
+        existingWorkspaceMode: latest.workspace_mode,
+        ...(requestedWorkspaceMode !== undefined
+          ? { inputWorkspaceMode: requestedWorkspaceMode }
+          : {}),
+        ...(candidateWorkflow !== undefined ? { workflow: candidateWorkflow } : {}),
+        hasDeliverCmd,
+        hostStagedRoleIds,
+      });
+      const nextWorkspaceMode = aligned.workspaceMode;
+      if (nextWorkspaceMode !== latest.workspace_mode) {
+        updatedFields.push("workspace_mode");
+      }
+      let nextWorkflow = aligned.workflow;
+      if (nextWorkflow !== candidateWorkflow && !updatedFields.includes("workflow")) {
+        updatedFields.push("workflow");
       }
       if (patch.pm_rationale !== undefined && nextWorkflow !== undefined) {
         nextWorkflow = {
@@ -1956,6 +1909,7 @@ export class KilnChatEngine {
               ? `, default_accept_cmd=${spaceConfig.default_accept_cmd}`
               : ""
           }`,
+          `**蓝图护栏**：\`git_worktree\` 任务中 \`deliver\` 命令节点的 \`apply_staged\`、\`verify_sha256\`、\`final_accept_gate\` 必须保持 \`false\`（仅 \`host_op\` 设为 \`true\`），严禁把 \`workspace_mode\` 改为 \`host_scoped\` 或把 \`space\` 改为 \`local\`。`,
           `**只读探索约束**：你当前位于项目仓库目录 (${cwd})，可只读检索代码、目录结构与测试脚本以确定准确的可改范围 (scope) 与验收命令 (accept_cmd)；**严禁直接修改项目源码文件或执行 git 写入命令**${
             mcpEnabled
               ? `，只允许通过 wb_plan(mode: "upsert_draft") 更新草稿`
@@ -2014,7 +1968,7 @@ export class KilnChatEngine {
         ? `- 当前为 **L1 快车道**：保持 1–2 轮高效收敛，避免过度访谈；生成精简 4 段设计稿（目标与改动、边界约束、方案要点、验收命令）并尽快补齐全部契约字段。`
         : `- 当前为 **L2 标准交付**：确保业务规则、多状态流转、异常边界与人工兜底全部梳理清晰，直至 open_questions 清零；BRIEF.md 固定采用 5 段结构：\n  ## 1. 目标与用户场景\n  ## 2. 已确认规则与关键流程 / 边界\n  ## 3. 选定落地方案与关键取舍\n  ## 4. 范围边界（做什么 / 明确不做什么）\n  ## 5. 可观察验收场景`,
       `自动补全与安全边界：用户已在前端通过 Tab 选定了项目空间、优先级或轨道；请主动替用户推导并回填 title、end、accept_cmd、scope、non_goals、depends_on、open_questions 与 brief_markdown，严禁私自调用 commit_card 直接建卡（必须由用户点击「＋ 创建新任务」确认）。`,
-      `5. **可组合流程蓝图预设**：按任务复杂度优先选用 4 套配方之一：\`quick\`（快速通道：实施→验真→交付，适合简单脚本/小改）、\`host_op\`（本机两阶段操作：实施暂存 dry-run→staged_only 门禁→单一交付审批后由内核原子落盘+执行+终审，**自身已有可逆隔离与最终人工交付审批，默认无需叠加重型多轮审查**；如确需加 \`review\`，\`loop.max_rounds\` 保持 \`2\`）、\`standard_dev\`（标准开发：实施⇄审查循环→交付，默认项目开发）、\`full_delivery\`（完整交付：顾问出方案 PLAN.md→实施⇄审查→独立验收→交付审批）。跨模块深挖可前置加入 \`research\` 节点（\`research -> plan\`），由 \`researcher\` 先补齐深层代码地图后再交 \`architect\` 设计 \`PLAN.md\`。若为 \`host_op\` 涉及本机实际执行命令，应把待执行命令放入 \`contract.deliver: { mode: "run_cmd", cmd: "..." }\`、把最终校验命令放入 \`contract.accept_cmd\`，Phase 1 只生成暂存脚本与校验报告，切勿让正式宿主验收命令在审批落盘前执行。`,
+      `5. **可组合流程蓝图预设**：按任务复杂度优先选用 4 套配方之一：\`quick\`（快速通道：实施→验真→交付，适合简单脚本/小改）、\`host_op\`（本机两阶段操作：实施暂存 dry-run→staged_only 门禁→单一交付审批后由内核原子落盘+执行+终审，**自身已有可逆隔离与最终人工交付审批，默认无需叠加重型多轮审查**；如确需加 \`review\`，\`loop.max_rounds\` 保持 \`2\`）、\`standard_dev\`（标准开发：实施⇄审查循环→交付，默认项目开发）、\`full_delivery\`（完整交付：顾问出方案 PLAN.md→实施⇄审查→独立验收→交付审批）。跨模块深挖可前置加入 \`research\` 节点（\`research -> plan\`），由 \`researcher\` 先补齐深层代码地图后再交 \`architect\` 设计 \`PLAN.md\`。若为 \`host_op\` 涉及本机实际执行命令，应把待执行命令放入 \`contract.deliver: { mode: "run_cmd", cmd: "..." }\`、把最终校验命令放入 \`contract.accept_cmd\`，Phase 1 只生成暂存脚本与校验报告，切勿让正式宿主验收命令在审批落盘前执行；鉴于 Phase 1 盘点与人工交付审批之间可能存在时间差，宿主机清理/迁移脚本在正式执行时若遇目标原路径已不存在，应幂等记录 \`already_missing\` 跳过，仅对越界、符号链接逃逸或权限异常返回非零退出码。`,
     ].join("\n");
 
     const rosterConfig = this.store.readEffectiveRosterConfig();

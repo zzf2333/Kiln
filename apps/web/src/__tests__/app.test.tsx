@@ -7254,4 +7254,214 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     expect(postTaskCreateCalls).toHaveLength(0);
     await screen.findByText(/Readonly/);
   });
+
+  it("keeps project mode locked during intake chat even if draft workflow contains final_accept_gate, and prevents stale in-flight bootstrap from wiping optimistic task card", async () => {
+    const projectBoot = makeBaseBootstrap();
+    const slowBootstrapGate: { resolve: (() => void) | null } = { resolve: null };
+    let bootstrapCalls = 0;
+
+    const projectDraftReply = {
+      schema_version: 1 as const,
+      id: "d-proj-keep",
+      title: "Add /api/stats",
+      space: "kiln",
+      priority: "P2" as const,
+      track: "L2" as const,
+      workspace_mode: "git_worktree" as const,
+      depends_on: [],
+      intake_open: true,
+      open_questions: [],
+      workflow: {
+        schema_version: 1 as const,
+        preset: "standard_dev" as const,
+        steps: [
+          {
+            kind: "loop" as const,
+            max_rounds: 3,
+            stuck_threshold: 2,
+            steps: [
+              {
+                kind: "agent" as const,
+                stage: "implement" as const,
+                role: "worker" as const,
+                fresh_context: false,
+              },
+              { kind: "gate" as const, stage: "verify" as const, check: "full" as const },
+              {
+                kind: "agent" as const,
+                stage: "review" as const,
+                role: "reviewer" as const,
+                fresh_context: true,
+              },
+            ],
+          },
+          {
+            kind: "agent" as const,
+            stage: "accept" as const,
+            role: "verifier" as const,
+            fresh_context: true,
+          },
+          {
+            kind: "command" as const,
+            stage: "deliver" as const,
+            apply_staged: false,
+            run_deliver_cmd: false,
+            verify_sha256: false,
+            final_accept_gate: true,
+          },
+        ],
+      },
+      contract: {
+        goal: "Add /api/stats",
+        end: "npm test passes",
+        accept_cmd: "npm test",
+        scope: ["src/server.mjs"],
+        deliver: { mode: "merge_main" as const, cmd: null },
+        human_accept: false,
+        external_actions: "ask" as const,
+      },
+      brief_markdown: "# Brief\n\nProject task.",
+      created_at: "2026-11-28T00:00:00.000Z",
+      updated_at: "2026-11-28T00:00:00.000Z",
+    };
+
+    const committedCard = {
+      schema_version: 1 as const,
+      id: "t-101",
+      title: "Add /api/stats",
+      space: "kiln",
+      priority: "P2" as const,
+      track: "L2" as const,
+      workspace_mode: "git_worktree" as const,
+      parent: null,
+      depends_on: [],
+      workflow: buildWorkflowPreset("standard_dev"),
+      contract_version: 1,
+      contract: {
+        ...projectDraftReply.contract,
+        accept_files_hash: "pending",
+      },
+      limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 100_000 },
+      created_at: "2026-11-28T00:01:00.000Z",
+      updated_at: "2026-11-28T00:01:00.000Z",
+    };
+
+    let committed = false;
+    let commitBody: Record<string, unknown> | null = null;
+
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof Request ? input.url : "";
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url === "/api/bootstrap") {
+        bootstrapCalls += 1;
+        // Call #2 is the unawaited bootstrap triggered by sendIntakeChat before commit
+        if (bootstrapCalls === 2) {
+          await new Promise<void>((resolve) => {
+            slowBootstrapGate.resolve = resolve;
+          });
+          return jsonResponse({ ...projectBoot, tasks: [] });
+        }
+        return jsonResponse({
+          ...projectBoot,
+          tasks: committed
+            ? [
+                {
+                  id: "t-101",
+                  space: "kiln",
+                  parent_id: null,
+                  title: "Add /api/stats",
+                  priority: "P2",
+                  effective_priority: "P2",
+                  track: "L2",
+                  workspace_mode: "git_worktree",
+                  status: "running",
+                  stage: "implement",
+                  round: 1,
+                  active_run_id: "run-1",
+                  contract_version: 1,
+                  depends_on: [],
+                  created_at: "2026-11-28T00:01:00.000Z",
+                  updated_at: "2026-11-28T00:01:00.000Z",
+                  tokens: {
+                    input_tokens: 0,
+                    cached_input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                  },
+                  cost_usd: 0,
+                  summary: "Add /api/stats",
+                },
+              ]
+            : [],
+        });
+      }
+      if (url === "/api/drafts" && method === "POST") {
+        return jsonResponse({ ok: true, draft: projectDraftReply });
+      }
+      if (url === "/api/drafts/d-proj-keep/chat" && method === "POST") {
+        return jsonResponse({
+          ok: true,
+          messages: [
+            { who: "me", text: "实现 /api/stats" },
+            { who: "agent", name: "intake", text: "已同步" },
+          ],
+          draft: projectDraftReply,
+          brief_markdown: projectDraftReply.brief_markdown,
+        });
+      }
+      if (url === "/api/drafts/d-proj-keep/commit" && method === "POST") {
+        committed = true;
+        commitBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        return jsonResponse({
+          ok: true,
+          card: committedCard,
+          state: {
+            status: "running",
+            stage: "implement",
+            round: 1,
+            activeRunId: "run-1",
+            effectivePriority: "P2",
+            contractVersion: 1,
+          },
+        });
+      }
+      if (url.includes("/api/chat/commands")) {
+        return jsonResponse({ commands: [], mcpServers: [] });
+      }
+      return jsonResponse({});
+    });
+
+    window.location.hash = "";
+    render(<App />);
+    const newReqBtn = await screen.findByRole("button", { name: "新需求 N" });
+    fireEvent.click(newReqBtn);
+
+    const input = await screen.findByPlaceholderText(/描述「Kiln 本体」需求/);
+    fireEvent.change(input, { target: { value: "实现 /api/stats" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    const createBtn = await screen.findByRole("button", { name: "＋ 创建新任务" });
+    await waitFor(() => {
+      expect((createBtn as HTMLButtonElement).disabled).toBe(false);
+    });
+    // Must stay in project mode instead of flipping to 本机与临时 (local)
+    expect(screen.getByRole("radio", { name: "Kiln 本体" }).getAttribute("aria-checked")).toBe(
+      "true",
+    );
+    expect(screen.queryByRole("radiogroup", { name: "本机工作区模式" })).toBeNull();
+
+    // Commit immediately while bootstrap #2 (pre-commit empty snapshot) is still in flight
+    fireEvent.click(createBtn);
+    await screen.findByRole("heading", { name: "Add /api/stats" });
+    expect(commitBody).not.toBeNull();
+    expect(commitBody!.space).toBe("kiln");
+    expect(commitBody!.workspace_mode).toBe("git_worktree");
+
+    // Resolve slow pre-commit bootstrap -> must NOT wipe t-101 off the board
+    slowBootstrapGate.resolve?.();
+    await waitFor(() => {
+      expect(bootstrapCalls).toBeGreaterThanOrEqual(3);
+    });
+    expect(screen.getByRole("heading", { name: "Add /api/stats" })).toBeTruthy();
+  });
 });

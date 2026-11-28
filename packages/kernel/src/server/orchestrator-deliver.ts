@@ -90,6 +90,24 @@ export interface DeliverExecutionContext {
   wake: () => Promise<void>;
 }
 
+function formatDeliverCommandOutputExcerpt(
+  result: { stdout: string; stderr: string },
+  maxChars = 500,
+): string {
+  const raw = result.stderr.trim() || result.stdout.trim();
+  if (!raw) {
+    return "";
+  }
+  const normalized = raw
+    .replace(/[`\r\n\t]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  if (!normalized) {
+    return "";
+  }
+  return normalized.length > maxChars ? `${normalized.slice(0, maxChars - 1)}…` : normalized;
+}
+
 export function hasApprovedDeliverDecision(
   events: readonly StateEvent[],
   waitingReason: string,
@@ -257,6 +275,13 @@ export async function executeDeliverStage(
           return;
         }
         if (!applyRes.ok) {
+          const cmdExcerpt =
+            applyRes.reason === "deliver_cmd_failed_rolled_back"
+              ? formatDeliverCommandOutputExcerpt(applyRes.postApplyResult)
+              : applyRes.reason === "verify_failed_rolled_back"
+                ? formatDeliverCommandOutputExcerpt(applyRes.verifyResult)
+                : "";
+          const excerptLine = cmdExcerpt ? `\n- 命令输出摘要: \`${cmdExcerpt}\`` : "";
           const failureDetail =
             applyRes.reason === "staged_hash_mismatch"
               ? "暂存区文件 SHA-256 校验与待批快照不一致，已拦截写入宿主机"
@@ -271,7 +296,7 @@ export async function executeDeliverStage(
             contract_version: card.contract_version,
             reason: `host_apply_${applyRes.reason}`,
             category: "host_scoped_apply_error",
-            question: `${failureDetail}，请选择下一步操作。`,
+            question: `${failureDetail}，请选择下一步操作。${excerptLine}`,
             options: [
               {
                 id: "opt-reimplement",
@@ -363,13 +388,15 @@ export async function executeDeliverStage(
             return;
           }
           if (finalAccept.exitCode !== 0 || finalAccept.timedOut) {
+            const finalExcerpt = formatDeliverCommandOutputExcerpt(finalAccept);
+            const finalExcerptLine = finalExcerpt ? `\n- 命令输出摘要: \`${finalExcerpt}\`` : "";
             const decision = PendingDecisionSchema.parse({
               id: `dec-${randomUUID().slice(0, 8)}`,
               task_id: plan.taskId,
               contract_version: card.contract_version,
               reason: "deliver_final_accept_failed",
               category: "deliver_approval",
-              question: `最终宿主机验收命令失败 (exit=${finalAccept.exitCode}, timedOut=${finalAccept.timedOut})，请选择处理方式。`,
+              question: `最终宿主机验收命令失败 (exit=${finalAccept.exitCode}, timedOut=${finalAccept.timedOut})，请选择处理方式。${finalExcerptLine}`,
               options: [
                 {
                   id: "opt-reimplement",
@@ -1004,13 +1031,15 @@ export async function executeDeliverStage(
           return;
         }
         if (finalAccept.exitCode !== 0 || finalAccept.timedOut) {
+          const finalExcerpt = formatDeliverCommandOutputExcerpt(finalAccept);
+          const excerptLine = finalExcerpt ? `\n- 命令输出摘要: \`${finalExcerpt}\`` : "";
           const decision = PendingDecisionSchema.parse({
             id: `dec-${randomUUID().slice(0, 8)}`,
             task_id: plan.taskId,
             contract_version: card.contract_version,
             reason: "deliver_final_accept_failed",
             category: "deliver_approval",
-            question: `交付命令已执行，但最终验收命令失败 (exit=${finalAccept.exitCode}, timedOut=${finalAccept.timedOut})，请选择下一步处理。`,
+            question: `交付命令已执行，但最终验收命令失败 (exit=${finalAccept.exitCode}, timedOut=${finalAccept.timedOut})，请选择下一步处理。${excerptLine}`,
             options: [
               {
                 id: "opt-reimplement",

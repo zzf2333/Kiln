@@ -19,6 +19,7 @@ export const HostBackupFileEntrySchema = z.object({
   pre_sha256: z.string().min(1).nullable(),
   post_sha256: z.string().min(1).nullable(),
   file_mode: z.number().int().min(0).max(0o7777).optional(),
+  staged_file_mode: z.number().int().min(0).max(0o7777).optional(),
   updated_at: z.string().min(1),
 });
 export type HostBackupFileEntry = z.infer<typeof HostBackupFileEntrySchema>;

@@ -2486,4 +2486,82 @@ describe("runVerificationGate end-to-end", () => {
       }),
     ).toEqual({ fastForward: false });
   });
+
+  it("preserves executable mode on newly staged host_scoped scripts while keeping existing file modes on apply and rollback", async () => {
+    const kilnHome = makeTempDir("kiln-host-mode-");
+    const hostDir = makeTempDir("kiln-host-mode-target-");
+    const store = new KilnStore({ kilnHome });
+
+    try {
+      const newScriptTarget = resolveCanonicalHostTarget(path.join(hostDir, "apply-new.sh"));
+      const existingConfTarget = resolveCanonicalHostTarget(path.join(hostDir, "secret.conf"));
+      fs.writeFileSync(existingConfTarget, "old=1\n", { encoding: "utf8", mode: 0o600 });
+      if (process.platform !== "win32") {
+        fs.chmodSync(existingConfTarget, 0o600);
+      }
+
+      const card = makeTaskCard({
+        id: "t-host-mode",
+        track: "L1",
+        workspace_mode: "host_scoped",
+        contract: {
+          goal: "Apply script with +x and update secret.conf",
+          end: "Applied safely",
+          accept_cmd: `test -f ${JSON.stringify(newScriptTarget)}`,
+          accept_files_hash: "pending",
+          scope: [path.join(hostDir, "**")],
+          deliver: { mode: "manual", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+      });
+      store.createTask(card, "# Host op");
+
+      const stagedDir = store.paths.stagedDir(card.id);
+      fs.mkdirSync(stagedDir, { recursive: true });
+      const stagedScript = path.join(stagedDir, "apply-new.sh");
+      const stagedConf = path.join(stagedDir, "secret.conf");
+      fs.writeFileSync(stagedScript, "#!/bin/bash\necho ok\n", {
+        encoding: "utf8",
+        mode: 0o755,
+      });
+      fs.writeFileSync(stagedConf, "new=2\n", { encoding: "utf8", mode: 0o755 });
+      if (process.platform !== "win32") {
+        fs.chmodSync(stagedScript, 0o755);
+        fs.chmodSync(stagedConf, 0o755);
+      }
+
+      const staged = stageHostScopedChanges(store, {
+        taskId: card.id,
+        contractScope: card.contract.scope,
+        stagedFiles: [
+          { stagedRelativePath: "apply-new.sh", targetPath: newScriptTarget },
+          { stagedRelativePath: "secret.conf", targetPath: existingConfTarget },
+        ],
+      });
+      expect(staged.ok).toBe(true);
+      if (!staged.ok) throw new Error("Expected stageHostScopedChanges ok");
+
+      const applied = await applyApprovedHostScopedChanges(store, {
+        taskId: card.id,
+        approved: true,
+        verifyCmd: card.contract.accept_cmd,
+      });
+      expect(applied.ok).toBe(true);
+      if (process.platform !== "win32") {
+        expect(fs.statSync(newScriptTarget).mode & 0o777).toBe(0o755);
+        expect(fs.statSync(existingConfTarget).mode & 0o777).toBe(0o600);
+      }
+
+      const restored = restoreHostScopedBackup(store, { taskId: card.id });
+      expect(restored.ok).toBe(true);
+      expect(fs.existsSync(newScriptTarget)).toBe(false);
+      expect(fs.readFileSync(existingConfTarget, "utf8")).toBe("old=1\n");
+      if (process.platform !== "win32") {
+        expect(fs.statSync(existingConfTarget).mode & 0o777).toBe(0o600);
+      }
+    } finally {
+      store.close();
+    }
+  });
 });

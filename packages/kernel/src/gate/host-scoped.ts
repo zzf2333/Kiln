@@ -903,6 +903,7 @@ export function stageHostScopedChanges(
     stagedRel: string;
     canonicalTarget: string;
     stagedSha: string;
+    stagedFileMode?: number;
   }> = [];
   const seenTargets = new Set<string>();
 
@@ -910,6 +911,8 @@ export function stageHostScopedChanges(
     const stagedRel = normalizeRepoRelativePath(spec.stagedRelativePath);
     const stagedFilePath = resolveValidatedStagedFile(stagedDir, canonicalStagedDir, stagedRel);
     const stagedSha = sha256Buffer(fs.readFileSync(stagedFilePath));
+    const stagedFileMode =
+      process.platform !== "win32" ? fs.statSync(stagedFilePath).mode & 0o777 : undefined;
 
     const canonicalTarget = resolveCanonicalHostTarget(spec.targetPath);
     if (!isHostTargetWithinScope(canonicalTarget, input.contractScope)) {
@@ -924,7 +927,12 @@ export function stageHostScopedChanges(
 
     // Ensure any pre-existing target is a regular file (not a directory or symlink).
     readHostFileIfRegular(canonicalTarget);
-    resolvedItems.push({ stagedRel, canonicalTarget, stagedSha });
+    resolvedItems.push({
+      stagedRel,
+      canonicalTarget,
+      stagedSha,
+      ...(stagedFileMode !== undefined ? { stagedFileMode } : {}),
+    });
   }
 
   const canonicalTargets = resolvedItems.map((item) => item.canonicalTarget);
@@ -963,6 +971,7 @@ export function stageHostScopedChanges(
           pre_sha256: preSha,
           post_sha256: null,
           ...(fileMode !== undefined ? { file_mode: fileMode } : {}),
+          ...(item.stagedFileMode !== undefined ? { staged_file_mode: item.stagedFileMode } : {}),
           updated_at: timestamp,
         });
       } else {
@@ -974,6 +983,7 @@ export function stageHostScopedChanges(
           existed_before: false,
           pre_sha256: null,
           post_sha256: null,
+          ...(item.stagedFileMode !== undefined ? { staged_file_mode: item.stagedFileMode } : {}),
           updated_at: timestamp,
         });
       }
@@ -1123,10 +1133,17 @@ export async function applyApprovedHostScopedChanges(
     const appliedEntries: HostBackupFileEntry[] = [];
     try {
       for (const item of stagedPayload) {
-        writeFileAtomic(item.entry.target_canonical_path, item.bytes);
-        if (process.platform !== "win32" && item.entry.file_mode !== undefined) {
-          fs.chmodSync(item.entry.target_canonical_path, item.entry.file_mode);
-        }
+        const applyMode =
+          process.platform !== "win32"
+            ? item.entry.existed_before
+              ? item.entry.file_mode
+              : item.entry.staged_file_mode
+            : undefined;
+        writeFileAtomic(
+          item.entry.target_canonical_path,
+          item.bytes,
+          applyMode !== undefined ? { mode: applyMode } : undefined,
+        );
         appliedEntries.push({
           ...item.entry,
           post_sha256: item.postSha,

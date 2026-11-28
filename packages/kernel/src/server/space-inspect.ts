@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
+  buildCustomWorkflow,
   extractWorkflowToggles,
   flattenWorkflowSteps,
   hasCompleteHostTwoPhaseWorkflow,
@@ -16,7 +17,9 @@ import {
   type RosterConfig,
   type SpaceConfig,
   type SpaceFileEntry,
+  type WorkflowAgentNode,
   type WorkflowBlueprint,
+  type WorkflowPreset,
   type WorkspaceMode,
 } from "@kiln/protocol";
 import { buildSanitizedEnv } from "../gate/command-runner.js";
@@ -1058,6 +1061,174 @@ function containsDraftsReference(text: string, textPrefixes: readonly string[]):
     }
   }
   return false;
+}
+
+export interface AlignDraftWorkspaceAndWorkflowInput {
+  existingSpace?: string;
+  inputSpace?: string;
+  existingWorkspaceMode?: WorkspaceMode;
+  inputWorkspaceMode?: WorkspaceMode;
+  workflow?: WorkflowBlueprint;
+  hasDeliverCmd: boolean;
+  hostStagedRoleIds?: ReadonlySet<string>;
+}
+
+export interface AlignDraftWorkspaceAndWorkflowResult {
+  space: string;
+  workspaceMode: Exclude<WorkspaceMode, "external_only">;
+  workflow?: WorkflowBlueprint;
+}
+
+/**
+ * Aligns a draft's space, workspace_mode, and composable workflow blueprint so project drafts
+ * stay locked to `git_worktree` without `host_op` two-phase fields, while preserving node roles/rationales.
+ */
+export function alignDraftWorkspaceAndWorkflow(
+  input: AlignDraftWorkspaceAndWorkflowInput,
+): AlignDraftWorkspaceAndWorkflowResult {
+  let space: string;
+  if (input.existingSpace && input.existingSpace !== "local") {
+    space =
+      input.inputSpace && input.inputSpace !== "local" ? input.inputSpace : input.existingSpace;
+  } else {
+    space = input.inputSpace ?? input.existingSpace ?? "local";
+  }
+
+  let workspaceMode: Exclude<WorkspaceMode, "external_only">;
+  if (space !== "local") {
+    workspaceMode = "git_worktree";
+  } else {
+    const requestedHostScoped =
+      input.inputWorkspaceMode === "host_scoped" ||
+      (input.inputWorkspaceMode === undefined &&
+        (input.existingWorkspaceMode === "host_scoped" ||
+          (input.workflow !== undefined &&
+            (input.workflow.preset === "host_op" ||
+              hasCompleteHostTwoPhaseWorkflow(input.workflow)))));
+    workspaceMode = requestedHostScoped ? "host_scoped" : "scratch_dir";
+  }
+
+  if (input.workflow === undefined) {
+    return { space, workspaceMode };
+  }
+
+  const origWorkflow = input.workflow;
+  const toggles = extractWorkflowToggles(origWorkflow);
+  const flat = flattenWorkflowSteps(origWorkflow);
+  const hasDryRunImplement = flat.some(
+    (node) => node.kind === "agent" && node.stage === "implement" && node.mode === "dry_run_only",
+  );
+
+  const byStageAndMode = new Map<string, WorkflowAgentNode>();
+  const byStage = new Map<string, WorkflowAgentNode>();
+  for (const node of flat) {
+    if (node.kind !== "agent") continue;
+    const modeKey = `${node.stage}:${node.mode === "test_first_lock" ? "test_first_lock" : "normal"}`;
+    if (!byStageAndMode.has(modeKey)) byStageAndMode.set(modeKey, node);
+    if (!byStage.has(node.stage)) byStage.set(node.stage, node);
+  }
+
+  const mergeNode = (node: WorkflowAgentNode, dropHostRoles: boolean): WorkflowAgentNode => {
+    const modeKey = `${node.stage}:${node.mode === "test_first_lock" ? "test_first_lock" : "normal"}`;
+    const prev = byStageAndMode.get(modeKey) ?? byStage.get(node.stage);
+    if (!prev) return node;
+    const rawRole = node.roster_role ?? prev.roster_role;
+    const rosterRole =
+      rawRole && dropHostRoles && input.hostStagedRoleIds?.has(rawRole) ? undefined : rawRole;
+    const rationale = node.rationale ?? prev.rationale;
+    const id = node.id ?? prev.id;
+    const label = node.label ?? prev.label;
+    const instructions = node.instructions ?? prev.instructions;
+    const binding = node.binding ?? prev.binding;
+    const onFail = node.on_fail ?? prev.on_fail;
+    return {
+      ...node,
+      ...(rosterRole !== undefined ? { roster_role: rosterRole } : {}),
+      ...(rationale !== undefined ? { rationale } : {}),
+      ...(id !== undefined ? { id } : {}),
+      ...(label !== undefined ? { label } : {}),
+      ...(instructions !== undefined ? { instructions } : {}),
+      ...(binding !== undefined ? { binding } : {}),
+      ...(onFail !== undefined ? { on_fail: onFail } : {}),
+    };
+  };
+
+  let alignedWorkflow: WorkflowBlueprint = origWorkflow;
+  if (
+    workspaceMode !== "host_scoped" &&
+    (origWorkflow.preset === "host_op" || toggles.hostTwoPhase || hasDryRunImplement)
+  ) {
+    const nextPreset: WorkflowPreset =
+      origWorkflow.preset === "host_op"
+        ? toggles.includeReview
+          ? "standard_dev"
+          : "quick"
+        : origWorkflow.preset;
+    const rebuilt = buildCustomWorkflow({
+      ...toggles,
+      preset: nextPreset,
+      hostTwoPhase: false,
+      testFirstLock: workspaceMode === "git_worktree" ? toggles.testFirstLock : false,
+      deliverApproval:
+        origWorkflow.preset === "host_op"
+          ? input.hasDeliverCmd
+            ? toggles.deliverApproval
+            : false
+          : toggles.deliverApproval,
+      hasDeliverCmd: input.hasDeliverCmd,
+    });
+    alignedWorkflow = {
+      ...rebuilt,
+      steps: rebuilt.steps.map((step) =>
+        step.kind === "agent"
+          ? mergeNode(step, true)
+          : step.kind === "loop"
+            ? {
+                ...step,
+                steps: step.steps.map((inner) =>
+                  inner.kind === "agent" ? mergeNode(inner, true) : inner,
+                ),
+              }
+            : step,
+      ),
+      ...(origWorkflow.pm_rationale !== undefined
+        ? { pm_rationale: origWorkflow.pm_rationale }
+        : {}),
+    };
+  } else if (workspaceMode === "host_scoped" && !hasCompleteHostTwoPhaseWorkflow(origWorkflow)) {
+    const rebuilt = buildCustomWorkflow({
+      ...toggles,
+      preset: origWorkflow.preset === "custom" ? "custom" : "host_op",
+      hostTwoPhase: true,
+      deliverApproval: true,
+      testFirstLock: false,
+      hasDeliverCmd: input.hasDeliverCmd,
+    });
+    alignedWorkflow = {
+      ...rebuilt,
+      steps: rebuilt.steps.map((step) =>
+        step.kind === "agent"
+          ? mergeNode(step, false)
+          : step.kind === "loop"
+            ? {
+                ...step,
+                steps: step.steps.map((inner) =>
+                  inner.kind === "agent" ? mergeNode(inner, false) : inner,
+                ),
+              }
+            : step,
+      ),
+      ...(origWorkflow.pm_rationale !== undefined
+        ? { pm_rationale: origWorkflow.pm_rationale }
+        : {}),
+    };
+  }
+
+  return {
+    space,
+    workspaceMode,
+    workflow: alignedWorkflow,
+  };
 }
 
 export function validateCommitWorkflow(

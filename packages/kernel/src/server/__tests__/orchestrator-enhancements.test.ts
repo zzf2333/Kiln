@@ -2062,4 +2062,175 @@ describe("Orchestrator enhancements: step_index, tester/deliverer agent modes, a
     });
     expect(pending?.options.find((o) => o.id === "opt-retry-implement")?.recommended).toBe(false);
   });
+
+  it("includes failed deliver command stderr excerpt in host_apply_deliver_cmd_failed_rolled_back decision question", async () => {
+    const kilnHome = makeTempDir();
+    tempDirs.push(kilnHome);
+    const hostTargetDir = makeTempDir();
+    tempDirs.push(hostTargetDir);
+    const targetFile = path.join(hostTargetDir, "apply.sh");
+    fs.writeFileSync(targetFile, "echo original\n", "utf8");
+
+    const fakeBackend = new FakeBackend({ defaultTurnScript: [] });
+    let server: KilndServer;
+    server = new KilndServer({
+      kilnHome,
+      host: "127.0.0.1",
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: true,
+      tokenSecret: "enhancements-deliver-stderr-secret-0123",
+      approvalHandler: async (req, ctx) => {
+        if (req.action === "host_impl_fail_deliver") {
+          const token =
+            fakeBackend
+              .getRecordedSpecs()
+              .filter((s) => s.taskId === ctx.taskId)
+              .at(-1)?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+          const stagedDir = server.store.paths.stagedDir(ctx.taskId);
+          fs.mkdirSync(stagedDir, { recursive: true });
+          fs.writeFileSync(path.join(stagedDir, "apply.sh"), "echo updated\n", "utf8");
+          const receiptRes = await server.invokeMcpRpc({
+            method: "POST",
+            url: "/rpc/mcp/wb_submit_receipt",
+            headers: { Authorization: `Bearer ${token}` },
+            rawBody: JSON.stringify({
+              markdown: serializeFrontmatterMarkdown(
+                {
+                  run_id: ctx.runId,
+                  contract_version: ctx.card.contract_version,
+                  outcome: "completed",
+                  input_ref: "host_scoped",
+                  output_ref: stagedDir,
+                  changed_paths: [targetFile],
+                  accept_result: "skipped",
+                  is_bugfix: false,
+                  complexity_escalate: false,
+                },
+                "## 改动说明\nstaged apply.sh\n\n## 验证命令与真实输出\ndry run ok\n\n## 未完成或待决问题\n无\n",
+              ),
+            }),
+          });
+          expect(receiptRes.status).toBe(200);
+          await ctx.backend.answer(req.id, true);
+        }
+      },
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    server.store.writeConfig("roles", {
+      schema_version: 1,
+      heterogeneous_review: false,
+      roles: {
+        worker: {
+          backend_id: "fake",
+          agent: "codex",
+          model: "gpt-5.4",
+          allow_full_access_fallback: false,
+        },
+      },
+    });
+
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "host_impl_fail_deliver", detail: "stage apply.sh" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-host-deliver-stderr", role: "worker" },
+    );
+
+    const now = new Date().toISOString();
+    server.stateMachine.createTask(
+      TaskCardSchema.parse({
+        schema_version: 1,
+        id: "t-host-deliver-stderr",
+        title: "Host deliver stderr surface",
+        space: "local",
+        priority: "P2",
+        track: "L1",
+        workspace_mode: "host_scoped",
+        workflow: {
+          schema_version: 1,
+          preset: "host_op",
+          steps: [
+            {
+              kind: "loop",
+              max_rounds: 2,
+              stuck_threshold: 2,
+              steps: [
+                {
+                  kind: "agent",
+                  stage: "implement",
+                  role: "worker",
+                  fresh_context: false,
+                  mode: "dry_run_only",
+                },
+                { kind: "gate", stage: "verify", check: "staged_only" },
+              ],
+            },
+            { kind: "approval", stage: "deliver", show: ["staged_diff", "commands"] },
+            {
+              kind: "command",
+              stage: "deliver",
+              apply_staged: true,
+              run_deliver_cmd: true,
+              verify_sha256: true,
+              final_accept_gate: true,
+            },
+          ],
+        },
+        contract_version: 1,
+        contract: {
+          goal: "Run post-apply script",
+          end: "Delivered",
+          accept_cmd: `test -f ${JSON.stringify(targetFile)}`,
+          accept_files_hash: "pending",
+          scope: [targetFile],
+          deliver: {
+            mode: "run_cmd",
+            cmd: `node -e 'process.stderr.write("ENOENT: Spark Desktop missing\\n"); process.exit(1);'`,
+          },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 0, max_tokens: 1_000_000 },
+        created_at: now,
+        updated_at: now,
+      }),
+      "# Brief",
+    );
+
+    await server.start();
+    await waitUntil(
+      () => server.pendingDecisions.get("t-host-deliver-stderr")?.reason === "host_scoped_approval",
+      "t-host-deliver-stderr awaits host_scoped_approval",
+    );
+
+    const approval = server.pendingDecisions.get("t-host-deliver-stderr")!;
+    const approveRes = await server.app.request(
+      new Request("http://127.0.0.1/api/tasks/t-host-deliver-stderr/decide", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          decision_id: approval.id,
+          option_id: "opt-apply-host",
+          action: "resume",
+          rationale: "approve",
+        }),
+      }),
+    );
+    expect(approveRes.status).toBe(200);
+
+    await waitUntil(
+      () =>
+        server.pendingDecisions.get("t-host-deliver-stderr")?.reason ===
+        "host_apply_deliver_cmd_failed_rolled_back",
+      "t-host-deliver-stderr surfaces rolled-back error decision",
+    );
+
+    const rollbackDecision = server.pendingDecisions.get("t-host-deliver-stderr")!;
+    expect(rollbackDecision.question).toContain("命令输出摘要");
+    expect(rollbackDecision.question).toContain("ENOENT: Spark Desktop missing");
+    expect(fs.readFileSync(targetFile, "utf8")).toBe("echo original\n");
+  });
 });

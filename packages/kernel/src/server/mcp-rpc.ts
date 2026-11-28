@@ -67,6 +67,7 @@ import {
   supersedePendingDecisionForRework,
 } from "./pending-decisions.js";
 import {
+  alignDraftWorkspaceAndWorkflow,
   validateCommitContract,
   validateCommitWorkflow,
   validateCommitWorkspace,
@@ -903,27 +904,47 @@ export class McpRpcServer {
           assertSafeSegment(input.space, "space");
         }
         const existing = this.store.readDraft(input.draft_id);
-        const draft = DraftCardSchema.parse({
-          schema_version: 1,
-          id: input.draft_id,
-          title: input.title ?? existing?.title ?? "",
-          space: input.space ?? existing?.space ?? "local",
-          priority: input.priority ?? existing?.priority ?? "P2",
-          track: input.track ?? existing?.track ?? "L2",
-          workspace_mode: input.workspace_mode ?? existing?.workspace_mode ?? "git_worktree",
-          depends_on: input.depends_on ?? existing?.depends_on ?? [],
-          ...((input.open_questions ?? existing?.open_questions) !== undefined
-            ? { open_questions: input.open_questions ?? existing?.open_questions }
+        const rosterCfg = this.store.readEffectiveRosterConfig();
+        const hostStagedRoleIds = new Set(
+          Object.entries(rosterCfg.roster)
+            .filter(([, entry]) => entry.perm === "host_staged")
+            .map(([id]) => id),
+        );
+        const mergedContract = {
+          ...(existing?.contract ?? {}),
+          ...(input.contract ?? {}),
+        };
+        const aligned = alignDraftWorkspaceAndWorkflow({
+          ...(existing?.space !== undefined ? { existingSpace: existing.space } : {}),
+          ...(input.space !== undefined ? { inputSpace: input.space } : {}),
+          ...(existing?.workspace_mode !== undefined
+            ? { existingWorkspaceMode: existing.workspace_mode }
+            : {}),
+          ...(input.workspace_mode !== undefined
+            ? { inputWorkspaceMode: input.workspace_mode }
             : {}),
           ...((input.workflow ?? existing?.workflow) !== undefined
             ? { workflow: input.workflow ?? existing?.workflow }
             : {}),
+          hasDeliverCmd: mergedContract.deliver?.mode === "run_cmd",
+          hostStagedRoleIds,
+        });
+        const draft = DraftCardSchema.parse({
+          schema_version: 1,
+          id: input.draft_id,
+          title: input.title ?? existing?.title ?? "",
+          space: aligned.space,
+          priority: input.priority ?? existing?.priority ?? "P2",
+          track: input.track ?? existing?.track ?? "L2",
+          workspace_mode: aligned.workspaceMode,
+          depends_on: input.depends_on ?? existing?.depends_on ?? [],
+          ...((input.open_questions ?? existing?.open_questions) !== undefined
+            ? { open_questions: input.open_questions ?? existing?.open_questions }
+            : {}),
+          ...(aligned.workflow !== undefined ? { workflow: aligned.workflow } : {}),
           // Preserve HTTP-managed draft attachments; ignore unvalidated attachments metadata from agent RPC.
           ...(existing?.attachments !== undefined ? { attachments: existing.attachments } : {}),
-          contract: {
-            ...(existing?.contract ?? {}),
-            ...(input.contract ?? {}),
-          },
+          contract: mergedContract,
           session_ref: existing?.session_ref ?? null,
           ...(existing?.intake_open !== undefined ? { intake_open: existing.intake_open } : {}),
           created_at: existing?.created_at ?? now,
