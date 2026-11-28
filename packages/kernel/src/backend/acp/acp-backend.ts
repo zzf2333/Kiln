@@ -729,7 +729,7 @@ export class AcpBackend implements ProviderTelemetryBackend {
               fs: { readTextFile: true, writeTextFile: false },
               terminal: false,
             },
-            clientInfo: { name: "kiln", version: "0.0.7" },
+            clientInfo: { name: "kiln", version: "0.0.8" },
           },
           this.requestOpts(8_000),
         ),
@@ -990,7 +990,7 @@ export class AcpBackend implements ProviderTelemetryBackend {
             fs: { readTextFile: true, writeTextFile: false },
             terminal: false,
           },
-          clientInfo: { name: "kiln", version: "0.0.7" },
+          clientInfo: { name: "kiln", version: "0.0.8" },
         },
         this.requestOpts(this.rpcTimeoutMs),
       );

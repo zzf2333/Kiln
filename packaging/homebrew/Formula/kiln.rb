@@ -9,7 +9,8 @@
 class Kiln < Formula
   desc "Local-first autonomous developer workbench and kilnd CLI"
   homepage "https://github.com/zzf2333/Kiln"
-  version "0.0.4"
+  version "0.0.8"
+  # Placeholder SHA-256 digests; update with checksums from v0.0.8 GitHub Release SHA256SUMS.
   license "Apache-2.0"
 
   on_macos do

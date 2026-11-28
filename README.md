@@ -80,7 +80,7 @@ Most AI coding tools trap you inside a "one conversation window, one manually pi
 
 ## Installation
 
-> **Pre-release Notice**: Current manifests target pre-release **`0.0.7`** (including full V3 multi-CLI orchestration, `Vite+` / `TypeScript 7` / Electron E1 runtime migration, Track 6 `B16–B18` adaptive blueprint replanning, controlled subtask splitting & 0-token conditional fast-forward, and Track 7 `E1–E3` `test_first_lock` red-green test isolation, `dual_synthesis` dual-brain plan synthesis & on-demand `CONTEXT_MAP.md`; **`0.1.0`** is reserved for the first signed & notarized public release). Release binaries and installers activate when a corresponding GitHub Release tag is published; until then, you can build or package locally from source.
+> **Pre-release Notice**: Current manifests target pre-release **`0.0.8`** (including full V3 multi-CLI orchestration, `Vite+` / `TypeScript 7` / Electron E1 runtime migration, Track 6 `B16–B18`, Track 7 `E1–E3`, plus live-verified fixes for cross-platform `kiln-runtime/bin` CLI launching, isolated ACP/Pi session caching, project-space intake locking, board waiting-card layout, and idempotent `host_scoped` `+x` staging; **`0.1.0`** is reserved for the first signed & notarized public release). Release binaries and installers activate when a corresponding GitHub Release tag is published; until then, you can build or package locally from source.
 
 ### 1. Electron Desktop App (macOS `.dmg` / Windows NSIS `.exe`, Zero Prerequisites)
 
@@ -118,7 +118,7 @@ pnpm install       # Install monorepo dependencies (zero C++ native builds)
 pnpm check         # Oxfmt format check + Oxlint (typeAware/typeCheck) + tsrs
 pnpm build         # Build all packages, Web UI, and Electron runtime/
 pnpm typecheck     # Workspace-wide TypeScript 7 type checking
-pnpm test          # Run 58 non-socket unit/integration test suites (503 tests)
+pnpm test          # Run 58 non-socket unit/integration test suites (547 tests)
 pnpm test:socket   # Run 5 real UDS / dual-port / accept_entry smoke suites (12 tests)
 ```
 
@@ -174,7 +174,7 @@ ruby -c packaging/homebrew/Formula/kiln.rb && ruby -c packaging/homebrew/Casks/k
 | `kiln doctor [--json]`                                                                                                                  | Inspect runtime, Git/APFS, discovered Agents, and daemon/service health                                      |
 | `kiln service <install\|uninstall\|status>`                                                                                             | Explicitly install or remove user-level OS login service (`LaunchAgent` / `systemd --user` / `HKCU\...\Run`) |
 | `kiln uninstall [--purge-data]`                                                                                                         | Stop `kilnd`, remove OS startup entry, inspect worktrees (keeps `~/.kiln` unless `--purge-data`)             |
-| `kiln -h, --help` / `kiln -v, --version`                                                                                                | Show CLI help or version (`0.0.7`)                                                                           |
+| `kiln -h, --help` / `kiln -v, --version`                                                                                                | Show CLI help or version (`0.0.8`)                                                                           |
 
 ---
 

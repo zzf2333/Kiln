@@ -578,7 +578,7 @@ export class CodexAppServerBackend implements ProviderTelemetryBackend {
       await proc.request(
         "initialize",
         {
-          clientInfo: { name: "kiln", title: "Kiln", version: "0.0.7" },
+          clientInfo: { name: "kiln", title: "Kiln", version: "0.0.8" },
           capabilities: { experimentalApi: true },
         },
         { includeJsonRpcField: false, timeoutMs: 8_000 },
@@ -827,7 +827,7 @@ export class CodexAppServerBackend implements ProviderTelemetryBackend {
       await proc.request(
         "initialize",
         {
-          clientInfo: { name: "kiln", title: "Kiln", version: "0.0.7" },
+          clientInfo: { name: "kiln", title: "Kiln", version: "0.0.8" },
           capabilities: { experimentalApi: true },
         },
         { includeJsonRpcField: false, timeoutMs: this.rpcTimeoutMs },

@@ -80,7 +80,7 @@
 
 ## 安装方式
 
-> **版本状态说明**：当前源码与本地构建指向预发布版本 **`0.0.7`**（包含完整 V3 多订阅编排、Vite+ / TypeScript 7 / Electron E1 架构迁移、Track 6 `B16–B18` 动态蓝图重排 / 受控子卡裂变 / 0-Token 条件快进，以及 Track 7 `E1–E3` 红绿建测物理隔离 / 双脑方案博弈合成 / 按需 `CONTEXT_MAP.md` 代码地图；**`0.1.0`** 预留给完成代码签名与公证后的首个正式对外版本）。各通道安装包会在发布对应 Release Tag 后激活，当前也可随时通过「源码构建」在本地打包或运行。
+> **版本状态说明**：当前源码与本地构建指向预发布版本 **`0.0.8`**（包含完整 V3 多订阅编排、Vite+ / TypeScript 7 / Electron E1 架构迁移、Track 6 `B16–B18`、Track 7 `E1–E3`，以及实机闭环修复：`kiln-runtime/bin` 跨平台终端启动器、ACP 探针缓存与 Pi 会话隔离、项目空间立项锁定、看板待决卡片排版与 `host_scoped` 延迟审批/`+x` 权限保持；**`0.1.0`** 预留给完成代码签名与公证后的首个正式对外版本）。各通道安装包会在发布对应 Release Tag 后激活，当前也可随时通过「源码构建」在本地打包或运行。
 
 ### 方式 1：Electron 桌面应用（macOS `.dmg` / Windows NSIS `.exe`，零前置依赖）
 
@@ -118,7 +118,7 @@ pnpm install       # 安装 Monorepo 全部工作区依赖（零 C++ 原生编�
 pnpm check         # Oxfmt 格式检查 + Oxlint (typeAware/typeCheck) + tsrs 类型校验
 pnpm build         # 构建全部分包、Web 工作台与 Electron runtime/
 pnpm typecheck     # 全仓 TypeScript 7 类型检查
-pnpm test          # 运行全部 58 组（503 条）非 Socket 单元与集成测试
+pnpm test          # 运行全部 58 组（547 条）非 Socket 单元与集成测试
 pnpm test:socket   # 运行 5 组（12 条）真实 Socket / 双端口 / accept_entry 冒烟测试
 ```
 
@@ -174,7 +174,7 @@ ruby -c packaging/homebrew/Formula/kiln.rb && ruby -c packaging/homebrew/Casks/k
 | `kiln doctor [--json]`                                                                                                                  | 巡检运行环境、Git/APFS、Agent 探测与服务状态                                                              |
 | `kiln service <install\|uninstall\|status>`                                                                                             | 显式安装或清理系统用户级开机自启（macOS `LaunchAgent` / Linux `systemd --user` / Windows `HKCU\...\Run`） |
 | `kiln uninstall [--purge-data]`                                                                                                         | 停止服务、清除自启并巡检工作树（默认保留 `~/.kiln` 数据，加 `--purge-data` 一并清理）                     |
-| `kiln -h, --help` / `kiln -v, --version`                                                                                                | 打印帮助或当前版本号（`0.0.7`）                                                                           |
+| `kiln -h, --help` / `kiln -v, --version`                                                                                                | 打印帮助或当前版本号（`0.0.8`）                                                                           |
 
 ---
 
