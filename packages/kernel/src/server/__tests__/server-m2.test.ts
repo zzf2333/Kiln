@@ -2870,4 +2870,307 @@ describe("M2 server modules: LiveRateTracker, static-files, chat & extended endp
     const persistedChat = server.chatEngine.getTaskChatMessages("t-opt-sync");
     expect(persistedChat.at(-1)?.questions).toHaveLength(1);
   });
+
+  it("isolates resolver from wb_plan card creation, guards auto_resume away from deliver, and supersedes waiting approval on contract/decision rework", async () => {
+    const kilnHome = makeTempDir("kiln-resolver-supersede-");
+    const targetDir = makeTempDir("kiln-host-target-");
+    const targetFile = path.join(targetDir, "note.txt");
+    fs.writeFileSync(targetFile, "before\n", "utf8");
+
+    const fakeBackend = new FakeBackend({
+      backendId: "fake",
+      agents: [
+        {
+          id: "codex",
+          label: "Codex",
+          capabilities: {
+            interactiveChat: true,
+            approvals: true,
+            mcpInjection: false,
+            usageCacheBreakdown: true,
+            interrupt: true,
+            warmSessionReuse: true,
+            contextWindowTelemetry: false,
+          },
+          modes: [{ id: "auto", label: "Auto" }],
+          defaultModeId: "auto",
+        },
+      ],
+    });
+    const server = new KilndServer({
+      kilnHome,
+      host: "127.0.0.1",
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: false,
+      tokenSecret: "resolver-supersede-secret-012345",
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    server.store.writeConfig("roles", {
+      schema_version: 1,
+      heterogeneous_review: false,
+      roles: {
+        resolver: {
+          backend_id: "fake",
+          agent: "codex",
+          model: "gpt-5.4",
+          allow_full_access_fallback: false,
+        },
+        intake: {
+          backend_id: "fake",
+          agent: "codex",
+          model: "gpt-5.4",
+          allow_full_access_fallback: false,
+        },
+      },
+    });
+
+    const card: TaskCard = {
+      schema_version: 1,
+      id: "t-host-wait",
+      title: "清理本机文件",
+      space: "local",
+      priority: "P2",
+      track: "L2",
+      workspace_mode: "host_scoped",
+      parent: null,
+      depends_on: [],
+      contract_version: 1,
+      contract: {
+        goal: "只做只读盘点，不要删文件",
+        end: "审批落盘",
+        accept_cmd: "echo ok",
+        accept_files_hash: "sha256:host",
+        scope: [targetFile],
+        deliver: { mode: "manual", cmd: null },
+        human_accept: false,
+        external_actions: "ask",
+      },
+      limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 100_000 },
+      created_at: "2026-11-28T01:00:00.000Z",
+      updated_at: "2026-11-28T01:00:00.000Z",
+    };
+    server.stateMachine.createTask(card, "# Host cleanup");
+
+    // 1. Resolver token cannot invoke wb_plan upsert_draft/commit_card/commit_split_cards
+    const resolverToken = server.issueRunToken({
+      taskId: card.id,
+      runId: "run-resolver-check",
+      role: "resolver",
+      contractVersion: 1,
+    });
+    for (const body of [
+      { mode: "upsert_draft", draft_id: "d-forbid", title: "Forbidden" },
+      {
+        mode: "commit_card",
+        title: "Forbidden card",
+        space: "local",
+        priority: "P2",
+        track: "L1",
+        workspace_mode: "scratch_dir",
+        parent: null,
+        depends_on: [],
+        contract: card.contract,
+        brief_markdown: "# Nope",
+      },
+      {
+        mode: "commit_split_cards",
+        cards: [
+          {
+            temp_id: "c1",
+            title: "Forbidden split 1",
+            space: "local",
+            workspace_mode: "scratch_dir",
+            contract: card.contract,
+            brief_markdown: "# Nope 1",
+          },
+          {
+            temp_id: "c2",
+            title: "Forbidden split 2",
+            space: "local",
+            workspace_mode: "scratch_dir",
+            depends_on_temp_ids: ["c1"],
+            contract: card.contract,
+            brief_markdown: "# Nope 2",
+          },
+        ],
+      },
+    ]) {
+      const forbidRes = await server.invokeMcpRpc({
+        method: "POST",
+        url: "/rpc/mcp/wb_plan",
+        headers: { Authorization: `Bearer ${resolverToken}` },
+        rawBody: JSON.stringify(body),
+      });
+      expect(forbidRes.status).toBe(403);
+      expect((forbidRes.body as { code?: string }).code).toBe("role_forbidden");
+    }
+
+    // 2. Put task in host_scoped_approval waiting state with staged files + active host_path_locks
+    const stagedDir = server.store.paths.stagedDir(card.id);
+    fs.mkdirSync(stagedDir, { recursive: true });
+    fs.writeFileSync(path.join(stagedDir, "note.txt"), "after\n", "utf8");
+    const stageRes = stageHostScopedChanges(server.store, {
+      taskId: card.id,
+      contractScope: card.contract.scope,
+      stagedFiles: [{ targetPath: targetFile, stagedRelativePath: "note.txt" }],
+    });
+    expect(stageRes.ok).toBe(true);
+    expect(server.store.listHostPathLocks()).toHaveLength(1);
+
+    server.persistRunForDispatch(
+      {
+        schema_version: 1,
+        run_id: "run-host-1",
+        task_id: card.id,
+        stage: "deliver",
+        round: 1,
+        role: "worker",
+        backend_id: "fake",
+        agent: "codex",
+        model: "gpt-5.4",
+        session_ref: { backendId: "fake", sessionId: "sess-host-1" },
+        session_reused: false,
+        contract_version: 1,
+        started_at: "2026-11-28T01:01:00.000Z",
+        input_ref: "host_scoped",
+      },
+      "001-deliver",
+    );
+    const workerToken = server.issueRunToken({
+      taskId: card.id,
+      runId: "run-host-1",
+      role: "worker",
+      contractVersion: 1,
+    });
+    const askRes = await server.invokeMcpRpc({
+      method: "POST",
+      url: "/rpc/mcp/wb_ask_decision",
+      headers: { Authorization: `Bearer ${workerToken}` },
+      rawBody: JSON.stringify({
+        category: "host_scoped_approval",
+        reason: "Awaiting host write approval",
+        question: "批准写入宿主机吗？",
+        options: [
+          { id: "opt-approve", label: "批准", action: "resume", recommended: true },
+          { id: "opt-cancel", label: "取消", action: "cancel" },
+        ],
+      }),
+    });
+    expect(askRes.status).toBe(200);
+    const decId = (askRes.body as { decision: { id: string } }).decision.id;
+    expect(decId).toBeTruthy();
+    expect(server.store.getTaskIndex(card.id)?.status).toBe("waiting");
+
+    // 3. Guard: auto_resume targeting "deliver" MUST NOT auto-resume or release waiting decision
+    fakeBackend.enqueueScript(
+      [
+        {
+          kind: "message",
+          text: [
+            "收到，但我尝试直接跳过到 deliver：",
+            "```kiln-decision-patch",
+            JSON.stringify({
+              question: "继续交付？",
+              options: [
+                {
+                  id: "opt-deliver",
+                  label: "直接交付",
+                  action: "resume",
+                  target_stage: "deliver",
+                  recommended: true,
+                },
+              ],
+              resolution_summary: "attempt unsafe auto-deliver",
+              auto_resume: true,
+            }),
+            "```",
+          ].join("\n"),
+          delta: false,
+        },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "resolver" },
+    );
+
+    const guardRes = await server.app.request(
+      new Request(`http://127.0.0.1/api/tasks/${card.id}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "先别交付" }),
+      }),
+    );
+    expect(guardRes.status).toBe(200);
+    const guardJson = (await guardRes.json()) as {
+      decisionResolved?: boolean;
+      state?: { status?: string; stage?: string };
+      pendingDecision?: unknown;
+    };
+    expect(guardJson.decisionResolved).toBe(false);
+    expect(guardJson.state?.status).toBe("waiting");
+    expect(guardJson.pendingDecision).toBeTruthy();
+
+    // 4. Updating contract during resolver discussion supersedes pending decision, releases host locks, and queues implement
+    fakeBackend.enqueueScript(
+      [
+        {
+          kind: "message",
+          text: [
+            "已按你的要求改回只读盘点，正在重跑原任务：",
+            "```kiln-contract-patch",
+            JSON.stringify({
+              contract: { goal: "仅生成只读盘点报告，不落盘删除" },
+              affected_stages: ["implement"],
+              rationale: "用户要求仅只读盘点",
+            }),
+            "```",
+          ].join("\n"),
+          delta: false,
+        },
+        { kind: "exit", reason: "completed" },
+      ],
+      { role: "resolver" },
+    );
+
+    const resolveChatRes = await server.app.request(
+      new Request(`http://127.0.0.1/api/tasks/${card.id}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "改成只读盘点重跑" }),
+      }),
+    );
+    expect(resolveChatRes.status).toBe(200);
+    const resolveChatJson = (await resolveChatRes.json()) as {
+      decisionResolved?: boolean;
+      state?: { status?: string; stage?: string };
+      pendingDecision?: unknown;
+      card?: { contract_version: number; contract: { goal: string } };
+    };
+    expect(resolveChatJson.decisionResolved).toBe(true);
+    expect(resolveChatJson.state?.status).toBe("queued");
+    expect(resolveChatJson.state?.stage).toBe("implement");
+    expect(resolveChatJson.pendingDecision).toBeNull();
+    expect(resolveChatJson.card?.contract_version).toBe(2);
+    expect(resolveChatJson.card?.contract.goal).toContain("只读盘点");
+
+    server.pendingDecisions.hydrateFromDisk();
+    expect(server.pendingDecisions.get(card.id)).toBeNull();
+    expect(server.store.listHostPathLocks()).toEqual([]);
+
+    // Survives full SQLite rebuild from disk
+    server.store.rebuildIndexFromDisk();
+    const rebuilt = server.store.getTaskIndex(card.id);
+    expect(rebuilt?.status).toBe("queued");
+    expect(rebuilt?.contract_version).toBe(2);
+    const rebuiltDetailRes = await server.app.request(
+      new Request(`http://127.0.0.1/api/tasks/${card.id}`),
+    );
+    expect(rebuiltDetailRes.status).toBe(200);
+    const rebuiltDetailJson = (await rebuiltDetailRes.json()) as {
+      state: { status: string; stage: string; contractVersion: number };
+    };
+    expect(rebuiltDetailJson.state.stage).toBe("implement");
+    expect(rebuiltDetailJson.state.status).toBe("queued");
+  });
 });

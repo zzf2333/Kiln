@@ -1165,7 +1165,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     fireEvent.change(screen.getByLabelText("可改范围"), {
       target: { value: "workspaces/<新任务>/**" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "开始推进" }));
+    fireEvent.click(screen.getByRole("button", { name: "＋ 创建新任务" }));
 
     await waitFor(() => {
       expect(commitPayload).not.toBeNull();
@@ -3086,7 +3086,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
         "支持 Markdown 立项对话",
       );
     });
-    fireEvent.click(screen.getByRole("button", { name: "开始推进" }));
+    fireEvent.click(screen.getByRole("button", { name: "＋ 创建新任务" }));
     await waitFor(() => {
       expect(screen.getByRole("heading", { name: "总览" })).toBeTruthy();
     });
@@ -3413,7 +3413,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
 
     // Switch back to 产品方案 tab -> verifies Markdown preview + open_questions + raw edit
     fireEvent.click(screen.getByRole("tab", { name: /产品方案/ }));
-    expect(screen.getByLabelText("待拍板事项").textContent).toContain("是否限制单次导出上限？");
+    expect(screen.getByLabelText("待澄清事项").textContent).toContain("是否限制单次导出上限？");
     const briefPreview = document.querySelector('[data-brief-preview="true"]')!;
     expect(briefPreview.querySelector("h2")?.textContent).toContain("1. 目标与用户场景");
 
@@ -3428,7 +3428,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       "人工追加：单次上限 10000 条。",
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "开始推进" }));
+    fireEvent.click(screen.getByRole("button", { name: "＋ 创建新任务" }));
     await waitFor(() => {
       expect(commitPayload).not.toBeNull();
     });
@@ -4294,7 +4294,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     fireEvent.change(screen.getByLabelText("交付命令"), {
       target: { value: "python3 ~/clean.py" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "开始推进" }));
+    fireEvent.click(screen.getByRole("button", { name: "＋ 创建新任务" }));
 
     await waitFor(() => {
       expect(commitPayload).not.toBeNull();
@@ -4395,7 +4395,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     fireEvent.change(screen.getByLabelText("可改范围"), {
       target: { value: "src/**" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "开始推进" }));
+    fireEvent.click(screen.getByRole("button", { name: "＋ 创建新任务" }));
 
     await waitFor(() => {
       expect(commitPayload).not.toBeNull();
@@ -4853,7 +4853,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     fireEvent.change(screen.getByLabelText("可改范围"), {
       target: { value: "scripts/**" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "开始推进" }));
+    fireEvent.click(screen.getByRole("button", { name: "＋ 创建新任务" }));
 
     await waitFor(() => {
       expect(commitPayload).not.toBeNull();
@@ -5526,7 +5526,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     window.location.hash = "#view=intake";
     render(<App />);
 
-    const startBtn = await screen.findByRole("button", { name: "开始推进" });
+    const startBtn = await screen.findByRole("button", { name: "＋ 创建新任务" });
     await waitFor(() => {
       expect((startBtn as HTMLButtonElement).disabled).toBe(false);
     });
@@ -5647,7 +5647,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     window.location.hash = "#view=intake";
     render(<App />);
 
-    const startBtn = await screen.findByRole("button", { name: "开始推进" });
+    const startBtn = await screen.findByRole("button", { name: "＋ 创建新任务" });
     await waitFor(() => {
       expect((startBtn as HTMLButtonElement).disabled).toBe(false);
     });
@@ -5988,7 +5988,7 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
       expect(hostRadio.getAttribute("aria-checked")).toBe("true");
     });
 
-    const startBtn = await screen.findByRole("button", { name: "开始推进" });
+    const startBtn = await screen.findByRole("button", { name: "＋ 创建新任务" });
     await waitFor(() => {
       expect((startBtn as HTMLButtonElement).disabled).toBe(false);
     });
@@ -7041,5 +7041,217 @@ describe("@kiln/web M2-S3 MVP Workbench", () => {
     await screen.findByText(/查看双脑候选方案对照/);
     await screen.findByText(/Brain A 空数组返回 null/);
     await screen.findByText(/Brain B 空数组抛异常/);
+  });
+
+  it("hides IntakeDock in resolve/detail views, cancels waiting cards from BoardView, and jumps ResolveView to detail on decisionResolved", async () => {
+    const baseBootstrap = makeBaseBootstrap();
+    baseBootstrap.tasks = [
+      {
+        id: "t-wait-ux",
+        title: "等待用户澄清的本机任务",
+        space: "kiln",
+        parent_id: null,
+        priority: "P2",
+        effective_priority: "P2",
+        track: "L2",
+        workspace_mode: "host_scoped",
+        status: "waiting",
+        stage: "deliver",
+        round: 1,
+        active_run_id: null,
+        contract_version: 1,
+        depends_on: [],
+        created_at: "2026-11-28T00:00:00.000Z",
+        updated_at: "2026-11-28T00:05:00.000Z",
+        tokens: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+        cost_usd: 0,
+      },
+    ];
+    baseBootstrap.pendingDecisions = [
+      {
+        id: "d-wait-ux",
+        task_id: "t-wait-ux",
+        run_id: "r-wait-ux",
+        category: "host_scoped_approval",
+        reason: "host_scoped_approval",
+        question: "批准写入宿主机吗？",
+        options: [
+          { id: "opt-go", label: "批准", action: "resume", recommended: true },
+          { id: "opt-cancel", label: "取消", action: "cancel", recommended: false },
+        ],
+        created_at: "2026-11-28T00:05:00.000Z",
+        contract_version: 1,
+      },
+    ];
+    baseBootstrap.drafts = [
+      {
+        schema_version: 1,
+        id: "d-bg-intake",
+        space: "kiln",
+        title: "进行中的旧立项草稿",
+        priority: "P2",
+        track: "L2",
+        workspace_mode: "git_worktree",
+        depends_on: [],
+        contract: {},
+        intake_open: true,
+        open_questions: [],
+        brief_markdown: "# Draft",
+        created_at: "2026-11-28T00:00:00.000Z",
+        updated_at: "2026-11-28T00:00:00.000Z",
+      },
+    ];
+
+    const decideCalls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const postTaskCreateCalls: string[] = [];
+
+    const taskDetailBase = {
+      card: {
+        schema_version: 1,
+        id: "t-wait-ux",
+        title: "等待用户澄清的本机任务",
+        space: "kiln",
+        priority: "P2",
+        track: "L2",
+        workspace_mode: "host_scoped",
+        parent: null,
+        depends_on: [],
+        contract_version: 2,
+        workflow: buildWorkflowPreset("host_op"),
+        contract: {
+          goal: "只做只读盘点",
+          end: "done",
+          accept_cmd: "echo ok",
+          accept_files_hash: "pending",
+          scope: ["/tmp/ok.txt"],
+          deliver: { mode: "manual", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: { retries_per_stage: 2, review_rounds: 2, advisor_calls: 1, max_tokens: 100_000 },
+        created_at: "2026-11-28T00:00:00.000Z",
+        updated_at: "2026-11-28T00:06:00.000Z",
+      },
+      state: {
+        taskId: "t-wait-ux",
+        status: "queued",
+        stage: "implement",
+        stepIndex: 0,
+        round: 2,
+        track: "L2",
+        priority: "P2",
+        contractVersion: 2,
+        activeRunId: null,
+      },
+      brief: "# Goal\nReadonly",
+      plan: null,
+      research: null,
+      decisions: "",
+      pendingDecision: null,
+      ledgerProposals: [],
+      runs: [],
+      usageTurns: [],
+      usage: {
+        totals: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+        byModel: {},
+        todayCostUsd: 0,
+        totalCostUsd: 0,
+      },
+      chatMessages: [],
+    };
+
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof Request ? input.url : "";
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url === "/api/bootstrap") {
+        return jsonResponse(baseBootstrap);
+      }
+      if (url === "/api/tasks" && method === "POST") {
+        postTaskCreateCalls.push(url);
+        return jsonResponse({});
+      }
+      if (url === "/api/tasks/t-wait-ux/decide" && method === "POST") {
+        decideCalls.push({ url, body: JSON.parse(String(init?.body ?? "{}")) });
+        return jsonResponse({ ok: true });
+      }
+      if (url === "/api/tasks/t-wait-ux/chat" && method === "GET") {
+        return jsonResponse({ messages: [] });
+      }
+      if (url === "/api/tasks/t-wait-ux/chat" && method === "POST") {
+        baseBootstrap.tasks[0]!.status = "queued";
+        baseBootstrap.tasks[0]!.stage = "implement";
+        baseBootstrap.pendingDecisions = [];
+        return jsonResponse({
+          reply: { who: "agent", name: "resolver", text: "已修改契约并直接重跑原任务" },
+          decisionResolved: true,
+          state: {
+            status: "queued",
+            stage: "implement",
+            round: 2,
+            activeRunId: null,
+            priority: "P2",
+            effectivePriority: "P2",
+            track: "L2",
+            contractVersion: 2,
+            updatedAt: "2026-11-28T00:06:00.000Z",
+          },
+          pendingDecision: null,
+          card: taskDetailBase.card,
+        });
+      }
+      if (url === "/api/tasks/t-wait-ux") {
+        return jsonResponse({
+          ...taskDetailBase,
+          pendingDecision: baseBootstrap.pendingDecisions[0] ?? null,
+          state: {
+            ...taskDetailBase.state,
+            status: baseBootstrap.tasks[0]!.status,
+            stage: baseBootstrap.tasks[0]!.stage,
+          },
+        });
+      }
+      if (url.includes("/api/chat/commands")) {
+        return jsonResponse({ commands: [], mcpServers: [] });
+      }
+      return jsonResponse({});
+    });
+
+    window.location.hash = "";
+    render(<App />);
+
+    // 1. On board: IntakeDock is visible, and waiting card has quick 取消 button
+    await waitFor(() => {
+      expect(document.querySelector('[data-intake-dock="true"]')).toBeTruthy();
+    });
+    const cancelBtn = await screen.findByRole("button", { name: "取消" });
+    fireEvent.click(cancelBtn);
+    await waitFor(() => {
+      expect(decideCalls).toHaveLength(1);
+    });
+    expect(decideCalls[0]!.body).toMatchObject({
+      decision_id: "d-wait-ux",
+      option_id: "opt-cancel",
+      action: "cancel",
+    });
+
+    // 2. Enter resolve view -> IntakeDock MUST hide
+    window.location.hash = "#resolve=t-wait-ux";
+    fireEvent(window, new HashChangeEvent("hashchange"));
+    await waitFor(() => {
+      expect(document.getElementById("chatIn")).toBeTruthy();
+    });
+    expect(document.querySelector('[data-intake-dock="true"]')).toBeNull();
+
+    // 3. Submit resolve chat returning decisionResolved: true -> jumps to detail (#task=t-wait-ux), IntakeDock remains hidden, zero new tasks created
+    const resolveInput = document.getElementById("chatIn") as HTMLTextAreaElement;
+    fireEvent.change(resolveInput, { target: { value: "改成只读盘点然后继续" } });
+    fireEvent.keyDown(resolveInput, { key: "Enter", shiftKey: false });
+
+    await waitFor(() => {
+      expect(window.location.hash).toBe("#task=t-wait-ux");
+    });
+    expect(document.querySelector('[data-intake-dock="true"]')).toBeNull();
+    expect(postTaskCreateCalls).toHaveLength(0);
+    await screen.findByText(/Readonly/);
   });
 });

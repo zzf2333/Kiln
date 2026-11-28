@@ -129,6 +129,12 @@ const WbPlanBaseUnionSchema = z.discriminatedUnion("mode", [
     options: z.array(DecisionOptionSchema).min(1),
     resolution_summary: z.string().min(1).optional(),
     max_tokens: z.number().int().min(50_000).max(50_000_000).optional(),
+    auto_resume: z
+      .boolean()
+      .optional()
+      .describe(
+        "仅当用户在讨论中已明确拍板退回 implement | plan | research 重做时设为 true；对 deliver / finish / cancel 无效。",
+      ),
   }),
   z.object({
     mode: z.literal("commit_split_cards"),

@@ -38,6 +38,7 @@ import {
   type GateReport,
   type MidFlightSubtaskSpec,
   type PendingDecision,
+  type ReceiptKind,
   type RoleId,
   type RunEvent,
   type RunMeta,
@@ -192,6 +193,21 @@ import { z } from "zod";
 
 const RATE_LIMIT_MESSAGE_RE = /\b429\b|rate[_ -]?limit|too many requests|quota exceeded/i;
 const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 15_000;
+const MAX_IN_RUN_RECEIPT_CONTINUATIONS = 2;
+
+function resolveReceiptKindForRole(role: RoleId): ReceiptKind | null {
+  switch (role) {
+    case "worker":
+      return "worker";
+    case "reviewer":
+    case "verifier":
+    case "triage":
+    case "advisor":
+      return role;
+    default:
+      return null;
+  }
+}
 
 export type { DeliverContext, DeliverHandler, DeliverOutcome };
 
@@ -328,7 +344,7 @@ function resolveExistingHostDir(rawPattern: string): string | null {
   return null;
 }
 
-function resolveStagedHostMapping(
+export function resolveStagedHostMapping(
   stagedFiles: readonly string[],
   receiptChangedPaths: readonly string[],
   contractScope: readonly string[],
@@ -4090,6 +4106,29 @@ export class KilnOrchestrator {
     );
   }
 
+  private buildInRunReceiptNudgePrompt(params: {
+    taskId: string;
+    runDirName: string;
+    runMeta: RunMeta;
+    reason: string;
+    mcpEnabled: boolean;
+    attempt: number;
+    maxAttempts: number;
+  }): string {
+    const { taskId, runDirName, runMeta, reason, mcpEnabled, attempt, maxAttempts } = params;
+    const receiptPath = this.store.paths.receiptMd(taskId, runDirName);
+    const submitAction = mcpEnabled
+      ? `调用 \`wb_submit_receipt\` 提交合法回执（如确有阻塞请调用 \`wb_ask_decision\`）`
+      : `将合法回执写入 \`${receiptPath}\``;
+    return [
+      `### 单步单会话闭环提醒（第 ${attempt}/${maxAttempts} 次）`,
+      `你本轮虽然结束了输出，但当前阶段 \`${runMeta.stage}\` 尚未收到可结案的回执：${reason}`,
+      `请**就在当前会话内**直接补齐并${submitAction}（不要忽略该要求或重述计划）：`,
+      `- \`run_id\`: \`${runMeta.run_id}\``,
+      `- \`contract_version\`: \`${runMeta.contract_version}\``,
+    ].join("\n");
+  }
+
   private attachSessionConsumer(
     taskId: string,
     runDirName: string,
@@ -4120,105 +4159,205 @@ export class KilnOrchestrator {
 
     handle.consumePromise = (async () => {
       let exitEvent: Extract<RunEvent, { kind: "exit" }> | null = null;
+      let continuationCount = 0;
 
       try {
         try {
-          for await (const ev of backend.events(sessionRef)) {
-            if (handle.stallRecovering) {
+          while (true) {
+            if (
+              this.stopped ||
+              handle.cancelledByControl ||
+              abortController.signal.aborted ||
+              handle.stallRecovering
+            ) {
               break;
             }
-            handle.lastEventAtMs = this.nowMs();
-            handle.stallWarnedAtMs = null;
+            exitEvent = null;
+            for await (const ev of backend.events(handle.sessionRef)) {
+              if (handle.stallRecovering) {
+                break;
+              }
+              handle.lastEventAtMs = this.nowMs();
+              handle.stallWarnedAtMs = null;
 
-            this.store.recordRunEvent(taskId, runDirName, ev);
+              this.store.recordRunEvent(taskId, runDirName, ev);
 
-            if (ev.kind === "session_bound") {
-              const currentMeta = readYamlOptional(
-                this.store.paths.runYaml(taskId, runDirName),
-                RunMetaSchema,
-              );
-              const baseMeta = currentMeta ?? runMeta;
-              const nextMeta: RunMeta = {
-                ...baseMeta,
-                session_ref: {
-                  ...baseMeta.session_ref,
-                  meta: {
-                    ...(baseMeta.session_ref.meta ?? {}),
-                    providerSessionId: ev.providerSessionId,
-                    ...(ev.providerSessionPath !== undefined
-                      ? { providerSessionPath: ev.providerSessionPath }
-                      : {}),
+              if (ev.kind === "session_bound") {
+                const currentMeta = readYamlOptional(
+                  this.store.paths.runYaml(taskId, runDirName),
+                  RunMetaSchema,
+                );
+                const baseMeta = currentMeta ?? runMeta;
+                const nextMeta: RunMeta = {
+                  ...baseMeta,
+                  session_ref: {
+                    ...baseMeta.session_ref,
+                    meta: {
+                      ...(baseMeta.session_ref.meta ?? {}),
+                      providerSessionId: ev.providerSessionId,
+                      ...(ev.providerSessionPath !== undefined
+                        ? { providerSessionPath: ev.providerSessionPath }
+                        : {}),
+                    },
                   },
-                },
-              };
-              runMeta = nextMeta;
-              handle.runMeta = nextMeta;
-              handle.sessionRef = nextMeta.session_ref;
-              writeYamlAtomic(
-                this.store.paths.runYaml(taskId, runDirName),
-                nextMeta,
-                RunMetaSchema,
-              );
-              this.publishTaskUpdated(taskId, {
-                stage: runMeta.stage,
-                round: runMeta.round,
-                contractVersion: runMeta.contract_version,
-              });
-            }
+                };
+                runMeta = nextMeta;
+                handle.runMeta = nextMeta;
+                handle.sessionRef = nextMeta.session_ref;
+                writeYamlAtomic(
+                  this.store.paths.runYaml(taskId, runDirName),
+                  nextMeta,
+                  RunMetaSchema,
+                );
+                this.publishTaskUpdated(taskId, {
+                  stage: runMeta.stage,
+                  round: runMeta.round,
+                  contractVersion: runMeta.contract_version,
+                });
+              }
 
-            if (ev.kind === "message" && ev.delta) {
-              this.rateTracker.recordDelta({ taskId, text: ev.text });
-            } else if (ev.kind === "thinking" && ev.chars && ev.chars > 0) {
-              this.rateTracker.recordCharDelta({ taskId, chars: ev.chars });
-            }
+              if (ev.kind === "message" && ev.delta) {
+                this.rateTracker.recordDelta({ taskId, text: ev.text });
+              } else if (ev.kind === "thinking" && ev.chars && ev.chars > 0) {
+                this.rateTracker.recordCharDelta({ taskId, chars: ev.chars });
+              }
 
-            if (ev.kind === "context_window") {
-              const pct =
-                ev.percent ??
-                (ev.contextWindowTokens > 0
-                  ? Math.min(100, Math.max(0, (ev.usedTokens / ev.contextWindowTokens) * 100))
-                  : 0);
-              this.latestContextPercentByRunId.set(runMeta.run_id, pct);
-            }
+              if (ev.kind === "context_window") {
+                const pct =
+                  ev.percent ??
+                  (ev.contextWindowTokens > 0
+                    ? Math.min(100, Math.max(0, (ev.usedTokens / ev.contextWindowTokens) * 100))
+                    : 0);
+                this.latestContextPercentByRunId.set(runMeta.run_id, pct);
+              }
 
-            if (ev.kind === "rate_limited") {
-              const cooldownMs =
-                ev.retryAfterSec !== undefined
-                  ? Math.max(1_000, ev.retryAfterSec * 1_000)
-                  : this.rateLimitCooldownMs;
-              this.scheduler.markRateLimited(
-                {
-                  backendId: runMeta.backend_id,
-                  agent: runMeta.agent,
-                  model: runMeta.model,
-                },
-                cooldownMs,
-              );
-              const untilIso =
-                this.providerHealth?.recordRateLimit(ev.provider, {
-                  ...(ev.retryAfterSec !== undefined ? { retryAfterSec: ev.retryAfterSec } : {}),
-                  ...(ev.until !== undefined ? { until: ev.until } : {}),
+              if (ev.kind === "rate_limited") {
+                const cooldownMs =
+                  ev.retryAfterSec !== undefined
+                    ? Math.max(1_000, ev.retryAfterSec * 1_000)
+                    : this.rateLimitCooldownMs;
+                this.scheduler.markRateLimited(
+                  {
+                    backendId: runMeta.backend_id,
+                    agent: runMeta.agent,
+                    model: runMeta.model,
+                  },
+                  cooldownMs,
+                );
+                const untilIso =
+                  this.providerHealth?.recordRateLimit(ev.provider, {
+                    ...(ev.retryAfterSec !== undefined ? { retryAfterSec: ev.retryAfterSec } : {}),
+                    ...(ev.until !== undefined ? { until: ev.until } : {}),
+                    ...(ev.detail !== undefined ? { detail: ev.detail } : {}),
+                  }) ?? ev.until;
+                this.sseHub.publish({
+                  type: "provider.status",
+                  providerId: ev.provider,
+                  status: "cooldown",
+                  ...(untilIso !== undefined ? { cooldownUntil: untilIso } : {}),
                   ...(ev.detail !== undefined ? { detail: ev.detail } : {}),
-                }) ?? ev.until;
+                  at: ev.at,
+                });
+              }
+
               this.sseHub.publish({
-                type: "provider.status",
-                providerId: ev.provider,
-                status: "cooldown",
-                ...(untilIso !== undefined ? { cooldownUntil: untilIso } : {}),
-                ...(ev.detail !== undefined ? { detail: ev.detail } : {}),
-                at: ev.at,
+                type: "run.event",
+                taskId,
+                runId: runMeta.run_id,
+                event: ev,
               });
+
+              if (ev.kind === "exit") {
+                exitEvent = ev;
+              }
             }
 
-            this.sseHub.publish({
-              type: "run.event",
-              taskId,
-              runId: runMeta.run_id,
-              event: ev,
-            });
+            if (
+              this.stopped ||
+              handle.cancelledByControl ||
+              abortController.signal.aborted ||
+              handle.stallRecovering ||
+              exitEvent?.reason !== "completed" ||
+              continuationCount >= MAX_IN_RUN_RECEIPT_CONTINUATIONS
+            ) {
+              break;
+            }
 
-            if (ev.kind === "exit") {
-              exitEvent = ev;
+            const latestCard = readYamlOptional(this.store.paths.cardYaml(taskId), TaskCardSchema);
+            const latestDerived = latestCard
+              ? deriveTaskStatus(latestCard, this.store.readStateEvents(taskId))
+              : null;
+            if (
+              !latestCard ||
+              !latestDerived ||
+              latestDerived.status !== "running" ||
+              latestDerived.activeRunId !== runMeta.run_id ||
+              latestCard.contract_version !== runMeta.contract_version
+            ) {
+              break;
+            }
+
+            const caps =
+              this.agentCapabilitiesMap.get(runMeta.agent) ??
+              (await backend.capabilities(runMeta.agent).catch(() => undefined));
+            const lastContextPct = this.latestContextPercentByRunId.get(runMeta.run_id) ?? 0;
+            if (caps?.warmSessionReuse !== true || lastContextPct >= WARM_CONTEXT_PERCENT_LIMIT) {
+              break;
+            }
+
+            const rawReceipt = readOptionalText(this.store.paths.receiptMd(taskId, runDirName));
+            const receiptKind = resolveReceiptKindForRole(runMeta.role);
+            let nudgeReason: string | null = null;
+            if (rawReceipt === null) {
+              nudgeReason = "尚未收到当前阶段的有效回执（RECEIPT.md 缺失）。";
+            } else if (caps.mcpInjection !== true && receiptKind !== null) {
+              const parsed = parseAndValidateReceipt(receiptKind, rawReceipt);
+              if (!parsed.ok) {
+                nudgeReason = `回执格式校验未通过：${parsed.errors.join("; ")}`;
+              } else if (
+                parsed.frontmatter.run_id !== runMeta.run_id ||
+                parsed.frontmatter.contract_version !== runMeta.contract_version
+              ) {
+                nudgeReason = `回执 frontmatter 中的 run_id (${parsed.frontmatter.run_id}) 或 contract_version (${parsed.frontmatter.contract_version}) 与当前运行 (${runMeta.run_id}, v${runMeta.contract_version}) 不匹配。`;
+              }
+            }
+
+            if (nudgeReason === null) {
+              break;
+            }
+
+            const nudgePrompt = this.buildInRunReceiptNudgePrompt({
+              taskId,
+              runDirName,
+              runMeta,
+              reason: nudgeReason,
+              mcpEnabled: caps.mcpInjection === true,
+              attempt: continuationCount + 1,
+              maxAttempts: MAX_IN_RUN_RECEIPT_CONTINUATIONS,
+            });
+            if (
+              this.stopped ||
+              handle.cancelledByControl ||
+              abortController.signal.aborted ||
+              handle.stallRecovering
+            ) {
+              break;
+            }
+            try {
+              handle.lastEventAtMs = this.nowMs();
+              await backend.send(handle.sessionRef, nudgePrompt);
+              if (
+                this.stopped ||
+                handle.cancelledByControl ||
+                abortController.signal.aborted ||
+                handle.stallRecovering
+              ) {
+                await backend.cancel(handle.sessionRef).catch(() => {});
+                break;
+              }
+              continuationCount += 1;
+            } catch {
+              break;
             }
           }
         } catch (err) {
@@ -4376,28 +4515,30 @@ export class KilnOrchestrator {
     this.warmStepMetaByRunId.delete(runMeta.run_id);
     this.latestContextPercentByRunId.delete(runMeta.run_id);
 
+    const latestRunMeta =
+      readYamlOptional(this.store.paths.runYaml(taskId, runDirName), RunMetaSchema) ?? runMeta;
+    const backendForRun = this.backendRegistry.get(latestRunMeta.backend_id);
+    const capsForRun =
+      this.agentCapabilitiesMap.get(latestRunMeta.agent) ??
+      (backendForRun
+        ? await backendForRun.capabilities(latestRunMeta.agent).catch(() => undefined)
+        : undefined);
+    let parkedInWarmPool = false;
+
     if (
       runMeta.stage === "implement" &&
       runMeta.role === "worker" &&
       exitEvent?.reason === "completed" &&
       sessionKey !== undefined
     ) {
-      const latestRunMeta =
-        readYamlOptional(this.store.paths.runYaml(taskId, runDirName), RunMetaSchema) ?? runMeta;
-      const backend = this.backendRegistry.get(latestRunMeta.backend_id);
-      const caps =
-        this.agentCapabilitiesMap.get(latestRunMeta.agent) ??
-        (backend
-          ? await backend.capabilities(latestRunMeta.agent).catch(() => undefined)
-          : undefined);
       const cwd =
         latestRunMeta.cwd ??
         (card.workspace_mode === "git_worktree"
           ? this.getGitWorktreeDir(taskId)
           : this.store.paths.workspaceDir(taskId));
       if (
-        backend &&
-        caps?.warmSessionReuse === true &&
+        backendForRun &&
+        capsForRun?.warmSessionReuse === true &&
         reuseCount < WARM_MAX_CONSECUTIVE_REUSES &&
         (lastContextPercent === null || lastContextPercent < WARM_CONTEXT_PERCENT_LIMIT)
       ) {
@@ -4406,7 +4547,7 @@ export class KilnOrchestrator {
             taskId,
             sessionRef: latestRunMeta.session_ref,
             sessionKey,
-            backend,
+            backend: backendForRun,
             backendId: latestRunMeta.backend_id,
             agent: latestRunMeta.agent,
             model: latestRunMeta.model,
@@ -4423,53 +4564,60 @@ export class KilnOrchestrator {
           },
           this.getWarmCacheTtlMs(),
         );
+        parkedInWarmPool = true;
       }
     }
 
-    if (exitEvent?.reason === "cancelled") {
-      await this.applyStageFailure(
-        taskId,
-        runMeta.stage,
-        runMeta,
-        {
-          kind: "runtime_error",
-          message: exitEvent.detail ?? "run_cancelled_unexpectedly",
-        },
-        guard,
-      );
-      return;
-    }
+    try {
+      if (exitEvent?.reason === "cancelled") {
+        await this.applyStageFailure(
+          taskId,
+          runMeta.stage,
+          runMeta,
+          {
+            kind: "runtime_error",
+            message: exitEvent.detail ?? "run_cancelled_unexpectedly",
+          },
+          guard,
+        );
+        return;
+      }
 
-    switch (runMeta.stage) {
-      case "plan":
-        await this.finalizePlanRun(taskId, runDirName, runMeta);
-        break;
-      case "research":
-        await this.finalizeResearchRun(taskId, runDirName, runMeta);
-        break;
-      case "implement":
-        await this.finalizeWorkerRun(taskId, runDirName, runMeta, exitEvent, signal);
-        break;
-      case "verify":
-        await this.finalizeVerifyAgentRun(taskId, runDirName, runMeta, exitEvent, signal);
-        break;
-      case "review":
-        await this.finalizeReviewerRun(taskId, runDirName, runMeta, exitEvent);
-        break;
-      case "accept":
-        await this.finalizeVerifierRun(taskId, runDirName, runMeta);
-        break;
-      case "triage":
-        await this.finalizeTriageRun(taskId, runDirName, runMeta);
-        break;
-      case "advise":
-        await this.finalizeAdvisorRun(taskId, runDirName, runMeta);
-        break;
-      case "deliver":
-        await this.finalizeDeliverAgentRun(taskId, runDirName, runMeta);
-        break;
-      default:
-        break;
+      switch (runMeta.stage) {
+        case "plan":
+          await this.finalizePlanRun(taskId, runDirName, runMeta);
+          break;
+        case "research":
+          await this.finalizeResearchRun(taskId, runDirName, runMeta);
+          break;
+        case "implement":
+          await this.finalizeWorkerRun(taskId, runDirName, runMeta, exitEvent, signal);
+          break;
+        case "verify":
+          await this.finalizeVerifyAgentRun(taskId, runDirName, runMeta, exitEvent, signal);
+          break;
+        case "review":
+          await this.finalizeReviewerRun(taskId, runDirName, runMeta, exitEvent);
+          break;
+        case "accept":
+          await this.finalizeVerifierRun(taskId, runDirName, runMeta);
+          break;
+        case "triage":
+          await this.finalizeTriageRun(taskId, runDirName, runMeta);
+          break;
+        case "advise":
+          await this.finalizeAdvisorRun(taskId, runDirName, runMeta);
+          break;
+        case "deliver":
+          await this.finalizeDeliverAgentRun(taskId, runDirName, runMeta);
+          break;
+        default:
+          break;
+      }
+    } finally {
+      if (!parkedInWarmPool && capsForRun?.warmSessionReuse === true && backendForRun) {
+        await backendForRun.cancel(latestRunMeta.session_ref).catch(() => {});
+      }
     }
   }
 

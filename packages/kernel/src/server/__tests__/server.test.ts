@@ -2061,10 +2061,16 @@ describe("KilndServer end-to-end (UDS MCP RPC + HTTP REST + SSE + host_scoped)",
     expect(server.store.getTaskIndex("t-paused-down")?.status).toBe("queued");
 
     // 6. commit_card (MCP) and draft commit (HTTP) with cancelled dep auto-register upstream_cancelled pendingDecision
+    const intakeToken = server.issueRunToken({
+      taskId: "draft-t-up1",
+      runId: "run-intake-blocked",
+      role: "intake",
+      contractVersion: 1,
+    });
     const commitBlockedRes = await requestMcpRpc(server, {
       method: "POST",
       path: "/rpc/mcp/wb_plan",
-      headers: { Authorization: `Bearer ${resolverTokenFor("t-up1")}` },
+      headers: { Authorization: `Bearer ${intakeToken}` },
       body: {
         mode: "commit_card",
         title: "Born blocked by t-up1",

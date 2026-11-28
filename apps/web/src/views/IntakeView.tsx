@@ -607,7 +607,7 @@ export function IntakeView() {
                 <div className="brief-bar">
                   <span className="brief-status">
                     {openQuestions.length > 0
-                      ? `待拍板 ${openQuestions.length} 项`
+                      ? `待澄清 ${openQuestions.length} 项`
                       : hasBrief
                         ? "方案已就绪 · 提交后写入 BRIEF.md"
                         : "尚未生成产品方案"}
@@ -677,8 +677,8 @@ export function IntakeView() {
                 ) : null}
 
                 {openQuestions.length > 0 ? (
-                  <div className="open-questions" aria-label="待拍板事项">
-                    <div className="oq-title">待拍板（{openQuestions.length}）</div>
+                  <div className="open-questions" aria-label="待澄清事项">
+                    <div className="oq-title">待澄清（{openQuestions.length}）</div>
                     <ul>
                       {openQuestions.map((q, idx) => (
                         <li key={idx}>{q}</li>
@@ -1349,7 +1349,7 @@ export function IntakeView() {
                 }
                 onClick={() => void store.commitIntakeTask()}
               >
-                开始推进
+                ＋ 创建新任务
               </button>
             ) : null}
             <button
@@ -1376,7 +1376,7 @@ export function IntakeView() {
                     ? "当前处于多卡拆片 DAG 模式，请核对上方拓扑依赖后点击「批量立项」"
                     : ready
                       ? openQuestions.length > 0
-                        ? `契约已齐，但仍有 ${openQuestions.length} 项待拍板；也可直接点击开始推进`
+                        ? `契约已齐，但仍有 ${openQuestions.length} 项待澄清；也可直接点击「＋ 创建新任务」`
                         : hasBrief
                           ? "《产品方案》与契约已就绪，确认后写入 card.yaml 和 BRIEF.md"
                           : "确认后写入 card.yaml 和 BRIEF.md，进入队列调度"

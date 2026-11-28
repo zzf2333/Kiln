@@ -290,6 +290,9 @@ export class KilndServer {
           await this.orchestrator.wake();
         })();
       },
+      onTaskQueued: () => {
+        void this.orchestrator.wake();
+      },
       ...(options.mcpServerCommand !== undefined
         ? { mcpServerCommand: options.mcpServerCommand }
         : {}),

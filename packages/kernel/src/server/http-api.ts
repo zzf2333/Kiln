@@ -2579,6 +2579,8 @@ export function createHttpApiApp(deps: HttpApiDependencies): Hono {
       reply: res.reply,
       pendingDecision: res.pendingDecision,
       card: res.card,
+      decisionResolved: res.decisionResolved,
+      state: res.state,
     });
   });
 

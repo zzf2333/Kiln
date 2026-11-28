@@ -4155,7 +4155,23 @@ export class KilnWebStore {
                 : res.reply,
             ]
           : current;
+      const nextPendingDecisions = res.decisionResolved
+        ? this.state.pendingDecisions.filter((d) => d.task_id !== taskId)
+        : this.state.pendingDecisions;
+      const nextTasks = res.decisionResolved
+        ? this.state.tasks.map((task) =>
+            task.id === taskId
+              ? {
+                  ...task,
+                  status: res.state?.status ?? "queued",
+                  ...(res.state?.stage !== undefined ? { stage: res.state.stage } : {}),
+                }
+              : task,
+          )
+        : this.state.tasks;
       this.setState({
+        pendingDecisions: nextPendingDecisions,
+        tasks: nextTasks,
         resolveMessagesByTask: {
           ...this.state.resolveMessagesByTask,
           [taskId]: nextMsgs,
@@ -4167,7 +4183,14 @@ export class KilnWebStore {
         resolveBusy: false,
       });
       void this.bootstrap();
-      if (res.pendingDecision || res.card) {
+      if (res.decisionResolved) {
+        this.showToast("已按讨论结果推进原任务重跑");
+        if (this.state.view === "resolve" && this.state.taskId === taskId) {
+          this.openTask(taskId);
+        } else {
+          await this.loadTaskDetail(taskId);
+        }
+      } else if (res.pendingDecision || res.card) {
         await this.loadTaskDetail(taskId);
       }
     } catch (err) {

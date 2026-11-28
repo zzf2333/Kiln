@@ -606,6 +606,8 @@ export interface ChatResponsePayload {
   pendingDecision?: PendingDecision | null;
   contractPatch?: Partial<CardContract>;
   card?: TaskCard;
+  decisionResolved?: boolean;
+  state?: TaskDetailResponse["state"];
 }
 
 export interface ReconDraftResponse {

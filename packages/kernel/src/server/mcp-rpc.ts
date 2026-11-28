@@ -33,6 +33,7 @@ import {
   type TaskCard,
 } from "@kiln/protocol";
 import { InvalidStateTransitionError, TaskStateMachine, canTransition } from "../state/index.js";
+import { checkScope, isHostTargetWithinScope, resolveCanonicalHostTarget } from "../gate/index.js";
 import {
   KilnStore,
   assertSafeSegment,
@@ -44,20 +45,26 @@ import {
 } from "../store/index.js";
 import type { CaffeinateController } from "./caffeinate.js";
 import { copyDraftAttachmentsToTask, validateCommitAttachments } from "./attachments.js";
+import { resolveStagedHostMapping } from "./orchestrator.js";
 import { ServerHttpError, mapDomainError } from "./errors.js";
 import {
   createNetHttpServer,
   type IpcTransportMode,
   type NetHttpServerHandle,
 } from "./ipc-http.js";
+import { collectRelativeFiles } from "./orchestrator-git.js";
 import {
   appendLedgerProposal,
   applyPendingDecisionUpdate,
   countRunningLeafTasks,
+  isApprovalGatePendingDecision,
+  isSafeReworkStage,
   PendingDecisionStore,
+  pickSafeReworkStage,
   readOptionalText,
   readTaskCardOptional,
   resolveCardLimits,
+  supersedePendingDecisionForRework,
 } from "./pending-decisions.js";
 import {
   validateCommitContract,
@@ -858,11 +865,39 @@ export class McpRpcServer {
   }
 
   private handlePlan(rawBody: unknown, claims: RunTokenClaims): Record<string, unknown> {
+    if (rawBody !== null && typeof rawBody === "object" && "mode" in rawBody) {
+      const rawMode = (rawBody as { mode?: unknown }).mode;
+      if (
+        (rawMode === "upsert_draft" ||
+          rawMode === "commit_card" ||
+          rawMode === "commit_split_cards") &&
+        claims.role !== "intake"
+      ) {
+        throw new ServerHttpError(403, {
+          error: "role_forbidden",
+          code: "role_forbidden",
+          role: claims.role,
+          tool: "wb_plan",
+          mode: rawMode,
+          message: `Role "${claims.role}" is not allowed to call wb_plan(${rawMode})`,
+        });
+      }
+    }
     const input = WbPlanInputSchema.parse(rawBody);
     const now = new Date().toISOString();
 
     switch (input.mode) {
       case "upsert_draft": {
+        if (claims.role !== "intake") {
+          throw new ServerHttpError(403, {
+            error: "role_forbidden",
+            code: "role_forbidden",
+            role: claims.role,
+            tool: "wb_plan",
+            mode: input.mode,
+            message: `Role "${claims.role}" is not allowed to call wb_plan(${input.mode})`,
+          });
+        }
         assertSafeSegment(input.draft_id, "draft_id");
         if (input.space !== undefined) {
           assertSafeSegment(input.space, "space");
@@ -919,6 +954,16 @@ export class McpRpcServer {
       }
 
       case "commit_card": {
+        if (claims.role !== "intake") {
+          throw new ServerHttpError(403, {
+            error: "role_forbidden",
+            code: "role_forbidden",
+            role: claims.role,
+            tool: "wb_plan",
+            mode: input.mode,
+            message: `Role "${claims.role}" is not allowed to call wb_plan(${input.mode})`,
+          });
+        }
         assertSafeSegment(input.space, "space");
         if (input.draft_id !== undefined) {
           assertSafeSegment(input.draft_id, "draft_id");
@@ -1025,6 +1070,16 @@ export class McpRpcServer {
       }
 
       case "commit_split_cards": {
+        if (claims.role !== "intake") {
+          throw new ServerHttpError(403, {
+            error: "role_forbidden",
+            code: "role_forbidden",
+            role: claims.role,
+            tool: "wb_plan",
+            mode: input.mode,
+            message: `Role "${claims.role}" is not allowed to call wb_plan(${input.mode})`,
+          });
+        }
         return {
           ...commitSplitCards(
             {
@@ -1057,6 +1112,8 @@ export class McpRpcServer {
           card,
           this.store.readStateEvents(input.task_id),
         ).status;
+        const prevPending =
+          previousStatus === "waiting" ? this.pendingDecisions.get(input.task_id) : null;
         if (
           input.contract.accept_cmd !== undefined &&
           input.contract.accept_cmd !== card.contract.accept_cmd &&
@@ -1079,12 +1136,40 @@ export class McpRpcServer {
           now,
         });
 
+        let finalState = updated.state;
+        let decisionSuperseded = false;
         if (updated.state.status === "waiting") {
           const rebound = this.pendingDecisions.rebindContractVersion(
             input.task_id,
             updated.newVersion,
           );
-          if (previousStatus !== "waiting" && rebound) {
+          const pendingTarget = prevPending ?? rebound;
+          const reworkStage = pickSafeReworkStage(input.affected_stages);
+          if (
+            previousStatus === "waiting" &&
+            isApprovalGatePendingDecision(pendingTarget) &&
+            reworkStage !== null
+          ) {
+            const superseded = supersedePendingDecisionForRework(
+              {
+                store: this.store,
+                stateMachine: this.stateMachine,
+                pendingDecisions: this.pendingDecisions,
+                sseHub: this.sseHub,
+                caffeinate: this.caffeinate,
+              },
+              {
+                taskId: input.task_id,
+                targetStage: reworkStage,
+                rationale: input.rationale,
+                now,
+              },
+            );
+            if (superseded.resolved) {
+              finalState = superseded.state;
+              decisionSuperseded = true;
+            }
+          } else if (previousStatus !== "waiting" && rebound) {
             this.sseHub.publish({
               type: "decision.requested",
               taskId: input.task_id,
@@ -1099,22 +1184,26 @@ export class McpRpcServer {
           type: "task.updated",
           taskId: input.task_id,
           patch: {
-            status: updated.state.status,
-            ...(updated.state.stage !== null ? { stage: updated.state.stage } : {}),
+            status: finalState.status,
+            ...(finalState.stage !== null ? { stage: finalState.stage } : {}),
             contractVersion: updated.newVersion,
           },
         });
+        if (decisionSuperseded && finalState.status === "queued") {
+          this.onTaskQueued?.(input.task_id);
+        }
         this.onContractUpdated?.(input.task_id);
 
         return {
           ok: true,
           mode: "update_contract",
           taskId: input.task_id,
-          status: updated.state.status,
-          stage: updated.state.stage,
+          status: finalState.status,
+          stage: finalState.stage,
           contractVersion: updated.newVersion,
           archivedReceipts: updated.archivedReceipts,
           rationale: input.rationale,
+          decisionResolved: decisionSuperseded,
         };
       }
 
@@ -1163,6 +1252,37 @@ export class McpRpcServer {
           },
         );
 
+        let decisionResolved = false;
+        let resolvedState: DerivedTaskState | undefined;
+        if (input.auto_resume === true) {
+          const chosen =
+            updated.decision.options.find((opt) => opt.recommended) ?? updated.decision.options[0];
+          if (chosen && chosen.action === "resume" && isSafeReworkStage(chosen.target_stage)) {
+            const superseded = supersedePendingDecisionForRework(
+              {
+                store: this.store,
+                stateMachine: this.stateMachine,
+                pendingDecisions: this.pendingDecisions,
+                sseHub: this.sseHub,
+                caffeinate: this.caffeinate,
+              },
+              {
+                taskId: input.task_id,
+                targetStage: chosen.target_stage,
+                rationale: input.resolution_summary?.trim() || chosen.label,
+                now,
+              },
+            );
+            if (superseded.resolved) {
+              decisionResolved = true;
+              resolvedState = superseded.state;
+              if (superseded.state.status === "queued") {
+                this.onTaskQueued?.(input.task_id);
+              }
+            }
+          }
+        }
+
         return {
           ok: true,
           mode: "update_decision",
@@ -1170,6 +1290,8 @@ export class McpRpcServer {
           decisionId: updated.decision.id,
           maxTokensUpdated: updated.maxTokensUpdated,
           maxTokens: updated.card.limits.max_tokens,
+          decisionResolved,
+          ...(resolvedState ? { status: resolvedState.status, stage: resolvedState.stage } : {}),
         };
       }
     }
@@ -1345,7 +1467,7 @@ export class McpRpcServer {
   private handleSubmitReceipt(rawBody: unknown, claims: RunTokenClaims): Record<string, unknown> {
     const input = WbSubmitReceiptInputSchema.parse(rawBody);
     const effectiveRunId = this.resolveEffectiveRunId(claims);
-    this.requireCard(claims.taskId);
+    const card = this.requireCard(claims.taskId);
 
     if (!isReceiptKind(claims.role)) {
       throw new ServerHttpError(400, {
@@ -1404,6 +1526,64 @@ export class McpRpcServer {
         runId: effectiveRunId,
         message: `No RUN.yaml found for task "${claims.taskId}" and run "${effectiveRunId}"`,
       });
+    }
+
+    if (
+      claims.role === "worker" &&
+      matchedRun.runMeta.stage === "implement" &&
+      validation.ok &&
+      "outcome" in validation.frontmatter &&
+      validation.frontmatter.outcome === "completed"
+    ) {
+      const preCheckErrors: string[] = [];
+      if (card.workspace_mode === "git_worktree") {
+        try {
+          const scopeCheck = checkScope(validation.frontmatter.changed_paths, card.contract.scope);
+          if (!scopeCheck.ok) {
+            preCheckErrors.push(
+              `changed_paths outside contract.scope (${scopeCheck.outOfScopePaths.join(", ")}); revert out-of-scope edits or fix changed_paths before resubmitting`,
+            );
+          }
+        } catch (err) {
+          preCheckErrors.push(
+            `Invalid changed_paths for git_worktree scope: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      } else if (card.workspace_mode === "host_scoped") {
+        const stagedFiles = collectRelativeFiles(this.store.paths.stagedDir(claims.taskId));
+        if (stagedFiles.length > 0) {
+          const { specs, unmappedPaths } = resolveStagedHostMapping(
+            stagedFiles,
+            validation.frontmatter.changed_paths,
+            card.contract.scope,
+          );
+          if (unmappedPaths.length > 0) {
+            preCheckErrors.push(
+              `Unmapped staged files cannot resolve host targets: ${unmappedPaths.join(", ")}`,
+            );
+          }
+          for (const spec of specs) {
+            try {
+              const canonical = resolveCanonicalHostTarget(spec.targetPath);
+              if (!isHostTargetWithinScope(canonical, card.contract.scope)) {
+                preCheckErrors.push(`Staged host target outside contract.scope: ${canonical}`);
+              }
+            } catch (err) {
+              preCheckErrors.push(
+                `Invalid staged host target "${spec.targetPath}": ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          }
+        }
+      }
+      if (preCheckErrors.length > 0) {
+        throw new ServerHttpError(400, {
+          error: "invalid_receipt",
+          role: claims.role,
+          errors: preCheckErrors,
+          message: `Invalid ${claims.role} receipt: ${preCheckErrors.join("; ")}`,
+        });
+      }
     }
 
     const submitResult = this.store.submitReceipt({

@@ -1193,4 +1193,287 @@ describe("Track 1: B1 layered HANDOFF, B2 warm session reuse & sessionKey MCP au
     );
     expect(impl2Meta?.session_reused).toBe(true);
   });
+
+  it("nudges missing/out-of-scope receipt inside the same Run via backend.send() while preserving active lease", async () => {
+    const kilnHome = makeTempDir("kiln-inrun-nudge-");
+    const { repoPath, baseCommit } = initGitRepo("inrun");
+    const acceptCmd = "node -e 'process.exit(0)'";
+    const snap = computeFrozenSnapshot(repoPath, [], acceptCmd);
+
+    const fakeBackend = makeWarmCapableBackend();
+    let workerApprovals = 0;
+
+    const server = new KilndServer({
+      kilnHome,
+      host: "127.0.0.1",
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: true,
+      tokenSecret: "inrun-receipt-secret-0123456789abc",
+      approvalHandler: async (req, ctx) => {
+        if (ctx.taskId !== "t-inrun-nudge" || req.action !== "impl_nudge") {
+          return;
+        }
+        workerApprovals += 1;
+        const spec = fakeBackend
+          .getRecordedSpecs()
+          .find((s) => s.taskId === ctx.taskId && s.role === "worker");
+        const token = spec?.mcpServers?.[0]?.env?.KILN_RUN_TOKEN ?? "";
+
+        if (workerApprovals === 1) {
+          // Turn 1 forgets to submit RECEIPT.md and simply exits
+          await ctx.backend.answer(req.id, true);
+          return;
+        }
+
+        // Turn 2 (in-run backend.send continuation): first hits out-of-scope pre-check (400),
+        // verifies stage lease stays active, then resubmits valid receipt on same runId
+        const badRes = await server.invokeMcpRpc({
+          method: "POST",
+          url: "/rpc/mcp/wb_submit_receipt",
+          headers: { Authorization: `Bearer ${token}` },
+          rawBody: JSON.stringify({
+            markdown: makeWorkerReceiptMarkdown({
+              run_id: ctx.runId,
+              contract_version: ctx.card.contract_version,
+              input_ref: baseCommit,
+              output_ref: "HEAD",
+              changed_paths: ["outside/forbidden.ts"],
+            }),
+          }),
+        });
+        expect(badRes.status).toBe(400);
+        expect(server.store.getStageLease(ctx.taskId)?.state).toBe("active");
+
+        const wtPath = path.join(server.store.paths.workspaceDir(ctx.taskId), "worktree");
+        fs.writeFileSync(path.join(wtPath, "src", "app.ts"), "export const v = 99;\n");
+
+        const goodRes = await server.invokeMcpRpc({
+          method: "POST",
+          url: "/rpc/mcp/wb_submit_receipt",
+          headers: { Authorization: `Bearer ${token}` },
+          rawBody: JSON.stringify({
+            markdown: makeWorkerReceiptMarkdown({
+              run_id: ctx.runId,
+              contract_version: ctx.card.contract_version,
+              input_ref: baseCommit,
+              output_ref: "HEAD",
+              changed_paths: ["src/app.ts"],
+            }),
+          }),
+        });
+        expect(goodRes.status).toBe(200);
+        expect((goodRes.body as { accepted?: boolean }).accepted).toBe(true);
+        await ctx.backend.answer(req.id, true);
+      },
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "kiln",
+      name: "Kiln",
+      repo_path: repoPath,
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    });
+    server.store.writeConfig("roles", {
+      schema_version: 1,
+      heterogeneous_review: false,
+      roles: {
+        worker: {
+          backend_id: "fake",
+          agent: "codex",
+          model: "gpt-5.4",
+          allow_full_access_fallback: false,
+        },
+      },
+    });
+
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "impl_nudge", detail: "turn1-omit" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-inrun-nudge", turnNumber: 1 },
+    );
+    fakeBackend.enqueueScript(
+      [
+        { kind: "approval", action: "impl_nudge", detail: "turn2-fix" },
+        { kind: "exit", reason: "completed" },
+      ],
+      { taskId: "t-inrun-nudge", turnNumber: 2 },
+    );
+
+    const now = new Date().toISOString();
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-inrun-nudge",
+        title: "同 Run 续跑补交回执",
+        space: "kiln",
+        priority: "P2",
+        track: "L1",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        workflow: {
+          schema_version: 1,
+          preset: "quick",
+          steps: [
+            { kind: "agent", stage: "implement", role: "worker", fresh_context: false },
+            { kind: "gate", stage: "verify", check: "full" },
+          ],
+        },
+        contract_version: 1,
+        contract: {
+          goal: "Keep missing/bad receipt in one Run",
+          end: "Verify passes without spawning 002-implement",
+          accept_cmd: acceptCmd,
+          accept_files_hash: snap.hash,
+          scope: ["src/**"],
+          deliver: { mode: "manual", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: {
+          retries_per_stage: 2,
+          review_rounds: 1,
+          advisor_calls: 0,
+          max_tokens: 5_000_000,
+        },
+        created_at: now,
+        updated_at: now,
+      },
+      "# In-run nudge",
+    );
+
+    await server.start();
+    await waitUntil(
+      () => server.store.getTaskIndex("t-inrun-nudge")?.status === "done",
+      "t-inrun-nudge done in single Run",
+    );
+
+    expect(workerApprovals).toBe(2);
+    expect(
+      fakeBackend
+        .getRecordedSpecs()
+        .filter((s) => s.taskId === "t-inrun-nudge" && s.role === "worker"),
+    ).toHaveLength(1);
+    expect(fakeBackend.getRecordedSends()).toHaveLength(1);
+    expect(fs.existsSync(server.store.paths.runDir("t-inrun-nudge", "002-implement"))).toBe(false);
+  });
+
+  it("aborts in-run receipt continuation cleanly when task is paused concurrently with backend.send", async () => {
+    const kilnHome = makeTempDir("kiln-inrun-abort-");
+    const { repoPath } = initGitRepo("inrun-abort");
+    const acceptCmd = "node -e 'process.exit(0)'";
+    const snap = computeFrozenSnapshot(repoPath, [], acceptCmd);
+
+    const fakeBackend = makeWarmCapableBackend();
+    const server = new KilndServer({
+      kilnHome,
+      host: "127.0.0.1",
+      port: 0,
+      publicDir: null,
+      enableOrchestrator: true,
+      tokenSecret: "inrun-abort-secret-0123456789abcd",
+    });
+    servers.push(server);
+    server.backendRegistry.register(fakeBackend);
+    server.store.writeSpace({
+      schema_version: 1,
+      id: "kiln",
+      name: "Kiln",
+      repo_path: repoPath,
+      default_branch: "main",
+      copy_untracked: [],
+      clone_deps: [],
+      freeze_patterns: [],
+    });
+    server.store.writeConfig("roles", {
+      schema_version: 1,
+      heterogeneous_review: false,
+      roles: {
+        worker: {
+          backend_id: "fake",
+          agent: "codex",
+          model: "gpt-5.4",
+          allow_full_access_fallback: false,
+        },
+      },
+    });
+
+    const origSend = fakeBackend.send.bind(fakeBackend);
+    let pausePromise: Promise<Response> | Response | null = null;
+    vi.spyOn(fakeBackend, "send").mockImplementation(async (sessionRef, msg) => {
+      pausePromise = server.app.request(
+        new Request("http://127.0.0.1/api/tasks/t-inrun-abort/pause", { method: "POST" }),
+      );
+      await origSend(sessionRef, msg);
+    });
+
+    fakeBackend.enqueueScript([{ kind: "exit", reason: "completed" }], {
+      taskId: "t-inrun-abort",
+      turnNumber: 1,
+    });
+    fakeBackend.enqueueScript([{ kind: "wait_for_cancel" }], {
+      taskId: "t-inrun-abort",
+      turnNumber: 2,
+    });
+
+    const now = new Date().toISOString();
+    server.stateMachine.createTask(
+      {
+        schema_version: 1,
+        id: "t-inrun-abort",
+        title: "并发暂停中断续跑",
+        space: "kiln",
+        priority: "P2",
+        track: "L1",
+        workspace_mode: "git_worktree",
+        parent: null,
+        depends_on: [],
+        workflow: {
+          schema_version: 1,
+          preset: "quick",
+          steps: [
+            { kind: "agent", stage: "implement", role: "worker", fresh_context: false },
+            { kind: "gate", stage: "verify", check: "full" },
+          ],
+        },
+        contract_version: 1,
+        contract: {
+          goal: "Abort Turn 2 without hanging",
+          end: "Paused cleanly",
+          accept_cmd: acceptCmd,
+          accept_files_hash: snap.hash,
+          scope: ["src/**"],
+          deliver: { mode: "manual", cmd: null },
+          human_accept: false,
+          external_actions: "ask",
+        },
+        limits: {
+          retries_per_stage: 2,
+          review_rounds: 1,
+          advisor_calls: 0,
+          max_tokens: 5_000_000,
+        },
+        created_at: now,
+        updated_at: now,
+      },
+      "# In-run abort",
+    );
+
+    await server.start();
+    await waitUntil(() => pausePromise !== null, "concurrent pause triggered at send()");
+    const pauseRes = await pausePromise!;
+    expect(pauseRes.status).toBe(200);
+    await waitUntil(
+      () => server.store.getTaskIndex("t-inrun-abort")?.status === "paused",
+      "t-inrun-abort paused without hanging on wait_for_cancel",
+    );
+  });
 });

@@ -1060,7 +1060,7 @@ describe("@kiln/web Slice 6b DetailView & IntakeView", () => {
       target: { value: "apps/web/src/**" },
     });
     expect(document.body.querySelectorAll("select")).toHaveLength(0);
-    fireEvent.click(screen.getByRole("button", { name: "开始推进" }));
+    fireEvent.click(screen.getByRole("button", { name: "＋ 创建新任务" }));
 
     await waitFor(() => {
       expect(commitPayload).not.toBeNull();

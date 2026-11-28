@@ -11,18 +11,25 @@ import {
   calculateOrthogonalTurnCostUsd,
   type CardLimits,
   type DecisionOption,
+  type DecisionRecord,
   type PendingDecision,
   type PricingConfig,
+  type StageId,
   type StateEvent,
   type TaskCard,
 } from "@kiln/protocol";
+import { readHostBackupManifest } from "../gate/host-scoped.js";
+import type { TaskStateMachine } from "../state/index.js";
 import {
   KilnStore,
   assertSafeSegment,
+  deriveTaskStatus,
   writeFileAtomic,
   writeYamlAtomic,
+  type DerivedTaskState,
   type UsageTurnRow,
 } from "../store/index.js";
+import type { CaffeinateController } from "./caffeinate.js";
 
 export const LedgerProposalSchema = z.object({
   schema_version: z.literal(1).default(1),
@@ -675,6 +682,181 @@ export function applyPendingDecisionUpdate(
   });
 
   return { decision: nextDecision, card: nextCard, maxTokensUpdated };
+}
+
+const SAFE_REWORK_STAGES = new Set<StageId>(["plan", "research", "implement"]);
+const SAFE_REWORK_STAGE_ORDER: Readonly<Record<"plan" | "research" | "implement", number>> = {
+  plan: 1,
+  research: 2,
+  implement: 3,
+};
+const BLOCKING_NON_REWORK_REASONS = new Set([
+  "upstream_cancelled",
+  "backend_policy_blocked",
+  "budget_exceeded",
+]);
+
+export function isSafeReworkStage(
+  stage: StageId | null | undefined,
+): stage is "plan" | "research" | "implement" {
+  return stage !== null && stage !== undefined && SAFE_REWORK_STAGES.has(stage);
+}
+
+/**
+ * Returns true when the pending decision represents a host-write or final delivery approval gate
+ * whose pending action becomes obsolete once the contract is updated for rework.
+ */
+export function isApprovalGatePendingDecision(
+  decision: Pick<PendingDecision, "reason" | "category"> | null | undefined,
+): boolean {
+  if (!decision) {
+    return false;
+  }
+  return (
+    decision.reason === "host_scoped_approval" ||
+    decision.reason === "deliver_approval" ||
+    decision.category === "host_scoped_approval" ||
+    decision.category === "deliver_approval"
+  );
+}
+
+export function pickSafeReworkStage(
+  stages: readonly StageId[],
+): "plan" | "research" | "implement" | null {
+  const safe = stages.filter((s): s is "plan" | "research" | "implement" => isSafeReworkStage(s));
+  if (safe.length === 0) {
+    return null;
+  }
+  safe.sort((a, b) => SAFE_REWORK_STAGE_ORDER[a] - SAFE_REWORK_STAGE_ORDER[b]);
+  return safe[0]!;
+}
+
+export type SupersedePendingDecisionResult =
+  | { resolved: false }
+  | { resolved: true; state: DerivedTaskState; decisionRecord: DecisionRecord };
+
+/**
+ * Supersedes a `waiting` task's pending decision when resolver/contract discussion settles on
+ * reworking a safe sandbox stage (`plan | research | implement`): records the decision via
+ * `TaskStateMachine.applyDecision` (never auto-persisting ledger rules), clears `pending_decision.json`
+ * and stale `host_scoped` locks/staging manifests, and transitions the original task back to `queued`.
+ */
+export function supersedePendingDecisionForRework(
+  deps: {
+    store: KilnStore;
+    stateMachine: TaskStateMachine;
+    pendingDecisions: PendingDecisionStore;
+    sseHub?: { publish: (ev: any) => unknown };
+    caffeinate?: CaffeinateController;
+  },
+  input: {
+    taskId: string;
+    targetStage: StageId;
+    rationale: string;
+    now?: string;
+  },
+): SupersedePendingDecisionResult {
+  if (!isSafeReworkStage(input.targetStage)) {
+    return { resolved: false };
+  }
+
+  const safeTaskId = assertSafeSegment(input.taskId, "taskId");
+  const card = readTaskCardOptional(deps.store, safeTaskId);
+  if (!card) {
+    return { resolved: false };
+  }
+  const derived = deriveTaskStatus(card, deps.store.readStateEvents(safeTaskId));
+  const pending = deps.pendingDecisions.get(safeTaskId);
+  if (derived.status !== "waiting" || !pending || BLOCKING_NON_REWORK_REASONS.has(pending.reason)) {
+    return { resolved: false };
+  }
+
+  const matchedExisting = pending.options.find(
+    (opt) => opt.action === "resume" && opt.target_stage === input.targetStage,
+  );
+  const stripLedgerRule = (opt: DecisionOption): DecisionOption => {
+    const { ledger_rule: _ignored, ...rest } = opt;
+    return rest;
+  };
+  const chosenOption: DecisionOption = matchedExisting
+    ? stripLedgerRule(matchedExisting)
+    : {
+        id: "opt-rework-superseded",
+        label: "按讨论修订方案退回重做",
+        action: "resume",
+        target_stage: input.targetStage,
+        recommended: true,
+      };
+  const alignedOptions = matchedExisting
+    ? pending.options.map((opt) =>
+        opt.id === chosenOption.id ? chosenOption : stripLedgerRule(opt),
+      )
+    : [...pending.options.map(stripLedgerRule), chosenOption];
+  const decisionForApply = PendingDecisionSchema.parse({
+    ...pending,
+    contract_version: derived.contractVersion,
+    options: alignedOptions,
+  });
+
+  const now = input.now ?? new Date().toISOString();
+  const applyRes = deps.stateMachine.applyDecision({
+    taskId: safeTaskId,
+    decision: decisionForApply,
+    optionId: chosenOption.id,
+    decider: "human",
+    rationale: input.rationale,
+    affectedStages: [input.targetStage],
+    now,
+  });
+
+  deps.pendingDecisions.remove(safeTaskId);
+
+  const manifestPath = deps.store.paths.backupManifest(safeTaskId);
+  const hasAwaitingManifest =
+    fs.existsSync(manifestPath) &&
+    readHostBackupManifest(deps.store, safeTaskId)?.status === "staged_awaiting_approval";
+  if (
+    pending.reason === "host_scoped_approval" ||
+    pending.category === "host_scoped_approval" ||
+    hasAwaitingManifest
+  ) {
+    deps.store.releaseHostPathLocks(safeTaskId);
+    fs.rmSync(manifestPath, { force: true });
+    fs.rmSync(path.join(deps.store.paths.backupDir(safeTaskId), "files"), {
+      recursive: true,
+      force: true,
+    });
+  }
+
+  if (applyRes.state.status === "waiting") {
+    const nextWaiting = deps.pendingDecisions.ensureUpstreamCancelledDecision(safeTaskId);
+    if (nextWaiting) {
+      deps.sseHub?.publish({
+        type: "decision.requested",
+        taskId: safeTaskId,
+        priority: deps.store.getTaskIndex(safeTaskId)?.priority ?? applyRes.state.priority,
+        question: nextWaiting.question,
+      });
+    }
+  }
+
+  deps.caffeinate?.syncRunningCount(countRunningLeafTasks(deps.store));
+  deps.sseHub?.publish({
+    type: "task.updated",
+    taskId: safeTaskId,
+    patch: {
+      status: applyRes.state.status,
+      ...(applyRes.state.stage !== null ? { stage: applyRes.state.stage } : {}),
+      ...(applyRes.state.round !== null ? { round: applyRes.state.round } : {}),
+      contractVersion: applyRes.state.contractVersion,
+    },
+  });
+
+  return {
+    resolved: true,
+    state: applyRes.state,
+    decisionRecord: applyRes.decisionRecord,
+  };
 }
 
 /**

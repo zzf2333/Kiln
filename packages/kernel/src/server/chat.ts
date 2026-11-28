@@ -53,6 +53,7 @@ import {
   KilnStore,
   readNdjsonValidated,
   writeFileAtomic,
+  type DerivedTaskState,
 } from "../store/index.js";
 import { resolveRunAttachmentInputs } from "./attachments.js";
 import { selectActiveLedgerEntriesForHandoff } from "./improvements.js";
@@ -62,8 +63,12 @@ import { discoverMcpServers, discoverSkills } from "./extensions.js";
 import {
   applyPendingDecisionUpdate,
   countRunningLeafTasks,
+  isApprovalGatePendingDecision,
+  isSafeReworkStage,
   PendingDecisionStore,
+  pickSafeReworkStage,
   readOptionalText,
+  supersedePendingDecisionForRework,
 } from "./pending-decisions.js";
 import type { LiveRateTracker } from "./rate-tracker.js";
 import type { SseHub } from "./sse.js";
@@ -151,6 +156,7 @@ const NonMcpDecisionPatchSchema = z.object({
   options: z.array(DecisionOptionSchema).min(1),
   resolution_summary: optionalTrimmedString,
   max_tokens: z.number().int().min(50_000).max(50_000_000).optional(),
+  auto_resume: z.boolean().optional(),
 });
 
 function extractLabeledJsonPatchBlock(
@@ -857,6 +863,7 @@ export interface KilnChatEngineOptions {
   mcpServerCommand?: McpCommandSpec;
   chatResponder?: ChatResponder;
   onContractUpdated?: (taskId: string) => void;
+  onTaskQueued?: (taskId: string) => void;
   extensionsHomeDir?: string;
 }
 
@@ -888,6 +895,7 @@ export class KilnChatEngine {
   private readonly mcpServerCommand: McpCommandSpec;
   private readonly chatResponder: ChatResponder | undefined;
   private readonly onContractUpdated: ((taskId: string) => void) | undefined;
+  private readonly onTaskQueued: ((taskId: string) => void) | undefined;
   private readonly extensionsHomeDir: string | undefined;
   private readonly locks = new Map<string, Promise<unknown>>();
 
@@ -905,6 +913,7 @@ export class KilnChatEngine {
     this.mcpServerCommand = resolveMcpServerCommand(options.mcpServerCommand);
     this.chatResponder = options.chatResponder;
     this.onContractUpdated = options.onContractUpdated;
+    this.onTaskQueued = options.onTaskQueued;
     this.extensionsHomeDir = options.extensionsHomeDir;
   }
 
@@ -1719,6 +1728,8 @@ export class KilnChatEngine {
         card,
         this.store.readStateEvents(params.safeTaskId),
       ).status;
+      const prevPending =
+        previousStatus === "waiting" ? this.pendingDecisions.get(params.safeTaskId) : null;
       if (previousStatus === "done" || previousStatus === "cancelled") {
         return {
           applied: false,
@@ -1739,6 +1750,7 @@ export class KilnChatEngine {
         };
       }
 
+      const now = new Date().toISOString();
       const updated = this.stateMachine.updateContract({
         taskId: params.safeTaskId,
         contractPatch: patch.contract,
@@ -1746,15 +1758,43 @@ export class KilnChatEngine {
         ...(patch.contract.accept_files_hash !== undefined
           ? { acceptFilesHash: patch.contract.accept_files_hash }
           : {}),
-        now: new Date().toISOString(),
+        now,
       });
 
+      let finalState = updated.state;
+      let decisionSuperseded = false;
       if (updated.state.status === "waiting") {
         const rebound = this.pendingDecisions.rebindContractVersion(
           params.safeTaskId,
           updated.newVersion,
         );
-        if (previousStatus !== "waiting" && rebound) {
+        const pendingTarget = prevPending ?? rebound;
+        const reworkStage = pickSafeReworkStage(patch.affected_stages);
+        if (
+          previousStatus === "waiting" &&
+          isApprovalGatePendingDecision(pendingTarget) &&
+          reworkStage !== null
+        ) {
+          const superseded = supersedePendingDecisionForRework(
+            {
+              store: this.store,
+              stateMachine: this.stateMachine,
+              pendingDecisions: this.pendingDecisions,
+              ...(this.sseHub ? { sseHub: this.sseHub } : {}),
+              ...(this.caffeinate ? { caffeinate: this.caffeinate } : {}),
+            },
+            {
+              taskId: params.safeTaskId,
+              targetStage: reworkStage,
+              rationale: patch.rationale,
+              now,
+            },
+          );
+          if (superseded.resolved) {
+            finalState = superseded.state;
+            decisionSuperseded = true;
+          }
+        } else if (previousStatus !== "waiting" && rebound) {
           this.sseHub?.publish({
             type: "decision.requested",
             taskId: params.safeTaskId,
@@ -1770,16 +1810,21 @@ export class KilnChatEngine {
         type: "task.updated",
         taskId: params.safeTaskId,
         patch: {
-          status: updated.state.status,
-          ...(updated.state.stage !== null ? { stage: updated.state.stage } : {}),
+          status: finalState.status,
+          ...(finalState.stage !== null ? { stage: finalState.stage } : {}),
           contractVersion: updated.newVersion,
         },
       });
+      if (decisionSuperseded && finalState.status === "queued") {
+        this.onTaskQueued?.(params.safeTaskId);
+      }
       this.onContractUpdated?.(params.safeTaskId);
 
       return {
         applied: true,
-        message: `contract_patch · 契约已升至 v${updated.newVersion}（${patch.rationale}）`,
+        message: decisionSuperseded
+          ? `contract_patch · 契约已升至 v${updated.newVersion}，旧拍板已自动作废并唤醒原任务重跑（${patch.rationale}）`
+          : `contract_patch · 契约已升至 v${updated.newVersion}（${patch.rationale}）`,
       };
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
@@ -1821,6 +1866,35 @@ export class KilnChatEngine {
           ...(patch.max_tokens !== undefined ? { maxTokens: patch.max_tokens } : {}),
         },
       );
+      if (patch.auto_resume === true && this.stateMachine) {
+        const chosen =
+          updated.decision.options.find((opt) => opt.recommended) ?? updated.decision.options[0];
+        if (chosen && chosen.action === "resume" && isSafeReworkStage(chosen.target_stage)) {
+          const superseded = supersedePendingDecisionForRework(
+            {
+              store: this.store,
+              stateMachine: this.stateMachine,
+              pendingDecisions: this.pendingDecisions,
+              ...(this.sseHub ? { sseHub: this.sseHub } : {}),
+              ...(this.caffeinate ? { caffeinate: this.caffeinate } : {}),
+            },
+            {
+              taskId: params.safeTaskId,
+              targetStage: chosen.target_stage,
+              rationale: patch.resolution_summary?.trim() || chosen.label,
+            },
+          );
+          if (superseded.resolved) {
+            if (superseded.state.status === "queued") {
+              this.onTaskQueued?.(params.safeTaskId);
+            }
+            return {
+              applied: true,
+              message: `decision_patch · 已按讨论定案自动作废旧拍板并退回「${chosen.target_stage}」重跑原任务`,
+            };
+          }
+        }
+      }
       return {
         applied: true,
         message: updated.maxTokensUpdated
@@ -1939,7 +2013,7 @@ export class KilnChatEngine {
       draft.track === "L1"
         ? `- 当前为 **L1 快车道**：保持 1–2 轮高效收敛，避免过度访谈；生成精简 4 段设计稿（目标与改动、边界约束、方案要点、验收命令）并尽快补齐全部契约字段。`
         : `- 当前为 **L2 标准交付**：确保业务规则、多状态流转、异常边界与人工兜底全部梳理清晰，直至 open_questions 清零；BRIEF.md 固定采用 5 段结构：\n  ## 1. 目标与用户场景\n  ## 2. 已确认规则与关键流程 / 边界\n  ## 3. 选定落地方案与关键取舍\n  ## 4. 范围边界（做什么 / 明确不做什么）\n  ## 5. 可观察验收场景`,
-      `自动补全与安全边界：用户已在前端通过 Tab 选定了项目空间、优先级或轨道；请主动替用户推导并回填 title、end、accept_cmd、scope、non_goals、depends_on、open_questions 与 brief_markdown，严禁私自调用 commit_card 直接建卡（必须由用户点击「开始推进」确认）。`,
+      `自动补全与安全边界：用户已在前端通过 Tab 选定了项目空间、优先级或轨道；请主动替用户推导并回填 title、end、accept_cmd、scope、non_goals、depends_on、open_questions 与 brief_markdown，严禁私自调用 commit_card 直接建卡（必须由用户点击「＋ 创建新任务」确认）。`,
       `5. **可组合流程蓝图预设**：按任务复杂度优先选用 4 套配方之一：\`quick\`（快速通道：实施→验真→交付，适合简单脚本/小改）、\`host_op\`（本机两阶段操作：实施暂存 dry-run→staged_only 门禁→单一交付审批后由内核原子落盘+执行+终审，**自身已有可逆隔离与最终人工交付审批，默认无需叠加重型多轮审查**；如确需加 \`review\`，\`loop.max_rounds\` 保持 \`2\`）、\`standard_dev\`（标准开发：实施⇄审查循环→交付，默认项目开发）、\`full_delivery\`（完整交付：顾问出方案 PLAN.md→实施⇄审查→独立验收→交付审批）。跨模块深挖可前置加入 \`research\` 节点（\`research -> plan\`），由 \`researcher\` 先补齐深层代码地图后再交 \`architect\` 设计 \`PLAN.md\`。若为 \`host_op\` 涉及本机实际执行命令，应把待执行命令放入 \`contract.deliver: { mode: "run_cmd", cmd: "..." }\`、把最终校验命令放入 \`contract.accept_cmd\`，Phase 1 只生成暂存脚本与校验报告，切勿让正式宿主验收命令在审批落盘前执行。`,
     ].join("\n");
 
@@ -2020,10 +2094,27 @@ export class KilnChatEngine {
       .join("\n\n");
   }
 
+  private resolveTaskChatWorkspaceCwd(card: TaskCard): string {
+    if (card.workspace_mode === "git_worktree") {
+      const wtDir = path.join(this.store.paths.workspaceDir(card.id), "worktree");
+      if (fs.existsSync(wtDir)) {
+        return wtDir;
+      }
+      const spaceCfg = card.space !== "local" ? this.store.readSpace(card.space) : null;
+      if (spaceCfg?.repo_path && fs.existsSync(spaceCfg.repo_path)) {
+        return spaceCfg.repo_path;
+      }
+    }
+    const wsDir = this.store.paths.workspaceDir(card.id);
+    ensureDir(wsDir);
+    return wsDir;
+  }
+
   private buildResolverSystemPrompt(
     card: TaskCard,
     pendingDecision: PendingDecision | null,
     mcpEnabled: boolean,
+    cwd: string,
   ): string {
     const brief = readOptionalText(this.store.paths.briefMd(card.id)) ?? "";
     const decisions = readOptionalText(this.store.paths.decisionsMd(card.id)) ?? "";
@@ -2042,11 +2133,12 @@ export class KilnChatEngine {
     const protocolSection = mcpEnabled
       ? [
           `可使用 wb_get_context / wb_list_tasks / wb_read_ledger / wb_plan(mode: "update_contract") / wb_plan(mode: "update_decision")。`,
-          `一旦分析出新方案、收敛了用户诉求或需要把「当前默认待决选项」替换为具体执行方案，**必须立刻调用 \`wb_plan({ mode: "update_decision", task_id: "${card.id}", question, options, resolution_summary, max_tokens? })\`** 同步更新右侧「需要你决定」卡片（为推荐项设 \`recommended: true\`、指明 \`target_stage\`，并将给下一阶段执行 Agent 的详细动作指令写入 \`resolution_summary\`），不要只口头给出建议。`,
+          `你当前处于任务工作区目录（cwd=${cwd}，若为 host_scoped 可直接只读查看 \`staged/\` 下的暂存清单与脚本），**严禁创建新任务或修改文件**。`,
+          `一旦分析出新方案、收敛了用户诉求或需要把「当前默认待决选项」替换为具体执行方案，**必须立刻调用 \`wb_plan({ mode: "update_decision", task_id: "${card.id}", question, options, resolution_summary, max_tokens?, auto_resume? })\`** 同步更新右侧「需要你决定」卡片；若用户在对话中已明确决定**修改契约**或**按新方向退回 \`implement | plan | research\` 重做**，请调用 \`update_contract\` 或在 \`update_decision\` 中设置 \`auto_resume: true\`，系统会自动作废旧拍板并直接唤醒原任务重跑（涉及宿主机落盘/合并交付 \`deliver\`、\`finish\`、\`cancel\` 时**严禁**设 \`auto_resume: true\`，必须留待用户人工点击确认）。`,
         ].join("\n")
       : [
-          `当前对话运行在无 MCP 模式，请仅做只读分析与方案讨论，严禁直接修改文件。`,
-          `当提出可具体落地的方案或收敛了用户选择时，请在回复末尾附一个 \`\`\`kiln-decision-patch\\n{"question": "...", "options": [{"id": "opt-1", "label": "...", "action": "resume", "target_stage": "implement", "recommended": true}], "resolution_summary": "给下一阶段的具体执行指令", "max_tokens": 500000}\\n\`\`\` JSON 代码块同步更新右侧「需要你决定」卡片。`,
+          `当前对话运行在无 MCP 模式（cwd=${cwd}），请仅做只读分析与方案讨论，严禁直接修改文件或创建新任务。`,
+          `当提出可具体落地的方案或收敛了用户选择时，请在回复末尾附一个 \`\`\`kiln-decision-patch\\n{"question": "...", "options": [{"id": "opt-1", "label": "...", "action": "resume", "target_stage": "implement", "recommended": true}], "resolution_summary": "给下一阶段的具体执行指令", "max_tokens": 500000, "auto_resume": false}\\n\`\`\` JSON 代码块同步更新右侧「需要你决定」卡片；仅当用户明确决定退回 \`implement | plan | research\` 重做时可设 \`"auto_resume": true\`（对 \`deliver\` 写宿主机/合并无效）。`,
           `仅当用户明确要求修改当前任务契约（goal、end、scope 或 accept_cmd）时，才另附 \`\`\`kiln-contract-patch\\n{...}\\n\`\`\` 代码块（含 affected_stages、rationale 与 contract 变更字段；若改 accept_cmd 须同步提供新 accept_files_hash）。`,
         ].join("\n");
 
@@ -2054,11 +2146,11 @@ export class KilnChatEngine {
       `回复格式与交互指引：`,
       KILN_OPTIONS_PROMPT_INSTRUCTION,
       `1) 若除 \`kiln-options\` 块外还需在正文中列举选项，可使用 \`1. <问题>\` + \`A（推荐）：...\` / \`B：...\` 或 Markdown 对比表；分析性小标题不要与 \`A/B\` 选项混排。`,
-      `2) 若已确定具体可行方案并同步更新了右侧「需要你决定」卡片，请在正文末尾用一句话明确告诉用户：「已为你同步右侧待决方案，点击输入框上方 **按推荐方案立即执行** 或右侧 **确认执行** 即可立即恢复推进。」`,
+      `2) 若已确定具体可行方案并同步更新了右侧「需要你决定」卡片（且未自动退回重跑），请在正文末尾用一句话明确告诉用户：「已为你同步右侧待决方案，点击输入框上方 **按推荐方案立即执行** 或右侧 **确认执行** 即可立即恢复推进。」`,
     ].join("\n");
 
     return [
-      `你是 Kiln 的 resolver 讨论角色，负责协助用户讨论任务 "${card.id}"（${card.title}，契约 v${card.contract_version}）。`,
+      `你是 Kiln 的 resolver 讨论角色，负责协助用户讨论任务 "${card.id}"（${card.title}，契约 v${card.contract_version}，cwd: ${cwd}）。`,
       protocolSection,
       uxFormattingSection,
       `当前契约：\n- goal: ${card.contract.goal}\n- end: ${card.contract.end}\n- accept_cmd: ${card.contract.accept_cmd}\n- scope: ${card.contract.scope.join(", ")}`,
@@ -2500,6 +2592,8 @@ export class KilnChatEngine {
     reply: ChatMessageRecord;
     pendingDecision: PendingDecision | null;
     card: TaskCard;
+    decisionResolved: boolean;
+    state: DerivedTaskState;
   }> {
     const safeTaskId = assertSafeSegment(taskId, "taskId");
     const trimmed = message.trim();
@@ -2529,6 +2623,8 @@ export class KilnChatEngine {
       const historyBefore = this.getTaskChatMessages(safeTaskId);
       const chatFile = this.taskChatPath(safeTaskId);
       const pendingDecision = this.pendingDecisions.get(safeTaskId);
+      const hadPendingBefore = pendingDecision !== null;
+      const resolverCwd = this.resolveTaskChatWorkspaceCwd(card);
 
       const userRecord: ChatMessageRecord = {
         id: `msg-${randomUUID().slice(0, 8)}`,
@@ -2612,7 +2708,8 @@ export class KilnChatEngine {
           reusable &&
           reusable.backend.backendId === executor.backend.backendId &&
           reusableMeta?.kiln_chat_agent === executor.agent &&
-          reusableMeta?.kiln_chat_model === executor.model
+          reusableMeta?.kiln_chat_model === executor.model &&
+          reusableMeta?.kiln_chat_cwd === resolverCwd
         ) {
           sessionRef = reusable.sessionRef;
           sessionReused = true;
@@ -2636,12 +2733,13 @@ export class KilnChatEngine {
             ...(executor.reasoningEffort !== undefined
               ? { reasoningEffort: executor.reasoningEffort }
               : {}),
-            cwd: this.store.paths.taskDir(safeTaskId),
+            cwd: resolverCwd,
             prompt: firstTurnPrompt,
             systemPrompt: this.buildResolverSystemPrompt(
               card,
               pendingDecision,
               executor.mcpEnabled,
+              resolverCwd,
             ),
             freshContext: false,
             allowFullAccessFallback: executor.allowFullAccessFallback,
@@ -2654,6 +2752,7 @@ export class KilnChatEngine {
               ...sessionRef.meta,
               kiln_chat_agent: executor.agent,
               kiln_chat_model: executor.model,
+              kiln_chat_cwd: resolverCwd,
             },
           };
           writeFileAtomic(
@@ -2779,11 +2878,21 @@ export class KilnChatEngine {
       };
       appendNdjsonLine(chatFile, replyRecord);
 
+      const finalCard = this.store.readTaskCard(safeTaskId);
+      const finalDerived = deriveTaskStatus(finalCard, this.store.readStateEvents(safeTaskId));
+      const finalPending = this.pendingDecisions.get(safeTaskId);
+      const decisionResolved =
+        hadPendingBefore &&
+        finalPending === null &&
+        (finalDerived.status === "queued" || finalDerived.status === "running");
+
       return {
         messages: this.getTaskChatMessages(safeTaskId),
         reply: replyRecord,
-        pendingDecision: this.pendingDecisions.get(safeTaskId),
-        card: this.store.readTaskCard(safeTaskId),
+        pendingDecision: finalPending,
+        card: finalCard,
+        decisionResolved,
+        state: finalDerived,
       };
     });
   }

@@ -3,7 +3,12 @@ import { getProjectSpaces, useKilnStore } from "../state/store";
 export function IntakeDock() {
   const { store, state } = useKilnStore();
 
-  if (!state.intakeActiveOpen || state.view === "intake") {
+  if (
+    !state.intakeActiveOpen ||
+    state.view === "intake" ||
+    state.view === "resolve" ||
+    state.view === "detail"
+  ) {
     return null;
   }
 

@@ -285,6 +285,26 @@ export function BoardView() {
             >
               讨论
             </button>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                const cancelOpt = dec?.options.find((o) => o.action === "cancel");
+                if (dec && cancelOpt) {
+                  void store.submitDecision(t.id, {
+                    decision_id: dec.id,
+                    option_id: cancelOpt.id,
+                    action: "cancel",
+                    apply_ledger_rule: false,
+                  });
+                } else {
+                  void store.cancelTask(t.id, "用户在待裁决列取消任务");
+                }
+              }}
+            >
+              取消
+            </button>
           </div>
         </article>
       );
